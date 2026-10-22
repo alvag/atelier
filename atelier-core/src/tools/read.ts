@@ -26,7 +26,6 @@ async function scan(path: string, start: number, end: number): Promise<Scan> {
 	let parts: Buffer[] = [];
 	let partBytes = 0;
 	let partial = false;
-	let first = true;
 
 	const wanted = () =>
 		total + 1 >= start && total + 1 <= end && lines.length < MAX_LINES && collectedBytes <= MAX_BYTES;
@@ -52,10 +51,7 @@ async function scan(path: string, start: number, end: number): Promise<Scan> {
 	const stream = createReadStream(path);
 	try {
 		for await (const chunk of stream as AsyncIterable<Buffer>) {
-			if (first) {
-				first = false;
-				if (chunk.includes(0)) return { lines: [], total: 0, binary: true };
-			}
+			if (chunk.includes(0)) return { lines: [], total: 0, binary: true };
 			let position = 0;
 			while (position < chunk.length) {
 				const newline = chunk.indexOf(NEWLINE, position);

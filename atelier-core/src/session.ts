@@ -49,14 +49,20 @@ export class Session {
 
 	static async start(options: SessionOptions): Promise<Session> {
 		const session = new Session(options);
-		session.#scratchDir = await mkdtemp(join(tmpdir(), "atelier-session-"));
-		session.#backendSession = await options.backend.start({
-			cwd: options.cwd,
-			...(options.model === undefined ? {} : { model: options.model }),
-			systemPromptAppend: options.systemPromptAppend ?? "",
-			tools: options.tools,
-			executeTool: (call) => session.#executeTool(call),
-		});
+		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-session-"));
+		session.#scratchDir = scratchDir;
+		try {
+			session.#backendSession = await options.backend.start({
+				cwd: options.cwd,
+				...(options.model === undefined ? {} : { model: options.model }),
+				systemPromptAppend: options.systemPromptAppend ?? "",
+				tools: options.tools,
+				executeTool: (call) => session.#executeTool(call),
+			});
+		} catch (error) {
+			await rm(scratchDir, { recursive: true, force: true });
+			throw error;
+		}
 		return session;
 	}
 
@@ -130,9 +136,10 @@ export class Session {
 		if (!this.#closing) {
 			this.#closed = true;
 			const scratchDir = this.#scratchDir;
-			this.#closing = Promise.resolve(this.#backendSession?.close()).finally(() =>
-				scratchDir === undefined ? undefined : rm(scratchDir, { recursive: true, force: true }),
-			);
+			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
+			this.#closing = Promise.resolve()
+				.then(() => this.#backendSession?.close())
+				.finally(() => (scratchDir === undefined ? undefined : rm(scratchDir, { recursive: true, force: true })));
 		}
 		return this.#closing;
 	}

@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { realpath } from "node:fs/promises";
-import { relative } from "node:path";
+import { matchesGlob, relative } from "node:path";
 import { z } from "zod";
-import { errorMessage, failure, MAX_GREP_MATCHES, MAX_LINE_CHARS } from "./limits.ts";
+import { errorMessage, failure, MAX_GREP_MATCHES, MAX_LINE_CHARS, takeHead } from "./limits.ts";
 import { resolveInside } from "./paths.ts";
 import { defineTool, type ToolDefinition } from "./types.ts";
 
@@ -36,6 +36,8 @@ function runSearch(
 	args: string[],
 	root: string,
 	signal: AbortSignal | undefined,
+	/** Keeps only matches whose relative path passes; applied before the match limit. */
+	accept: (path: string) => boolean = () => true,
 ): Promise<SearchResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
@@ -52,17 +54,21 @@ function runSearch(
 		const timer = setTimeout(() => stop("timeout"), SEARCH_TIMEOUT_MS);
 		const onAbort = () => stop("aborted");
 		signal?.addEventListener("abort", onAbort, { once: true });
+		if (signal?.aborted) stop("aborted");
 
-		const toRelative = (line: string) => {
-			const path = line.startsWith(`${root}/`) ? line.slice(root.length + 1) : line.replace(/^\.\//, "");
-			return clip(path);
+		const toRelative = (line: string) =>
+			clip(line.startsWith(`${root}/`) ? line.slice(root.length + 1) : line.replace(/^\.\//, ""));
+		const add = (line: string) => {
+			const match = toRelative(line);
+			const path = /^(.*?):\d+:/.exec(match)?.[1] ?? match;
+			if (accept(path)) matches.push(match);
 		};
 		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
 			if (stopped) return;
 			const lines = (pending + chunk).split("\n");
 			pending = lines.pop() ?? "";
 			for (const line of lines) {
-				matches.push(toRelative(line));
+				add(line);
 				if (matches.length > MAX_GREP_MATCHES) return stop("limit");
 			}
 		});
@@ -78,7 +84,7 @@ function runSearch(
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", onAbort);
 			// A partial last line only counts when the command finished on its own.
-			if (!stopped && pending) matches.push(toRelative(pending));
+			if (!stopped && pending) add(pending);
 			if (!stopped && code === 2 && matches.length === 0) {
 				reject(new Error(stderr.trim() || `${command} failed`));
 				return;
@@ -95,10 +101,14 @@ function ripgrepArgs(target: string, pattern: string, glob: string | undefined):
 	return args;
 }
 
-/** System grep, extended regular expressions; the target must be absolute (BSD grep excludes "." itself otherwise). */
+/**
+ * System grep, extended regular expressions. The target must be absolute (BSD grep
+ * excludes "." itself otherwise). --include only sees file names, so a glob with
+ * a directory is applied to the relative paths instead (see execute).
+ */
 function grepArgs(target: string, pattern: string, glob: string | undefined): string[] {
 	const args = ["-rnHIE", "--exclude-dir=node_modules", "--exclude-dir=.*", "--exclude=.*"];
-	if (glob !== undefined) args.push(`--include=${glob}`);
+	if (glob !== undefined && !glob.includes("/")) args.push(`--include=${glob}`);
 	args.push("-e", pattern, "--", target);
 	return args;
 }
@@ -117,17 +127,25 @@ export function createGrepTool(options: { useRipgrep?: boolean } = {}): ToolDefi
 				if (signal?.aborted) return failure("Search aborted.");
 				const target = await resolveInside(cwd, path ?? ".");
 				const root = await realpath(cwd);
+				if (signal?.aborted) return failure("Search aborted.");
 				const useRipgrep = options.useRipgrep ?? hasRipgrep();
 				const result = useRipgrep
 					? await runSearch("rg", ripgrepArgs(relative(root, target) || ".", pattern, glob), root, signal)
-					: await runSearch("grep", grepArgs(target, pattern, glob), root, signal);
+					: await runSearch(
+							"grep",
+							grepArgs(target, pattern, glob),
+							root,
+							signal,
+							glob?.includes("/") ? (match) => matchesGlob(match, glob) : undefined,
+						);
 				if (result.stopped === "aborted") return failure("Search aborted.");
 
-				const truncated = result.stopped !== undefined;
-				const shown = result.matches.slice(0, MAX_GREP_MATCHES);
+				const limited = result.matches.slice(0, MAX_GREP_MATCHES);
+				const shown = takeHead(limited).lines;
+				const truncated = result.stopped !== undefined || shown.length < limited.length;
 				const notes: string[] = [];
-				if (result.stopped === "limit")
-					notes.push(`[Showing the first ${MAX_GREP_MATCHES} matches. Narrow the pattern, path or glob.]`);
+				if (result.stopped === "limit" || shown.length < limited.length)
+					notes.push(`[Showing the first ${shown.length} matches. Narrow the pattern, path or glob.]`);
 				if (result.stopped === "timeout") notes.push("[Search timed out; results are partial.]");
 				if (result.unreadable) notes.push("[Some files could not be read.]");
 				const body = shown.length > 0 ? shown.join("\n") : "No matches.";
