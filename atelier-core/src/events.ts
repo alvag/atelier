@@ -54,6 +54,8 @@ export type AtelierEventBody =
 	/** The prompt cache could not reuse the previous prefix; `reason` is the API's (`system_changed`...). */
 	| { type: "cache_miss"; reason: string; missedTokens: number }
 	| { type: "phase_changed"; phase: Phase; source: "inferred" | "declared" }
+	/** Sent first in a session's first turn: whether long-term memory works, for which project, or why not. */
+	| { type: "memory_status"; available: boolean; project?: string; reason?: string }
 	/** The active ODD feature document changed. */
 	| { type: "feature_changed"; name: string; path: string; title: string; tasks: FeatureTask[] }
 	| { type: "rate_limit"; status: string; resetsAt?: number; window?: string }

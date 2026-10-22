@@ -63,6 +63,8 @@ export class MemoryError extends Error {
 export class FakeMemory implements MemoryPort {
 	readonly project: string;
 	readonly entries: MemoryEntry[] = [];
+	/** Every save, in order, updates included. */
+	readonly saved: NewMemory[] = [];
 	readonly summaries: string[] = [];
 	closed = false;
 
@@ -72,7 +74,11 @@ export class FakeMemory implements MemoryPort {
 
 	async context(maxBytes: number): Promise<string> {
 		const text = this.entries.map((entry) => `- [${entry.type}] ${entry.title}`).join("\n");
-		return Buffer.from(text).subarray(0, maxBytes).toString("utf8");
+		const buffer = Buffer.from(text);
+		if (buffer.length <= maxBytes) return text;
+		let end = maxBytes;
+		while (end > 0 && ((buffer[end] as number) & 0xc0) === 0x80) end--;
+		return buffer.subarray(0, end).toString("utf8");
 	}
 
 	async search(query: string, limit: number): Promise<MemoryHit[]> {
@@ -89,6 +95,7 @@ export class FakeMemory implements MemoryPort {
 	}
 
 	async save(entry: NewMemory): Promise<{ id: number }> {
+		this.saved.push({ ...entry });
 		const existing =
 			entry.topicKey === undefined
 				? undefined

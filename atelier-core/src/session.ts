@@ -12,6 +12,8 @@ import {
 	type SubagentTag,
 	ZERO_USAGE,
 } from "./events.ts";
+import { CONTEXT_BYTES, createMemoryTool, findSecret, MEMORY_TOOL, type MemoryPort } from "./memory/index.ts";
+import type { CompletedFeature } from "./odd/tracker.ts";
 import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
 import { ODD_RULES } from "./prompt.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
@@ -20,7 +22,7 @@ import { type ToolContext, type ToolDefinition, ToolInputError, type ToolOutcome
 type TurnEvent = AtelierEventBody & SubagentTag;
 
 /** Tools a subagent never gets: delegation and the ODD document belong to the parent. */
-const PARENT_ONLY = new Set([TASK_TOOL, FEATURE_TOOL, PHASE_TOOL]);
+const PARENT_ONLY = new Set([TASK_TOOL, FEATURE_TOOL, PHASE_TOOL, MEMORY_TOOL]);
 
 export interface ApprovalRequest {
 	callId: string;
@@ -44,6 +46,10 @@ export interface SessionOptions {
 	maxRequestsPerTurn?: number;
 	/** Turns on ODD tracking: the feature and phase tools, phases and the verbatim user log. */
 	odd?: boolean;
+	/** Long-term memory, connected by the caller; the session closes it. */
+	memory?: MemoryPort;
+	/** Why there is no memory, when the caller tried and failed; reported in memory_status. */
+	memoryUnavailable?: string;
 }
 
 export interface SubagentOptions {
@@ -66,6 +72,9 @@ export class Session {
 	/** The subagent running right now, so interrupting or closing reaches it. */
 	#child: Session | undefined;
 	readonly #odd: OddTracker | undefined;
+	/** Recent memory, fetched once at start and given with the first prompt only. */
+	#memoryContext = "";
+	#announced = false;
 	#abort: AbortController | undefined;
 	#closed = false;
 	#closing: Promise<void> | undefined;
@@ -81,8 +90,18 @@ export class Session {
 					),
 				]
 			: options.tools;
-		this.#odd = options.odd ? new OddTracker(options.cwd, (event) => this.#turn?.push(event)) : undefined;
-		const all = this.#odd ? [...tools, ...this.#odd.tools()] : tools;
+		this.#odd = options.odd
+			? new OddTracker(
+					options.cwd,
+					(event) => this.#turn?.push(event),
+					options.memory ? (feature) => this.#mirror(feature) : undefined,
+				)
+			: undefined;
+		const all = [
+			...tools,
+			...(this.#odd ? this.#odd.tools() : []),
+			...(options.memory ? [createMemoryTool(options.memory)] : []),
+		];
 		this.#options = { ...options, tools: all };
 		this.#tools = new Map(all.map((tool) => [tool.name, tool]));
 		this.#createId = options.createId ?? randomUUID;
@@ -92,6 +111,7 @@ export class Session {
 		const session = new Session(options);
 		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-session-"));
 		session.#scratchDir = scratchDir;
+		if (options.memory) session.#memoryContext = await options.memory.context(CONTEXT_BYTES).catch(() => "");
 		try {
 			session.#backendSession = await options.backend.start({
 				cwd: options.cwd,
@@ -137,11 +157,21 @@ export class Session {
 		// The user's words reach the feature log as the turn starts, without delaying the backend;
 		// the turn waits for it before finishing, so a failure is reported inside this turn.
 		const logged = this.#odd?.userMessage(prompt);
+		// The first turn says whether memory works and gives the model the recent memory, outside the system prompt.
+		let sent = prompt;
+		if (!this.#announced) {
+			this.#announced = true;
+			const memory = this.#options.memory;
+			if (memory) turn.push({ type: "memory_status", available: true, project: memory.project });
+			else if (this.#options.memoryUnavailable !== undefined)
+				turn.push({ type: "memory_status", available: false, reason: this.#options.memoryUnavailable });
+			if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
+		}
 		const pump = (async () => {
 			let finish: AtelierEventBody | undefined;
 			let failed = false;
 			try {
-				for await (const event of backendSession.send(prompt)) {
+				for await (const event of backendSession.send(sent)) {
 					if (event.type === "turn_finished") finish ??= event;
 					else {
 						if (event.type === "error") failed = true;
@@ -189,6 +219,7 @@ export class Session {
 			this.#closing = Promise.resolve()
 				.then(() => this.#child?.close())
 				.then(() => this.#odd?.close())
+				.then(() => this.#options.memory?.close().catch(() => {}))
 				.then(() => this.#backendSession?.close())
 				.finally(() => (scratchDir === undefined ? undefined : rm(scratchDir, { recursive: true, force: true })));
 		}
@@ -300,6 +331,39 @@ export class Session {
 			signal?.removeEventListener("abort", stop);
 			this.#child = undefined;
 			await child.close();
+		}
+	}
+
+	/** Keeps a finished feature in memory. Never throws: the feature change it follows is already saved. */
+	async #mirror(feature: CompletedFeature): Promise<void> {
+		const memory = this.#options.memory;
+		if (!memory) return;
+		const secret = findSecret(feature.text);
+		if (secret) {
+			this.#turn?.push(
+				errorEvent(
+					"memory_mirror_skipped",
+					`Feature ${feature.name} was not saved to memory: it contains what looks like ${secret}.`,
+					true,
+				),
+			);
+			return;
+		}
+		try {
+			await memory.save({
+				title: `Feature ${feature.name}: ${feature.title}`,
+				type: "architecture",
+				content: feature.text,
+				topicKey: `odd/${feature.name}/tasks`,
+			});
+		} catch (error) {
+			this.#turn?.push(
+				errorEvent(
+					"memory_mirror_failed",
+					`Feature ${feature.name} was not saved to memory: ${describeError(error)}`,
+					true,
+				),
+			);
 		}
 	}
 }

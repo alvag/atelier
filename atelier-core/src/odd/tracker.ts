@@ -28,6 +28,14 @@ const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const TEST_COMMAND =
 	/(?:^|[\s;&|(])(?:(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+test\b|npm\s+t\b|node\s+--test\b|vitest\b|jest\b|mocha\b|pytest\b|go\s+test\b|cargo\s+test\b|make\s+test\b)/;
 
+/** A feature whose tasks just all became done or dropped. */
+export interface CompletedFeature {
+	name: string;
+	title: string;
+	/** The whole document, as written. */
+	text: string;
+}
+
 interface Active {
 	name: string;
 	path: string;
@@ -71,10 +79,18 @@ export class OddTracker {
 	#phase: Phase | undefined;
 	#queue: Promise<unknown> = Promise.resolve();
 	#closed = false;
+	readonly #onComplete: ((feature: CompletedFeature) => Promise<void>) | undefined;
+	/** Features whose tasks are all closed, so completion is reported once, on the transition. */
+	readonly #complete = new Set<string>();
 
-	constructor(cwd: string, emit: (event: AtelierEventBody) => void) {
+	constructor(
+		cwd: string,
+		emit: (event: AtelierEventBody) => void,
+		onComplete?: (feature: CompletedFeature) => Promise<void>,
+	) {
 		this.#cwd = cwd;
 		this.#emit = emit;
+		this.#onComplete = onComplete;
 	}
 
 	/**
@@ -90,7 +106,7 @@ export class OddTracker {
 			const doc = copy(active.doc);
 			if (!this.#appendPending(doc)) return;
 			await this.#write(active.path, doc);
-			this.#commit({ ...active, doc });
+			await this.#commit({ ...active, doc });
 		}).catch((error: unknown) => {
 			if (error instanceof TrackerClosed) return;
 			const path = this.#active?.path ?? ODD_DIR;
@@ -207,7 +223,7 @@ export class OddTracker {
 			const added = this.#appendPending(doc, 0);
 			if (input.action === "start" || added) await this.#write(path, doc);
 			const active = { name, path, doc };
-			this.#commit(active);
+			await this.#commit(active);
 			return done(`${input.action === "start" ? "Started" : "Opened"} ${path}.\n${summary(active, true)}`);
 		}
 
@@ -237,7 +253,7 @@ export class OddTracker {
 		}
 		await this.#write(active.path, doc);
 		const next = { ...active, doc };
-		this.#commit(next);
+		await this.#commit(next);
 		return done(summary(next, false));
 	}
 
@@ -249,10 +265,17 @@ export class OddTracker {
 	}
 
 	/** Makes a written document the active one; only called after its write succeeded. */
-	#commit(active: Active): void {
+	async #commit(active: Active): Promise<void> {
 		this.#active = active;
 		this.#logged = this.#userMessages.length;
 		this.#changed(active);
+		const tasks = listTasks(active.doc);
+		const complete = tasks.length > 0 && tasks.every((task) => task.status === "done" || task.status === "dropped");
+		const was = this.#complete.has(active.name);
+		if (complete) this.#complete.add(active.name);
+		else this.#complete.delete(active.name);
+		if (complete && !was && this.#onComplete)
+			await this.#onComplete({ name: active.name, title: active.doc.title, text: serializeFeatureDoc(active.doc) });
 	}
 
 	async #write(path: string, doc: FeatureDoc): Promise<void> {

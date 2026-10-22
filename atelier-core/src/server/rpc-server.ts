@@ -4,6 +4,7 @@ import type { Readable } from "node:stream";
 import type { AgentBackend } from "../backend.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { describeError, type JsonValue } from "../events.ts";
+import type { MemoryPort } from "../memory/index.ts";
 import { decodeClientMessage, encodeMessage, LineSplitter } from "../protocol/codec.ts";
 import {
 	type BackendName,
@@ -25,6 +26,8 @@ export interface RpcServerOptions {
 	createBackend: (name: BackendName) => AgentBackend | Promise<AgentBackend>;
 	/** Agents every session can delegate to, each on a fresh backend like the session's. Default: the builtins. */
 	subagents?: readonly SubagentDefinition[];
+	/** Connects long-term memory for a session folder. Without it sessions have no memory. */
+	connectMemory?: (cwd: string) => Promise<MemoryPort>;
 	tools: readonly ToolDefinition[];
 	systemPromptAppend: string;
 	onShutdown?: () => void;
@@ -198,9 +201,19 @@ export class RpcServer {
 		)
 			throw new CommandError("invalid_cwd", `Working directory does not exist: ${cwd}`);
 		const approvals = new Map<string, (approved: boolean) => void>();
+		// Memory is optional: a session that cannot connect it starts anyway and says why.
+		let memory: MemoryPort | undefined;
+		let memoryUnavailable: string | undefined;
+		if (this.#options.connectMemory)
+			memory = await this.#options.connectMemory(cwd).catch((error: unknown) => {
+				memoryUnavailable = describeError(error);
+				return undefined;
+			});
 		let session: Session;
 		try {
 			session = await Session.start({
+				...(memory ? { memory } : {}),
+				...(memoryUnavailable === undefined ? {} : { memoryUnavailable }),
 				backend: await this.#options.createBackend(backend),
 				cwd,
 				...(model === undefined ? {} : { model }),
@@ -215,6 +228,7 @@ export class RpcServer {
 				},
 			});
 		} catch (error) {
+			await memory?.close().catch(() => {});
 			if (error instanceof MissingApiKeyError || error instanceof KeychainError)
 				throw new CommandError(error.code, error.message);
 			throw new CommandError("session_start_failed", describeError(error));

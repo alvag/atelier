@@ -151,7 +151,13 @@ export class EngramMemory implements MemoryPort {
 	}
 
 	async #raw(name: string, args: Record<string, unknown>): Promise<{ isError: boolean; text: string }> {
-		const result = await this.#client.callTool({ name, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
+		let result: Awaited<ReturnType<Client["callTool"]>>;
+		try {
+			result = await this.#client.callTool({ name, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
+		} catch (error) {
+			// A timeout or a dead Engram process is a memory failure, never a crash of the caller.
+			throw new MemoryError(`Engram ${name} failed: ${describeError(error)}`);
+		}
 		const content = Array.isArray(result.content) ? result.content : [];
 		const first = content[0] as { type?: string; text?: string } | undefined;
 		return { isError: result.isError === true, text: first?.type === "text" ? (first.text ?? "") : "" };
