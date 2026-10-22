@@ -114,6 +114,15 @@ function firstLine(command: string): string {
 	return line.length > 80 ? `${line.slice(0, 77)}...` : line;
 }
 
+/** Credentials the model could read with `echo $VAR` and leak; nothing else is removed. */
+const HIDDEN_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+
+function commandEnv(): NodeJS.ProcessEnv {
+	const env = { ...process.env };
+	for (const name of HIDDEN_ENV) delete env[name];
+	return env;
+}
+
 export const bashTool = defineTool({
 	name: "bash",
 	description: `Run a shell command with bash in the working directory. stdout and stderr are combined. Output is truncated to its tail; the full text is saved to a file. Default timeout: ${DEFAULT_TIMEOUT_SEC}s.`,
@@ -127,7 +136,12 @@ export const bashTool = defineTool({
 		if (signal?.aborted)
 			return { ok: false, output: "[command aborted]", summary: `${firstLine(command)} (aborted)`, truncated: false };
 
-		const child = spawn("bash", ["-c", command], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn("bash", ["-c", command], {
+			cwd,
+			env: commandEnv(),
+			detached: true,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
 		const sink = new OutputSink(scratchDir);
 		child.stdout.on("data", (chunk: Buffer) => sink.write(chunk));
 		child.stderr.on("data", (chunk: Buffer) => sink.write(chunk));

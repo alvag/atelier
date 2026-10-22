@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import process from "node:process";
-import type { AgentBackend } from "../backend.ts";
-import { ClaudeCodeBackend } from "../backends/claude-code/backend.ts";
+import { createBackend as createNamedBackend } from "../backend-factory.ts";
 import { SYSTEM_PROMPT_APPEND } from "../prompt.ts";
+import type { BackendName } from "../protocol/types.ts";
 import { coreTools } from "../tools/index.ts";
 import { EchoBackend } from "./echo-backend.ts";
 import { RpcServer } from "./rpc-server.ts";
@@ -12,8 +12,13 @@ const USAGE = `Usage: atelier-core serve
 Runs the Atelier core as a separate process speaking the Atelier protocol
 (JSON lines) on stdin and stdout. Logs go to stderr.
 
+Sessions use the claude-code backend (Claude subscription) unless session.start
+asks for anthropic-api, which reads the API key from the macOS Keychain
+(service atelier-anthropic).
+
 Environment:
   ATELIER_BACKEND=echo   Network-free echo backend, for tests
+  ANTHROPIC_API_KEY      API key for anthropic-api sessions, instead of the Keychain
 `;
 
 if (process.argv.length !== 3 || process.argv[2] !== "serve") {
@@ -27,8 +32,8 @@ console.log = toStderr;
 console.info = toStderr;
 console.debug = toStderr;
 
-const createBackend = (): AgentBackend =>
-	process.env.ATELIER_BACKEND === "echo" ? new EchoBackend() : new ClaudeCodeBackend();
+const createBackend = (name: BackendName) =>
+	process.env.ATELIER_BACKEND === "echo" ? new EchoBackend() : createNamedBackend(name);
 
 const server = new RpcServer({
 	input: process.stdin,

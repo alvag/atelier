@@ -2,9 +2,16 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import type { Readable } from "node:stream";
 import type { AgentBackend } from "../backend.ts";
+import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { describeError, type JsonValue } from "../events.ts";
 import { decodeClientMessage, encodeMessage, LineSplitter } from "../protocol/codec.ts";
-import { type ClientMessage, PROTOCOL_VERSION, type ServerMessage } from "../protocol/types.ts";
+import {
+	type BackendName,
+	type ClientMessage,
+	DEFAULT_BACKEND,
+	PROTOCOL_VERSION,
+	type ServerMessage,
+} from "../protocol/types.ts";
 import { Session } from "../session.ts";
 import type { ToolDefinition } from "../tools/types.ts";
 import { VERSION } from "../version.ts";
@@ -13,7 +20,8 @@ export interface RpcServerOptions {
 	input: Readable;
 	/** Receives one encoded line per message; in `serve` it writes to stdout. */
 	write: (line: string) => void;
-	createBackend: () => AgentBackend;
+	/** May be async: anthropic-api resolves its key first. */
+	createBackend: (name: BackendName) => AgentBackend | Promise<AgentBackend>;
 	tools: readonly ToolDefinition[];
 	systemPromptAppend: string;
 	onShutdown?: () => void;
@@ -132,7 +140,14 @@ export class RpcServer {
 	async #execute(message: ClientMessage): Promise<Result> {
 		switch (message.command) {
 			case "session.start":
-				return { sessionId: await this.#start(message.cwd, message.model, message.autoApprove ?? false) };
+				return {
+					sessionId: await this.#start(
+						message.cwd,
+						message.model,
+						message.autoApprove ?? false,
+						message.backend ?? DEFAULT_BACKEND,
+					),
+				};
 			case "session.send": {
 				const entry = this.#session(message.sessionId);
 				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
@@ -170,7 +185,7 @@ export class RpcServer {
 		}
 	}
 
-	async #start(cwd: string, model: string | undefined, autoApprove: boolean): Promise<string> {
+	async #start(cwd: string, model: string | undefined, autoApprove: boolean, backend: BackendName): Promise<string> {
 		if (this.#stopping) throw new CommandError("shutting_down", "The server is shutting down.");
 		if (
 			!(await stat(cwd).then(
@@ -183,7 +198,7 @@ export class RpcServer {
 		let session: Session;
 		try {
 			session = await Session.start({
-				backend: this.#options.createBackend(),
+				backend: await this.#options.createBackend(backend),
 				cwd,
 				...(model === undefined ? {} : { model }),
 				tools: this.#options.tools,
@@ -192,6 +207,8 @@ export class RpcServer {
 				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
 			});
 		} catch (error) {
+			if (error instanceof MissingApiKeyError || error instanceof KeychainError)
+				throw new CommandError(error.code, error.message);
 			throw new CommandError("session_start_failed", describeError(error));
 		}
 		if (this.#stopping) {

@@ -6,6 +6,7 @@ export type {
 	ToolCallResult,
 	ToolExecutor,
 } from "./backend.ts";
+export { type BackendFactoryOptions, createBackend } from "./backend-factory.ts";
 export {
 	AnthropicApiBackend,
 	type AnthropicApiBackendOptions,
@@ -21,6 +22,13 @@ export {
 } from "./backends/claude-code/backend.ts";
 export { type MapContext, mapSdkMessage } from "./backends/claude-code/map.ts";
 export { type CoreExit, RpcClient, type RpcClientOptions, RpcError } from "./client/rpc-client.ts";
+export {
+	KEYCHAIN_SERVICE,
+	KeychainError,
+	MissingApiKeyError,
+	resolveApiKey,
+	STORE_KEY_COMMAND,
+} from "./credentials.ts";
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
 export { costOfRequest, PRICES, type PriceTier } from "./pricing.ts";

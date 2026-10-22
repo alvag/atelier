@@ -3,8 +3,13 @@ import type { AtelierEvent, JsonValue } from "../events.ts";
 /** Bumped on any incompatible change; sent first by the server in `hello`. */
 export const PROTOCOL_VERSION = 1;
 
+export const BACKEND_NAMES = ["claude-code", "anthropic-api"] as const;
+/** claude-code uses the Claude subscription; anthropic-api runs Atelier's own loop on an API key. */
+export type BackendName = (typeof BACKEND_NAMES)[number];
+export const DEFAULT_BACKEND: BackendName = "claude-code";
+
 export type ClientCommand =
-	| { command: "session.start"; cwd: string; model?: string; autoApprove?: boolean }
+	| { command: "session.start"; cwd: string; model?: string; autoApprove?: boolean; backend?: BackendName }
 	| { command: "session.send"; sessionId: string; prompt: string }
 	| { command: "session.interrupt"; sessionId: string }
 	| { command: "session.approve"; sessionId: string; callId: string; approved: boolean }

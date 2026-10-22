@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ClientMessage, ServerMessage } from "./types.ts";
+import { BACKEND_NAMES, type ClientMessage, type ServerMessage } from "./types.ts";
 
 /**
  * Splits a stream of text into lines on "\n" only (other Unicode line
@@ -41,6 +41,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		cwd: z.string().min(1),
 		model: z.string().min(1).optional(),
 		autoApprove: z.boolean().optional(),
+		backend: z.enum(BACKEND_NAMES).optional(),
 	}),
 	z.object({ command: z.literal("session.send"), sessionId, prompt: z.string().min(1) }),
 	z.object({ command: z.literal("session.interrupt"), sessionId }),
