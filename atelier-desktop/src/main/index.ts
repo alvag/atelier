@@ -42,7 +42,8 @@ function createWindow(): BrowserWindow {
 		return { action: "deny" };
 	});
 	created.webContents.on("will-navigate", (event) => event.preventDefault());
-	created.webContents.once("did-finish-load", () => void host.start());
+	// Every load (including reloads) makes sure the core runs; the renderer asks for the status itself.
+	created.webContents.on("did-finish-load", () => void host.start());
 	if (process.env.ELECTRON_RENDERER_URL) void created.loadURL(process.env.ELECTRON_RENDERER_URL);
 	else void created.loadFile(join(import.meta.dirname, "../renderer/index.html"));
 	return created;
@@ -50,6 +51,7 @@ function createWindow(): BrowserWindow {
 
 ipcMain.handle(IPC.request, (_event, command: ClientCommand) => host.request(command));
 ipcMain.handle(IPC.restart, () => host.restart());
+ipcMain.handle(IPC.status, () => host.status());
 ipcMain.handle(IPC.pickFolder, async () => {
 	const options = { properties: ["openDirectory" as const] };
 	const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);

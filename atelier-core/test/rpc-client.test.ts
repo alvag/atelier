@@ -50,6 +50,17 @@ describe("RpcClient", () => {
 		expect(events.flatMap((e) => (e.type === "text_delta" ? [e.text] : [])).join("")).toBe("echo: hi");
 	});
 
+	it("keeps its own id even if a command object carries one", async () => {
+		const client = await connect(echoCore);
+		const forged = {
+			command: "session.close",
+			sessionId: "missing",
+			id: "alien",
+			type: "other",
+		} as unknown as Parameters<RpcClient["request"]>[0];
+		await expect(client.request(forged)).rejects.toMatchObject({ code: "unknown_session" });
+	});
+
 	it("rejects a failed command with its code", async () => {
 		const client = await connect(echoCore);
 		const failure = client.request({ command: "session.close", sessionId: "nope" });

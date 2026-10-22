@@ -10,6 +10,7 @@ const bridge: AtelierBridge = {
 		return () => ipcRenderer.off(IPC.message, handler);
 	},
 	restartCore: () => ipcRenderer.invoke(IPC.restart),
+	getStatus: () => ipcRenderer.invoke(IPC.status),
 	pickFolder: () => ipcRenderer.invoke(IPC.pickFolder),
 };
 

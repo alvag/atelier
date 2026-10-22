@@ -137,6 +137,71 @@ describe("CoreHost", () => {
 		expect(h.connections[1]?.requests).toEqual([{ command: "shutdown" }]);
 	});
 
+	it("does not orphan a core when started twice", async () => {
+		const h = harness();
+		await h.host.start();
+		await h.host.start();
+		await h.host.stop();
+		expect(h.connections).toHaveLength(1);
+		expect(h.connections.every((c) => c.closed)).toBe(true);
+	});
+
+	it("serializes overlapping restarts", async () => {
+		const h = harness();
+		await h.host.start();
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const old = h.connections[0] as FakeConnection;
+		old.close = async () => {
+			await gate;
+			old.closed = true;
+		};
+		const first = h.host.restart();
+		const second = h.host.restart();
+		release();
+		await Promise.all([first, second]);
+		await h.host.stop();
+		expect(h.connections.every((c) => c.closed)).toBe(true);
+	});
+
+	it("lets stop win against an in-flight restart", async () => {
+		const h = harness();
+		await h.host.start();
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const old = h.connections[0] as FakeConnection;
+		old.close = async () => {
+			await gate;
+			old.closed = true;
+		};
+		const restarting = h.host.restart();
+		const stopping = h.host.stop();
+		release();
+		await Promise.all([restarting, stopping]);
+		expect(h.connections.every((c) => c.closed)).toBe(true);
+		await h.host.start();
+		expect(h.connections.every((c) => c.closed)).toBe(true);
+	});
+
+	it("remembers the core status for a renderer that subscribes late", async () => {
+		const h = harness();
+		expect(h.host.status()).toBeUndefined();
+		await h.host.start();
+		expect(h.host.status()).toEqual({ type: "core_ready", version: "9.9.9" });
+		(h.connections[0] as FakeConnection).crash({ code: 1, signal: null, stderr: "" });
+		expect(h.host.status()).toEqual({ type: "core_exited", message: "The core stopped (exit code 1)." });
+
+		const failing = harness(async () => {
+			throw new Error("no node");
+		});
+		await failing.host.start();
+		expect(failing.host.status()).toEqual({ type: "core_failed", message: "no node" });
+	});
+
 	it("closes the core on stop without reporting a crash", async () => {
 		const h = harness();
 		await h.host.start();

@@ -124,7 +124,8 @@ export class RpcClient {
 		const id = `r${++this.#nextId}`;
 		return new Promise((resolve, reject) => {
 			this.#pending.set(id, { resolve: resolve as Pending["resolve"], reject });
-			this.#child.stdin.write(encodeMessage({ type: "command", id, ...command }));
+			// The envelope goes last, so a command object can never override its id or type.
+			this.#child.stdin.write(encodeMessage({ ...command, type: "command", id }));
 		});
 	}
 
