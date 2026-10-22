@@ -123,7 +123,7 @@ describe("ClaudeCodeBackend options", () => {
 		expect(o.settingSources).toEqual([]);
 		expect(o.skills).toEqual([]);
 		expect(o.strictMcpConfig).toBe(true);
-		expect(o.settings).toEqual({ includeGitInstructions: false });
+		expect(o.settings).toEqual({ includeGitInstructions: false, autoMemoryEnabled: false });
 		expect(o.permissionMode).toBe("bypassPermissions");
 		expect(o.allowDangerouslySkipPermissions).toBe(true);
 		expect(o.includePartialMessages).toBe(true);
@@ -285,6 +285,15 @@ describe("ClaudeCodeBackend turns", () => {
 		}
 	});
 
+	it("hands every raw SDK message to onSdkMessage, for recording fixtures", async () => {
+		const recorded: SDKMessage[] = [];
+		const { query } = fakeQuery([init], [[text("hi"), result(0)]]);
+		const backend = new ClaudeCodeBackend({ query, env: {}, onSdkMessage: (m) => recorded.push(m) });
+		const session = await Session.start({ backend, cwd: "/w", tools: [] });
+		await collect(session.send("x"));
+		expect(recorded.map((m) => m.type)).toEqual(["system", "stream_event", "result"]);
+	});
+
 	it("forwards interrupt and close to the SDK query", async () => {
 		const { query, calls } = fakeQuery([], []);
 		const backendSession = await new ClaudeCodeBackend({ query, env: {} }).start({
@@ -342,6 +351,45 @@ describe("createToolBridge", () => {
 	it("marks failed results as MCP errors", async () => {
 		const { handler } = bridgeWith([{ ok: false, output: "denied" }]);
 		expect(await handler({ text: "x" }, {})).toEqual({ content: [{ type: "text", text: "denied" }], isError: true });
+	});
+
+	it("announces the tool_use ids of a real recorded session in order", async () => {
+		const { readFile } = await import("node:fs/promises");
+		const text = await readFile(
+			new URL("./fixtures/claude-code/recorded-opus-email-validation.jsonl", import.meta.url),
+			"utf8",
+		);
+		const received: ToolCall[] = [];
+		const names = ["read", "edit", "bash", "grep"];
+		const tools = names.map((name) =>
+			defineTool({
+				name,
+				description: name,
+				inputShape: {},
+				execute: async () => ({ ok: true, output: "", summary: "", truncated: false }),
+			}),
+		);
+		const bridge = createToolBridge(tools, async (call) => {
+			received.push(call);
+			return { ok: true, output: "" };
+		});
+		const handlers = new Map(
+			bridge.definitions.map((d) => [d.name, d.handler as (a: unknown, e: unknown) => Promise<unknown>]),
+		);
+		for (const line of text.trim().split("\n")) {
+			const message = JSON.parse(line) as SDKMessage;
+			bridge.observe(message);
+			if (message.type !== "assistant") continue;
+			for (const block of message.message.content)
+				if (block.type === "tool_use") await handlers.get(block.name.replace("mcp__atelier__", ""))?.({}, {});
+		}
+		expect(received.map((c) => [c.tool, c.callId])).toEqual([
+			["bash", "toolu_01En89Jc6N4oF17qvMEB5n84"],
+			["bash", "toolu_01KKayNQQP2ZH9z8tDxUTTty"],
+			["edit", "toolu_01ND4iZQof5peGbuURCivLQN"],
+			["edit", "toolu_01YHUMT5pDixQ53jqEqkovrP"],
+			["bash", "toolu_01CPZpDuBzNKYTYLtM6JJTy9"],
+		]);
 	});
 
 	it("exposes each tool with its name, description and input shape", () => {

@@ -37,6 +37,8 @@ export interface ClaudeCodeBackendOptions {
 	pathToClaudeCodeExecutable?: string;
 	/** How long an interrupted turn may take to finish before the SDK query is closed. */
 	interruptGraceMs?: number;
+	/** Receives every raw SDK message; used to record fixtures. */
+	onSdkMessage?: (message: SDKMessage) => void;
 }
 
 /**
@@ -119,7 +121,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 				strictMcpConfig: true,
 				settingSources: [],
 				skills: [],
-				settings: { includeGitInstructions: false },
+				settings: { includeGitInstructions: false, autoMemoryEnabled: false },
 				permissionMode: "bypassPermissions",
 				allowDangerouslySkipPermissions: true,
 				systemPrompt: { type: "preset", preset: "claude_code", append: start.systemPromptAppend },
@@ -131,12 +133,12 @@ export class ClaudeCodeBackend implements AgentBackend {
 					: { pathToClaudeCodeExecutable: this.#options.pathToClaudeCodeExecutable }),
 			},
 		});
-		return new ClaudeCodeSession(
-			query,
-			input,
-			bridge.observe,
-			this.#options.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS,
-		);
+		const record = this.#options.onSdkMessage;
+		const observe = (message: SDKMessage) => {
+			record?.(message);
+			bridge.observe(message);
+		};
+		return new ClaudeCodeSession(query, input, observe, this.#options.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS);
 	}
 }
 
