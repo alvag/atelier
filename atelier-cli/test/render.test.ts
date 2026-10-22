@@ -71,8 +71,9 @@ describe("Renderer", () => {
 			child({ type: "session_started", backend: "claude-code", model: "haiku", authSource: "api_key" }),
 			child({ type: "tool_call_started", callId: "r1", tool: "read", input: { path: "a.ts" } }),
 			child({ type: "tool_call_finished", callId: "r1", ok: true, summary: "a.ts (3 lines)", truncated: false }),
-			child({ type: "text_delta", text: "Found\n\n" }),
-			child({ type: "text_delta", text: "it." }),
+			// A blank line split across deltas, as streaming often sends it.
+			child({ type: "text_delta", text: "Found\n" }),
+			child({ type: "text_delta", text: "\nit." }),
 			child({ type: "error", code: "x", message: "child hiccup", recoverable: false }),
 			child({
 				type: "turn_finished",
