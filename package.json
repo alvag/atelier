@@ -9,10 +9,11 @@
 	"scripts": {
 		"atelier": "node atelier-cli/src/main.ts",
 		"test": "vitest run",
-		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"typecheck": "tsc -p tsconfig.json --noEmit && tsc -p atelier-desktop/tsconfig.json --noEmit",
 		"lint": "biome check .",
 		"format": "biome format --write .",
-		"check": "pnpm lint && pnpm typecheck && pnpm test"
+		"check": "pnpm lint && pnpm typecheck && pnpm test",
+		"desktop": "pnpm -C atelier-desktop dev"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.6.2",
