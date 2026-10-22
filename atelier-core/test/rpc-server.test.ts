@@ -261,6 +261,36 @@ describe("RpcServer", () => {
 		expect(h.events(two)[0]).toMatchObject({ type: "text_delta", text: "from two" });
 	});
 
+	it("closes a session whose start was still running when the client disconnected", async () => {
+		const input = new PassThrough();
+		const fake = new FakeBackend([]);
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const server = new RpcServer({
+			input,
+			write: () => {},
+			createBackend: () => ({
+				id: "slow",
+				start: async (options) => {
+					await gate;
+					return fake.start(options);
+				},
+			}),
+			tools: [],
+			systemPromptAppend: "",
+		});
+		const done = server.run();
+		input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd })}\n`);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		input.end();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		release();
+		await done;
+		expect(fake.closed).toBe(true);
+	});
+
 	it("closes sessions and stops on shutdown", async () => {
 		const h = harness([[]]);
 		await h.start();

@@ -71,8 +71,11 @@ export class RpcServer {
 			if (this.#stopping) break;
 		}
 		if (!this.#stopping) for (const line of splitter.flush()) handle(line);
-		await this.#closeAll();
+		// Commands still running (a session.start, say) finish before the final cleanup,
+		// and a start that completes after this point closes its own session.
+		this.#stopping = true;
 		await Promise.allSettled(pending);
+		await this.#closeAll();
 	}
 
 	#send(message: ServerMessage): void {
@@ -180,6 +183,10 @@ export class RpcServer {
 			});
 		} catch (error) {
 			throw new CommandError("session_start_failed", describeError(error));
+		}
+		if (this.#stopping) {
+			await session.close();
+			throw new CommandError("shutting_down", "The server is shutting down.");
 		}
 		const sessionId = this.#createId();
 		this.#sessions.set(sessionId, { session, approvals });
