@@ -11,6 +11,8 @@ export const DEFAULT_API_MODEL = "claude-sonnet-5-5";
 export const DEFAULT_MAX_TOKENS = 16_000;
 export const DEFAULT_MAX_REQUESTS_PER_TURN = 50;
 const INTERRUPTED_TOOL = "Interrupted by the user.";
+/** 5-minute TTL, the API default. */
+const BREAKPOINT: Anthropic.CacheControlEphemeral = Object.freeze({ type: "ephemeral" });
 
 export interface AnthropicApiBackendOptions {
 	/** Always passed explicitly, so the SDK never looks for credentials on its own. */
@@ -29,18 +31,53 @@ export interface RequestState {
 	model: string;
 	maxTokens: number;
 	system: string;
-	tools: Anthropic.Tool[];
+	tools: readonly Anthropic.Tool[];
+	/** Stored history: it only grows and never carries cache breakpoints. */
 	messages: Anthropic.MessageParam[];
+	/** Id of the last response, so the API can say why the cache missed. */
+	previousMessageId?: string;
 }
 
+/**
+ * Builds a request with three cache breakpoints, from the most to the least
+ * stable part: the last tool, the system block and the last block of the last
+ * message. The last one moves forward each request; the API finds the previous
+ * write by looking back. Nothing in `state` is modified.
+ */
 export function buildRequest(state: RequestState): Anthropic.MessageCreateParamsNonStreaming {
+	const tools = state.tools.map((tool, index) =>
+		index === state.tools.length - 1 ? { ...tool, cache_control: BREAKPOINT } : tool,
+	);
 	return {
 		model: state.model,
 		max_tokens: state.maxTokens,
-		system: state.system,
-		...(state.tools.length === 0 ? {} : { tools: state.tools }),
-		messages: state.messages,
+		system: [{ type: "text", text: state.system, cache_control: BREAKPOINT }],
+		...(tools.length === 0 ? {} : { tools }),
+		messages: state.messages.map((message, index) =>
+			index === state.messages.length - 1 ? withBreakpoint(message) : message,
+		),
+		diagnostics: { previous_message_id: state.previousMessageId ?? null },
 	};
+}
+
+function withBreakpoint(message: Anthropic.MessageParam): Anthropic.MessageParam {
+	const blocks: Anthropic.ContentBlockParam[] =
+		typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
+	// Same role and block kinds as `message`, so the cast cannot change its type.
+	return {
+		...message,
+		content: blocks.map((block, index) =>
+			index === blocks.length - 1 ? ({ ...block, cache_control: BREAKPOINT } as Anthropic.ContentBlockParam) : block,
+		),
+	} as Anthropic.MessageParam;
+}
+
+/** Only `*_changed` reasons mean the prompt changed; `previous_message_not_found` and `unavailable` compared nothing. */
+function cacheMiss(message: Anthropic.Message): AtelierEventBody | undefined {
+	const reason = message.diagnostics?.cache_miss_reason;
+	if (!reason?.type.endsWith("_changed")) return undefined;
+	const missedTokens = "cache_missed_input_tokens" in reason ? reason.cache_missed_input_tokens : 0;
+	return { type: "cache_miss", reason: reason.type, missedTokens };
 }
 
 /** Runs turns with Atelier's own loop on the Messages API, billed to an API key. */
@@ -62,7 +99,7 @@ export class AnthropicApiBackend implements AgentBackend {
 			model: start.model ?? this.#options.model ?? DEFAULT_API_MODEL,
 			maxTokens: this.#options.maxTokens ?? DEFAULT_MAX_TOKENS,
 			system: systemPrompt(start.cwd, start.systemPromptAppend),
-			tools: toAnthropicTools(start.tools),
+			tools: Object.freeze(toAnthropicTools(start.tools)),
 			messages: [],
 		};
 		const maxRequests = this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
@@ -114,6 +151,9 @@ class AnthropicApiSession implements BackendSession {
 				}
 				const message = await stream.finalMessage();
 				meter.add(toUsage(message.usage));
+				this.#state.previousMessageId = message.id;
+				const miss = cacheMiss(message);
+				if (miss) yield miss;
 				// Only complete messages enter the history; an interrupted stream leaves nothing behind.
 				this.#state.messages.push({ role: "assistant", content: message.content });
 				if (message.stop_reason !== "tool_use") {
@@ -133,7 +173,13 @@ class AnthropicApiSession implements BackendSession {
 			if (this.#abort === abort) this.#abort = undefined;
 		}
 		const costUsd = meter.costUsd;
-		yield { type: "turn_finished", stopReason, usage: meter.usage, ...(costUsd === undefined ? {} : { costUsd }) };
+		yield {
+			type: "turn_finished",
+			stopReason,
+			usage: meter.usage,
+			...(costUsd === undefined ? {} : { costUsd }),
+			requests: meter.requests,
+		};
 	}
 
 	/** Runs tool_use blocks in order; once interrupted, the rest get an error result so the history stays valid. */

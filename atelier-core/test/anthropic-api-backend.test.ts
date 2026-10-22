@@ -19,6 +19,8 @@ interface Reply {
 	usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
 	/** Stop after the first text delta and wait for the request to be aborted. */
 	hang?: boolean;
+	id?: string;
+	diagnostics?: unknown;
 }
 
 type Scripted = Reply | { status: number; errorType: string; message: string } | { streamError: string };
@@ -31,13 +33,14 @@ function sseOf(reply: Reply): { head: string; tail: string } {
 			{
 				type: "message_start",
 				message: {
-					id: "msg_1",
+					id: reply.id ?? "msg_1",
 					type: "message",
 					role: "assistant",
 					model: "claude-sonnet-5-5",
 					content: [],
 					stop_reason: null,
 					stop_sequence: null,
+					diagnostics: reply.diagnostics ?? null,
 					usage: {
 						input_tokens: usage.input ?? 10,
 						output_tokens: 1,
@@ -193,6 +196,9 @@ async function collect(events: AsyncIterable<AtelierEventBody>): Promise<Atelier
 const finished = (events: AtelierEventBody[]) => events.filter((e) => e.type === "turn_finished");
 const messagesOf = (body: Record<string, unknown> | undefined) =>
 	body?.messages as { role: string; content: unknown }[];
+/** A request as stored history: the moving cache breakpoint is only added to what is sent. */
+const withoutBreakpoints = (value: unknown) =>
+	JSON.parse(JSON.stringify(value, (key, v) => (key === "cache_control" ? undefined : v)));
 
 describe("AnthropicApiBackend", () => {
 	it("streams a text turn and reports the session, usage and cost", async () => {
@@ -215,14 +221,15 @@ describe("AnthropicApiBackend", () => {
 				stopReason: "end_turn",
 				usage: { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 },
 				costUsd: 12,
+				requests: 1,
 			},
 		]);
 		const body = api.bodies[0];
 		expect(body?.model).toBe("claude-sonnet-5-5");
 		expect(body?.stream).toBe(true);
-		expect(String(body?.system)).toContain("/work");
-		expect(String(body?.system)).toContain("APPEND");
-		expect(messagesOf(body)).toEqual([{ role: "user", content: [{ type: "text", text: "Hi" }] }]);
+		expect(JSON.stringify(body?.system)).toContain("/work");
+		expect(JSON.stringify(body?.system)).toContain("APPEND");
+		expect(withoutBreakpoints(messagesOf(body))).toEqual([{ role: "user", content: [{ type: "text", text: "Hi" }] }]);
 		// SDK 1.x sends the key as a bearer token and pins API version 2026-10-21.
 		expect(api.headers[0]?.get("authorization")).toBe(`Bearer ${API_KEY}`);
 		expect(api.headers[0]?.get("anthropic-version")).toBe("2026-10-21");
@@ -276,21 +283,24 @@ describe("AnthropicApiBackend", () => {
 				stopReason: "end_turn",
 				usage: { input: 170, output: 17, cacheRead: 200, cacheWrite: 30 },
 				costUsd: (170 * 2 + 17 * 10 + 200 * 0.1 + 30 * 2.5) / 1_000_000,
+				requests: 3,
 			},
 		]);
 		expect(api.bodies).toHaveLength(3);
 		const last = messagesOf(api.bodies[2]);
 		expect(last.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant", "user"]);
-		expect(last[2]?.content).toEqual([
+		expect(withoutBreakpoints(last[2]?.content)).toEqual([
 			{ type: "tool_result", tool_use_id: "tu_1", content: "ran echo" },
 			{ type: "tool_result", tool_use_id: "tu_2", content: "ran echo" },
 		]);
-		expect(last[4]?.content).toEqual([{ type: "tool_result", tool_use_id: "tu_3", content: "ran echo" }]);
+		expect(withoutBreakpoints(last[4]?.content)).toEqual([
+			{ type: "tool_result", tool_use_id: "tu_3", content: "ran echo" },
+		]);
 		// The prefix never changes between requests of a session.
 		expect(api.bodies[2]?.tools).toEqual(api.bodies[0]?.tools);
 		expect(api.bodies[2]?.system).toEqual(api.bodies[0]?.system);
 		// Earlier requests are not rewritten afterwards: each body is a prefix of the next.
-		expect(last.slice(0, 3)).toEqual(messagesOf(api.bodies[1]));
+		expect(withoutBreakpoints(last.slice(0, 3))).toEqual(withoutBreakpoints(messagesOf(api.bodies[1])));
 	});
 
 	it("sends a denied tool back as an error result", async () => {
@@ -302,7 +312,7 @@ describe("AnthropicApiBackend", () => {
 			async () => ({ ok: false, output: "The user denied this command." }),
 		);
 		await collect(session.send("go"));
-		expect(messagesOf(api.bodies[1])[2]?.content).toEqual([
+		expect(withoutBreakpoints(messagesOf(api.bodies[1])[2]?.content)).toEqual([
 			{ type: "tool_result", tool_use_id: "tu_1", content: "The user denied this command.", is_error: true },
 		]);
 	});
@@ -339,6 +349,7 @@ describe("AnthropicApiBackend", () => {
 				stopReason: "error",
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				costUsd: 0,
+				requests: 0,
 			},
 		]);
 	});
@@ -366,7 +377,7 @@ describe("AnthropicApiBackend", () => {
 
 		await collect(session.send("second"));
 		// The partial answer is dropped and both prompts share one user message.
-		expect(messagesOf(api.bodies[1])).toEqual([
+		expect(withoutBreakpoints(messagesOf(api.bodies[1]))).toEqual([
 			{
 				role: "user",
 				content: [
@@ -403,7 +414,7 @@ describe("AnthropicApiBackend", () => {
 		await collect(session.send("again"));
 		const messages = messagesOf(harness.api.bodies[1]);
 		expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-		expect(messages[2]?.content).toEqual([
+		expect(withoutBreakpoints(messages[2]?.content)).toEqual([
 			{ type: "tool_result", tool_use_id: "tu_1", content: "Interrupted.", is_error: true },
 			{ type: "tool_result", tool_use_id: "tu_2", content: "Interrupted by the user.", is_error: true },
 			{ type: "text", text: "again" },
@@ -414,6 +425,49 @@ describe("AnthropicApiBackend", () => {
 		const { session } = await start([]);
 		await session.close();
 		await expect(collect(session.send("late"))).rejects.toThrow(/closed/);
+	});
+
+	it("compares each request with the previous response for cache diagnostics", async () => {
+		const { session, api } = await start([
+			{
+				id: "msg_a",
+				blocks: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "a" } }],
+				stopReason: "tool_use",
+			},
+			{ id: "msg_b", blocks: [{ type: "text", text: "done" }] },
+			{ id: "msg_c", blocks: [{ type: "text", text: "again" }] },
+		]);
+		await collect(session.send("one"));
+		await collect(session.send("two"));
+		expect(api.bodies.map((body) => body.diagnostics)).toEqual([
+			{ previous_message_id: null },
+			{ previous_message_id: "msg_a" },
+			{ previous_message_id: "msg_b" },
+		]);
+	});
+
+	it("reports a cache miss with its reason and the tokens it cost", async () => {
+		const { session } = await start([
+			{
+				blocks: [{ type: "text", text: "x" }],
+				diagnostics: { cache_miss_reason: { type: "system_changed", cache_missed_input_tokens: 4200 } },
+			},
+		]);
+		const events = await collect(session.send("hi"));
+		expect(events.filter((e) => e.type === "cache_miss")).toEqual([
+			{ type: "cache_miss", reason: "system_changed", missedTokens: 4200 },
+		]);
+	});
+
+	it.each([
+		["no divergence", null],
+		["a pending diagnosis", { cache_miss_reason: null }],
+		["a missing previous message", { cache_miss_reason: { type: "previous_message_not_found" } }],
+		["an unavailable diagnosis", { cache_miss_reason: { type: "unavailable" } }],
+	])("reports no cache miss for %s", async (_name, diagnostics) => {
+		const { session } = await start([{ blocks: [{ type: "text", text: "x" }], diagnostics }]);
+		const events = await collect(session.send("hi"));
+		expect(events.some((e) => e.type === "cache_miss")).toBe(false);
 	});
 
 	it("works end to end through Session, which stamps events and reports tools", async () => {
@@ -437,7 +491,7 @@ describe("AnthropicApiBackend", () => {
 				[5, "turn_finished"],
 			]);
 			expect(events[2]).toMatchObject({ callId: "tu_1", ok: true, summary: "hi" });
-			expect(messagesOf(api.bodies[1])[2]?.content).toEqual([
+			expect(withoutBreakpoints(messagesOf(api.bodies[1])[2]?.content)).toEqual([
 				{ type: "tool_result", tool_use_id: "tu_1", content: "echo: hi" },
 			]);
 		} finally {

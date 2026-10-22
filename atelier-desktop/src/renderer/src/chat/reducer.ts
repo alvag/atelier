@@ -112,6 +112,7 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 			return { ...state, notice: `Rate limit: ${event.status}${event.window ? ` (${event.window})` : ""}` };
 		}
 		case "thinking_delta":
+		case "cache_miss":
 			return state;
 		case "text_delta":
 			return updateTurn(state, event.turnId, (turn) => {

@@ -29,7 +29,10 @@ export type AtelierEventBody =
 			fullOutputPath?: string;
 	  }
 	| { type: "approval_requested"; callId: string; command: string }
-	| { type: "turn_finished"; stopReason: string; usage: Usage; costUsd?: number }
+	/** `requests`: model requests the turn made, when the backend knows it. */
+	| { type: "turn_finished"; stopReason: string; usage: Usage; costUsd?: number; requests?: number }
+	/** The prompt cache could not reuse the previous prefix; `reason` is the API's (`system_changed`...). */
+	| { type: "cache_miss"; reason: string; missedTokens: number }
 	| { type: "rate_limit"; status: string; resetsAt?: number; window?: string }
 	| { type: "error"; code: string; message: string; recoverable: boolean };
 
