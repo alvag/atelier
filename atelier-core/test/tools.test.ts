@@ -385,6 +385,37 @@ describe("grep", () => {
 				expect(result.output).not.toContain("top secret");
 			});
 
+			it("finishes quickly with a pattern that makes backtracking engines explode", async () => {
+				await writeFile(join(cwd, "evil.txt"), `${"a".repeat(40)}!\n`);
+				const started = Date.now();
+				const result = await tool.execute({ pattern: "(a+)+$", path: "evil.txt" }, ctx);
+				expect(Date.now() - started).toBeLessThan(5000);
+				expect(result).toMatchObject({ ok: true, output: "No matches." });
+			});
+
+			it("stops when the signal is aborted", async () => {
+				const controller = new AbortController();
+				controller.abort();
+				expect(await tool.execute({ pattern: "email" }, { cwd, signal: controller.signal })).toMatchObject({
+					ok: false,
+					output: "Search aborted.",
+				});
+			});
+
+			it("reports files it could not read but keeps the matches", async () => {
+				await writeFile(join(cwd, "src/locked.ts"), "email locked\n", { mode: 0o000 });
+				const result = await tool.execute({ pattern: "email", path: "src" }, ctx);
+				expect(result.ok).toBe(true);
+				expect(result.output).toContain("src/a.ts:1:const email = 1;");
+				expect(result.output).toContain("[Some files could not be read.]");
+			});
+
+			it("searches a single file", async () => {
+				expect((await tool.execute({ pattern: "other", path: "src/a.ts" }, ctx)).output).toBe(
+					"src/a.ts:2:const other = 2;",
+				);
+			});
+
 			it("caps the number of matches", async () => {
 				await writeFile(join(cwd, "many.txt"), Array.from({ length: 500 }, () => "hit").join("\n"));
 				const result = await tool.execute({ pattern: "hit" }, ctx);
