@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import type { Readable } from "node:stream";
-import { type AgentBackend, ClaudeCodeBackend, coreTools, Session, VERSION } from "@atelier/core";
+import { type AgentBackend, ClaudeCodeBackend, coreTools, Session, SYSTEM_PROMPT_APPEND, VERSION } from "@atelier/core";
 import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { Renderer } from "./render.ts";
 
@@ -28,10 +28,6 @@ export const EXIT_FAILED = 1;
 export const EXIT_USAGE = 2;
 export const EXIT_INTERRUPTED = 130;
 const FORCE_EXIT_MS = 3000;
-
-/** Byte-stable: Claude Code caches the prompt prefix across turns. */
-export const SYSTEM_PROMPT_APPEND =
-	"You are running inside Atelier. Use only the Atelier tools (read, edit, bash, grep). Paths are relative to the working directory. bash commands may need the user's approval; if one is denied, do not retry it.";
 
 export async function run(
 	argv: readonly string[],

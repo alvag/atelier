@@ -17,7 +17,9 @@ export {
 export { type MapContext, mapSdkMessage } from "./backends/claude-code/map.ts";
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
+export { SYSTEM_PROMPT_APPEND } from "./prompt.ts";
 export * from "./protocol/index.ts";
+export { EchoBackend } from "./server/echo-backend.ts";
 export { RpcServer, type RpcServerOptions } from "./server/rpc-server.ts";
 export { type ApprovalRequest, Session, type SessionOptions } from "./session.ts";
 export * from "./tools/index.ts";
