@@ -4,9 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentBackend, BackendSession, ToolCall, ToolCallResult } from "./backend.ts";
 import { Channel } from "./channel.ts";
-import { type AtelierEvent, type AtelierEventBody, describeError, errorEvent, ZERO_USAGE } from "./events.ts";
+import {
+	type AtelierEvent,
+	type AtelierEventBody,
+	describeError,
+	errorEvent,
+	type SubagentTag,
+	ZERO_USAGE,
+} from "./events.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
-import { type ToolDefinition, ToolInputError, type ToolOutcome } from "./tools/types.ts";
+import { type ToolContext, type ToolDefinition, ToolInputError, type ToolOutcome } from "./tools/types.ts";
+
+type TurnEvent = AtelierEventBody & SubagentTag;
 
 export interface ApprovalRequest {
 	callId: string;
@@ -46,7 +55,9 @@ export class Session {
 	readonly #tools: Map<string, ToolDefinition>;
 	readonly #createId: () => string;
 	#backendSession: BackendSession | undefined;
-	#turn: Channel<AtelierEventBody> | undefined;
+	#turn: Channel<TurnEvent> | undefined;
+	/** The subagent running right now, so interrupting or closing reaches it. */
+	#child: Session | undefined;
 	#abort: AbortController | undefined;
 	#closed = false;
 	#closing: Promise<void> | undefined;
@@ -57,7 +68,9 @@ export class Session {
 		const tools = subagents
 			? [
 					...options.tools,
-					createTaskTool(subagents.agents, (agent, prompt) => this.#runSubagent(subagents, agent, prompt)),
+					createTaskTool(subagents.agents, (agent, prompt, context) =>
+						this.#runSubagent(subagents, agent, prompt, context),
+					),
 				]
 			: options.tools;
 		this.#options = { ...options, tools };
@@ -92,7 +105,7 @@ export class Session {
 	/** Runs one turn. `turnId` lets a caller know the id before the first event (the RPC server answers with it). */
 	async *send(prompt: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
 		let seq = 0;
-		const stamp = (body: AtelierEventBody): AtelierEvent => ({ ...body, seq: ++seq, turnId });
+		const stamp = (body: TurnEvent): AtelierEvent => ({ ...body, seq: ++seq, turnId });
 
 		const backendSession = this.#backendSession;
 		if (this.#closed || !backendSession) {
@@ -106,7 +119,7 @@ export class Session {
 			return;
 		}
 
-		const turn = new Channel<AtelierEventBody>();
+		const turn = new Channel<TurnEvent>();
 		this.#turn = turn;
 		this.#abort = new AbortController();
 		const pump = (async () => {
@@ -146,6 +159,7 @@ export class Session {
 	/** Aborts running tools and asks the backend to stop the turn. */
 	async interrupt(): Promise<void> {
 		if (!this.#turn) return;
+		// Aborting reaches a running subagent too: it listens to the tool's signal.
 		this.#abort?.abort();
 		await this.#backendSession?.interrupt();
 	}
@@ -157,6 +171,7 @@ export class Session {
 			const scratchDir = this.#scratchDir;
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
 			this.#closing = Promise.resolve()
+				.then(() => this.#child?.close())
 				.then(() => this.#backendSession?.close())
 				.finally(() => (scratchDir === undefined ? undefined : rm(scratchDir, { recursive: true, force: true })));
 		}
@@ -188,6 +203,7 @@ export class Session {
 				cwd: this.#options.cwd,
 				...(signal ? { signal } : {}),
 				...(this.#scratchDir === undefined ? {} : { scratchDir: this.#scratchDir }),
+				callId,
 			});
 			emit({
 				type: "tool_call_finished",
@@ -205,7 +221,12 @@ export class Session {
 	}
 
 	/** Runs one child turn with its own context and turns its final text into the report. */
-	async #runSubagent(options: SubagentOptions, agent: SubagentDefinition, prompt: string): Promise<ToolOutcome> {
+	async #runSubagent(
+		options: SubagentOptions,
+		agent: SubagentDefinition,
+		prompt: string,
+		{ callId, signal }: ToolContext,
+	): Promise<ToolOutcome> {
 		const fail = (output: string): ToolOutcome => ({ ok: false, output, summary: output, truncated: false });
 		let child: Session;
 		try {
@@ -229,12 +250,19 @@ export class Session {
 		} catch (error) {
 			return fail(`The ${agent.name} subagent could not start: ${describeError(error)}`);
 		}
+		this.#child = child;
+		const stop = () => void child.interrupt();
+		signal?.addEventListener("abort", stop, { once: true });
+		const tag: SubagentTag = { ...(callId === undefined ? {} : { parentCallId: callId }), agent: agent.name };
 		try {
 			// Only the text after the child's last tool call is its answer.
 			let report = "";
 			let failure: string | undefined;
 			let stopReason = "incomplete";
 			for await (const event of child.send(prompt)) {
+				// Clients see the child's work in the parent's turn; the parent model never does.
+				const { seq: _seq, turnId: _turnId, ...body } = event;
+				this.#turn?.push({ ...body, ...tag });
 				if (event.type === "text_delta") report += event.text;
 				else if (event.type === "tool_call_started") report = "";
 				else if (event.type === "error") failure ??= `${event.code}: ${event.message}`;
@@ -251,6 +279,8 @@ export class Session {
 				truncated: bounded.truncated,
 			};
 		} finally {
+			signal?.removeEventListener("abort", stop);
+			this.#child = undefined;
 			await child.close();
 		}
 	}

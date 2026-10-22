@@ -489,6 +489,73 @@ describe("AnthropicApiBackend", () => {
 		expect(events.some((e) => e.type === "cache_miss")).toBe(false);
 	});
 
+	it("keeps the subagent's conversation out of the parent's context: only its report comes back", async () => {
+		const api = fakeApi([
+			// parent
+			{
+				id: "msg_p1",
+				blocks: [{ type: "tool_use", id: "tu_task", name: "task", input: { agent: "helper", prompt: "Look it up." } }],
+				stopReason: "tool_use",
+			},
+			// child, first request: thinks aloud and uses a tool
+			{
+				id: "msg_c1",
+				blocks: [
+					{ type: "text", text: "CHILD-NOISE while I look." },
+					{ type: "tool_use", id: "tu_echo", name: "echo", input: { text: "CHILD-TOOL-INPUT" } },
+				],
+				stopReason: "tool_use",
+			},
+			// child, final answer
+			{ id: "msg_c2", blocks: [{ type: "text", text: "Final report: src/a.ts:3." }] },
+			// parent, after the report
+			{ id: "msg_p2", blocks: [{ type: "text", text: "Thanks." }] },
+		]);
+		const newBackend = () => new AnthropicApiBackend({ apiKey: API_KEY, fetch: api.fetch, maxRetries: 0 });
+		const session = await Session.start({
+			backend: newBackend(),
+			cwd: process.cwd(),
+			tools: [echoTool],
+			subagents: {
+				agents: [
+					{
+						name: "helper",
+						description: "Helps",
+						tools: ["echo"],
+						prompt: "HELPER PROMPT",
+						models: {},
+						maxRequests: 5,
+					},
+				],
+				createBackend: newBackend,
+			},
+		});
+		try {
+			for await (const _ of session.send("Find it.", "t1")) {
+			}
+		} finally {
+			await session.close();
+		}
+		expect(api.bodies).toHaveLength(4);
+		const child = api.bodies[1] as Record<string, unknown>;
+		expect(JSON.stringify(child.system)).toContain("HELPER PROMPT");
+		expect(withoutBreakpoints(messagesOf(child))).toEqual([
+			{ role: "user", content: [{ type: "text", text: "Look it up." }] },
+		]);
+		expect((child.tools as { name: string }[]).map((t) => t.name)).toEqual(["echo"]);
+
+		const parentAfter = withoutBreakpoints(messagesOf(api.bodies[3]));
+		expect(parentAfter.map((m: { role: string }) => m.role)).toEqual(["user", "assistant", "user"]);
+		expect(parentAfter[2].content).toEqual([
+			{ type: "tool_result", tool_use_id: "tu_task", content: "Final report: src/a.ts:3." },
+		]);
+		const parentText = JSON.stringify(parentAfter);
+		for (const childOnly of ["CHILD-NOISE", "CHILD-TOOL-INPUT", "echo: ", "HELPER PROMPT"])
+			expect(parentText).not.toContain(childOnly);
+		// The parent keeps comparing its own requests for cache diagnostics, not the child's.
+		expect(api.bodies[3]?.diagnostics).toEqual({ previous_message_id: "msg_p1" });
+	});
+
 	it("works end to end through Session, which stamps events and reports tools", async () => {
 		const api = fakeApi([
 			{ blocks: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "hi" } }], stopReason: "tool_use" },

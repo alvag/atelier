@@ -1,7 +1,7 @@
 import type { AtelierEvent, JsonValue } from "../events.ts";
 
 /** Bumped on any incompatible change; sent first by the server in `hello`. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const BACKEND_NAMES = ["claude-code", "anthropic-api"] as const;
 /** claude-code uses the Claude subscription; anthropic-api runs Atelier's own loop on an API key. */

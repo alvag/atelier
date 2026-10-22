@@ -13,6 +13,7 @@ import {
 	type ServerMessage,
 } from "../protocol/types.ts";
 import { Session } from "../session.ts";
+import { BUILTIN_AGENTS, type SubagentDefinition } from "../subagents/definitions.ts";
 import type { ToolDefinition } from "../tools/types.ts";
 import { VERSION } from "../version.ts";
 
@@ -22,6 +23,8 @@ export interface RpcServerOptions {
 	write: (line: string) => void;
 	/** May be async: anthropic-api resolves its key first. */
 	createBackend: (name: BackendName) => AgentBackend | Promise<AgentBackend>;
+	/** Agents every session can delegate to, each on a fresh backend like the session's. Default: the builtins. */
+	subagents?: readonly SubagentDefinition[];
 	tools: readonly ToolDefinition[];
 	systemPromptAppend: string;
 	onShutdown?: () => void;
@@ -205,6 +208,10 @@ export class RpcServer {
 				systemPromptAppend: this.#options.systemPromptAppend,
 				autoApprove,
 				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
+				subagents: {
+					agents: this.#options.subagents ?? BUILTIN_AGENTS,
+					createBackend: () => this.#options.createBackend(backend),
+				},
 			});
 		} catch (error) {
 			if (error instanceof MissingApiKeyError || error instanceof KeychainError)

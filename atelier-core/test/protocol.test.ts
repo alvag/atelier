@@ -37,7 +37,7 @@ describe("LineSplitter", () => {
 describe("encodeMessage", () => {
 	it("writes one JSON object per line", () => {
 		const line = encodeMessage({ type: "hello", protocol: PROTOCOL_VERSION, core: "0.0.0" });
-		expect(line).toBe('{"type":"hello","protocol":1,"core":"0.0.0"}\n');
+		expect(line).toBe('{"type":"hello","protocol":2,"core":"0.0.0"}\n');
 	});
 
 	it("escapes newlines inside strings, so a message is always one line", () => {
@@ -95,7 +95,7 @@ describe("decodeClientMessage", () => {
 
 describe("decodeServerMessage", () => {
 	const messages: ServerMessage[] = [
-		{ type: "hello", protocol: 1, core: "0.0.0" },
+		{ type: "hello", protocol: 2, core: "0.0.0" },
 		{ type: "response", id: "c1", ok: true, result: { sessionId: "s1" } },
 		{ type: "response", id: "c2", ok: false, error: { code: "unknown_session", message: "No session s9." } },
 		{

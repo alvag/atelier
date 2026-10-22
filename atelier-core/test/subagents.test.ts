@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { AgentBackend } from "../src/backend.ts";
-import { type AtelierEventBody, FakeBackend, type FakeStep, Session, type SessionOptions } from "../src/index.ts";
+import {
+	type AtelierEvent,
+	type AtelierEventBody,
+	FakeBackend,
+	type FakeStep,
+	Session,
+	type SessionOptions,
+} from "../src/index.ts";
 import { BUILTIN_AGENTS, REPORT_LIMIT, type SubagentDefinition, TASK_TOOL } from "../src/subagents/definitions.ts";
 import { defineTool, type ToolDefinition } from "../src/tools/types.ts";
 
@@ -14,6 +21,7 @@ const tool = (name: string): ToolDefinition =>
 		name,
 		description: name,
 		inputShape: { path: z.string().optional() },
+		...(name === "bash" ? { approvalCommand: () => "rm -rf build" } : {}),
 		execute: async () => ({ ok: true, output: `${name} ran`, summary: name, truncated: false }),
 	});
 const tools = ["read", "edit", "bash", "grep"].map(tool);
@@ -191,5 +199,144 @@ describe("builtin agents", () => {
 		expect(BUILTIN_AGENTS[0]?.models).toEqual({ "claude-code": "haiku", "anthropic-api": "claude-haiku-5-5" });
 		expect(BUILTIN_AGENTS[1]?.models).toEqual({});
 		for (const agent of BUILTIN_AGENTS) expect(agent.prompt).toContain("path:line");
+	});
+});
+
+/** A parent session whose first turn calls task once; child backends play `childTurns`. */
+async function start(childTurns: FakeStep[][], extra: Partial<SessionOptions> = {}, agent = "worker") {
+	const parentUsage = { input: 7, output: 3, cacheRead: 0, cacheWrite: 0 };
+	const parent = new FakeBackend([
+		[
+			{ toolCall: { tool: "task", input: { agent, prompt: "Do it." }, callId: "c1" } },
+			{ event: { type: "turn_finished", stopReason: "end_turn", usage: parentUsage } },
+		],
+	]);
+	const children: FakeBackend[] = [];
+	const session = await Session.start({
+		backend: parent,
+		cwd: process.cwd(),
+		tools,
+		createId: (() => {
+			let n = 0;
+			return () => `id-${++n}`;
+		})(),
+		subagents: {
+			agents: [explorer, worker],
+			createBackend: () => {
+				const child = new FakeBackend([childTurns[children.length] ?? []]);
+				children.push(child);
+				return child;
+			},
+		},
+		...extra,
+	});
+	return { session, parent, children, parentUsage };
+}
+
+async function collectTurn(session: Session, onEvent?: (event: AtelierEvent) => Promise<void> | void) {
+	const events: AtelierEvent[] = [];
+	for await (const event of session.send("go", "t1")) {
+		events.push(event);
+		await onEvent?.(event);
+	}
+	return events;
+}
+
+describe("subagent events and control", () => {
+	it("forwards the child's events into the parent's turn, tagged with the task call and the agent", async () => {
+		const childUsage = { input: 50, output: 9, cacheRead: 0, cacheWrite: 0 };
+		const { session, parentUsage } = await start([
+			[
+				{ event: { type: "session_started", backend: "fake", model: "m", authSource: "api_key" } },
+				{ toolCall: { tool: "read", input: { path: "a" }, callId: "r1" } },
+				text("Report."),
+				{ event: { type: "turn_finished", stopReason: "end_turn", usage: childUsage } },
+			],
+		]);
+		const events = await collectTurn(session);
+		await session.close();
+		expect(events.map((e) => [e.seq, e.turnId, e.type, e.parentCallId, e.agent])).toEqual([
+			[1, "t1", "tool_call_started", undefined, undefined],
+			[2, "t1", "session_started", "c1", "worker"],
+			[3, "t1", "tool_call_started", "c1", "worker"],
+			[4, "t1", "tool_call_finished", "c1", "worker"],
+			[5, "t1", "text_delta", "c1", "worker"],
+			[6, "t1", "turn_finished", "c1", "worker"],
+			[7, "t1", "tool_call_finished", undefined, undefined],
+			[8, "t1", "turn_finished", undefined, undefined],
+		]);
+		expect(events[5]).toMatchObject({ usage: childUsage });
+		// The parent's own turn_finished counts only the parent.
+		expect(events[7]).toMatchObject({ usage: parentUsage });
+	});
+
+	it("asks the parent's approver for the child's commands and tags the request", async () => {
+		const asked: string[] = [];
+		const { session } = await start(
+			[[{ toolCall: { tool: "bash", input: {}, callId: "b1" } }, text("Done."), { event: finished }]],
+			{
+				approve: async ({ callId, command }) => {
+					asked.push(`${callId} ${command}`);
+					return true;
+				},
+			},
+		);
+		const events = await collectTurn(session);
+		await session.close();
+		expect(asked).toEqual(["b1 rm -rf build"]);
+		expect(events.find((e) => e.type === "approval_requested")).toMatchObject({
+			callId: "b1",
+			command: "rm -rf build",
+			parentCallId: "c1",
+			agent: "worker",
+		});
+	});
+
+	it("passes autoApprove to the child", async () => {
+		const asked: string[] = [];
+		const { session } = await start(
+			[[{ toolCall: { tool: "bash", input: {}, callId: "b1" } }, text("Done."), { event: finished }]],
+			{
+				autoApprove: true,
+				approve: async ({ callId }) => {
+					asked.push(callId);
+					return false;
+				},
+			},
+		);
+		const events = await collectTurn(session);
+		await session.close();
+		expect(asked).toEqual([]);
+		expect(events.some((e) => e.type === "approval_requested")).toBe(false);
+	});
+
+	it("interrupts the child when the parent's turn is interrupted", async () => {
+		const { session, children, parent } = await start([[text("Working"), { waitForInterrupt: true }]]);
+		const events = await collectTurn(session, async (event) => {
+			if (event.type === "text_delta" && event.parentCallId === "c1") await session.interrupt();
+		});
+		await session.close();
+		expect(children[0]?.interrupts).toBe(1);
+		expect(parent.toolResults[0]).toEqual({
+			ok: false,
+			output: "The worker subagent failed (interrupted): no details",
+		});
+		expect(events.map((e) => [e.type, e.parentCallId])).toEqual([
+			["tool_call_started", undefined],
+			["text_delta", "c1"],
+			["turn_finished", "c1"],
+			["tool_call_finished", undefined],
+			["turn_finished", undefined],
+		]);
+		expect(events[2]).toMatchObject({ stopReason: "interrupted" });
+	});
+
+	it("closes a running child when the parent session closes", async () => {
+		const { session, children } = await start([[text("Working"), { hang: true }]]);
+		const turn = collectTurn(session, async (event) => {
+			if (event.type === "text_delta" && event.parentCallId === "c1") await session.close();
+		});
+		await turn;
+		expect(children[0]?.closed).toBe(true);
 	});
 });

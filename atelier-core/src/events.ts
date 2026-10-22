@@ -36,8 +36,15 @@ export type AtelierEventBody =
 	| { type: "rate_limit"; status: string; resetsAt?: number; window?: string }
 	| { type: "error"; code: string; message: string; recoverable: boolean };
 
+/** Marks an event that a subagent produced inside the parent's turn. */
+export interface SubagentTag {
+	/** The parent's task call that started the subagent. */
+	parentCallId?: string;
+	agent?: string;
+}
+
 /** An event as delivered to clients: the body stamped by the session. */
-export type AtelierEvent = AtelierEventBody & { seq: number; turnId: string };
+export type AtelierEvent = AtelierEventBody & SubagentTag & { seq: number; turnId: string };
 
 export type AtelierEventType = AtelierEventBody["type"];
 

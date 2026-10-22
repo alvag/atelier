@@ -6,6 +6,8 @@ export interface ToolContext {
 	signal?: AbortSignal;
 	/** Session-owned temporary directory: tools may write there, `read` may read it, and it is deleted when the session closes. */
 	scratchDir?: string;
+	/** The call being executed. */
+	callId?: string;
 }
 
 export interface ToolOutcome {

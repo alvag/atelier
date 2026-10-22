@@ -1,6 +1,5 @@
 import { z } from "zod";
-import type { ToolOutcome } from "../tools/types.ts";
-import { defineTool, type ToolDefinition } from "../tools/types.ts";
+import { defineTool, type ToolContext, type ToolDefinition, type ToolOutcome } from "../tools/types.ts";
 
 export const TASK_TOOL = "task";
 /** Characters of a subagent report that reach the parent; enforced in code, not asked for in a prompt. */
@@ -43,7 +42,7 @@ export const BUILTIN_AGENTS: readonly SubagentDefinition[] = Object.freeze([
 	},
 ]);
 
-export type RunSubagent = (agent: SubagentDefinition, prompt: string, signal?: AbortSignal) => Promise<ToolOutcome>;
+export type RunSubagent = (agent: SubagentDefinition, prompt: string, context: ToolContext) => Promise<ToolOutcome>;
 
 /** The task tool the parent sees. Its execution belongs to the session, which owns backends and events. */
 export function createTaskTool(agents: readonly SubagentDefinition[], run: RunSubagent): ToolDefinition {
@@ -60,9 +59,9 @@ export function createTaskTool(agents: readonly SubagentDefinition[], run: RunSu
 			agent: z.enum(names).describe("Which subagent to run"),
 			prompt: z.string().min(1).describe("Everything the subagent needs to do the work"),
 		},
-		execute: async ({ agent, prompt }, { signal }) => {
+		execute: async ({ agent, prompt }, context) => {
 			const definition = agents.find((candidate) => candidate.name === agent) as SubagentDefinition;
-			return run(definition, prompt, signal);
+			return run(definition, prompt, context);
 		},
 	});
 }
