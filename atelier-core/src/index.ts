@@ -11,4 +11,4 @@ export type {
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
 export { type ApprovalRequest, Session, type SessionOptions } from "./session.ts";
-export * from "./tools/types.ts";
+export * from "./tools/index.ts";

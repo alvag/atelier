@@ -33,6 +33,7 @@ export class Session {
 	readonly #createId: () => string;
 	#backendSession: BackendSession | undefined;
 	#turn: Channel<AtelierEventBody> | undefined;
+	#abort: AbortController | undefined;
 	#closed = false;
 
 	private constructor(options: SessionOptions) {
@@ -76,6 +77,7 @@ export class Session {
 
 		const turn = new Channel<AtelierEventBody>();
 		this.#turn = turn;
+		this.#abort = new AbortController();
 		const pump = (async () => {
 			let finish: AtelierEventBody | undefined;
 			let failed = false;
@@ -100,14 +102,21 @@ export class Session {
 		try {
 			for await (const body of turn) yield stamp(body);
 		} finally {
-			if (!turn.closed) await backendSession.interrupt().catch(() => {});
+			if (!turn.closed) {
+				this.#abort?.abort();
+				await backendSession.interrupt().catch(() => {});
+			}
 			await pump;
 			this.#turn = undefined;
+			this.#abort = undefined;
 		}
 	}
 
+	/** Aborts running tools and asks the backend to stop the turn. */
 	async interrupt(): Promise<void> {
-		if (this.#turn) await this.#backendSession?.interrupt();
+		if (!this.#turn) return;
+		this.#abort?.abort();
+		await this.#backendSession?.interrupt();
 	}
 
 	async close(): Promise<void> {
@@ -136,7 +145,8 @@ export class Session {
 				const approved = (await this.#options.approve?.({ callId, command })) ?? false;
 				if (!approved) return fail("The user denied this command.");
 			}
-			const outcome = await tool.execute(call.input, { cwd: this.#options.cwd });
+			const signal = this.#abort?.signal;
+			const outcome = await tool.execute(call.input, { cwd: this.#options.cwd, ...(signal ? { signal } : {}) });
 			emit({
 				type: "tool_call_finished",
 				callId,

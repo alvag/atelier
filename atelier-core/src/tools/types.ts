@@ -50,6 +50,6 @@ export function defineTool<Shape extends z.ZodRawShape>(spec: ToolSpec<Shape>): 
 		description: spec.description,
 		inputShape: spec.inputShape,
 		approvalCommand: (input) => spec.approvalCommand?.(parse(input)),
-		execute: (input, context) => spec.execute(parse(input), context),
+		execute: async (input, context) => spec.execute(parse(input), context),
 	};
 }

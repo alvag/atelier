@@ -245,6 +245,33 @@ describe("Session", () => {
 		expect(session.busy).toBe(false);
 	});
 
+	it("aborts a running tool when the turn is interrupted", async () => {
+		let aborted = false;
+		const slow = defineTool({
+			name: "slow",
+			description: "Waits for abort",
+			inputShape: {},
+			execute: (_input, { signal }) =>
+				new Promise((resolve) => {
+					signal?.addEventListener("abort", () => {
+						aborted = true;
+						resolve({ ok: false, output: "aborted", summary: "aborted", truncated: false });
+					});
+				}),
+		});
+		const { backend, session } = await start([[{ toolCall: { tool: "slow", input: {}, callId: "c1" } }]], {
+			tools: [slow],
+		});
+		const events: AtelierEvent[] = [];
+		for await (const event of session.send("x")) {
+			events.push(event);
+			if (event.type === "tool_call_started") await session.interrupt();
+		}
+		expect(aborted).toBe(true);
+		expect(backend.toolResults).toEqual([{ ok: false, output: "aborted" }]);
+		expect(events.at(-1)?.type).toBe("turn_finished");
+	});
+
 	it("interrupts the backend when the client stops reading", async () => {
 		const { backend, session } = await start([
 			[{ event: { type: "text_delta", text: "a" } }, { waitForInterrupt: true }],
