@@ -71,6 +71,20 @@ describe("resolveApiKey", () => {
 		);
 	});
 
+	it("never puts stdout in the message, whether the key is missing or the Keychain fails", async () => {
+		for (const [code, expected] of [
+			[
+				44,
+				`No Anthropic API key in the Keychain. Store it with: security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a "$USER" -w`,
+			],
+			[51, "The Keychain could not be read (security exit 51): denied"],
+		] as const) {
+			const keychain = security({ code, stdout: KEY, stderr: "denied" });
+			const error = await resolveApiKey({ env: {}, platform: "darwin", runSecurity: keychain.run }).catch((e) => e);
+			expect(error.message).toBe(expected);
+		}
+	});
+
 	it("reports other Keychain failures with stderr but never stdout", async () => {
 		const keychain = security({ code: 51, stdout: KEY, stderr: "User interaction is not allowed." });
 		const error = await resolveApiKey({ env: {}, platform: "darwin", runSecurity: keychain.run }).catch((e) => e);
@@ -90,6 +104,41 @@ describe("resolveApiKey", () => {
 });
 
 describe("createBackend", () => {
+	it("keeps the resolved key out of the environment and out of error events", async () => {
+		const before = { ...process.env };
+		const backend = await createBackend("anthropic-api", {
+			resolveApiKey: async () => KEY,
+			anthropicApi: {
+				maxRetries: 0,
+				fetch: async (_url, init) => {
+					expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${KEY}`);
+					return new Response(
+						JSON.stringify({
+							type: "error",
+							error: { type: "authentication_error", message: `Bearer ${KEY}; ${KEY}` },
+						}),
+						{ status: 401, headers: { "content-type": "application/json" } },
+					);
+				},
+			},
+		});
+		const session = await backend.start({
+			cwd: process.cwd(),
+			tools: [],
+			systemPromptAppend: "",
+			executeTool: async () => ({ ok: true, output: "" }),
+		});
+		try {
+			const events = [];
+			for await (const event of session.send("hello")) events.push(event);
+			expect(events).toContainEqual(expect.objectContaining({ type: "error", code: "authentication_error" }));
+			expect(JSON.stringify(events)).not.toContain(KEY);
+			expect(process.env).toEqual(before);
+		} finally {
+			await session.close();
+		}
+	});
+
 	it("builds Claude Code without reading any key", async () => {
 		let reads = 0;
 		const backend = await createBackend("claude-code", {
@@ -217,6 +266,7 @@ describe("bash environment", () => {
 		process.env.ANTHROPIC_AUTH_TOKEN = "token-SECRET";
 		process.env.ATELIER_TEST_VISIBLE = "still here";
 		const outcome = await bashTool.execute(
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion, not a JS template.
 			{ command: 'echo "${ANTHROPIC_API_KEY-unset} ${ANTHROPIC_AUTH_TOKEN-unset} $ATELIER_TEST_VISIBLE"' },
 			{ cwd: tmpdir() },
 		);
