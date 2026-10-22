@@ -1,0 +1,22 @@
+{
+	"name": "atelier",
+	"private": true,
+	"type": "module",
+	"packageManager": "pnpm@12.14.0",
+	"engines": {
+		"node": ">=22.18.0"
+	},
+	"scripts": {
+		"test": "vitest run",
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"lint": "biome check .",
+		"format": "biome format --write .",
+		"check": "pnpm lint && pnpm typecheck && pnpm test"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.6.2",
+		"@types/node": "^22.20.5",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.5"
+	}
+}

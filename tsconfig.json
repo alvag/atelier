@@ -1,0 +1,4 @@
+{
+	"extends": "./tsconfig.base.json",
+	"include": ["atelier-core/src", "atelier-core/test", "atelier-cli/src", "atelier-cli/test"]
+}
