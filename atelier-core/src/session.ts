@@ -70,8 +70,8 @@ export class Session {
 		return this.#turn !== undefined;
 	}
 
-	async *send(prompt: string): AsyncGenerator<AtelierEvent> {
-		const turnId = this.#createId();
+	/** Runs one turn. `turnId` lets a caller know the id before the first event (the RPC server answers with it). */
+	async *send(prompt: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
 		let seq = 0;
 		const stamp = (body: AtelierEventBody): AtelierEvent => ({ ...body, seq: ++seq, turnId });
 
