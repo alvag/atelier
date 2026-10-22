@@ -51,7 +51,7 @@ pnpm -C atelier-desktop smoke   # build + Playwright smoke test (echo backend, n
 
 Open a folder, pick a backend and a model, and chat. Each tool call shows as a row with its status; `bash` commands ask for approval in a card that shows invisible and control characters as visible markers. Every turn ends with its tokens; the status bar shows the core status, warnings and the latest error. If the core process dies, the app says so and offers a restart.
 
-The desktop starts the core with Electron's own Node (no system Node needed) and talks to it over the Atelier protocol (version 2): one JSON message per line on stdin/stdout, a `hello` with the protocol version, an `id` on every command and exactly one response per command, and events tagged with their session. See `../docs/m2-diseno.md`.
+The desktop starts the core with Electron's own Node (no system Node needed) and talks to it over the Atelier protocol (version 3): one JSON message per line on stdin/stdout, a `hello` with the protocol version, an `id` on every command and exactly one response per command, and events tagged with their session. See `../docs/m2-diseno.md`.
 
 ## How it works
 
@@ -60,9 +60,10 @@ The desktop starts the core with Electron's own Node (no system Node needed) and
 - `ClaudeCodeBackend` drives Claude Code through the Claude Agent SDK, isolated from your `~/.claude` setup (no settings, hooks, plugins, skills, CLAUDE.md or other MCP servers) and without `ANTHROPIC_API_KEY`, so it uses your subscription.
 - `AnthropicApiBackend` runs Atelier's own loop on the Messages API. It owns the prompt: tools and system prompt are fixed for the session, and three cache breakpoints (last tool, system, last message) keep the prefix cached. Each request asks the API to compare its prefix with the previous response, which is how cache misses are reported. See `../docs/m3-diseno.md`; a measured session is in `../docs/m3-medicion.md`.
 - Subagents: the agent can delegate with a `task` tool to `explorer` (read and grep only, on the cheapest model: `haiku` / `claude-haiku-5-5`) or `worker` (read, edit, grep, bash, on the session's model). A subagent runs in its own session with only the task prompt and its role's instructions, on a fresh backend of the same kind. Only its final report, cut in code at 8,000 characters, returns to the parent. Its work shows nested under the task call: indented under `↳ agent · model` in the CLI, in a foldable block in the desktop, each with its own token line. Its bash commands ask for approval like any other. See `../docs/m4-diseno.md` and `../docs/m4-medicion.md`.
+- ODD (Organic Driven Development) is core state, not prompt prose. For large work the agent keeps a feature document in `odd/tasks/<name>.md` (`## Specs`, `## Tasks`, `## Log`) through the `feature` tool, the only way to change it: `edit` refuses that directory. Atelier writes the log's user entries itself, verbatim (L1 is the original request), so the model never paraphrases you. Each change is validated and written as one transaction, so the document stays well formed. A later session resumes with `open`. The current phase (exploring, implementing, checking…) is inferred from the tools, or declared with the `phase` tool. The CLI prints `· <phase>` and `◆ <feature>: n/m done`; the desktop shows the phase in the status bar and the feature's tasks in a side panel. See `../docs/m5-diseno.md`.
 - `bash` runs without `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`. That only filters its environment; it is not isolation (a command could still inspect processes or ask the Keychain). Keep approvals on (no `--yes`) for work you do not trust.
 
-Design and decisions: `../docs/m1-diseno.md`, `../docs/m2-diseno.md`, `../docs/m3-diseno.md`, `../docs/m4-diseno.md`.
+Design and decisions: `../docs/m1-diseno.md`, `../docs/m2-diseno.md`, `../docs/m3-diseno.md`, `../docs/m4-diseno.md`, `../docs/m5-diseno.md`.
 
 ## Development
 

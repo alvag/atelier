@@ -79,7 +79,9 @@ try {
 		const tokens = await finished.first().textContent();
 		const tools = await page.getByTestId("tool-row").allTextContents();
 		const subagents = await page.getByTestId("subagent").count();
-		console.log(JSON.stringify({ status, tokens, tools, subagents }, null, 2));
+		const panel = page.getByRole("complementary", { name: "Feature" });
+		const feature = (await panel.count()) > 0 ? await panel.textContent() : null;
+		console.log(JSON.stringify({ status, tokens, tools, subagents, feature }, null, 2));
 		if (backend === "anthropic-api")
 			assert.ok(status?.includes("billed to your Anthropic API key"), `not on the API key: ${status}`);
 		else assert.ok(!status?.includes("not using a Claude subscription"), "the session is not on the subscription");
