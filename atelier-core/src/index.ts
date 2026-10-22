@@ -32,6 +32,19 @@ export {
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
 export {
+	connectMemory,
+	FakeMemory,
+	MEMORY_MIN_VERSION,
+	MEMORY_TYPES,
+	type MemoryEntry,
+	MemoryError,
+	type MemoryHit,
+	type MemoryPort,
+	type MemoryType,
+	MemoryUnavailableError,
+	type NewMemory,
+} from "./memory/index.ts";
+export {
 	addTask,
 	appendLog,
 	CANONICAL_COLUMNS,
