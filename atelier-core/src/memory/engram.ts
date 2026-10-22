@@ -159,9 +159,9 @@ export class EngramMemory implements MemoryPort {
 }
 
 /**
- * Reads "#<id> [<type>] <title>", the content, then Engram's metadata lines.
- * Metadata is read from the end, so content that looks like metadata stays
- * content unless it is the very last lines.
+ * Reads "#<id> [<type>] <title>", the content, then Engram's metadata block, read
+ * from the end up to its "Session:" line and no further: content that looks like
+ * metadata stays content. A block without that line is not trusted (undefined).
  */
 export function parseObservationText(text: string): MemoryEntry | undefined {
 	const lines = text.split("\n");
@@ -169,11 +169,13 @@ export function parseObservationText(text: string): MemoryEntry | undefined {
 	if (!header) return undefined;
 	let end = lines.length;
 	const metadata: Record<string, string> = {};
-	while (end > 1 && METADATA.test(lines[end - 1] as string)) {
-		const line = lines[end - 1] as string;
+	for (;;) {
+		const line = end > 1 ? (lines[end - 1] as string) : "";
+		if (!METADATA.test(line)) return undefined;
 		const colon = line.indexOf(": ");
 		metadata[line.slice(0, colon)] = line.slice(colon + 2);
 		end--;
+		if (line.startsWith("Session: ")) break;
 	}
 	return {
 		id: Number(header[1]),

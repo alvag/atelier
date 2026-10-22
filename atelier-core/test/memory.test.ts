@@ -39,6 +39,28 @@ describe("parseObservationText", () => {
 		});
 	});
 
+	it("keeps content that ends with metadata-like lines: only Engram's block, from its Session line down, is metadata", () => {
+		const text = [
+			"#3 [decision] Tail",
+			"body",
+			"Project: looks like metadata",
+			"Session: also looks like metadata",
+			"Session: manual-save-proj",
+			"Project: proj",
+			"Scope: project",
+			"Duplicates: 1",
+			"Revisions: 1",
+			"Created: 2026-10-22 17:15:21",
+		].join("\n");
+		expect(parseObservationText(text)?.content).toBe(
+			"body\nProject: looks like metadata\nSession: also looks like metadata",
+		);
+	});
+
+	it("refuses a metadata block without its Session line instead of cutting content", () => {
+		expect(parseObservationText("#3 [decision] Tail\nbody\nProject: proj\nCreated: 2026-10-22")).toBeUndefined();
+	});
+
 	it("returns undefined for text it does not recognize", () => {
 		expect(parseObservationText("something else")).toBeUndefined();
 	});
@@ -111,6 +133,12 @@ describe.skipIf(!engramInstalled)("EngramMemory against the real binary (tempora
 		});
 		expect(updated.id).toBe(saved.id);
 		expect((await memory.get(saved.id))?.content).toBe("v2");
+	});
+
+	it("gets back content whose last line looks like Engram metadata", async () => {
+		const content = "**What**: tail case\nSession: this is content";
+		const saved = await memory.save({ title: "Tail case", type: "discovery", content });
+		expect((await memory.get(saved.id))?.content).toBe(content);
 	});
 
 	it("returns undefined for a missing entry", async () => {
