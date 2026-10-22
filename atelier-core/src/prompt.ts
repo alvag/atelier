@@ -16,3 +16,7 @@ export const MEMORY_RULES = `You have long-term memory of this project (the memo
 - Before work that may build on earlier sessions, search memory; recent memory also comes with the first message.
 - Save only what is worth knowing next time: a decision the user confirmed, a bug fixed with its cause, a non-obvious discovery, a user preference. Use **What** / **Why** / **Where** / **Learned**, and a topicKey for something that evolves.
 - Never save secrets. Finished feature documents are saved for you.`;
+
+/** Added when the session reviews its changes. Byte-stable and short: the code derives the risk. */
+export const RISK_RULES =
+	"Atelier reviews your uncommitted changes for risk automatically when you finish a turn. The risk tool can only raise it: call it when a change is risky in a way file paths and content do not show (data loss, security, contracts others use).";

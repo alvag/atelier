@@ -15,14 +15,16 @@ import {
 import { CONTEXT_BYTES, createMemoryTool, findSecret, MEMORY_TOOL, type MemoryPort } from "./memory/index.ts";
 import type { CompletedFeature } from "./odd/tracker.ts";
 import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
-import { MEMORY_RULES, ODD_RULES } from "./prompt.ts";
+import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
+import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
+import { RISK_TOOL } from "./review/tool.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
 import { type ToolContext, type ToolDefinition, ToolInputError, type ToolOutcome } from "./tools/types.ts";
 
 type TurnEvent = AtelierEventBody & SubagentTag;
 
 /** Tools a subagent never gets: delegation and the ODD document belong to the parent. */
-const PARENT_ONLY = new Set([TASK_TOOL, FEATURE_TOOL, PHASE_TOOL, MEMORY_TOOL]);
+const PARENT_ONLY = new Set([TASK_TOOL, FEATURE_TOOL, PHASE_TOOL, MEMORY_TOOL, RISK_TOOL]);
 
 export interface ApprovalRequest {
 	callId: string;
@@ -50,6 +52,8 @@ export interface SessionOptions {
 	memory?: MemoryPort;
 	/** Why there is no memory, when the caller tried and failed; reported in memory_status. */
 	memoryUnavailable?: string;
+	/** Turns on RDD: the risk tool, the assessment at the end of each turn and `Session.review`. Never given to subagents. */
+	review?: ReviewOptions;
 }
 
 export interface SubagentOptions {
@@ -72,6 +76,7 @@ export class Session {
 	/** The subagent running right now, so interrupting or closing reaches it. */
 	#child: Session | undefined;
 	readonly #odd: OddTracker | undefined;
+	readonly #review: SessionReview | undefined;
 	/** Recent memory, fetched once at start and given with the first prompt only. */
 	#memoryContext = "";
 	#announced = false;
@@ -97,8 +102,10 @@ export class Session {
 					options.memory ? (feature) => this.#mirror(feature) : undefined,
 				)
 			: undefined;
+		this.#review = options.review ? new SessionReview(options.review) : undefined;
 		const all = [
 			...tools,
+			...(this.#review ? [this.#review.tool] : []),
 			...(this.#odd ? this.#odd.tools() : []),
 			...(options.memory ? [createMemoryTool(options.memory)] : []),
 		];
@@ -135,6 +142,7 @@ export class Session {
 					options.systemPromptAppend ?? "",
 					options.odd ? ODD_RULES : "",
 					options.memory ? MEMORY_RULES : "",
+					options.review ? RISK_RULES : "",
 				]
 					.filter((part) => part !== "")
 					.join("\n\n"),
@@ -155,6 +163,69 @@ export class Session {
 
 	/** Runs one turn. `turnId` lets a caller know the id before the first event (the RPC server answers with it). */
 	async *send(prompt: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
+		yield* this.#stream(turnId, async (turn, signal, backendSession) => {
+			// The user's words reach the feature log as the turn starts, without delaying the backend;
+			// the turn waits for it before finishing, so a failure is reported inside this turn.
+			const logged = this.#odd?.userMessage(prompt);
+			// The first turn says whether memory works and gives the model the recent memory, outside the system prompt.
+			let sent = prompt;
+			if (!this.#announced) {
+				this.#announced = true;
+				const memory = this.#options.memory;
+				if (memory) turn.push({ type: "memory_status", available: true, project: memory.project });
+				else if (this.#options.memoryUnavailable !== undefined)
+					turn.push({ type: "memory_status", available: false, reason: this.#options.memoryUnavailable });
+				if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
+			}
+			let finish: Extract<AtelierEventBody, { type: "turn_finished" }> | undefined;
+			let failed = false;
+			try {
+				for await (const event of backendSession.send(sent)) {
+					if (event.type === "turn_finished") finish ??= event;
+					else {
+						if (event.type === "error") failed = true;
+						turn.push(event);
+					}
+				}
+			} catch (error) {
+				failed = true;
+				turn.push(errorEvent("backend_error", describeError(error)));
+			}
+			await logged;
+			const ended = finish ?? {
+				type: "turn_finished",
+				stopReason: failed ? "error" : "incomplete",
+				usage: { ...ZERO_USAGE },
+			};
+			// A change left by a turn that finished well is assessed before the turn ends; its cost joins the turn's.
+			const clean = !failed && finish !== undefined && !signal.aborted && !NOT_REVIEWED.has(finish.stopReason);
+			if (!clean || !this.#review) return ended;
+			return addSpent(ended, await this.#review.endOfTurn(this.#reviewHost(turn, signal, backendSession)));
+		});
+	}
+
+	/** Reviews the current uncommitted change on request: any risk, no consent. A turn like `send`, with one `turn_finished`. */
+	async *review(turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
+		yield* this.#stream(turnId, async (turn, signal, backendSession) => {
+			if (!this.#review) {
+				turn.push(errorEvent("review_unavailable", "Review is off for this session.", true));
+				return { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
+			}
+			const spent = await this.#review.onDemand(this.#reviewHost(turn, signal, backendSession));
+			const stopReason = signal.aborted ? "interrupted" : spent.refused ? "error" : "end_turn";
+			return addSpent({ type: "turn_finished", stopReason, usage: { ...ZERO_USAGE } }, spent);
+		});
+	}
+
+	/** The turn machinery both `send` and `review` share: closed/busy rules, the channel, and exactly one `turn_finished`. */
+	async *#stream(
+		turnId: string,
+		work: (
+			turn: Channel<TurnEvent>,
+			signal: AbortSignal,
+			backendSession: BackendSession,
+		) => Promise<Extract<AtelierEventBody, { type: "turn_finished" }>>,
+	): AsyncGenerator<AtelierEvent> {
 		let seq = 0;
 		const stamp = (body: TurnEvent): AtelierEvent => ({ ...body, seq: ++seq, turnId });
 
@@ -172,39 +243,17 @@ export class Session {
 
 		const turn = new Channel<TurnEvent>();
 		this.#turn = turn;
-		this.#abort = new AbortController();
-		// The user's words reach the feature log as the turn starts, without delaying the backend;
-		// the turn waits for it before finishing, so a failure is reported inside this turn.
-		const logged = this.#odd?.userMessage(prompt);
-		// The first turn says whether memory works and gives the model the recent memory, outside the system prompt.
-		let sent = prompt;
-		if (!this.#announced) {
-			this.#announced = true;
-			const memory = this.#options.memory;
-			if (memory) turn.push({ type: "memory_status", available: true, project: memory.project });
-			else if (this.#options.memoryUnavailable !== undefined)
-				turn.push({ type: "memory_status", available: false, reason: this.#options.memoryUnavailable });
-			if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
-		}
+		const abort = new AbortController();
+		this.#abort = abort;
 		const pump = (async () => {
-			let finish: AtelierEventBody | undefined;
-			let failed = false;
+			let finish: AtelierEventBody;
 			try {
-				for await (const event of backendSession.send(sent)) {
-					if (event.type === "turn_finished") finish ??= event;
-					else {
-						if (event.type === "error") failed = true;
-						turn.push(event);
-					}
-				}
+				finish = await work(turn, abort.signal, backendSession);
 			} catch (error) {
-				failed = true;
-				turn.push(errorEvent("backend_error", describeError(error)));
+				turn.push(errorEvent("turn_failed", describeError(error)));
+				finish = { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
 			}
-			await logged;
-			turn.push(
-				finish ?? { type: "turn_finished", stopReason: failed ? "error" : "incomplete", usage: { ...ZERO_USAGE } },
-			);
+			turn.push(finish);
 			turn.close();
 		})();
 
@@ -219,6 +268,40 @@ export class Session {
 			this.#turn = undefined;
 			this.#abort = undefined;
 		}
+	}
+
+	/** What a review may use of this session: the turn's stream, its signal, one correction turn and child sessions. */
+	#reviewHost(turn: Channel<TurnEvent>, signal: AbortSignal, backendSession: BackendSession): ReviewHost {
+		return {
+			cwd: this.#options.cwd,
+			model: this.#options.model,
+			signal,
+			push: (event) => turn.push(event),
+			correct: async (message) => {
+				let usage = ZERO_USAGE;
+				let costUsd: number | undefined;
+				let ok = false;
+				let failed = false;
+				try {
+					for await (const event of backendSession.send(message)) {
+						if (event.type === "turn_finished") {
+							usage = event.usage;
+							costUsd = event.costUsd;
+							ok = !NOT_REVIEWED.has(event.stopReason);
+						} else {
+							if (event.type === "error") failed = true;
+							turn.push(event);
+						}
+					}
+				} catch (error) {
+					failed = true;
+					turn.push(errorEvent("backend_error", describeError(error)));
+				}
+				return { ok: ok && !failed, usage, ...(costUsd === undefined ? {} : { costUsd }) };
+			},
+			startChild: (options) => Session.start(options),
+			createId: this.#createId,
+		};
 	}
 
 	/** Aborts running tools and asks the backend to stop the turn. */
@@ -237,6 +320,7 @@ export class Session {
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
 			this.#closing = Promise.resolve()
 				.then(() => this.#child?.close())
+				.then(() => this.#review?.close())
 				.then(() => this.#odd?.close())
 				.then(() => this.#options.memory?.close().catch(() => {}))
 				.then(() => this.#backendSession?.close())
@@ -385,4 +469,29 @@ export class Session {
 			);
 		}
 	}
+}
+
+/** Stop reasons after which a turn is neither assessed nor trusted as a correction. */
+const NOT_REVIEWED = new Set(["error", "interrupted", "incomplete"]);
+
+/** The turn's closing event with the review's usage and cost added. */
+function addSpent(
+	ended: Extract<AtelierEventBody, { type: "turn_finished" }>,
+	spent: Spent,
+): Extract<AtelierEventBody, { type: "turn_finished" }> {
+	const { usage } = ended;
+	const cost =
+		ended.costUsd === undefined && spent.costUsd === undefined
+			? undefined
+			: (ended.costUsd ?? 0) + (spent.costUsd ?? 0);
+	return {
+		...ended,
+		usage: {
+			input: usage.input + spent.usage.input,
+			output: usage.output + spent.usage.output,
+			cacheRead: usage.cacheRead + spent.usage.cacheRead,
+			cacheWrite: usage.cacheWrite + spent.usage.cacheWrite,
+		},
+		...(cost === undefined ? {} : { costUsd: cost }),
+	};
 }

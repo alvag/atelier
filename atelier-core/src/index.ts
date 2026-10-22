@@ -64,8 +64,9 @@ export { FEATURE_TOOL, ODD_DIR, OddTracker, PHASE_TOOL } from "./odd/tracker.ts"
 export { costOfRequest, PRICES, type PriceTier } from "./pricing.ts";
 export { MEMORY_RULES, ODD_RULES, SYSTEM_PROMPT_APPEND } from "./prompt.ts";
 export * from "./protocol/index.ts";
+export type { ReviewConsentRequest, ReviewOptions } from "./review/session-review.ts";
 export { EchoBackend } from "./server/echo-backend.ts";
-export { RpcServer, type RpcServerOptions } from "./server/rpc-server.ts";
+export { RpcServer, type RpcServerOptions, reviewEnabled } from "./server/rpc-server.ts";
 export { type ApprovalRequest, Session, type SessionOptions, type SubagentOptions } from "./session.ts";
 export {
 	BUILTIN_AGENTS,

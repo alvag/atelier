@@ -71,7 +71,7 @@ describe("RpcClient", () => {
 	it("rejects pending commands with core_exited when the core dies, with its stderr", async () => {
 		const client = await connect(
 			scriptCore(`
-				process.stdout.write(JSON.stringify({ type: "hello", protocol: 4, core: "test" }) + "\\n");
+				process.stdout.write(JSON.stringify({ type: "hello", protocol: 5, core: "test" }) + "\\n");
 				process.stdin.once("data", () => { process.stderr.write("boom: out of memory\\n"); process.exit(3); });
 			`),
 		);
@@ -108,7 +108,7 @@ describe("RpcClient", () => {
 	it("reports protocol errors from the core", async () => {
 		const client = await connect(
 			scriptCore(`
-				process.stdout.write(JSON.stringify({ type: "hello", protocol: 4, core: "test" }) + "\\n");
+				process.stdout.write(JSON.stringify({ type: "hello", protocol: 5, core: "test" }) + "\\n");
 				// Later than hello, so the test's listener is registered before these lines arrive.
 				setTimeout(() => {
 					process.stdout.write("garbage line\\n");
@@ -132,7 +132,7 @@ describe("RpcClient", () => {
 	it("kills a core that ignores shutdown", async () => {
 		const client = await RpcClient.connect({
 			...scriptCore(`
-				process.stdout.write(JSON.stringify({ type: "hello", protocol: 4, core: "test" }) + "\\n");
+				process.stdout.write(JSON.stringify({ type: "hello", protocol: 5, core: "test" }) + "\\n");
 				process.stdin.on("data", () => {});
 				process.on("SIGTERM", () => {});
 				setInterval(() => {}, 1000);

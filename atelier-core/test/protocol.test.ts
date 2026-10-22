@@ -37,7 +37,7 @@ describe("LineSplitter", () => {
 describe("encodeMessage", () => {
 	it("writes one JSON object per line", () => {
 		const line = encodeMessage({ type: "hello", protocol: PROTOCOL_VERSION, core: "0.0.0" });
-		expect(line).toBe('{"type":"hello","protocol":4,"core":"0.0.0"}\n');
+		expect(line).toBe('{"type":"hello","protocol":5,"core":"0.0.0"}\n');
 	});
 
 	it("escapes newlines inside strings, so a message is always one line", () => {
@@ -55,6 +55,28 @@ describe("decodeClientMessage", () => {
 		[{ type: "command", id: "c5", command: "session.approve", sessionId: "s1", callId: "k", approved: false }],
 		[{ type: "command", id: "c6", command: "session.close", sessionId: "s1" }],
 		[{ type: "command", id: "c7", command: "shutdown" }],
+		[{ type: "command", id: "c8", command: "session.start", cwd: "/w", review: false }],
+		[{ type: "command", id: "c9", command: "session.review", sessionId: "s1" }],
+		[
+			{
+				type: "command",
+				id: "c10",
+				command: "session.review_consent",
+				sessionId: "s1",
+				reviewId: "r1",
+				answer: "granted",
+			},
+		],
+		[
+			{
+				type: "command",
+				id: "c11",
+				command: "session.review_consent",
+				sessionId: "s1",
+				reviewId: "r1",
+				answer: "declined",
+			},
+		],
 	])("accepts %j", (message) => {
 		expect(decodeClientMessage(JSON.stringify(message))).toEqual({ ok: true, message });
 	});
@@ -83,6 +105,17 @@ describe("decodeClientMessage", () => {
 		expect(decodeClientMessage('"text"')).toMatchObject({ ok: false });
 	});
 
+	it("rejects a review answer that is neither granted nor declined, or lacks the review id", () => {
+		const consent = { type: "command", id: "c", command: "session.review_consent", sessionId: "s", reviewId: "r" };
+		expect(decodeClientMessage(JSON.stringify({ ...consent, answer: "maybe" })).ok).toBe(false);
+		expect(decodeClientMessage(JSON.stringify({ ...consent, reviewId: "", answer: "granted" })).ok).toBe(false);
+		expect(
+			decodeClientMessage(
+				JSON.stringify({ type: "command", id: "c", command: "session.start", cwd: "/w", review: "no" }),
+			).ok,
+		).toBe(false);
+	});
+
 	it("rejects empty ids and empty prompts", () => {
 		expect(decodeClientMessage(JSON.stringify({ type: "command", id: "", command: "shutdown" })).ok).toBe(false);
 		expect(
@@ -95,7 +128,7 @@ describe("decodeClientMessage", () => {
 
 describe("decodeServerMessage", () => {
 	const messages: ServerMessage[] = [
-		{ type: "hello", protocol: 4, core: "0.0.0" },
+		{ type: "hello", protocol: 5, core: "0.0.0" },
 		{ type: "response", id: "c1", ok: true, result: { sessionId: "s1" } },
 		{ type: "response", id: "c2", ok: false, error: { code: "unknown_session", message: "No session s9." } },
 		{

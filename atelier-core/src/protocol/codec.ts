@@ -42,10 +42,18 @@ const commandSchema = z.discriminatedUnion("command", [
 		model: z.string().min(1).optional(),
 		autoApprove: z.boolean().optional(),
 		backend: z.enum(BACKEND_NAMES).optional(),
+		review: z.boolean().optional(),
 	}),
 	z.object({ command: z.literal("session.send"), sessionId, prompt: z.string().min(1) }),
 	z.object({ command: z.literal("session.interrupt"), sessionId }),
 	z.object({ command: z.literal("session.approve"), sessionId, callId: z.string().min(1), approved: z.boolean() }),
+	z.object({ command: z.literal("session.review"), sessionId }),
+	z.object({
+		command: z.literal("session.review_consent"),
+		sessionId,
+		reviewId: z.string().min(1),
+		answer: z.enum(["granted", "declined"]),
+	}),
 	z.object({ command: z.literal("session.close"), sessionId }),
 	z.object({ command: z.literal("shutdown") }),
 ]);

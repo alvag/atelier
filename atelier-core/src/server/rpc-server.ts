@@ -30,8 +30,15 @@ export interface RpcServerOptions {
 	connectMemory?: (cwd: string) => Promise<MemoryPort>;
 	tools: readonly ToolDefinition[];
 	systemPromptAppend: string;
+	/** Sessions may review their changes (RDD). Off unless given; `serve` passes `reviewEnabled(process.env)`. */
+	review?: boolean;
 	onShutdown?: () => void;
 	createId?: () => string;
+}
+
+/** RDD is on unless `ATELIER_REVIEW=off`. */
+export function reviewEnabled(env: Record<string, string | undefined>): boolean {
+	return env.ATELIER_REVIEW !== "off";
 }
 
 /** A failure answered as `{ ok: false, error }` to the command that caused it. */
@@ -47,6 +54,8 @@ interface ServerSession {
 	session: Session;
 	/** Approval questions waiting for session.approve, by callId. */
 	approvals: Map<string, (approved: boolean) => void>;
+	/** Review questions waiting for session.review_consent, by reviewId. */
+	consents: Map<string, (answer: "granted" | "declined") => void>;
 }
 
 type Result = { [key: string]: JsonValue };
@@ -152,6 +161,7 @@ export class RpcServer {
 						message.model,
 						message.autoApprove ?? false,
 						message.backend ?? DEFAULT_BACKEND,
+						message.review ?? true,
 					),
 				};
 			case "session.send": {
@@ -163,10 +173,29 @@ export class RpcServer {
 				);
 				return { turnId };
 			}
+			case "session.review": {
+				const entry = this.#session(message.sessionId);
+				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
+				const turnId = this.#createId();
+				this.#runTurn(message.sessionId, entry, undefined, turnId).catch((error: unknown) =>
+					process.stderr.write(`atelier-core: review turn ${turnId} stopped: ${describeError(error)}\n`),
+				);
+				return { turnId };
+			}
+			case "session.review_consent": {
+				const entry = this.#session(message.sessionId);
+				const answer = entry.consents.get(message.reviewId);
+				if (!answer) throw new CommandError("unknown_review", `No pending review question ${message.reviewId}.`);
+				entry.consents.delete(message.reviewId);
+				answer(message.answer);
+				return {};
+			}
 			case "session.interrupt": {
 				const entry = this.#session(message.sessionId);
 				denyAll(entry);
 				await entry.session.interrupt();
+				// An interrupted question is not a refusal: the session drops it and offers the review again.
+				entry.consents.clear();
 				return {};
 			}
 			case "session.approve": {
@@ -181,6 +210,7 @@ export class RpcServer {
 				const entry = this.#session(message.sessionId);
 				this.#sessions.delete(message.sessionId);
 				denyAll(entry);
+				declineAll(entry);
 				await entry.session.close();
 				return {};
 			}
@@ -191,7 +221,13 @@ export class RpcServer {
 		}
 	}
 
-	async #start(cwd: string, model: string | undefined, autoApprove: boolean, backend: BackendName): Promise<string> {
+	async #start(
+		cwd: string,
+		model: string | undefined,
+		autoApprove: boolean,
+		backend: BackendName,
+		review: boolean,
+	): Promise<string> {
 		if (this.#stopping) throw new CommandError("shutting_down", "The server is shutting down.");
 		if (
 			!(await stat(cwd).then(
@@ -201,6 +237,7 @@ export class RpcServer {
 		)
 			throw new CommandError("invalid_cwd", `Working directory does not exist: ${cwd}`);
 		const approvals = new Map<string, (approved: boolean) => void>();
+		const consents = new Map<string, (answer: "granted" | "declined") => void>();
 		// Memory is optional: a session that cannot connect it starts anyway and says why.
 		let memory: MemoryPort | undefined;
 		let memoryUnavailable: string | undefined;
@@ -224,6 +261,14 @@ export class RpcServer {
 				autoApprove,
 				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
 				odd: true,
+				...(review && this.#options.review
+					? {
+							review: {
+								createBackend: () => this.#options.createBackend(backend),
+								consent: ({ reviewId }) => new Promise((resolve) => consents.set(reviewId, resolve)),
+							},
+						}
+					: {}),
 				subagents: {
 					agents: this.#options.subagents ?? BUILTIN_AGENTS,
 					createBackend: () => this.#options.createBackend(backend),
@@ -240,22 +285,28 @@ export class RpcServer {
 			throw new CommandError("shutting_down", "The server is shutting down.");
 		}
 		const sessionId = this.#createId();
-		this.#sessions.set(sessionId, { session, approvals });
+		this.#sessions.set(sessionId, { session, approvals, consents });
 		return sessionId;
 	}
 
-	async #runTurn(sessionId: string, entry: ServerSession, prompt: string, turnId: string): Promise<void> {
+	/** A turn for `prompt`, or the review of the current change when there is none. */
+	async #runTurn(sessionId: string, entry: ServerSession, prompt: string | undefined, turnId: string): Promise<void> {
 		try {
-			for await (const event of entry.session.send(prompt, turnId)) this.#send({ type: "event", sessionId, event });
+			const events = prompt === undefined ? entry.session.review(turnId) : entry.session.send(prompt, turnId);
+			for await (const event of events) this.#send({ type: "event", sessionId, event });
 		} finally {
 			denyAll(entry);
+			entry.consents.clear();
 		}
 	}
 
 	async #closeAll(): Promise<void> {
 		const entries = [...this.#sessions.values()];
 		this.#sessions.clear();
-		for (const entry of entries) denyAll(entry);
+		for (const entry of entries) {
+			denyAll(entry);
+			declineAll(entry);
+		}
 		await Promise.allSettled(entries.map((entry) => entry.session.close()));
 	}
 }
@@ -263,4 +314,9 @@ export class RpcServer {
 function denyAll(entry: ServerSession): void {
 	for (const answer of entry.approvals.values()) answer(false);
 	entry.approvals.clear();
+}
+
+function declineAll(entry: ServerSession): void {
+	for (const answer of entry.consents.values()) answer("declined");
+	entry.consents.clear();
 }

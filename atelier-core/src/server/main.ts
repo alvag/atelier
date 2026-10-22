@@ -6,7 +6,7 @@ import { SYSTEM_PROMPT_APPEND } from "../prompt.ts";
 import type { BackendName } from "../protocol/types.ts";
 import { coreTools } from "../tools/index.ts";
 import { EchoBackend } from "./echo-backend.ts";
-import { RpcServer } from "./rpc-server.ts";
+import { RpcServer, reviewEnabled } from "./rpc-server.ts";
 
 const USAGE = `Usage: atelier-core serve
 
@@ -21,6 +21,7 @@ Environment:
   ATELIER_BACKEND=echo   Network-free echo backend, for tests
   ANTHROPIC_API_KEY      API key for anthropic-api sessions, instead of the Keychain
   ATELIER_MEMORY=off     Run sessions without long-term memory
+  ATELIER_REVIEW=off     Run sessions without the review of uncommitted changes (RDD)
 `;
 
 if (process.argv.length !== 3 || process.argv[2] !== "serve") {
@@ -44,6 +45,7 @@ const server = new RpcServer({
 	input: process.stdin,
 	write: (line) => process.stdout.write(line),
 	createBackend,
+	review: reviewEnabled(process.env),
 	tools: coreTools,
 	systemPromptAppend: SYSTEM_PROMPT_APPEND,
 	connectMemory: memoryOff

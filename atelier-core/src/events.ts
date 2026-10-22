@@ -35,6 +35,31 @@ export interface FeatureTask {
 	commit?: string;
 }
 
+/** A review finding as clients see it (the frozen-tree evidence is a `path:line` reference). */
+export interface ReviewFinding {
+	id: string;
+	lens: string;
+	severity: string;
+	cause: string;
+	path: string;
+	line?: number;
+	claim: string;
+	evidence: string;
+}
+
+/** One step of a review's cycle, in the order the core takes them. */
+export type ReviewStep =
+	| { type: "lens_started"; lens: string }
+	| { type: "lens_finished"; lens: string; ok: boolean; findings: number }
+	| { type: "refuter_started"; findings: number }
+	| { type: "refuter_finished"; confirmed: number; refuted: number }
+	| { type: "correction_started"; budget: number; findings: number }
+	| { type: "correction_finished"; ok: boolean; used?: number }
+	| { type: "validator_started"; findings: number }
+	| { type: "validator_finished"; resolved: number; unresolved: number };
+
+export type ReviewVerdict = "approved" | "escalated" | "declined" | "unavailable";
+
 export type AtelierEventBody =
 	| { type: "session_started"; backend: string; model: string; authSource: AuthSource }
 	| { type: "text_delta"; text: string }
@@ -58,6 +83,38 @@ export type AtelierEventBody =
 	| { type: "memory_status"; available: boolean; project?: string; reason?: string }
 	/** The active ODD feature document changed. */
 	| { type: "feature_changed"; name: string; path: string; title: string; tasks: FeatureTask[] }
+	/** Whether the review of uncommitted changes (RDD) works in this session; sent when it does not, once per reason. */
+	| { type: "review_status"; available: boolean; reason?: string }
+	/** The free, deterministic risk of the change a turn left. `reviewDue`: only high risk is offered a review. */
+	| {
+			type: "review_assessed";
+			tree: string;
+			level: "passive" | "medium" | "high";
+			reasons: string[];
+			files: string[];
+			changedLines: number;
+			lenses: string[];
+			reviewDue: boolean;
+	  }
+	/** The core waits for session.review_consent; the turn stays open until it is answered. */
+	| { type: "review_consent_requested"; reviewId: string; level: string; reasons: string[]; lenses: string[] }
+	/** Progress of a review the user agreed to or asked for; role events follow tagged `agent: "review:<role>"`. */
+	| { type: "review_progress"; reviewId: string; step: ReviewStep }
+	| {
+			type: "review_finished";
+			reviewId: string;
+			verdict: ReviewVerdict;
+			reason?: string;
+			/** Confirmed blocking findings. */
+			findings: ReviewFinding[];
+			refuted: { id: string; reason: string }[];
+			followUps: ReviewFinding[];
+			correction: { budget: number; used: number } | null;
+			/** Absent when no receipt was written (an interrupted review). */
+			receiptPath?: string;
+			usage: Usage;
+			costUsd?: number;
+	  }
 	| { type: "rate_limit"; status: string; resetsAt?: number; window?: string }
 	| { type: "error"; code: string; message: string; recoverable: boolean };
 

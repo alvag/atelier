@@ -1,7 +1,7 @@
 import type { AtelierEvent, JsonValue } from "../events.ts";
 
 /** Bumped on any incompatible change; sent first by the server in `hello`. */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 export const BACKEND_NAMES = ["claude-code", "anthropic-api"] as const;
 /** claude-code uses the Claude subscription; anthropic-api runs Atelier's own loop on an API key. */
@@ -9,10 +9,20 @@ export type BackendName = (typeof BACKEND_NAMES)[number];
 export const DEFAULT_BACKEND: BackendName = "claude-code";
 
 export type ClientCommand =
-	| { command: "session.start"; cwd: string; model?: string; autoApprove?: boolean; backend?: BackendName }
+	| {
+			command: "session.start";
+			cwd: string;
+			model?: string;
+			autoApprove?: boolean;
+			backend?: BackendName;
+			review?: boolean;
+	  }
 	| { command: "session.send"; sessionId: string; prompt: string }
 	| { command: "session.interrupt"; sessionId: string }
 	| { command: "session.approve"; sessionId: string; callId: string; approved: boolean }
+	/** Reviews the current uncommitted change at any risk; answers like session.send. */
+	| { command: "session.review"; sessionId: string }
+	| { command: "session.review_consent"; sessionId: string; reviewId: string; answer: "granted" | "declined" }
 	| { command: "session.close"; sessionId: string }
 	| { command: "shutdown" };
 
