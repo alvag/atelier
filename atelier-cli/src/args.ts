@@ -33,6 +33,12 @@ Options:
       --cwd <dir>        Working directory (default: current directory)
   -h, --help             Show this help
   -v, --version          Show the version
+
+Long-term memory is used when its memory service is installed; the session says
+which project it uses, or why it has none.
+
+Environment:
+  ATELIER_MEMORY=off     Run without long-term memory
 `;
 
 export function parseCliArgs(argv: readonly string[], baseDir: string): CliArgs {

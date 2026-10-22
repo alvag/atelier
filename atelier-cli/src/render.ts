@@ -160,6 +160,10 @@ export class Renderer {
 					`cache miss: ${event.reason} (${numbers.format(event.missedTokens)} tokens not read from the cache)`,
 				);
 				return;
+			case "memory_status":
+				if (event.available) this.#line(this.#style("dim", `memory: ${event.project ?? "on"}`));
+				else this.#warn(`no memory: ${event.reason ?? "unavailable"}`);
+				return;
 			case "phase_changed":
 				this.#line(this.#style("dim", `· ${event.phase}`));
 				return;

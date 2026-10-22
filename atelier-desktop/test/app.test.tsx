@@ -163,6 +163,16 @@ describe("App", () => {
 		expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
 	});
 
+	it("shows the memory in the status bar, or why there is none", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "memory_status", available: true, project: "atelier" });
+		await waitFor(() => expect(screen.getByRole("status").textContent).toContain("memory: atelier"));
+		fake.emit({ type: "memory_status", available: false, reason: "Engram is not installed" });
+		await waitFor(() => expect(screen.getByRole("status").textContent).toContain("no memory"));
+		expect(screen.getByTitle("Engram is not installed")).toBeTruthy();
+	});
+
 	it("shows the phase in the status bar and the feature's tasks in a panel", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

@@ -16,7 +16,7 @@ const SECRETS: { name: string; pattern: RegExp }[] = [
 	{ name: "a GitHub token", pattern: /\bgh[pousr]_[A-Za-z0-9]{30,}/ },
 	{ name: "a GitHub token", pattern: /\bgithub_pat_[A-Za-z0-9_]{22,}/ },
 	{ name: "a Google API key", pattern: /\bAIza[0-9A-Za-z_-]{35}/ },
-	{ name: "an AWS access key", pattern: /\bAKIA[0-9A-Z]{16}\b/ },
+	{ name: "an AWS access key", pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
 	{ name: "a Slack token", pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}/ },
 	{ name: "a private key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
 ];

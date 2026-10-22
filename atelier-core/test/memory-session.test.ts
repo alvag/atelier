@@ -19,6 +19,7 @@ import {
 } from "../src/index.ts";
 import { MemoryUnavailableError } from "../src/memory/port.ts";
 import { findSecret } from "../src/memory/tool.ts";
+import { MEMORY_RULES } from "../src/prompt.ts";
 import { defineTool } from "../src/tools/types.ts";
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
@@ -158,6 +159,7 @@ describe("memory tool", () => {
 describe("findSecret", () => {
 	it("finds key-shaped text and nothing in ordinary prose", () => {
 		expect(findSecret("aws AKIAABCDEFGHIJKLMNOP")).toBeDefined();
+		expect(findSecret("temporary aws ASIAABCDEFGHIJKLMNOP")).toBeDefined();
 		expect(findSecret("slack xoxb-1234567890-abcdefghij")).toBeDefined();
 		expect(findSecret("We chose MCP; see sk-ant docs and the github token setting.")).toBeUndefined();
 	});
@@ -456,5 +458,19 @@ describe("independent U2 regressions (S4, S1)", () => {
 		await next.send("resume");
 		await next.session.close();
 		expect(next.memory.saved).toHaveLength(0);
+	});
+});
+
+describe("memory rules in the prompt", () => {
+	it("are appended only with memory, after the rest, and stay under 1 KB", async () => {
+		const { backend, session: s } = await session([], { systemPromptAppend: "BASE" });
+		await s.close();
+		expect(backend.startOptions?.systemPromptAppend).toBe(`BASE\n\n${MEMORY_RULES}`);
+		expect(Buffer.byteLength(MEMORY_RULES)).toBeLessThanOrEqual(1024);
+		for (const word of ["search", "save", "secret", "topicKey"]) expect(MEMORY_RULES).toContain(word);
+
+		const plain = new FakeBackend([]);
+		await (await Session.start({ backend: plain, cwd, tools, systemPromptAppend: "BASE" })).close();
+		expect(plain.startOptions?.systemPromptAppend).toBe("BASE");
 	});
 });

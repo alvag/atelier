@@ -153,6 +153,17 @@ describe("reduceChat", () => {
 		]);
 	});
 
+	it("tracks the memory status, and forgets it with a new session", () => {
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "x" },
+			event({ type: "memory_status", available: false, reason: "no engram" }),
+		]);
+		expect(state.memory).toEqual({ available: false, reason: "no engram" });
+		expect(state.turns[0]?.items).toEqual([]);
+		expect(run([{ type: "session_opened", sessionId: "s2", cwd: "/w" }], state)).not.toHaveProperty("memory");
+	});
+
 	it("tracks the phase and the active feature", () => {
 		const tasks = [
 			{ id: "T1", title: "A", specs: ["S1"], status: "done" },

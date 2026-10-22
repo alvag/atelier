@@ -8,6 +8,7 @@ import {
 	coreTools,
 	createBackend as createNamedBackend,
 	describeError,
+	type MemoryPort,
 	Session,
 	SYSTEM_PROMPT_APPEND,
 	VERSION,
@@ -32,6 +33,9 @@ export interface CliIO {
 	forceExitMs?: number;
 }
 
+/** Connects long-term memory for the working directory; may fail, and then the session runs without it. */
+export type MemoryConnector = (cwd: string) => Promise<MemoryPort>;
+
 /** Builds the backend named by --backend; may fail, for example without an API key. */
 export type BackendFactory = (name: BackendName) => AgentBackend | Promise<AgentBackend>;
 
@@ -45,6 +49,7 @@ export async function run(
 	argv: readonly string[],
 	io: CliIO,
 	createBackend: BackendFactory = (name) => createNamedBackend(name),
+	connectMemory?: MemoryConnector,
 ): Promise<number> {
 	let args: ReturnType<typeof parseCliArgs>;
 	try {
@@ -80,12 +85,24 @@ export async function run(
 		return EXIT_FAILED;
 	}
 
+	let memory: MemoryPort | undefined;
+	let memoryUnavailable: string | undefined;
+	if (connectMemory)
+		memory = await Promise.resolve()
+			.then(() => connectMemory(args.cwd))
+			.catch((error: unknown) => {
+				memoryUnavailable = describeError(error);
+				return undefined;
+			});
+
 	const renderer = new Renderer({ stdout: io.stdout, stderr: io.stderr, color: io.color });
 	const lines = createLineReader(io.stdin);
 	/** Cancels a pending approval question, answering no. */
 	let cancelApproval: (() => void) | undefined;
 	const session = await Session.start({
 		backend,
+		...(memory ? { memory } : {}),
+		...(memoryUnavailable === undefined ? {} : { memoryUnavailable }),
 		subagents: { agents: BUILTIN_AGENTS, createBackend: () => createBackend(args.backend) },
 		odd: true,
 		cwd: args.cwd,

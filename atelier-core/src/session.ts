@@ -15,7 +15,7 @@ import {
 import { CONTEXT_BYTES, createMemoryTool, findSecret, MEMORY_TOOL, type MemoryPort } from "./memory/index.ts";
 import type { CompletedFeature } from "./odd/tracker.ts";
 import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
-import { ODD_RULES } from "./prompt.ts";
+import { MEMORY_RULES, ODD_RULES } from "./prompt.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
 import { type ToolContext, type ToolDefinition, ToolInputError, type ToolOutcome } from "./tools/types.ts";
 
@@ -131,7 +131,11 @@ export class Session {
 			session.#backendSession = await options.backend.start({
 				cwd: options.cwd,
 				...(options.model === undefined ? {} : { model: options.model }),
-				systemPromptAppend: [options.systemPromptAppend ?? "", options.odd ? ODD_RULES : ""]
+				systemPromptAppend: [
+					options.systemPromptAppend ?? "",
+					options.odd ? ODD_RULES : "",
+					options.memory ? MEMORY_RULES : "",
+				]
 					.filter((part) => part !== "")
 					.join("\n\n"),
 				tools: session.#options.tools,

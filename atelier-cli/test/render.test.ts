@@ -126,6 +126,16 @@ describe("Renderer", () => {
 		expect(stderr).toBe("");
 	});
 
+	it("says which memory the session uses, or why it has none", () => {
+		const on = render([{ type: "memory_status", available: true, project: "atelier" }]);
+		expect(on.stdout).toBe("memory: atelier\n");
+		const off = render([
+			{ type: "memory_status", available: false, reason: "Engram is not installed (no engram command)." },
+		]);
+		expect(off.stdout).toBe("");
+		expect(off.stderr).toBe("no memory: Engram is not installed (no engram command).\n");
+	});
+
 	it("prints errors to stderr and remembers them", () => {
 		const { stdout, stderr, renderer } = render([
 			{ type: "text_delta", text: "partial" },

@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 import process from "node:process";
-import { type BackendName, createBackend as createNamedBackend } from "@atelier/core";
+import {
+	type BackendName,
+	connectMemory,
+	createBackend as createNamedBackend,
+	MemoryUnavailableError,
+} from "@atelier/core";
 import { run } from "./run.ts";
 
 // ATELIER_RECORD_SDK=<file.jsonl> appends every raw SDK message, to record test fixtures.
@@ -30,6 +35,11 @@ const exitCode = await run(
 		exit: (code) => process.exit(code),
 	},
 	createBackend,
+	process.env.ATELIER_MEMORY === "off"
+		? async () => {
+				throw new MemoryUnavailableError("Memory is off (ATELIER_MEMORY=off).");
+			}
+		: (cwd) => connectMemory({ cwd }),
 );
 
 // Exit only after stdout is flushed, so piped output is never cut short.

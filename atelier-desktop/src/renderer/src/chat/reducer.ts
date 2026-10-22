@@ -50,6 +50,8 @@ export interface ChatState {
 	authSource?: AuthSource;
 	/** The ODD phase the agent is in. */
 	phase?: Phase;
+	/** Whether the session has long-term memory, for which project, or why not. */
+	memory?: { available: boolean; project?: string; reason?: string };
 	/** The active ODD feature document, as the core last reported it. */
 	feature?: { name: string; path: string; title: string; tasks: FeatureTask[] };
 	turns: Turn[];
@@ -95,7 +97,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 		case "protocol_error":
 			return { ...state, lastError: { code: "protocol_error", message: action.message } };
 		case "session_opened": {
-			const { feature: _feature, phase: _phase, ...rest } = state;
+			const { feature: _feature, phase: _phase, memory: _memory, ...rest } = state;
 			return { ...rest, session: { id: action.sessionId, cwd: action.cwd }, turns: [], busy: false };
 		}
 		case "prompt_sent": {
@@ -143,6 +145,15 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 			};
 		case "phase_changed":
 			return { ...state, phase: event.phase };
+		case "memory_status":
+			return {
+				...state,
+				memory: {
+					available: event.available,
+					...(event.project === undefined ? {} : { project: event.project }),
+					...(event.reason === undefined ? {} : { reason: event.reason }),
+				},
+			};
 		case "feature_changed":
 			return { ...state, feature: { name: event.name, path: event.path, title: event.title, tasks: event.tasks } };
 		case "error": {

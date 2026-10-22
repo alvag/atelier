@@ -115,6 +115,15 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 				<span>{coreLabel(state.core)}</span>
 				{state.model ? <span>{state.model}</span> : null}
 				{state.phase ? <span className="phase">{state.phase}</span> : null}
+				{state.memory ? (
+					state.memory.available ? (
+						<span>memory: {state.memory.project}</span>
+					) : (
+						<span className="warning" title={state.memory.reason}>
+							no memory
+						</span>
+					)
+				) : null}
 				{state.backend === "anthropic-api" ? (
 					<span>billed to your Anthropic API key</span>
 				) : state.authSource && state.authSource !== "subscription" ? (

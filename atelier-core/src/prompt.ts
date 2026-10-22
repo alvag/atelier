@@ -10,3 +10,9 @@ export const ODD_RULES = `Work in ODD (Organic Driven Development):
 - To resume earlier work, open its feature by name.
 - Reading, editing and running tests show your phase by themselves; use the phase tool only for authorizing, deciding and closing.
 - When you need a decision from the user, ask one question and stop.`;
+
+/** Added when the session has long-term memory. Byte-stable and short: secrets are refused by code. */
+export const MEMORY_RULES = `You have long-term memory of this project (the memory tool), shared across sessions.
+- Before work that may build on earlier sessions, search memory; recent memory also comes with the first message.
+- Save only what is worth knowing next time: a decision the user confirmed, a bug fixed with its cause, a non-obvious discovery, a user preference. Use **What** / **Why** / **Where** / **Learned**, and a topicKey for something that evolves.
+- Never save secrets. Finished feature documents are saved for you.`;

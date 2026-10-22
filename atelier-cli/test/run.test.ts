@@ -2,7 +2,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { type AtelierEventBody, FakeBackend, type FakeStep, MissingApiKeyError } from "@atelier/core";
+import {
+	type AtelierEventBody,
+	FakeBackend,
+	FakeMemory,
+	type FakeStep,
+	MemoryUnavailableError,
+	MissingApiKeyError,
+} from "@atelier/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { run } from "../src/run.ts";
 
@@ -276,6 +283,30 @@ describe("run", () => {
 		expect(parent.backend.toolResults[0]).toEqual({ ok: true, output: "It is in a.ts." });
 	});
 
+	it("connects memory for the working directory and offers it to the agent", async () => {
+		const h = harness([[{ event: finished }]]);
+		const folders: string[] = [];
+		const memory = new FakeMemory("proj");
+		await run(["x"], h.io, h.createBackend, async (folder) => {
+			folders.push(folder);
+			return memory;
+		});
+		expect(folders).toEqual([cwd]);
+		expect(h.backend.startOptions?.tools.map((t) => t.name)).toContain("memory");
+		expect(h.out()).toContain("memory: proj\n");
+		expect(memory.closed).toBe(true);
+	});
+
+	it("runs without memory when it cannot connect, and says why", async () => {
+		const h = harness([[{ event: finished }]]);
+		const code = await run(["x"], h.io, h.createBackend, async () => {
+			throw new MemoryUnavailableError("Engram is not installed (no engram command).");
+		});
+		expect(code).toBe(0);
+		expect(h.backend.startOptions?.tools.map((t) => t.name)).not.toContain("memory");
+		expect(h.err()).toContain("no memory: Engram is not installed (no engram command).");
+	});
+
 	it("exits 1 with the instructions when the backend has no API key", async () => {
 		const h = harness([]);
 		const code = await run(["--backend", "anthropic-api", "x"], h.io, async () => {
@@ -293,6 +324,7 @@ describe("run", () => {
 		expect(await run(["--help"], help.io, help.createBackend)).toBe(0);
 		expect(help.out()).toContain("Usage: atelier [options] [prompt]");
 		expect(help.out()).toContain("--backend <name>");
+		expect(help.out()).toContain("ATELIER_MEMORY=off");
 		expect(help.backend.startOptions).toBeUndefined();
 
 		const version = harness([]);
