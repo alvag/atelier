@@ -35,6 +35,7 @@ export class Session {
 	#turn: Channel<AtelierEventBody> | undefined;
 	#abort: AbortController | undefined;
 	#closed = false;
+	#closing: Promise<void> | undefined;
 
 	private constructor(options: SessionOptions) {
 		this.#options = options;
@@ -119,10 +120,13 @@ export class Session {
 		await this.#backendSession?.interrupt();
 	}
 
-	async close(): Promise<void> {
-		if (this.#closed) return;
-		this.#closed = true;
-		await this.#backendSession?.close();
+	/** Closes the backend; every call waits for the same close to finish. */
+	close(): Promise<void> {
+		if (!this.#closing) {
+			this.#closed = true;
+			this.#closing = Promise.resolve(this.#backendSession?.close());
+		}
+		return this.#closing;
 	}
 
 	async #executeTool(call: ToolCall): Promise<ToolCallResult> {

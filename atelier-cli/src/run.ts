@@ -17,6 +17,8 @@ export interface CliIO {
 	onInterrupt?: (handler: () => void) => () => void;
 	/** Last resort when Claude Code does not stop after the session is closed. */
 	exit?: (code: number) => void;
+	/** Delay before that forced exit; defaults to FORCE_EXIT_MS. */
+	forceExitMs?: number;
 }
 
 export type BackendFactory = () => AgentBackend;
@@ -104,7 +106,7 @@ export async function run(
 		cancelApproval?.();
 		lines.close();
 		void session.close();
-		if (io.exit) forceExit = setTimeout(() => io.exit?.(EXIT_INTERRUPTED), FORCE_EXIT_MS).unref();
+		if (io.exit) forceExit = setTimeout(() => io.exit?.(EXIT_INTERRUPTED), io.forceExitMs ?? FORCE_EXIT_MS).unref();
 	};
 	const removeInterrupt = io.onInterrupt?.(() => {
 		renderer.endLine();
@@ -139,10 +141,11 @@ export async function run(
 		}
 		return EXIT_OK;
 	} finally {
+		lines.close();
+		// Keep the forced exit and the Ctrl+C handler until the session is really closed.
+		await session.close();
 		clearTimeout(forceExit);
 		removeInterrupt?.();
-		lines.close();
-		await session.close();
 	}
 }
 

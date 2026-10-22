@@ -176,6 +176,23 @@ describe("run", () => {
 			expect(h.exits).toEqual([]);
 		});
 
+		it("keeps the forced exit armed while closing the session hangs", async () => {
+			const h = harness([], { input: [], keepStdinOpen: true });
+			const stuck = {
+				id: "stuck",
+				start: async () => ({
+					async *send() {},
+					interrupt: async () => {},
+					close: () => new Promise<void>(() => {}),
+				}),
+			};
+			void run([], { ...h.io, forceExitMs: 20 }, () => stuck);
+			await tick();
+			h.ctrlC();
+			await new Promise((resolve) => setTimeout(resolve, 60));
+			expect(h.exits).toEqual([130]);
+		});
+
 		it("leaves an idle interactive session cleanly", async () => {
 			const h = harness([], { input: [], keepStdinOpen: true });
 			const pending = run([], h.io, h.createBackend);

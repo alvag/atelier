@@ -297,6 +297,32 @@ describe("Session", () => {
 		await collect(first);
 	});
 
+	it("makes every close call wait for the backend to finish closing", async () => {
+		let finishClose: () => void = () => {};
+		const backend = {
+			id: "slow-close",
+			start: async () => ({
+				async *send() {},
+				interrupt: async () => {},
+				close: () =>
+					new Promise<void>((resolve) => {
+						finishClose = resolve;
+					}),
+			}),
+		};
+		const session = await Session.start({ backend, cwd: "/w", tools: [] });
+		let secondDone = false;
+		void session.close();
+		const second = session.close().then(() => {
+			secondDone = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(secondDone).toBe(false);
+		finishClose();
+		await second;
+		expect(secondDone).toBe(true);
+	});
+
 	it("refuses turns after close", async () => {
 		const { backend, session } = await start([[{ event: finished }]]);
 		await session.close();
