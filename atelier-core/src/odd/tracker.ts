@@ -21,8 +21,12 @@ export const FEATURE_TOOL = "feature";
 export const PHASE_TOOL = "phase";
 export const ODD_DIR = "odd/tasks";
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
-/** Shell commands that run tests: the check phase. */
-const TEST_COMMAND = /\b(test|tests|vitest|jest|pytest|mocha|go test|cargo test|npm t)\b/;
+/**
+ * Shell commands that run tests: the check phase. Matches test runners, not the word "test" anywhere,
+ * so reading or writing test/slug.test.js does not count as checking.
+ */
+const TEST_COMMAND =
+	/(?:^|[\s;&|(])(?:(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+test\b|npm\s+t\b|node\s+--test\b|vitest\b|jest\b|mocha\b|pytest\b|go\s+test\b|cargo\s+test\b|make\s+test\b)/;
 
 interface Active {
 	name: string;

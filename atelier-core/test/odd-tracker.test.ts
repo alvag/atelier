@@ -386,6 +386,27 @@ describe("phases", () => {
 		]);
 	});
 
+	it.each([
+		["npm test", true],
+		["pnpm run test -- slug", true],
+		["cd app && yarn test", true],
+		["node --test", true],
+		["npx vitest run", true],
+		["python -m pytest -q", true],
+		["go test ./...", true],
+		["cargo test", true],
+		["make test", true],
+		["cat package.json src/slug.js test/slug.test.js", false],
+		["cat >> test/slug.test.js <<'EOF'", false],
+		["ls tests/", false],
+		["grep -rn latest .", false],
+	])("treats `%s` as running tests: %s", async (command, checks) => {
+		const { session: s, send } = await session([[call("bash", { command }), { event: finished }]]);
+		const events = await send("go");
+		await s.close();
+		expect(phases(events)).toEqual(checks ? ["checking:inferred"] : []);
+	});
+
 	it("rejects an unknown phase", async () => {
 		const {
 			backend,
