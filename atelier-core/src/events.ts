@@ -5,7 +5,8 @@
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
-export type AuthSource = "subscription" | "api_key" | "none";
+/** "other": no API key, but no confirmed subscription either (bearer token, cloud provider...). */
+export type AuthSource = "subscription" | "api_key" | "other" | "none";
 
 export interface Usage {
 	input: number;

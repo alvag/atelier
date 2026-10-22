@@ -51,7 +51,8 @@ export function mapSdkMessage(message: SDKMessage, context: MapContext): Atelier
 					type: "session_started",
 					backend: BACKEND_ID,
 					model: message.model,
-					authSource: message.apiKeySource === "none" ? "subscription" : "api_key",
+					// "none" only means no API key; the backend confirms a subscription with accountInfo().
+					authSource: message.apiKeySource === "none" ? "other" : "api_key",
 				},
 			];
 			const server = message.mcp_servers?.find((s) => s.name === MCP_SERVER_NAME);

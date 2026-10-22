@@ -1,4 +1,5 @@
 import {
+	type AccountInfo,
 	createSdkMcpServer,
 	type Options,
 	type SDKMessage,
@@ -13,12 +14,15 @@ import type { ToolDefinition } from "../../tools/types.ts";
 import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./map.ts";
 
 export const DEFAULT_MODEL = "opus";
+export const DEFAULT_INTERRUPT_GRACE_MS = 5000;
+const ACCOUNT_INFO_TIMEOUT_MS = 3000;
 const TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
 
 /** The part of the SDK's Query the backend uses. */
 export interface SdkQuery extends AsyncIterable<SDKMessage> {
 	interrupt(): Promise<unknown>;
 	close(): void;
+	accountInfo?(): Promise<AccountInfo>;
 }
 
 export type QueryFunction = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => SdkQuery;
@@ -31,6 +35,8 @@ export interface ClaudeCodeBackendOptions {
 	/** Keep ANTHROPIC_API_KEY. By default it is removed so the subscription is used instead of billing the API. */
 	keepApiKey?: boolean;
 	pathToClaudeCodeExecutable?: string;
+	/** How long an interrupted turn may take to finish before the SDK query is closed. */
+	interruptGraceMs?: number;
 }
 
 /**
@@ -46,7 +52,7 @@ export function createToolBridge(tools: readonly ToolDefinition[], executeTool: 
 		const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta?.["claudecode/toolUseId"];
 		if (typeof meta === "string") {
 			const index = queue.indexOf(meta);
-			queue.splice(index === -1 ? 0 : index, 1);
+			if (index !== -1) queue.splice(index, 1);
 			return meta;
 		}
 		return queue.shift();
@@ -125,22 +131,53 @@ export class ClaudeCodeBackend implements AgentBackend {
 					: { pathToClaudeCodeExecutable: this.#options.pathToClaudeCodeExecutable }),
 			},
 		});
-		return new ClaudeCodeSession(query, input, bridge.observe);
+		return new ClaudeCodeSession(
+			query,
+			input,
+			bridge.observe,
+			this.#options.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS,
+		);
+	}
+}
+
+/** Resolves to a subscription only when the account confirms one on Anthropic's own API. */
+async function confirmSubscription(query: SdkQuery): Promise<boolean> {
+	if (!query.accountInfo) return false;
+	let timer: NodeJS.Timeout | undefined;
+	const timeout = new Promise<undefined>((resolve) => {
+		timer = setTimeout(() => resolve(undefined), ACCOUNT_INFO_TIMEOUT_MS);
+	});
+	try {
+		const info = await Promise.race([query.accountInfo(), timeout]);
+		return Boolean(info?.subscriptionType) && (info?.apiProvider ?? "firstParty") === "firstParty";
+	} catch {
+		return false;
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
 class ClaudeCodeSession implements BackendSession {
 	readonly #query: SdkQuery;
 	readonly #input: Channel<SDKUserMessage>;
+	readonly #interruptGraceMs: number;
 	readonly #context: MapContext = { previousCostUsd: 0 };
 	/** Events that arrive between turns (for example system/init) wait for the next turn. */
 	#early: AtelierEventBody[] = [];
 	#turn: Channel<AtelierEventBody> | undefined;
+	#interruptTimer: NodeJS.Timeout | undefined;
+	#closing = false;
 	#failure: string | undefined;
 
-	constructor(query: SdkQuery, input: Channel<SDKUserMessage>, observe: (message: SDKMessage) => void) {
+	constructor(
+		query: SdkQuery,
+		input: Channel<SDKUserMessage>,
+		observe: (message: SDKMessage) => void,
+		interruptGraceMs: number,
+	) {
 		this.#query = query;
 		this.#input = input;
+		this.#interruptGraceMs = interruptGraceMs;
 		void this.#read(observe);
 	}
 
@@ -148,17 +185,30 @@ class ClaudeCodeSession implements BackendSession {
 		try {
 			for await (const message of this.#query) {
 				observe(message);
-				this.#deliver(mapSdkMessage(message, this.#context));
+				const events = mapSdkMessage(message, this.#context);
+				for (const event of events) {
+					if (
+						event.type === "session_started" &&
+						event.authSource === "other" &&
+						(await confirmSubscription(this.#query))
+					)
+						event.authSource = "subscription";
+				}
+				this.#deliver(events);
 				if (message.type === "result") {
 					this.#context.previousCostUsd = message.total_cost_usd;
 					this.#endTurn();
 				}
 			}
-			this.#failure ??= "Claude Code ended the session.";
+			if (!this.#closing) {
+				this.#failure = "Claude Code ended the session.";
+				this.#deliver([errorEvent("backend_ended", this.#failure)]);
+			}
 		} catch (error) {
 			this.#failure = describeError(error);
 			this.#deliver([errorEvent("backend_crashed", this.#failure)]);
 		} finally {
+			this.#failure ??= "Claude Code session is closed.";
 			this.#endTurn();
 		}
 	}
@@ -171,6 +221,8 @@ class ClaudeCodeSession implements BackendSession {
 	}
 
 	#endTurn(): void {
+		clearTimeout(this.#interruptTimer);
+		this.#interruptTimer = undefined;
 		this.#turn?.close();
 		this.#turn = undefined;
 	}
@@ -189,11 +241,22 @@ class ClaudeCodeSession implements BackendSession {
 		yield* turn;
 	}
 
+	/** Asks Claude Code to stop; if the turn does not end within the grace period, closes the query. */
 	async interrupt(): Promise<void> {
+		const turn = this.#turn;
 		await this.#query.interrupt().catch(() => {});
+		if (!turn || turn !== this.#turn || this.#interruptTimer) return;
+		this.#interruptTimer = setTimeout(() => {
+			if (this.#turn !== turn) return;
+			this.#deliver([errorEvent("interrupt_timeout", "Claude Code did not stop in time; the session was closed.")]);
+			this.#closing = true;
+			this.#query.close();
+		}, this.#interruptGraceMs);
 	}
 
 	async close(): Promise<void> {
+		this.#closing = true;
+		clearTimeout(this.#interruptTimer);
 		this.#input.close();
 		this.#query.close();
 	}

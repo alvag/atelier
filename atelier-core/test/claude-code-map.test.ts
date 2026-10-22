@@ -22,7 +22,7 @@ describe("mapSdkMessage", () => {
 	it("maps a recorded turn with thinking, text, a tool call and usage", async () => {
 		const events = (await fixture("text-and-tool-turn")).flatMap((m) => mapSdkMessage(m, context));
 		expect(events).toEqual([
-			{ type: "session_started", backend: "claude-code", model: "claude-opus-5-5", authSource: "subscription" },
+			{ type: "session_started", backend: "claude-code", model: "claude-opus-5-5", authSource: "other" },
 			{ type: "rate_limit", status: "allowed", resetsAt: 1792000000, window: "five_hour" },
 			{ type: "thinking_delta", text: "Need to read the file." },
 			{ type: "text_delta", text: "Let me " },
@@ -54,7 +54,7 @@ describe("mapSdkMessage", () => {
 	});
 
 	it.each([
-		["none", "subscription"],
+		["none", "other"],
 		["ANTHROPIC_API_KEY", "api_key"],
 		["apiKeyHelper", "api_key"],
 		["/login managed key", "api_key"],

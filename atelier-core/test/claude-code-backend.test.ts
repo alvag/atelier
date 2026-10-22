@@ -1,5 +1,5 @@
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
 	ClaudeCodeBackend,
@@ -7,11 +7,14 @@ import {
 	type QueryFunction,
 	type SdkQuery,
 } from "../src/backends/claude-code/backend.ts";
+import { Channel } from "../src/channel.ts";
 import { type AtelierEvent, defineTool, Session, type ToolCall } from "../src/index.ts";
 
 function msg(value: Record<string, unknown>): SDKMessage {
 	return { uuid: "u", session_id: "s", ...value } as unknown as SDKMessage;
 }
+
+const SUBSCRIPTION = { subscriptionType: "max", apiProvider: "firstParty", tokenSource: "claude.ai" };
 
 const init = msg({
 	type: "system",
@@ -38,7 +41,11 @@ const result = (totalCost: number) =>
 	});
 
 /** Fake SDK query: emits `boot` at start, then plays one scripted reply per user message. */
-function fakeQuery(boot: SDKMessage[], replies: (SDKMessage | Error)[][]) {
+function fakeQuery(
+	boot: SDKMessage[],
+	replies: (SDKMessage | Error)[][],
+	account: Record<string, unknown> = SUBSCRIPTION,
+) {
 	const calls: { options: Options; prompts: string[]; interrupts: number; closed: boolean } = {
 		options: {},
 		prompts: [],
@@ -62,12 +69,27 @@ function fakeQuery(boot: SDKMessage[], replies: (SDKMessage | Error)[][]) {
 			async interrupt() {
 				calls.interrupts++;
 			},
+			async accountInfo() {
+				return account;
+			},
 			close() {
 				calls.closed = true;
 			},
 		}) as SdkQuery;
 	};
 	return { query, calls };
+}
+
+/** SDK query whose output the test pushes by hand. */
+function controlledQuery() {
+	const output = new Channel<SDKMessage>();
+	const close = vi.fn(() => output.close());
+	const query: QueryFunction = () => ({
+		[Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
+		interrupt: async () => {},
+		close,
+	});
+	return { output, close, query };
 }
 
 async function collect(events: AsyncIterable<AtelierEvent>) {
@@ -189,6 +211,80 @@ describe("ClaudeCodeBackend turns", () => {
 		expect(second[0]).toMatchObject({ type: "error", code: "backend_error", message: "claude exited with code 1" });
 	});
 
+	it.each([
+		["a Max subscription", SUBSCRIPTION, "none", "subscription"],
+		["a third-party provider", { apiProvider: "bedrock" }, "none", "other"],
+		["a login without a subscription", { apiProvider: "firstParty" }, "none", "other"],
+		["an API key", {}, "ANTHROPIC_API_KEY", "api_key"],
+	])("reports %s as authSource %s", async (_name, account, apiKeySource, authSource) => {
+		const boot = [msg({ ...(init as unknown as Record<string, unknown>), apiKeySource })];
+		const { query } = fakeQuery(boot, [[result(0)]], account);
+		const session = await Session.start({ backend: new ClaudeCodeBackend({ query, env: {} }), cwd: "/w", tools: [] });
+		const events = await collect(session.send("x"));
+		expect(events[0]).toMatchObject({ type: "session_started", authSource });
+	});
+
+	it("reports an error when Claude Code ends without finishing the turn", async () => {
+		const h = controlledQuery();
+		const session = await Session.start({
+			backend: new ClaudeCodeBackend({ query: h.query, env: {} }),
+			cwd: "/w",
+			tools: [],
+		});
+		const pending = collect(session.send("x"));
+		h.output.close();
+		const events = await pending;
+		expect(events).toContainEqual({
+			type: "error",
+			code: "backend_ended",
+			message: "Claude Code ended the session.",
+			recoverable: false,
+		});
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished" });
+	});
+
+	it("closes the SDK query when an interrupt does not finish the turn in time", async () => {
+		vi.useFakeTimers();
+		try {
+			const h = controlledQuery();
+			const session = await Session.start({
+				backend: new ClaudeCodeBackend({ query: h.query, env: {}, interruptGraceMs: 5000 }),
+				cwd: "/w",
+				tools: [],
+			});
+			const pending = collect(session.send("x"));
+			await session.interrupt();
+			await vi.advanceTimersByTimeAsync(4999);
+			expect(h.close).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			expect(h.close).toHaveBeenCalledTimes(1);
+			const events = await pending;
+			expect(events.at(-1)).toMatchObject({ type: "turn_finished" });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not close the query when the interrupted turn finishes in time", async () => {
+		vi.useFakeTimers();
+		try {
+			const h = controlledQuery();
+			const session = await Session.start({
+				backend: new ClaudeCodeBackend({ query: h.query, env: {}, interruptGraceMs: 5000 }),
+				cwd: "/w",
+				tools: [],
+			});
+			const pending = collect(session.send("x"));
+			await session.interrupt();
+			h.output.push(result(0));
+			await pending;
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(h.close).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("forwards interrupt and close to the SDK query", async () => {
 		const { query, calls } = fakeQuery([], []);
 		const backendSession = await new ClaudeCodeBackend({ query, env: {} }).start({
@@ -229,7 +325,7 @@ describe("createToolBridge", () => {
 		expect(response).toEqual({ content: [{ type: "text", text: "hi" }] });
 	});
 
-	it("prefers the id in the MCP request metadata", async () => {
+	it("prefers the id in the MCP request metadata without consuming an unrelated announced id", async () => {
 		const { bridge, handler, received } = bridgeWith([]);
 		bridge.observe(
 			msg({
@@ -240,7 +336,7 @@ describe("createToolBridge", () => {
 		);
 		await handler({ text: "a" }, { _meta: { "claudecode/toolUseId": "toolu_meta" } });
 		await handler({ text: "b" }, {});
-		expect(received.map((c) => c.callId)).toEqual(["toolu_meta", undefined]);
+		expect(received.map((c) => c.callId)).toEqual(["toolu_meta", "toolu_1"]);
 	});
 
 	it("marks failed results as MCP errors", async () => {
