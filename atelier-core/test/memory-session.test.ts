@@ -260,7 +260,7 @@ describe("feature mirror", () => {
 		expect(memory.saved[0]?.content).toContain("| T2 | S1 | inline | B | dropped |");
 	});
 
-	it("does not mirror a document holding something that looks like a secret, and says so", async () => {
+	it("keeps the user's messages out of the mirror, so a secret pasted there never reaches memory", async () => {
 		const {
 			memory,
 			session: s,
@@ -275,7 +275,33 @@ describe("feature mirror", () => {
 			],
 			{ odd: true },
 		);
-		const events = await send("use sk-ant-api03-abcdefghijklmnopqrstuvwx for this");
+		await send("use sk-ant-api03-abcdefghijklmnopqrstuvwx for this");
+		await s.close();
+		expect(memory.saved).toHaveLength(1);
+		expect(memory.saved[0]?.content).not.toContain("sk-ant");
+		expect(memory.saved[0]?.content).toContain("Usuario: (message kept only in the feature document)");
+	});
+
+	it("does not mirror a document whose own text holds something that looks like a secret, and says so", async () => {
+		const {
+			memory,
+			session: s,
+			send,
+		} = await session(
+			[
+				[
+					call(
+						"feature",
+						{ ...START, specs: ["Use sk-ant-api03-abcdefghijklmnopqrstuvwx"], tasks: [START.tasks[0]] },
+						"1",
+					),
+					call("feature", { action: "update_task", id: "T1", status: "done" }, "2"),
+					{ event: finished },
+				],
+			],
+			{ odd: true },
+		);
+		const events = await send("track it");
 		await s.close();
 		expect(memory.saved).toEqual([]);
 		expect(events.filter((e) => e.type === "error")).toEqual([
@@ -332,11 +358,103 @@ describe("RpcServer memory", () => {
 		expect(status).toMatchObject({ available: true, project: "proj" });
 	});
 
+	it("survives a connector that throws instead of rejecting", async () => {
+		const { status } = await serve((() => {
+			throw new MemoryUnavailableError("sync failure");
+		}) as never);
+		expect(status).toMatchObject({ available: false, reason: "sync failure" });
+	});
+
 	it("starts the session without memory when it cannot connect, and says why", async () => {
 		const { backends, status } = await serve(async () => {
 			throw new MemoryUnavailableError("Engram is not installed (no engram command).");
 		});
 		expect(backends[0]?.startOptions?.tools.map((t) => t.name)).not.toContain("memory");
 		expect(status).toMatchObject({ available: false, reason: "Engram is not installed (no engram command)." });
+	});
+});
+
+describe("independent U2 regressions (S4, S1)", () => {
+	const start = {
+		action: "start",
+		name: "probe",
+		title: "Probe",
+		header: "",
+		specs: ["S"],
+		tasks: [{ title: "A", specs: ["S1"], route: "inline" }],
+	};
+	const done = { action: "update_task", id: "T1", status: "done" };
+	const keys = [
+		"sk-proj-" + "A1b2c3".repeat(20),
+		"github_pat_" + "A1b2c3".repeat(13) + "_abcdef",
+		"sk-ant-api03-\n" + "x".repeat(40),
+	];
+	it.each(keys)("rejects credentials through every save field and mirror: %s", async (key) => {
+		for (const field of ["title", "content", "topicKey"]) {
+			const r = await session([[call("memory", { ...SAVE, [field]: key }), { event: finished }]]);
+			await r.send("go");
+			await r.session.close();
+			expect(r.memory.saved).toEqual([]);
+			expect(r.backend.toolResults[0]).toMatchObject({ ok: false });
+			expect(r.backend.toolResults[0]?.output).not.toContain(key);
+		}
+		const r = await session(
+			[[call("feature", { ...start, header: key }), call("feature", done), { event: finished }]],
+			{ odd: true },
+		);
+		await r.send("go");
+		await r.session.close();
+		expect(r.memory.saved).toEqual([]);
+	});
+	it("rejects a key split between fields", async () => {
+		const r = await session([
+			[call("memory", { ...SAVE, title: "sk-ant-api03-", content: "x".repeat(40) }), { event: finished }],
+		]);
+		await r.send("go");
+		await r.session.close();
+		expect(r.memory.saved).toEqual([]);
+	});
+	it("does not automatically persist the user's raw prompt", async () => {
+		const r = await session([[call("feature", start), call("feature", done), { event: finished }]], { odd: true });
+		await r.send("PRIVATE_RAW_PROMPT");
+		await r.session.close();
+		expect(r.memory.saved[0]?.content).not.toContain("PRIVATE_RAW_PROMPT");
+	});
+	it("reports failed initial context as unavailable", async () => {
+		const memory = new FakeMemory("proj");
+		memory.context = async () => {
+			throw new MemoryError("context dead");
+		};
+		const r = await session([[{ event: finished }]], {}, memory);
+		const events = await r.send("go");
+		await r.session.close();
+		expect(events[0]).toMatchObject({
+			type: "memory_status",
+			available: false,
+			reason: expect.stringContaining("context dead"),
+		});
+	});
+	it("honors an explicit search limit", async () => {
+		const memory = new FakeMemory("proj");
+		for (let i = 0; i < 12; i++) await memory.save({ title: `A${i}`, type: "decision", content: "match" });
+		const r = await session(
+			[[call("memory", { action: "search", query: "match", limit: 1 }), { event: finished }]],
+			{},
+			memory,
+		);
+		await r.send("go");
+		await r.session.close();
+		expect(r.backend.toolResults[0]?.output.split("\n")).toHaveLength(1);
+	});
+	it("does not mirror a closed feature merely opened in a fresh session", async () => {
+		const r = await session([[call("feature", start), call("feature", done), { event: finished }]], { odd: true });
+		await r.send("go");
+		await r.session.close();
+		const next = await session([[call("feature", { action: "open", name: "probe" }), { event: finished }]], {
+			odd: true,
+		});
+		await next.send("resume");
+		await next.session.close();
+		expect(next.memory.saved).toHaveLength(0);
 	});
 });

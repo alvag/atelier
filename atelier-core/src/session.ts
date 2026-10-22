@@ -107,11 +107,26 @@ export class Session {
 		this.#createId = options.createId ?? randomUUID;
 	}
 
-	static async start(options: SessionOptions): Promise<Session> {
+	static async start(requested: SessionOptions): Promise<Session> {
+		// Memory that cannot even give its context is treated as unavailable, with the reason.
+		let options = requested;
+		let memoryContext = "";
+		const memory = requested.memory;
+		if (memory) {
+			try {
+				memoryContext = await Promise.resolve().then(() => memory.context(CONTEXT_BYTES));
+			} catch (error) {
+				await Promise.resolve()
+					.then(() => memory.close())
+					.catch(() => {});
+				const { memory: _dropped, ...rest } = requested;
+				options = { ...rest, memoryUnavailable: `Memory did not answer: ${describeError(error)}` };
+			}
+		}
 		const session = new Session(options);
+		session.#memoryContext = memoryContext;
 		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-session-"));
 		session.#scratchDir = scratchDir;
-		if (options.memory) session.#memoryContext = await options.memory.context(CONTEXT_BYTES).catch(() => "");
 		try {
 			session.#backendSession = await options.backend.start({
 				cwd: options.cwd,

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { createBackend as createNamedBackend } from "../backend-factory.ts";
-import { connectMemory } from "../memory/index.ts";
+import { connectMemory, MemoryUnavailableError } from "../memory/index.ts";
 import { SYSTEM_PROMPT_APPEND } from "../prompt.ts";
 import type { BackendName } from "../protocol/types.ts";
 import { coreTools } from "../tools/index.ts";
@@ -46,7 +46,15 @@ const server = new RpcServer({
 	createBackend,
 	tools: coreTools,
 	systemPromptAppend: SYSTEM_PROMPT_APPEND,
-	...(memoryOff ? {} : { connectMemory: (cwd: string) => connectMemory({ cwd }) }),
+	connectMemory: memoryOff
+		? async () => {
+				throw new MemoryUnavailableError(
+					process.env.ATELIER_MEMORY === "off"
+						? "Memory is off (ATELIER_MEMORY=off)."
+						: "No memory with the echo backend.",
+				);
+			}
+		: (cwd: string) => connectMemory({ cwd }),
 });
 
 await server.run();

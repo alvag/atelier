@@ -12,16 +12,26 @@ const ENTRY_CHARS = 8000;
 /** Shapes of credentials that must never reach memory. Prose that merely names them does not match. */
 const SECRETS: { name: string; pattern: RegExp }[] = [
 	{ name: "an Anthropic API key", pattern: /\bsk-ant-[A-Za-z0-9_-]{16,}/ },
-	{ name: "an API key", pattern: /\bsk-[A-Za-z0-9]{32,}/ },
+	{ name: "an API key", pattern: /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}/ },
 	{ name: "a GitHub token", pattern: /\bgh[pousr]_[A-Za-z0-9]{30,}/ },
+	{ name: "a GitHub token", pattern: /\bgithub_pat_[A-Za-z0-9_]{22,}/ },
+	{ name: "a Google API key", pattern: /\bAIza[0-9A-Za-z_-]{35}/ },
 	{ name: "an AWS access key", pattern: /\bAKIA[0-9A-Z]{16}\b/ },
 	{ name: "a Slack token", pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}/ },
 	{ name: "a private key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
 ];
 
-/** Names the kind of secret found, never the secret itself. */
+/**
+ * Names the kind of secret found, never the secret itself. It also joins each
+ * word with the next two, so a key broken across lines or fields is still found
+ * while it keeps the word boundary it starts at.
+ */
 export function findSecret(text: string): string | undefined {
-	return SECRETS.find((secret) => secret.pattern.test(text))?.name;
+	const words = text.split(/\s+/).filter((word) => word !== "");
+	const joined = words.map((word, i) => word + (words[i + 1] ?? "") + (words[i + 2] ?? ""));
+	return SECRETS.find(
+		(secret) => secret.pattern.test(text) || joined.some((candidate) => secret.pattern.test(candidate)),
+	)?.name;
 }
 
 export function createMemoryTool(memory: MemoryPort): ToolDefinition {
@@ -35,6 +45,7 @@ export function createMemoryTool(memory: MemoryPort): ToolDefinition {
 		inputShape: {
 			action: z.enum(["search", "get", "save"]),
 			query: z.string().optional().describe("search"),
+			limit: z.number().int().min(1).max(SEARCH_LIMIT).optional().describe(`search: 1 to ${SEARCH_LIMIT}`),
 			id: z.number().int().optional().describe("get"),
 			title: z.string().optional().describe("save: short and searchable"),
 			type: z.enum(MEMORY_TYPES).optional().describe("save"),
@@ -46,7 +57,7 @@ export function createMemoryTool(memory: MemoryPort): ToolDefinition {
 				switch (input.action) {
 					case "search": {
 						if (!input.query?.trim()) return failed("search needs query.");
-						const hits = await memory.search(input.query, SEARCH_LIMIT);
+						const hits = await memory.search(input.query, input.limit ?? SEARCH_LIMIT);
 						if (hits.length === 0) return done(`No memories match "${input.query}".`);
 						return done(
 							hits.map((hit) => `#${hit.id} [${hit.type}] ${hit.title} — ${oneLine(hit.preview)}`).join("\n"),

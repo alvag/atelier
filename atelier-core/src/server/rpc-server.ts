@@ -205,10 +205,12 @@ export class RpcServer {
 		let memory: MemoryPort | undefined;
 		let memoryUnavailable: string | undefined;
 		if (this.#options.connectMemory)
-			memory = await this.#options.connectMemory(cwd).catch((error: unknown) => {
-				memoryUnavailable = describeError(error);
-				return undefined;
-			});
+			memory = await Promise.resolve()
+				.then(() => this.#options.connectMemory?.(cwd))
+				.catch((error: unknown) => {
+					memoryUnavailable = describeError(error);
+					return undefined;
+				});
 		let session: Session;
 		try {
 			session = await Session.start({

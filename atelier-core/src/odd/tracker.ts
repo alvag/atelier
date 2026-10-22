@@ -32,7 +32,7 @@ const TEST_COMMAND =
 export interface CompletedFeature {
 	name: string;
 	title: string;
-	/** The whole document, as written. */
+	/** The document for long-term memory: as written, except the user's own messages, which stay only in the file. */
 	text: string;
 }
 
@@ -221,6 +221,8 @@ export class OddTracker {
 			}
 			// A document new to this session gets every user message of the session, L1 first.
 			const added = this.#appendPending(doc, 0);
+			// Work that was already finished when opened is not "completed" again by opening it.
+			if (isComplete(doc)) this.#complete.add(name);
 			if (input.action === "start" || added) await this.#write(path, doc);
 			const active = { name, path, doc };
 			await this.#commit(active);
@@ -269,13 +271,12 @@ export class OddTracker {
 		this.#active = active;
 		this.#logged = this.#userMessages.length;
 		this.#changed(active);
-		const tasks = listTasks(active.doc);
-		const complete = tasks.length > 0 && tasks.every((task) => task.status === "done" || task.status === "dropped");
+		const complete = isComplete(active.doc);
 		const was = this.#complete.has(active.name);
 		if (complete) this.#complete.add(active.name);
 		else this.#complete.delete(active.name);
 		if (complete && !was && this.#onComplete)
-			await this.#onComplete({ name: active.name, title: active.doc.title, text: serializeFeatureDoc(active.doc) });
+			await this.#onComplete({ name: active.name, title: active.doc.title, text: withoutUserMessages(active.doc) });
 	}
 
 	async #write(path: string, doc: FeatureDoc): Promise<void> {
@@ -298,6 +299,22 @@ export class OddTracker {
 			})),
 		});
 	}
+}
+
+function isComplete(doc: FeatureDoc): boolean {
+	const tasks = listTasks(doc);
+	return tasks.length > 0 && tasks.every((task) => task.status === "done" || task.status === "dropped");
+}
+
+/** The user's messages are kept verbatim in the file, never sent to long-term memory. */
+function withoutUserMessages(doc: FeatureDoc): string {
+	const redacted = copy(doc);
+	redacted.log = redacted.log.map((entry) =>
+		entry.text.startsWith("Usuario: ")
+			? { ...entry, text: "Usuario: (message kept only in the feature document)" }
+			: entry,
+	);
+	return serializeFeatureDoc(redacted);
 }
 
 function copy(doc: FeatureDoc): FeatureDoc {
