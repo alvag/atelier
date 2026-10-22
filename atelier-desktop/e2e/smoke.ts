@@ -67,7 +67,8 @@ try {
 	} else {
 		await send(promptArg ?? "Reply with the single word: ready");
 		// Allow every command the agent asks for until the turn ends.
-		const finished = page.getByText(/^tokens: /);
+		// The parent's own token line, not a subagent's (those sit inside .subagent blocks).
+		const finished = page.locator("section.turn > .tokens");
 		while (!(await finished.isVisible())) {
 			const allow = page.getByRole("button", { name: "Allow" });
 			if (await allow.isVisible()) await allow.first().click();
@@ -77,7 +78,8 @@ try {
 		const status = await page.getByRole("status").textContent();
 		const tokens = await finished.first().textContent();
 		const tools = await page.getByTestId("tool-row").allTextContents();
-		console.log(JSON.stringify({ status, tokens, tools }, null, 2));
+		const subagents = await page.getByTestId("subagent").count();
+		console.log(JSON.stringify({ status, tokens, tools, subagents }, null, 2));
 		if (backend === "anthropic-api")
 			assert.ok(status?.includes("billed to your Anthropic API key"), `not on the API key: ${status}`);
 		else assert.ok(!status?.includes("not using a Claude subscription"), "the session is not on the subscription");

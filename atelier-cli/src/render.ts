@@ -101,9 +101,14 @@ export class Renderer {
 	}
 
 	#writeIndented(text: string): void {
-		for (const [index, part] of text.split("\n").entries()) {
+		const parts = text.split("\n");
+		for (const [index, part] of parts.entries()) {
 			if (index > 0) this.write("\n");
-			if (part === "") continue;
+			if (part === "") {
+				// A blank line inside the text keeps the bar, so the block stays visibly nested.
+				if (index > 0 && index < parts.length - 1 && this.#atLineStart) this.write(CHILD.trimEnd());
+				continue;
+			}
 			if (this.#atLineStart) this.write(CHILD);
 			this.write(part);
 		}
