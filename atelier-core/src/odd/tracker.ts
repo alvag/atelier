@@ -30,10 +30,32 @@ interface Active {
 	doc: FeatureDoc;
 }
 
+type FeatureInput = {
+	action: string;
+	name?: string | undefined;
+	title?: string | undefined;
+	header?: string | undefined;
+	specs?: string[] | undefined;
+	tasks?: { title: string; specs: string[]; route: string }[] | undefined;
+	task?: { title: string; specs: string[]; route: string } | undefined;
+	id?: string | undefined;
+	status?: string | undefined;
+	note?: string | undefined;
+	commit?: string | undefined;
+	text?: string | undefined;
+};
+
+class TrackerClosed extends Error {}
+
 /**
  * The ODD state of one session: the active feature document, the phase and
  * the user's words. The document changes only here, and only the user's own
  * messages become user entries in its log.
+ *
+ * Every change is a transaction (copy, change, write, then commit to memory),
+ * and transactions run one at a time in the order they were asked for. So two
+ * concurrent tool calls cannot lose each other's change, a failed write leaves
+ * memory as it is on disk, and closing waits for what was already asked.
  */
 export class OddTracker {
 	readonly #cwd: string;
@@ -43,8 +65,8 @@ export class OddTracker {
 	#logged = 0;
 	#active: Active | undefined;
 	#phase: Phase | undefined;
-	/** Writes run one after another, so an older document never lands after a newer one. */
-	#queue: Promise<void> = Promise.resolve();
+	#queue: Promise<unknown> = Promise.resolve();
+	#closed = false;
 
 	constructor(cwd: string, emit: (event: AtelierEventBody) => void) {
 		this.#cwd = cwd;
@@ -52,17 +74,24 @@ export class OddTracker {
 	}
 
 	/**
-	 * Called with every user prompt as the turn starts. Synchronous, so it never
-	 * delays the turn; the write is queued and a failure is reported as an event.
+	 * Records a user prompt as the turn starts. It returns at once, so the turn
+	 * is not delayed; the returned promise settles when the prompt is in the
+	 * document (or its failure was reported as an event) and never rejects.
 	 */
-	userMessage(text: string): void {
+	userMessage(text: string): Promise<void> {
 		this.#userMessages.push(text);
-		const active = this.#active;
-		if (!active || !this.#logUserMessages(active)) return;
-		this.#changed(active);
-		this.#persist(active).catch((error: unknown) =>
-			this.#emit(errorEvent("odd_log_failed", `Could not write ${active.path}: ${describeError(error)}`, true)),
-		);
+		return this.#exclusive(async () => {
+			const active = this.#active;
+			if (!active) return;
+			const doc = copy(active.doc);
+			if (!this.#appendPending(doc)) return;
+			await this.#write(active.path, doc);
+			this.#commit({ ...active, doc });
+		}).catch((error: unknown) => {
+			if (error instanceof TrackerClosed) return;
+			const path = this.#active?.path ?? ODD_DIR;
+			this.#emit(errorEvent("odd_log_failed", `Could not log your message in ${path}: ${describeError(error)}`, true));
+		});
 	}
 
 	/** Infers the phase from a tool about to run. */
@@ -78,13 +107,21 @@ export class OddTracker {
 			this.#setPhase("planning", "inferred");
 	}
 
-	/** Resolves once every queued write has finished (they report their own errors). */
-	flush(): Promise<void> {
-		return this.#queue;
+	/** Waits for every change already asked for, then refuses new ones. */
+	close(): Promise<void> {
+		this.#closed = true;
+		return this.#queue.then(() => {});
 	}
 
 	tools(): ToolDefinition[] {
 		return [this.#featureTool(), this.#phaseTool()];
+	}
+
+	#exclusive<T>(run: () => Promise<T>): Promise<T> {
+		if (this.#closed) return Promise.reject(new TrackerClosed("The session is closed."));
+		const result = this.#queue.then(run);
+		this.#queue = result.catch(() => {});
+		return result;
 	}
 
 	#setPhase(phase: Phase, source: "inferred" | "declared"): void {
@@ -117,7 +154,7 @@ export class OddTracker {
 			description: [
 				`Tracks a large piece of work in its feature document, ${ODD_DIR}/<name>.md. This tool is the only way to change it.`,
 				"start: create it (name, title, header, specs, tasks). Copy the user's exact words into the specs; the user's messages are logged verbatim for you.",
-				"open: resume an existing one by name; returns the whole document. show: the active document.",
+				"open: resume an existing one by name. show: the active one. Both return its specs and tasks.",
 				"add_task (task), update_task (id, status, note, commit), log (text: your own note).",
 				`Statuses: ${TASK_STATUSES.join(", ")}; blocked needs a note.`,
 			].join("\n"),
@@ -135,80 +172,46 @@ export class OddTracker {
 				commit: z.string().optional().describe("update_task: the commit that holds the task"),
 				text: z.string().optional().describe("log"),
 			},
-			execute: async (input) => {
-				try {
-					return await this.#run(input);
-				} catch (error) {
-					if (error instanceof FeatureDocError) return failed(error.message);
+			execute: (input) =>
+				this.#exclusive(() => this.#run(input)).catch((error: unknown) => {
+					if (error instanceof TrackerClosed || error instanceof FeatureDocError) return failed(error.message);
 					throw error;
-				}
-			},
+				}),
 		});
 	}
 
-	async #run(input: {
-		action: string;
-		name?: string | undefined;
-		title?: string | undefined;
-		header?: string | undefined;
-		specs?: string[] | undefined;
-		tasks?: { title: string; specs: string[]; route: string }[] | undefined;
-		task?: { title: string; specs: string[]; route: string } | undefined;
-		id?: string | undefined;
-		status?: string | undefined;
-		note?: string | undefined;
-		commit?: string | undefined;
-		text?: string | undefined;
-	}): Promise<ToolOutcome> {
+	async #run(input: FeatureInput): Promise<ToolOutcome> {
 		if (input.action === "start" || input.action === "open") {
 			const name = input.name ?? "";
 			if (!NAME.test(name)) return failed("name must be lowercase letters, digits and dashes, like slug-accents.");
 			const path = `${ODD_DIR}/${name}.md`;
-			const absolute = join(this.#cwd, path);
+			const existing = await readFile(join(this.#cwd, path), "utf8").catch(() => undefined);
+			let doc: FeatureDoc;
 			if (input.action === "start") {
-				const exists = await readFile(absolute, "utf8").then(
-					() => true,
-					() => false,
-				);
-				if (exists) return failed(`${path} already exists; use open to resume it.`);
-				const doc = createFeatureDoc({
+				if (existing !== undefined) return failed(`${path} already exists; use open to resume it.`);
+				doc = createFeatureDoc({
 					title: input.title ?? "",
 					header: input.header ?? "",
 					specs: input.specs ?? [],
 					tasks: input.tasks ?? [],
 				});
-				const active = { name, path, doc };
-				const logged = this.#logged;
-				this.#logged = 0;
-				this.#logUserMessages(active);
-				try {
-					await this.#persist(active);
-				} catch (error) {
-					this.#logged = logged;
-					throw error;
-				}
-				this.#active = active;
-				this.#changed(active);
-				return done(`Started ${path}.\n${summary(active)}`);
+			} else {
+				if (existing === undefined) return failed(`${path} does not exist.`);
+				doc = parseFeatureDoc(existing);
 			}
-			const text = await readFile(absolute, "utf8").catch(() => undefined);
-			if (text === undefined) return failed(`${path} does not exist.`);
-			const doc = parseFeatureDoc(text);
+			// A document new to this session gets every user message of the session, L1 first.
+			const added = this.#appendPending(doc, 0);
+			if (input.action === "start" || added) await this.#write(path, doc);
 			const active = { name, path, doc };
-			this.#logged = 0;
-			this.#active = active;
-			if (this.#logUserMessages(active)) await this.#persist(active);
-			this.#changed(active);
-			return done(`Opened ${path}:\n\n${serializeFeatureDoc(active.doc)}`);
+			this.#commit(active);
+			return done(`${input.action === "start" ? "Started" : "Opened"} ${path}.\n${summary(active, true)}`);
 		}
 
 		const active = this.#active;
 		if (!active) return failed("no feature is active; start or open one first.");
-		// Work on a copy so a rejected change leaves the document as it was.
-		const doc = parseFeatureDoc(serializeFeatureDoc(active.doc));
+		if (input.action === "show") return done(summary(active, true));
+		const doc = copy(active.doc);
 		switch (input.action) {
-			case "show":
-				return done(serializeFeatureDoc(active.doc));
 			case "add_task":
 				if (!input.task) return failed("add_task needs task.");
 				addTask(doc, input.task);
@@ -228,29 +231,29 @@ export class OddTracker {
 			default:
 				return failed(`unknown action ${input.action}.`);
 		}
+		await this.#write(active.path, doc);
 		const next = { ...active, doc };
-		await this.#persist(next);
-		this.#active = next;
-		this.#changed(next);
-		return done(summary(next));
+		this.#commit(next);
+		return done(summary(next, false));
 	}
 
-	/** Logs, verbatim and in order, the session's user messages the document does not have yet. Returns whether it added any. */
-	#logUserMessages(active: Active): boolean {
-		if (this.#logged >= this.#userMessages.length) return false;
-		for (const message of this.#userMessages.slice(this.#logged)) appendLog(active.doc, "user", message);
+	/** Appends, verbatim and in order, the user messages from `from` on. Returns whether it added any. */
+	#appendPending(doc: FeatureDoc, from = this.#logged): boolean {
+		const pending = this.#userMessages.slice(from);
+		for (const message of pending) appendLog(doc, "user", message);
+		return pending.length > 0;
+	}
+
+	/** Makes a written document the active one; only called after its write succeeded. */
+	#commit(active: Active): void {
+		this.#active = active;
 		this.#logged = this.#userMessages.length;
-		return true;
+		this.#changed(active);
 	}
 
-	/** Queues a write of the document as it is when the write runs. */
-	#persist(active: Active): Promise<void> {
-		const write = this.#queue.then(async () => {
-			await mkdir(join(this.#cwd, ODD_DIR), { recursive: true });
-			await writeAtomic(join(this.#cwd, active.path), serializeFeatureDoc(active.doc), 0o644);
-		});
-		this.#queue = write.catch(() => {});
-		return write;
+	async #write(path: string, doc: FeatureDoc): Promise<void> {
+		await mkdir(join(this.#cwd, ODD_DIR), { recursive: true });
+		await writeAtomic(join(this.#cwd, path), serializeFeatureDoc(doc), 0o644);
 	}
 
 	#changed(active: Active): void {
@@ -270,12 +273,20 @@ export class OddTracker {
 	}
 }
 
-function summary(active: Active): string {
-	const lines = listTasks(active.doc).map(
+function copy(doc: FeatureDoc): FeatureDoc {
+	return parseFeatureDoc(serializeFeatureDoc(doc));
+}
+
+/** Compact state: tasks, and the specs when the model needs them to work (open, show); never the whole log. */
+function summary(active: Active, withSpecs: boolean): string {
+	const specs = withSpecs ? ["Specs:", ...active.doc.specs.map((spec) => `${spec.id} — ${spec.text}`), "Tasks:"] : [];
+	const tasks = listTasks(active.doc).map(
 		(task) =>
 			`${task.id} [${task.status ?? "?"}] ${task.title}${task.specs.length > 0 ? ` (${task.specs.join(", ")})` : ""}`,
 	);
-	return [`${active.doc.title} — ${active.path}`, ...lines, `Log: ${active.doc.log.length} entries.`].join("\n");
+	return [`${active.doc.title} — ${active.path}`, ...specs, ...tasks, `Log: ${active.doc.log.length} entries.`].join(
+		"\n",
+	);
 }
 
 function done(output: string): ToolOutcome {

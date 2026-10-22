@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -222,7 +222,7 @@ describe("feature tool", () => {
 		expect(backend.toolResults[0]?.ok).toBe(false);
 	});
 
-	it("opens an existing feature to resume it, returning the whole document and logging the new session's words", async () => {
+	it("opens an existing feature to resume it, returning its specs and tasks and logging the new session's words", async () => {
 		await mkdir(join(cwd, "odd/tasks"), { recursive: true });
 		const existing =
 			'# Slug accents\n\n## Specs\n\n- **S1** — a\n\n## Tasks\n\n| ID | Specs | Ruta | Entregable | Estado |\n|---|---|---|---|---|\n| T1 | S1 | inline | Do it | pending |\n\n## Log\n\n- **L1** — Usuario: "old"\n';
@@ -236,8 +236,11 @@ describe("feature tool", () => {
 		await s.close();
 		expect(backend.toolResults[0]).toEqual({
 			ok: true,
-			output: expect.stringContaining("| T1 | S1 | inline | Do it | pending |"),
+			output: expect.stringContaining("T1 [pending] Do it (S1)"),
 		});
+		// Compact: the specs to work from, not the whole history.
+		expect(backend.toolResults[0]?.output).toContain("S1 — a");
+		expect(backend.toolResults[0]?.output).not.toContain('Usuario: "old"');
 		expect(parseFeatureDoc(await readFile(docPath(), "utf8")).log.map((l) => l.text)).toEqual([
 			'Usuario: "old"',
 			'Usuario: "seguí con slug-accents"',
@@ -260,6 +263,73 @@ describe("feature tool", () => {
 	});
 });
 
+describe("feature transactions", () => {
+	it("keeps both of two concurrent changes", async () => {
+		const { backend, session: s, send } = await session([[call("feature", START), { event: finished }]]);
+		try {
+			await send("original");
+			const execute = backend.startOptions?.executeTool as NonNullable<typeof backend.startOptions>["executeTool"];
+			const results = await Promise.all(
+				["alpha", "beta"].map((text) => execute({ tool: "feature", input: { action: "log", text } })),
+			);
+			expect(results.every((r) => r.ok)).toBe(true);
+			expect(parseFeatureDoc(await readFile(docPath(), "utf8")).log.map((l) => l.text)).toEqual([
+				'Usuario: "original"',
+				"Agente: alpha",
+				"Agente: beta",
+			]);
+		} finally {
+			await s.close();
+		}
+	});
+
+	it("keeps memory in step with the disk when a write fails, and retries the user's words later", async () => {
+		const {
+			backend,
+			session: s,
+			send,
+		} = await session([
+			[call("feature", START), { event: finished }],
+			[{ event: finished }],
+			[call("feature", { action: "show" }), { event: finished }],
+			[{ event: finished }],
+		]);
+		try {
+			await send("first");
+			await chmod(join(cwd, "odd/tasks"), 0o500);
+			const failedTurn = await send("second");
+			expect(failedTurn.filter((e) => e.type === "error")).toEqual([
+				expect.objectContaining({ code: "odd_log_failed", recoverable: true }),
+			]);
+			await send("third");
+			expect(backend.toolResults.at(-1)?.output).toContain("Log: 1 entries.");
+			await chmod(join(cwd, "odd/tasks"), 0o755);
+			await send("fourth");
+		} finally {
+			await chmod(join(cwd, "odd/tasks"), 0o755);
+			await s.close();
+		}
+		expect(parseFeatureDoc(await readFile(docPath(), "utf8")).log.map((l) => l.text)).toEqual([
+			'Usuario: "first"',
+			'Usuario: "second"',
+			'Usuario: "third"',
+			'Usuario: "fourth"',
+		]);
+	});
+
+	it("finishes a feature action that started before the session closed, and refuses new ones after", async () => {
+		const { backend, session: s, send } = await session([[{ event: finished }]]);
+		await send("go");
+		const execute = backend.startOptions?.executeTool as NonNullable<typeof backend.startOptions>["executeTool"];
+		const started = execute({ tool: "feature", input: START });
+		await s.close();
+		expect(await readFile(docPath(), "utf8")).toContain("# Slug accents");
+		expect((await started).ok).toBe(true);
+		const late = await execute({ tool: "feature", input: { action: "show" } });
+		expect(late.ok).toBe(false);
+	});
+});
+
 describe("edit guard", () => {
 	it("refuses to edit odd/tasks/, whatever the case, and still edits other files", async () => {
 		await mkdir(join(cwd, "odd/tasks"), { recursive: true });
@@ -273,6 +343,19 @@ describe("edit guard", () => {
 		}
 		expect(await readFile(join(cwd, "odd/tasks/x.md"), "utf8")).toBe("# X\n");
 		expect((await editTool.execute({ path: "notes.md", edits }, { cwd })).ok).toBe(true);
+	});
+
+	it("refuses a feature document reached through a symlinked odd/tasks", async () => {
+		await mkdir(join(cwd, "stored"));
+		await mkdir(join(cwd, "odd"));
+		await symlink(join(cwd, "stored"), join(cwd, "odd/tasks"));
+		await writeFile(join(cwd, "stored/x.md"), "# X\n");
+		const outcome = await editTool.execute(
+			{ path: "odd/tasks/x.md", edits: [{ oldText: "# X", newText: "# Y" }] },
+			{ cwd },
+		);
+		expect(outcome.ok).toBe(false);
+		expect(await readFile(join(cwd, "stored/x.md"), "utf8")).toBe("# X\n");
 	});
 });
 

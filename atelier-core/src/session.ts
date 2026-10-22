@@ -131,8 +131,9 @@ export class Session {
 		const turn = new Channel<TurnEvent>();
 		this.#turn = turn;
 		this.#abort = new AbortController();
-		// The user's words reach the feature log as the turn starts, without delaying the backend.
-		this.#odd?.userMessage(prompt);
+		// The user's words reach the feature log as the turn starts, without delaying the backend;
+		// the turn waits for it before finishing, so a failure is reported inside this turn.
+		const logged = this.#odd?.userMessage(prompt);
 		const pump = (async () => {
 			let finish: AtelierEventBody | undefined;
 			let failed = false;
@@ -148,6 +149,7 @@ export class Session {
 				failed = true;
 				turn.push(errorEvent("backend_error", describeError(error)));
 			}
+			await logged;
 			turn.push(
 				finish ?? { type: "turn_finished", stopReason: failed ? "error" : "incomplete", usage: { ...ZERO_USAGE } },
 			);
@@ -183,7 +185,7 @@ export class Session {
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
 			this.#closing = Promise.resolve()
 				.then(() => this.#child?.close())
-				.then(() => this.#odd?.flush())
+				.then(() => this.#odd?.close())
 				.then(() => this.#backendSession?.close())
 				.finally(() => (scratchDir === undefined ? undefined : rm(scratchDir, { recursive: true, force: true })));
 		}

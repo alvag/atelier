@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { chmod, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { errorMessage, failure } from "./limits.ts";
 import { resolveInside } from "./paths.ts";
@@ -25,6 +25,29 @@ export async function writeAtomic(path: string, content: string, mode: number): 
 	}
 }
 
+/**
+ * True when the path, as written or as resolved, is under odd/tasks/, in any
+ * letter case and also when odd/tasks itself is a symlink to somewhere else.
+ */
+async function isFeatureDocument(cwd: string, path: string, target: string): Promise<boolean> {
+	const under = (base: string, file: string) => {
+		const rel = relative(base, file);
+		return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+	};
+	const lexical = relative(cwd, resolve(cwd, path)).split(sep).join("/").toLowerCase();
+	if (lexical.startsWith("odd/tasks/")) return true;
+	if (
+		relative(await realpath(cwd), target)
+			.split(sep)
+			.join("/")
+			.toLowerCase()
+			.startsWith("odd/tasks/")
+	)
+		return true;
+	const protectedDir = await realpath(join(cwd, "odd", "tasks")).catch(() => undefined);
+	return protectedDir !== undefined && under(protectedDir, target);
+}
+
 export const editTool = defineTool({
 	name: "edit",
 	description:
@@ -44,8 +67,7 @@ export const editTool = defineTool({
 		try {
 			const target = await realpath(await resolveInside(cwd, path));
 			// Feature documents change only through the feature tool, which keeps them well formed.
-			const inside = relative(await realpath(cwd), target).toLowerCase();
-			if (inside.startsWith("odd/tasks/"))
+			if (await isFeatureDocument(cwd, path, target))
 				return failure(`${path} is a feature document: change it with the feature tool, not edit.`);
 			const info = await stat(target);
 			if (!info.isFile()) return failure(`Not a file: ${path}`);
