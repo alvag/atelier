@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AtelierEvent, RpcClient, RpcError } from "../src/index.ts";
 
 const MAIN = fileURLToPath(new URL("../src/server/main.ts", import.meta.url));
@@ -109,15 +109,17 @@ describe("RpcClient", () => {
 		const client = await connect(
 			scriptCore(`
 				process.stdout.write(JSON.stringify({ type: "hello", protocol: 4, core: "test" }) + "\\n");
-				process.stdout.write("garbage line\\n");
-				process.stdout.write(JSON.stringify({ type: "protocol_error", message: "Invalid JSON." }) + "\\n");
+				// Later than hello, so the test's listener is registered before these lines arrive.
+				setTimeout(() => {
+					process.stdout.write("garbage line\\n");
+					process.stdout.write(JSON.stringify({ type: "protocol_error", message: "Invalid JSON." }) + "\\n");
+				}, 200);
 				setInterval(() => {}, 1000);
 			`),
 		);
 		const problems: string[] = [];
 		client.onProtocolError((message) => problems.push(message));
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		expect(problems).toEqual(["Unreadable line from the core: garbage line", "Invalid JSON."]);
+		await vi.waitFor(() => expect(problems).toEqual(["Unreadable line from the core: garbage line", "Invalid JSON."]));
 	});
 
 	it("closes with shutdown and the core exits 0", async () => {
