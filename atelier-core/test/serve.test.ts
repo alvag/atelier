@@ -56,7 +56,7 @@ function serve(args: string[] = ["serve"]) {
 describe("atelier-core serve", () => {
 	it("greets, runs a turn with the echo backend and exits 0 on shutdown", async () => {
 		const s = serve();
-		expect(await s.waitFor(() => true)).toEqual({ type: "hello", protocol: 2, core: "0.0.0" });
+		expect(await s.waitFor(() => true)).toEqual({ type: "hello", protocol: 3, core: "0.0.0" });
 
 		const startId = s.send({ command: "session.start", cwd });
 		const started = await s.waitFor((m) => m.type === "response" && m.id === startId);

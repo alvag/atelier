@@ -12,10 +12,14 @@ import {
 	type SubagentTag,
 	ZERO_USAGE,
 } from "./events.ts";
+import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
 import { type ToolContext, type ToolDefinition, ToolInputError, type ToolOutcome } from "./tools/types.ts";
 
 type TurnEvent = AtelierEventBody & SubagentTag;
+
+/** Tools a subagent never gets: delegation and the ODD document belong to the parent. */
+const PARENT_ONLY = new Set([TASK_TOOL, FEATURE_TOOL, PHASE_TOOL]);
 
 export interface ApprovalRequest {
 	callId: string;
@@ -37,6 +41,8 @@ export interface SessionOptions {
 	subagents?: SubagentOptions;
 	/** Passed to the backend: caps the model requests of one turn. */
 	maxRequestsPerTurn?: number;
+	/** Turns on ODD tracking: the feature and phase tools, phases and the verbatim user log. */
+	odd?: boolean;
 }
 
 export interface SubagentOptions {
@@ -58,6 +64,7 @@ export class Session {
 	#turn: Channel<TurnEvent> | undefined;
 	/** The subagent running right now, so interrupting or closing reaches it. */
 	#child: Session | undefined;
+	readonly #odd: OddTracker | undefined;
 	#abort: AbortController | undefined;
 	#closed = false;
 	#closing: Promise<void> | undefined;
@@ -73,8 +80,10 @@ export class Session {
 					),
 				]
 			: options.tools;
-		this.#options = { ...options, tools };
-		this.#tools = new Map(tools.map((tool) => [tool.name, tool]));
+		this.#odd = options.odd ? new OddTracker(options.cwd, (event) => this.#turn?.push(event)) : undefined;
+		const all = this.#odd ? [...tools, ...this.#odd.tools()] : tools;
+		this.#options = { ...options, tools: all };
+		this.#tools = new Map(all.map((tool) => [tool.name, tool]));
 		this.#createId = options.createId ?? randomUUID;
 	}
 
@@ -122,6 +131,8 @@ export class Session {
 		const turn = new Channel<TurnEvent>();
 		this.#turn = turn;
 		this.#abort = new AbortController();
+		// The user's words reach the feature log as the turn starts, without delaying the backend.
+		this.#odd?.userMessage(prompt);
 		const pump = (async () => {
 			let finish: AtelierEventBody | undefined;
 			let failed = false;
@@ -172,6 +183,7 @@ export class Session {
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
 			this.#closing = Promise.resolve()
 				.then(() => this.#child?.close())
+				.then(() => this.#odd?.flush())
 				.then(() => this.#backendSession?.close())
 				.finally(() => (scratchDir === undefined ? undefined : rm(scratchDir, { recursive: true, force: true })));
 		}
@@ -182,6 +194,7 @@ export class Session {
 		const callId = call.callId ?? this.#createId();
 		const emit = (event: AtelierEventBody) => this.#turn?.push(event);
 		emit({ type: "tool_call_started", callId, tool: call.tool, input: call.input });
+		this.#odd?.toolStarted(call.tool, call.input);
 
 		const fail = (summary: string): ToolCallResult => {
 			emit({ type: "tool_call_finished", callId, ok: false, summary, truncated: false });
@@ -238,7 +251,7 @@ export class Session {
 				...(model === undefined ? {} : { model }),
 				// In the definition's order; a tool the parent lacks is skipped, and task never: children do not delegate.
 				tools: agent.tools.flatMap((name) => {
-					const tool = name === TASK_TOOL ? undefined : this.#tools.get(name);
+					const tool = PARENT_ONLY.has(name) ? undefined : this.#tools.get(name);
 					return tool ? [tool] : [];
 				}),
 				systemPromptAppend: agent.prompt,

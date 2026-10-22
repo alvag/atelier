@@ -208,6 +208,7 @@ export class RpcServer {
 				systemPromptAppend: this.#options.systemPromptAppend,
 				autoApprove,
 				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
+				odd: true,
 				subagents: {
 					agents: this.#options.subagents ?? BUILTIN_AGENTS,
 					createBackend: () => this.#options.createBackend(backend),

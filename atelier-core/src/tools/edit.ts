@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { chmod, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { z } from "zod";
 import { errorMessage, failure } from "./limits.ts";
 import { resolveInside } from "./paths.ts";
@@ -13,7 +13,7 @@ function occurrences(content: string, text: string): number[] {
 }
 
 /** Writes through a temporary file in the same directory and renames it, so readers never see a partial file. */
-async function writeAtomic(path: string, content: string, mode: number): Promise<void> {
+export async function writeAtomic(path: string, content: string, mode: number): Promise<void> {
 	const temporary = join(dirname(path), `.${basename(path)}.${randomBytes(6).toString("hex")}.atelier-tmp`);
 	try {
 		await writeFile(temporary, content, { flag: "wx" });
@@ -43,6 +43,10 @@ export const editTool = defineTool({
 	async execute({ path, edits }, { cwd }) {
 		try {
 			const target = await realpath(await resolveInside(cwd, path));
+			// Feature documents change only through the feature tool, which keeps them well formed.
+			const inside = relative(await realpath(cwd), target).toLowerCase();
+			if (inside.startsWith("odd/tasks/"))
+				return failure(`${path} is a feature document: change it with the feature tool, not edit.`);
 			const info = await stat(target);
 			if (!info.isFile()) return failure(`Not a file: ${path}`);
 			const content = await readFile(target, "utf8");

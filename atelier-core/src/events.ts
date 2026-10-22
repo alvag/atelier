@@ -15,6 +15,26 @@ export interface Usage {
 	cacheWrite: number;
 }
 
+export const PHASES = [
+	"authorizing",
+	"exploring",
+	"deciding",
+	"planning",
+	"implementing",
+	"checking",
+	"closing",
+] as const;
+export type Phase = (typeof PHASES)[number];
+
+/** A task as clients see it; status is absent for documents without an Estado column. */
+export interface FeatureTask {
+	id: string;
+	title: string;
+	specs: string[];
+	status?: string;
+	commit?: string;
+}
+
 export type AtelierEventBody =
 	| { type: "session_started"; backend: string; model: string; authSource: AuthSource }
 	| { type: "text_delta"; text: string }
@@ -33,6 +53,9 @@ export type AtelierEventBody =
 	| { type: "turn_finished"; stopReason: string; usage: Usage; costUsd?: number; requests?: number }
 	/** The prompt cache could not reuse the previous prefix; `reason` is the API's (`system_changed`...). */
 	| { type: "cache_miss"; reason: string; missedTokens: number }
+	| { type: "phase_changed"; phase: Phase; source: "inferred" | "declared" }
+	/** The active ODD feature document changed. */
+	| { type: "feature_changed"; name: string; path: string; title: string; tasks: FeatureTask[] }
 	| { type: "rate_limit"; status: string; resetsAt?: number; window?: string }
 	| { type: "error"; code: string; message: string; recoverable: boolean };
 
