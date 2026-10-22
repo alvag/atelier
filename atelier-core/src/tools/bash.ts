@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, type WriteStream } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { closeSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -10,17 +10,36 @@ import { defineTool } from "./types.ts";
 export const DEFAULT_TIMEOUT_SEC = 120;
 const KILL_GRACE_MS = 2000;
 
+/** The full-output file stops growing here; the tail is still kept. */
+export const MAX_SPILL_BYTES = 50 * 1024 * 1024;
+
+/** A new file path for full output: in the session scratch directory, or a fresh temporary directory. */
+function spillPath(scratchDir: string | undefined): string {
+	if (scratchDir !== undefined) return join(scratchDir, `bash-${randomBytes(6).toString("hex")}.log`);
+	return join(mkdtempSync(join(tmpdir(), "atelier-bash-")), "output.log");
+}
+
 /**
  * Keeps a bounded tail of the output in memory. While the output is small it
- * also keeps all of it; once it grows, everything goes to a temporary file.
- * File errors never fail the command: the tail is still returned.
+ * also keeps all of it; once it grows, everything goes to a file, written
+ * synchronously so a fast command is slowed down by the pipe instead of
+ * filling memory, and capped at MAX_SPILL_BYTES. File errors never fail the
+ * command: the tail is still returned.
  */
 class OutputSink {
 	#tail: Buffer[] = [];
 	#tailBytes = 0;
 	#all: Buffer[] | undefined = [];
 	#allBytes = 0;
-	#spill: Promise<{ path: string; stream: WriteStream } | undefined> | undefined;
+	#fd: number | undefined;
+	#path: string | undefined;
+	#fileBytes = 0;
+	capped = false;
+	readonly #scratchDir: string | undefined;
+
+	constructor(scratchDir: string | undefined) {
+		this.#scratchDir = scratchDir;
+	}
 
 	write(chunk: Buffer): void {
 		this.#tail.push(chunk);
@@ -28,47 +47,62 @@ class OutputSink {
 		while (this.#tail.length > 1 && this.#tailBytes - (this.#tail[0] as Buffer).length >= MAX_BYTES * 2)
 			this.#tailBytes -= (this.#tail.shift() as Buffer).length;
 
-		if (this.#all) {
-			this.#all.push(chunk);
-			this.#allBytes += chunk.length;
-			if (this.#allBytes > MAX_BYTES * 2) {
-				const pending = this.#all;
-				this.#all = undefined;
-				this.#spill = openSpillFile().then((file) => {
-					for (const piece of pending) file?.stream.write(piece);
-					return file;
-				});
-			}
-		} else {
-			void this.#spill?.then((file) => file?.stream.write(chunk));
+		if (!this.#all) {
+			this.#writeFile(chunk);
+			return;
+		}
+		this.#all.push(chunk);
+		this.#allBytes += chunk.length;
+		if (this.#allBytes <= MAX_BYTES * 2) return;
+		const pending = this.#all;
+		this.#all = undefined;
+		try {
+			this.#path = spillPath(this.#scratchDir);
+			this.#fd = openSync(this.#path, "wx");
+		} catch {
+			this.#path = undefined;
+			return;
+		}
+		for (const piece of pending) this.#writeFile(piece);
+	}
+
+	#writeFile(chunk: Buffer): void {
+		if (this.#fd === undefined || this.capped) return;
+		const room = MAX_SPILL_BYTES - this.#fileBytes;
+		const piece = chunk.length > room ? chunk.subarray(0, room) : chunk;
+		try {
+			writeSync(this.#fd, piece);
+			this.#fileBytes += piece.length;
+			if (piece.length < chunk.length) this.capped = true;
+		} catch {
+			this.#closeFile();
+			this.#path = undefined;
 		}
 	}
 
-	async finish(): Promise<{ tail: string; all: string | undefined; fullOutputPath: string | undefined }> {
+	#closeFile(): void {
+		if (this.#fd === undefined) return;
+		try {
+			closeSync(this.#fd);
+		} catch {}
+		this.#fd = undefined;
+	}
+
+	finish(): { tail: string; all: string | undefined; fullOutputPath: string | undefined } {
+		this.#closeFile();
 		const tail = Buffer.concat(this.#tail).toString("utf8");
-		if (this.#all) return { tail, all: Buffer.concat(this.#all).toString("utf8"), fullOutputPath: undefined };
-		const file = await this.#spill;
-		if (!file) return { tail, all: undefined, fullOutputPath: undefined };
-		const closed = await new Promise<boolean>((resolve) => file.stream.end(() => resolve(!file.stream.errored)));
-		return { tail, all: undefined, fullOutputPath: closed ? file.path : undefined };
+		return {
+			tail,
+			all: this.#all ? Buffer.concat(this.#all).toString("utf8") : undefined,
+			fullOutputPath: this.#path,
+		};
 	}
 }
 
-async function openSpillFile(): Promise<{ path: string; stream: WriteStream } | undefined> {
+function saveFullOutput(text: string, scratchDir: string | undefined): string | undefined {
 	try {
-		const path = join(await mkdtemp(join(tmpdir(), "atelier-bash-")), "output.log");
-		const stream = createWriteStream(path);
-		stream.on("error", () => {});
-		return { path, stream };
-	} catch {
-		return undefined;
-	}
-}
-
-async function saveFullOutput(text: string): Promise<string | undefined> {
-	try {
-		const path = join(await mkdtemp(join(tmpdir(), "atelier-bash-")), "output.log");
-		await writeFile(path, text);
+		const path = spillPath(scratchDir);
+		writeFileSync(path, text, { flag: "wx" });
 		return path;
 	} catch {
 		return undefined;
@@ -88,13 +122,13 @@ export const bashTool = defineTool({
 		timeoutSec: z.number().int().min(1).max(3600).optional().describe("Timeout in seconds"),
 	},
 	approvalCommand: ({ command }) => command,
-	async execute({ command, timeoutSec }, { cwd, signal }) {
+	async execute({ command, timeoutSec }, { cwd, signal, scratchDir }) {
 		const timeout = timeoutSec ?? DEFAULT_TIMEOUT_SEC;
 		if (signal?.aborted)
 			return { ok: false, output: "[command aborted]", summary: `${firstLine(command)} (aborted)`, truncated: false };
 
 		const child = spawn("bash", ["-c", command], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-		const sink = new OutputSink();
+		const sink = new OutputSink(scratchDir);
 		child.stdout.on("data", (chunk: Buffer) => sink.write(chunk));
 		child.stderr.on("data", (chunk: Buffer) => sink.write(chunk));
 
@@ -125,11 +159,11 @@ export const bashTool = defineTool({
 		signal?.removeEventListener("abort", onAbort);
 		if (stopped) killGroup("SIGKILL");
 
-		const finished = await sink.finish();
+		const finished = sink.finish();
 		const { text, truncated: tailTruncated } = takeTail(finished.tail.replace(/\n$/, ""));
 		const spilled = finished.all === undefined;
 		let fullOutputPath = finished.fullOutputPath;
-		if (tailTruncated && finished.all !== undefined) fullOutputPath = await saveFullOutput(finished.all);
+		if (tailTruncated && finished.all !== undefined) fullOutputPath = saveFullOutput(finished.all, scratchDir);
 		const truncated = tailTruncated || spilled;
 		const status =
 			stopped === "timeout"
@@ -138,7 +172,7 @@ export const bashTool = defineTool({
 					? "[command aborted]"
 					: `[exit code ${code ?? "unknown"}]`;
 		const header = truncated
-			? `[Output truncated; showing the end.${fullOutputPath ? ` Full output: ${fullOutputPath}` : ""}]\n`
+			? `[Output truncated; showing the end.${fullOutputPath ? ` Full output${sink.capped ? " (first 50 MB)" : ""}: ${fullOutputPath}` : ""}]\n`
 			: "";
 		const ok = !stopped && code === 0;
 		const label = stopped === "timeout" ? "timed out" : stopped === "aborted" ? "aborted" : `exit ${code ?? "?"}`;

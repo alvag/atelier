@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -321,6 +322,27 @@ describe("Session", () => {
 		finishClose();
 		await second;
 		expect(secondDone).toBe(true);
+	});
+
+	it("gives tools a scratch directory and deletes it on close", async () => {
+		const seen: (string | undefined)[] = [];
+		const probe = defineTool({
+			name: "probe",
+			description: "Records the scratch directory",
+			inputShape: {},
+			execute: async (_input, { scratchDir }) => {
+				seen.push(scratchDir);
+				return { ok: true, output: "", summary: "", truncated: false };
+			},
+		});
+		const { session } = await start([[{ toolCall: { tool: "probe", input: {} } }, { event: finished }]], {
+			tools: [probe],
+		});
+		await collect(session.send("x"));
+		const dir = seen[0] as string;
+		expect((await stat(dir)).isDirectory()).toBe(true);
+		await session.close();
+		await expect(stat(dir)).rejects.toThrow();
 	});
 
 	it("refuses turns after close", async () => {

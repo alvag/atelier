@@ -4,6 +4,8 @@ export interface ToolContext {
 	/** Absolute working directory; every path a tool touches must stay inside it. */
 	cwd: string;
 	signal?: AbortSignal;
+	/** Session-owned temporary directory: tools may write there, `read` may read it, and it is deleted when the session closes. */
+	scratchDir?: string;
 }
 
 export interface ToolOutcome {

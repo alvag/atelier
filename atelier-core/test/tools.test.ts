@@ -99,6 +99,21 @@ describe("read", () => {
 		expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(51_200 + 200);
 	});
 
+	it("reads the scratch directory but nothing else outside cwd", async () => {
+		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-scratch-"));
+		try {
+			await writeFile(join(scratchDir, "out.log"), "spilled\n");
+			expect((await readTool.execute({ path: join(scratchDir, "out.log") }, { cwd, scratchDir })).output).toBe(
+				"1\tspilled",
+			);
+			const escaped = await readTool.execute({ path: join(outside, "secret.txt") }, { cwd, scratchDir });
+			expect(escaped.ok).toBe(false);
+			expect((await readTool.execute({ path: join(scratchDir, "out.log") }, ctx)).ok).toBe(false);
+		} finally {
+			await rm(scratchDir, { recursive: true, force: true });
+		}
+	});
+
 	it("fails for missing files, directories and paths outside cwd", async () => {
 		expect(await readTool.execute({ path: "missing.txt" }, ctx)).toMatchObject({ ok: false });
 		expect(await readTool.execute({ path: "." }, ctx)).toMatchObject({ ok: false });
@@ -255,6 +270,35 @@ describe("bash", () => {
 		expect(result.output).toContain("aaaEND");
 		expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(51_200 + 400);
 	});
+
+	it("saves the full output inside the session scratch directory when there is one", async () => {
+		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-scratch-"));
+		try {
+			const result = await bashTool.execute({ command: "seq 1 5000" }, { cwd, scratchDir });
+			expect(result.fullOutputPath?.startsWith(`${scratchDir}/`)).toBe(true);
+			const read = await readTool.execute({ path: result.fullOutputPath as string, offset: 4999 }, { cwd, scratchDir });
+			expect(read).toMatchObject({ ok: true });
+			expect(read.output).toBe("4999\t4999\n5000\t5000");
+		} finally {
+			await rm(scratchDir, { recursive: true, force: true });
+		}
+	});
+
+	it("stops saving the full output at 50 MB but still returns the tail", async () => {
+		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-scratch-"));
+		try {
+			const result = await bashTool.execute(
+				{ command: "yes 0123456789abcdef | head -c 60000000; echo; echo LAST-LINE" },
+				{ cwd, scratchDir },
+			);
+			expect(result.ok).toBe(true);
+			expect(result.output).toContain("LAST-LINE");
+			expect(result.output).toContain("Full output (first 50 MB):");
+			expect((await stat(result.fullOutputPath as string)).size).toBe(50 * 1024 * 1024);
+		} finally {
+			await rm(scratchDir, { recursive: true, force: true });
+		}
+	}, 20_000);
 
 	it("keeps the tail of long output and saves the full text to a file", async () => {
 		const result = await bashTool.execute({ command: "seq 1 5000" }, ctx);

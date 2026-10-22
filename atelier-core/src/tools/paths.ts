@@ -30,6 +30,18 @@ async function realpathAllowMissing(path: string): Promise<string> {
 	}
 }
 
+/** Like resolveInside, but also accepts paths inside the session scratch directory. */
+export async function resolveReadable(cwd: string, path: string, scratchDir: string | undefined): Promise<string> {
+	try {
+		return await resolveInside(cwd, path);
+	} catch (error) {
+		if (!(error instanceof PathOutsideError) || scratchDir === undefined || !isAbsolute(path)) throw error;
+		return await resolveInside(scratchDir, path).catch(() => {
+			throw error;
+		});
+	}
+}
+
 /**
  * Resolves `path` against `cwd` and rejects it when it leaves `cwd`, either
  * lexically or through a symlink. Returns the real path, so callers do not

@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentBackend, BackendSession, ToolCall, ToolCallResult } from "./backend.ts";
 import { Channel } from "./channel.ts";
 import { type AtelierEvent, type AtelierEventBody, describeError, errorEvent, ZERO_USAGE } from "./events.ts";
@@ -36,6 +39,7 @@ export class Session {
 	#abort: AbortController | undefined;
 	#closed = false;
 	#closing: Promise<void> | undefined;
+	#scratchDir: string | undefined;
 
 	private constructor(options: SessionOptions) {
 		this.#options = options;
@@ -45,6 +49,7 @@ export class Session {
 
 	static async start(options: SessionOptions): Promise<Session> {
 		const session = new Session(options);
+		session.#scratchDir = await mkdtemp(join(tmpdir(), "atelier-session-"));
 		session.#backendSession = await options.backend.start({
 			cwd: options.cwd,
 			...(options.model === undefined ? {} : { model: options.model }),
@@ -124,7 +129,10 @@ export class Session {
 	close(): Promise<void> {
 		if (!this.#closing) {
 			this.#closed = true;
-			this.#closing = Promise.resolve(this.#backendSession?.close());
+			const scratchDir = this.#scratchDir;
+			this.#closing = Promise.resolve(this.#backendSession?.close()).finally(() =>
+				scratchDir === undefined ? undefined : rm(scratchDir, { recursive: true, force: true }),
+			);
 		}
 		return this.#closing;
 	}
@@ -150,7 +158,11 @@ export class Session {
 				if (!approved) return fail("The user denied this command.");
 			}
 			const signal = this.#abort?.signal;
-			const outcome = await tool.execute(call.input, { cwd: this.#options.cwd, ...(signal ? { signal } : {}) });
+			const outcome = await tool.execute(call.input, {
+				cwd: this.#options.cwd,
+				...(signal ? { signal } : {}),
+				...(this.#scratchDir === undefined ? {} : { scratchDir: this.#scratchDir }),
+			});
 			emit({
 				type: "tool_call_finished",
 				callId,

@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { z } from "zod";
 import { errorMessage, failure, takeHead } from "./limits.ts";
-import { resolveInside } from "./paths.ts";
+import { resolveReadable } from "./paths.ts";
 import { defineTool } from "./types.ts";
 
 export const readTool = defineTool({
@@ -13,9 +13,9 @@ export const readTool = defineTool({
 		offset: z.number().int().min(1).optional().describe("First line to read, 1-based"),
 		limit: z.number().int().min(1).optional().describe("Maximum number of lines to read"),
 	},
-	async execute({ path, offset, limit }, { cwd }) {
+	async execute({ path, offset, limit }, { cwd, scratchDir }) {
 		try {
-			const absolute = await resolveInside(cwd, path);
+			const absolute = await resolveReadable(cwd, path, scratchDir);
 			if ((await stat(absolute)).isDirectory()) return failure(`Not a file: ${path}`);
 			const content = await readFile(absolute, "utf8");
 			const lines = content.split("\n");
