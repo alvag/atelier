@@ -7,6 +7,11 @@ export type {
 	ToolExecutor,
 } from "./backend.ts";
 export {
+	AnthropicApiBackend,
+	type AnthropicApiBackendOptions,
+	DEFAULT_API_MODEL,
+} from "./backends/anthropic-api/backend.ts";
+export {
 	ClaudeCodeBackend,
 	type ClaudeCodeBackendOptions,
 	createToolBridge,
