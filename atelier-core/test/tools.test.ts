@@ -99,6 +99,37 @@ describe("read", () => {
 		expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(51_200 + 200);
 	});
 
+	it("refuses binary files", async () => {
+		await writeFile(join(cwd, "image.bin"), Buffer.from([0x89, 0x50, 0x00, 0x01, 0x0a]));
+		expect(await readTool.execute({ path: "image.bin" }, ctx)).toMatchObject({
+			ok: false,
+			output: "Binary file: image.bin",
+		});
+	});
+
+	it("reads an empty file", async () => {
+		await writeFile(join(cwd, "empty.txt"), "");
+		expect(await readTool.execute({ path: "empty.txt" }, ctx)).toMatchObject({
+			ok: true,
+			output: "",
+			truncated: false,
+		});
+	});
+
+	it("handles a huge single line without newlines", async () => {
+		await writeFile(join(cwd, "huge.txt"), "x".repeat(8 * 1024 * 1024));
+		const result = await readTool.execute({ path: "huge.txt" }, ctx);
+		expect(result).toMatchObject({ ok: true, truncated: true, summary: "huge.txt (1 lines)" });
+		expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(51_200);
+	});
+
+	it("counts every line of a long file while showing a page", async () => {
+		await writeFile(join(cwd, "long.txt"), `${Array.from({ length: 50_000 }, (_, i) => `row ${i + 1}`).join("\n")}\n`);
+		const result = await readTool.execute({ path: "long.txt", offset: 49_999 }, ctx);
+		expect(result.output).toBe("49999\trow 49999\n50000\trow 50000");
+		expect(result.summary).toBe("long.txt (50000 lines)");
+	});
+
 	it("reads the scratch directory but nothing else outside cwd", async () => {
 		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-scratch-"));
 		try {
