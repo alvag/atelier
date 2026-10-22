@@ -3,7 +3,9 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { describe, expect, it } from "vitest";
 import { mapSdkMessage } from "../src/backends/claude-code/map.ts";
 
-// Hand-written from the SDK 0.3.308 types; U6 replaces them with a recorded session.
+// "text-and-tool-turn" is hand-written to cover cases a real run may not hit (thinking).
+// "recorded-opus-email-validation" is a real Claude Code 0.3.308 session (paths redacted),
+// recorded with ATELIER_RECORD_SDK while running the M1 example prompt.
 async function fixture(name: string): Promise<SDKMessage[]> {
 	const text = await readFile(new URL(`./fixtures/claude-code/${name}.jsonl`, import.meta.url), "utf8");
 	return text
@@ -171,6 +173,23 @@ describe("mapSdkMessage", () => {
 			expect(mapSdkMessage(msg({ type }), context)).toEqual([]);
 		}
 		expect(mapSdkMessage(msg({ type: "system", subtype: "status", status: null }), context)).toEqual([]);
+	});
+
+	it("maps a real recorded session", async () => {
+		const events = (await fixture("recorded-opus-email-validation")).flatMap((m) => mapSdkMessage(m, context));
+		const nonText = events.filter((e) => e.type !== "text_delta" && e.type !== "thinking_delta");
+		expect(nonText).toEqual([
+			{ type: "session_started", backend: "claude-code", model: "claude-opus-5-5", authSource: "other" },
+			{ type: "rate_limit", status: "allowed", resetsAt: 1792685400, window: "five_hour" },
+			{
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage: { input: 8, output: 1218, cacheRead: 12508, cacheWrite: 5536 },
+				costUsd: 0.0711816,
+			},
+		]);
+		const text = events.map((e) => (e.type === "text_delta" ? e.text : "")).join("");
+		expect(text.startsWith("Agregué la validación de email y los 3 tests pasan.")).toBe(true);
 	});
 
 	it("produces JSON-only events", async () => {
