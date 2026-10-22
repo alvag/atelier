@@ -31,6 +31,22 @@ export {
 } from "./credentials.ts";
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
+export {
+	addTask,
+	appendLog,
+	CANONICAL_COLUMNS,
+	createFeatureDoc,
+	type FeatureDoc,
+	FeatureDocError,
+	listTasks,
+	parseFeatureDoc,
+	parseSpecRefs,
+	serializeFeatureDoc,
+	TASK_STATUSES,
+	type TaskStatus,
+	type TaskView,
+	updateTask,
+} from "./odd/feature-doc.ts";
 export { costOfRequest, PRICES, type PriceTier } from "./pricing.ts";
 export { SYSTEM_PROMPT_APPEND } from "./prompt.ts";
 export * from "./protocol/index.ts";
