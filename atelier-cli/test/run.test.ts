@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { type AtelierEventBody, FakeBackend, type FakeStep } from "@atelier/core";
+import { type AtelierEventBody, FakeBackend, type FakeStep, MissingApiKeyError } from "@atelier/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { run } from "../src/run.ts";
 
@@ -65,7 +65,7 @@ describe("run", () => {
 		const code = await run(["say hi"], h.io, h.createBackend);
 		expect(code).toBe(0);
 		expect(h.backend.prompts).toEqual(["say hi"]);
-		expect(h.out()).toContain("hello\ntokens: input 1 · output 2 · cache read 3 · cache write 4\n");
+		expect(h.out()).toContain("hello\ntokens: input 1 · output 2 · cache read 3 · cache write 4 · cache 38%\n");
 		expect(h.backend.startOptions?.cwd).toBe(cwd);
 		expect(h.backend.startOptions?.tools.map((t) => t.name)).toEqual(["read", "edit", "bash", "grep"]);
 		expect(h.backend.closed).toBe(true);
@@ -235,10 +235,35 @@ describe("run", () => {
 		});
 	});
 
+	it("builds the backend named by --backend, claude-code by default", async () => {
+		const names: string[] = [];
+		for (const argv of [["--backend", "anthropic-api", "x"], ["y"]]) {
+			const h = harness([[{ event: finished }]]);
+			await run(argv, h.io, (name) => {
+				names.push(name);
+				return h.backend;
+			});
+		}
+		expect(names).toEqual(["anthropic-api", "claude-code"]);
+	});
+
+	it("exits 1 with the instructions when the backend has no API key", async () => {
+		const h = harness([]);
+		const code = await run(["--backend", "anthropic-api", "x"], h.io, async () => {
+			throw new MissingApiKeyError(
+				"No Anthropic API key in the Keychain. Store it with: security add-generic-password",
+			);
+		});
+		expect(code).toBe(1);
+		expect(h.err()).toBe("error: No Anthropic API key in the Keychain. Store it with: security add-generic-password\n");
+		expect(h.out()).toBe("");
+	});
+
 	it("prints help and the version", async () => {
 		const help = harness([]);
 		expect(await run(["--help"], help.io, help.createBackend)).toBe(0);
 		expect(help.out()).toContain("Usage: atelier [options] [prompt]");
+		expect(help.out()).toContain("--backend <name>");
 		expect(help.backend.startOptions).toBeUndefined();
 
 		const version = harness([]);

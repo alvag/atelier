@@ -33,7 +33,7 @@ describe("Renderer", () => {
 				"▸ read src/user.ts (12 lines) ✓",
 				"▸ bash npm test (exit 1) ✗ (truncated)",
 				"Fixed.",
-				"tokens: input 1,200 · output 85 · cache read 9,000 · cache write 3,100 · $0.0421",
+				"tokens: input 1,200 · output 85 · cache read 9,000 · cache write 3,100 · cache 68% · $0.0421",
 				"",
 			].join("\n"),
 		);
@@ -43,6 +43,24 @@ describe("Renderer", () => {
 	it("warns when the session is not using a subscription", () => {
 		const { stderr } = render([{ type: "session_started", backend: "claude-code", model: "m", authSource: "api_key" }]);
 		expect(stderr).toBe("warning: not using a Claude subscription (auth: api_key); usage may be billed separately.\n");
+	});
+
+	it("does not warn about billing on the anthropic-api backend, which is billed to the API key on purpose", () => {
+		const { stderr } = render([
+			{ type: "session_started", backend: "anthropic-api", model: "claude-sonnet-5-5", authSource: "api_key" },
+		]);
+		expect(stderr).toBe("");
+	});
+
+	it("shows the requests of a turn and why the cache missed", () => {
+		const { stdout, stderr } = render([
+			{ type: "cache_miss", reason: "system_changed", missedTokens: 4200 },
+			{ type: "turn_finished", stopReason: "end_turn", usage, costUsd: 0.0421, requests: 3 },
+		]);
+		expect(stdout).toBe(
+			"tokens: input 1,200 · output 85 · cache read 9,000 · cache write 3,100 · cache 68% · 3 requests · $0.0421\n",
+		);
+		expect(stderr).toBe("cache miss: system_changed (4,200 tokens not read from the cache)\n");
 	});
 
 	it("prints errors to stderr and remembers them", () => {

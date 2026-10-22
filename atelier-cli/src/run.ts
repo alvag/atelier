@@ -3,8 +3,10 @@ import { createInterface } from "node:readline";
 import type { Readable } from "node:stream";
 import {
 	type AgentBackend,
-	ClaudeCodeBackend,
+	type BackendName,
 	coreTools,
+	createBackend as createNamedBackend,
+	describeError,
 	Session,
 	SYSTEM_PROMPT_APPEND,
 	VERSION,
@@ -29,7 +31,8 @@ export interface CliIO {
 	forceExitMs?: number;
 }
 
-export type BackendFactory = () => AgentBackend;
+/** Builds the backend named by --backend; may fail, for example without an API key. */
+export type BackendFactory = (name: BackendName) => AgentBackend | Promise<AgentBackend>;
 
 export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
@@ -40,7 +43,7 @@ const FORCE_EXIT_MS = 3000;
 export async function run(
 	argv: readonly string[],
 	io: CliIO,
-	createBackend: BackendFactory = () => new ClaudeCodeBackend(),
+	createBackend: BackendFactory = (name) => createNamedBackend(name),
 ): Promise<number> {
 	let args: ReturnType<typeof parseCliArgs>;
 	try {
@@ -68,12 +71,20 @@ export async function run(
 		return EXIT_USAGE;
 	}
 
+	let backend: AgentBackend;
+	try {
+		backend = await createBackend(args.backend);
+	} catch (error) {
+		io.stderr(`error: ${describeError(error)}\n`);
+		return EXIT_FAILED;
+	}
+
 	const renderer = new Renderer({ stdout: io.stdout, stderr: io.stderr, color: io.color });
 	const lines = createLineReader(io.stdin);
 	/** Cancels a pending approval question, answering no. */
 	let cancelApproval: (() => void) | undefined;
 	const session = await Session.start({
-		backend: createBackend(),
+		backend,
 		cwd: args.cwd,
 		...(args.model === undefined ? {} : { model: args.model }),
 		tools: coreTools,

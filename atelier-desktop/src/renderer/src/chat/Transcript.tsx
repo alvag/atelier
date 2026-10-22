@@ -1,3 +1,4 @@
+import { cacheHitRate } from "@atelier/core/protocol";
 import { visibleText } from "@atelier/core/text";
 import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
@@ -58,6 +59,9 @@ function TokenLine({ finished }: { finished: NonNullable<Turn["finished"]> }) {
 		`cache read ${numbers.format(cacheRead)}`,
 		`cache write ${numbers.format(cacheWrite)}`,
 	];
+	const rate = cacheHitRate(finished.usage);
+	if (rate !== undefined) parts.push(`cache ${Math.round(rate * 100)}%`);
+	if (finished.requests !== undefined) parts.push(`${finished.requests} request${finished.requests === 1 ? "" : "s"}`);
 	if (finished.costUsd !== undefined) parts.push(`$${finished.costUsd.toFixed(4)}`);
 	return <div className="tokens">tokens: {parts.join(" · ")}</div>;
 }
@@ -81,6 +85,12 @@ function TurnView({ turn, onAnswer }: { turn: Turn; onAnswer: (callId: string, a
 						return (
 							<div key={key} className="turn-error" role="alert">
 								{item.message}
+							</div>
+						);
+					case "cache_miss":
+						return (
+							<div key={key} className="cache-miss">
+								cache miss: {item.reason} · {numbers.format(item.missedTokens)} tokens not read from the cache
 							</div>
 						);
 				}

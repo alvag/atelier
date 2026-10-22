@@ -63,7 +63,7 @@ describe("App", () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "add validation");
 		expect(fake.commands).toEqual([
-			{ command: "session.start", cwd: "/work", model: "opus" },
+			{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
 			{ command: "session.send", sessionId: "s1", prompt: "add validation" },
 		]);
 		expect(screen.getByText("add validation")).toBeTruthy();
@@ -85,7 +85,46 @@ describe("App", () => {
 		expect((await screen.findByText("there")).tagName).toBe("STRONG");
 		expect(screen.getByTestId("tool-row").textContent).toContain("a.ts (3 lines)");
 		expect(
-			screen.getByText("tokens: input 1,200 · output 85 · cache read 9,000 · cache write 3,100 · $0.0421"),
+			screen.getByText("tokens: input 1,200 · output 85 · cache read 9,000 · cache write 3,100 · cache 68% · $0.0421"),
+		).toBeTruthy();
+	});
+
+	it("opens an anthropic-api session with that backend's models and says it bills the API key", async () => {
+		const fake = fakeBridge();
+		render(<App bridge={fake.bridge} />);
+		await screen.findByText("core 0.0.0");
+		fireEvent.change(screen.getByLabelText("backend"), { target: { value: "anthropic-api" } });
+		const model = screen.getByLabelText("model") as HTMLSelectElement;
+		expect([...model.options].map((option) => option.value)).toEqual([
+			"claude-sonnet-5-5",
+			"claude-opus-5-5",
+			"claude-haiku-5-5",
+		]);
+		expect(model.value).toBe("claude-sonnet-5-5");
+		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
+		await waitFor(() =>
+			expect(fake.commands).toEqual([
+				{ command: "session.start", cwd: "/work", model: "claude-sonnet-5-5", backend: "anthropic-api" },
+			]),
+		);
+		fake.emit({ type: "session_started", backend: "anthropic-api", model: "claude-sonnet-5-5", authSource: "api_key" });
+		expect(await screen.findByText("billed to your Anthropic API key")).toBeTruthy();
+		expect(screen.queryByText(/not using a Claude subscription/)).toBeNull();
+	});
+
+	it("shows why the cache missed and how many requests the turn made", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "cache_miss", reason: "system_changed", missedTokens: 4200 });
+		fake.emit({
+			type: "turn_finished",
+			stopReason: "end_turn",
+			usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
+			requests: 3,
+		});
+		expect(await screen.findByText("cache miss: system_changed · 4,200 tokens not read from the cache")).toBeTruthy();
+		expect(
+			screen.getByText("tokens: input 100 · output 10 · cache read 0 · cache write 0 · cache 0% · 3 requests"),
 		).toBeTruthy();
 	});
 

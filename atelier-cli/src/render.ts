@@ -1,5 +1,5 @@
 import { styleText } from "node:util";
-import type { AtelierEvent } from "@atelier/core";
+import { type AtelierEvent, cacheHitRate } from "@atelier/core";
 
 export interface RendererOptions {
 	stdout: (text: string) => void;
@@ -56,7 +56,8 @@ export class Renderer {
 		switch (event.type) {
 			case "session_started":
 				this.#line(this.#style("dim", `atelier · ${event.backend} · ${event.model} · ${event.authSource}`));
-				if (event.authSource !== "subscription")
+				// anthropic-api is billed to the API key by choice; only an unexpected bill deserves a warning.
+				if (event.authSource !== "subscription" && event.backend !== "anthropic-api")
 					this.#warn(
 						`warning: not using a Claude subscription (auth: ${event.authSource}); usage may be billed separately.`,
 					);
@@ -87,10 +88,18 @@ export class Renderer {
 					`cache read ${numbers.format(cacheRead)}`,
 					`cache write ${numbers.format(cacheWrite)}`,
 				];
+				const rate = cacheHitRate(event.usage);
+				if (rate !== undefined) parts.push(`cache ${Math.round(rate * 100)}%`);
+				if (event.requests !== undefined) parts.push(`${event.requests} request${event.requests === 1 ? "" : "s"}`);
 				if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
 				this.#line(this.#style("dim", `tokens: ${parts.join(" · ")}`));
 				return;
 			}
+			case "cache_miss":
+				this.#warn(
+					`cache miss: ${event.reason} (${numbers.format(event.missedTokens)} tokens not read from the cache)`,
+				);
+				return;
 			case "rate_limit": {
 				if (event.status === "allowed") return;
 				const details = [

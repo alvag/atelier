@@ -6,6 +6,7 @@ describe("parseCliArgs", () => {
 		expect(parseCliArgs(["fix", "the tests"], "/home")).toEqual({
 			prompt: "fix the tests",
 			yes: false,
+			backend: "claude-code",
 			cwd: "/home",
 			help: false,
 			version: false,
@@ -21,11 +22,17 @@ describe("parseCliArgs", () => {
 			prompt: "do it",
 			yes: true,
 			model: "sonnet",
+			backend: "claude-code",
 			cwd: "/home/other",
 			help: false,
 			version: false,
 		});
 		expect(parseCliArgs(["-y", "x"], "/home").yes).toBe(true);
+	});
+
+	it("reads --backend, claude-code by default", () => {
+		expect(parseCliArgs(["--backend", "anthropic-api", "x"], "/h").backend).toBe("anthropic-api");
+		expect(parseCliArgs(["x"], "/h").backend).toBe("claude-code");
 	});
 
 	it("reads --help and --version", () => {
@@ -38,6 +45,7 @@ describe("parseCliArgs", () => {
 		[["--nope"], /Unknown option '--nope'/],
 		[["--model"], /--model/],
 		[["--model", ""], /--model needs a value/],
+		[["--backend", "openai"], /--backend must be claude-code or anthropic-api/],
 		[["   "], /The prompt is empty/],
 	])("rejects %j", (argv, message) => {
 		expect(() => parseCliArgs(argv, "/h")).toThrow(UsageError);

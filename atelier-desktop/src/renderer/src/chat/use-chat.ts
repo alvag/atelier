@@ -1,4 +1,4 @@
-import type { ClientCommand } from "@atelier/core/protocol";
+import type { BackendName, ClientCommand } from "@atelier/core/protocol";
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { AtelierBridge, CommandResult, HostMessage } from "../../../shared/bridge.ts";
 import { type ChatAction, type ChatState, initialChatState, reduceChat } from "./reducer.ts";
@@ -8,7 +8,7 @@ const nextFrame = (callback: () => void) =>
 
 export interface Chat {
 	state: ChatState;
-	openSession(cwd: string, model: string | undefined): Promise<void>;
+	openSession(cwd: string, model: string | undefined, backend: BackendName): Promise<void>;
 	send(prompt: string): Promise<void>;
 	interrupt(): Promise<void>;
 	answerApproval(callId: string, approved: boolean): Promise<void>;
@@ -56,10 +56,10 @@ export function useChat(bridge: AtelierBridge): Chat {
 
 	return {
 		state,
-		openSession: async (cwd, model) => {
+		openSession: async (cwd, model, backend) => {
 			const previous = stateRef.current.session;
 			if (previous) await request({ command: "session.close", sessionId: previous.id });
-			const result = await request({ command: "session.start", cwd, ...(model ? { model } : {}) });
+			const result = await request({ command: "session.start", cwd, ...(model ? { model } : {}), backend });
 			if (result.ok && typeof result.result.sessionId === "string")
 				dispatch({ type: "session_opened", sessionId: result.result.sessionId, cwd });
 		},

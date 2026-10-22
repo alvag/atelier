@@ -15,19 +15,21 @@ export type TurnItem =
 			truncated?: boolean;
 	  }
 	| { kind: "approval"; callId: string; command: string; state: "pending" | "approved" | "denied" }
-	| { kind: "error"; code: string; message: string };
+	| { kind: "error"; code: string; message: string }
+	| { kind: "cache_miss"; reason: string; missedTokens: number };
 
 export interface Turn {
 	/** Undefined until the core assigns the turn id. */
 	id?: string;
 	prompt: string;
 	items: TurnItem[];
-	finished?: { stopReason: string; usage: Usage; costUsd?: number };
+	finished?: { stopReason: string; usage: Usage; costUsd?: number; requests?: number };
 }
 
 export interface ChatState {
 	core: { status: "starting" | "ready" | "failed" | "exited"; version?: string; message?: string };
 	session?: { id: string; cwd: string };
+	backend?: string;
 	model?: string;
 	authSource?: AuthSource;
 	turns: Turn[];
@@ -106,14 +108,18 @@ function withoutSession(state: ChatState): ChatState {
 function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 	switch (event.type) {
 		case "session_started":
-			return { ...state, model: event.model, authSource: event.authSource };
+			return { ...state, backend: event.backend, model: event.model, authSource: event.authSource };
 		case "rate_limit": {
 			if (event.status === "allowed") return state;
 			return { ...state, notice: `Rate limit: ${event.status}${event.window ? ` (${event.window})` : ""}` };
 		}
 		case "thinking_delta":
-		case "cache_miss":
 			return state;
+		case "cache_miss":
+			return updateTurn(state, event.turnId, (turn) => ({
+				...turn,
+				items: [...turn.items, { kind: "cache_miss", reason: event.reason, missedTokens: event.missedTokens }],
+			}));
 		case "text_delta":
 			return updateTurn(state, event.turnId, (turn) => {
 				const last = turn.items.at(-1);
@@ -158,6 +164,7 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 				stopReason: event.stopReason,
 				usage: event.usage,
 				...(event.costUsd === undefined ? {} : { costUsd: event.costUsd }),
+				...(event.requests === undefined ? {} : { requests: event.requests }),
 			};
 			return { ...updateTurn(state, event.turnId, (turn) => ({ ...turn, finished })), busy: false };
 		}

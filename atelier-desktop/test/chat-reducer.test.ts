@@ -44,6 +44,7 @@ describe("reduceChat", () => {
 		expect(state.busy).toBe(false);
 		expect(state.model).toBe("claude-opus-5-5");
 		expect(state.authSource).toBe("subscription");
+		expect(state.backend).toBe("claude-code");
 		expect(state.turns).toEqual([
 			{
 				id: "t1",
@@ -64,6 +65,20 @@ describe("reduceChat", () => {
 				finished: { stopReason: "end_turn", usage, costUsd: 0.07 },
 			},
 		]);
+	});
+
+	it("keeps cache misses in the turn and the request count in its tokens", () => {
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "x" },
+			{ type: "turn_accepted", turnId: "t1" },
+			event({ type: "session_started", backend: "anthropic-api", model: "claude-sonnet-5-5", authSource: "api_key" }),
+			event({ type: "cache_miss", reason: "tools_changed", missedTokens: 900 }),
+			event({ type: "turn_finished", stopReason: "end_turn", usage, costUsd: 0.01, requests: 2 }),
+		]);
+		expect(state.backend).toBe("anthropic-api");
+		expect(state.turns[0]?.items).toEqual([{ kind: "cache_miss", reason: "tools_changed", missedTokens: 900 }]);
+		expect(state.turns[0]?.finished).toEqual({ stopReason: "end_turn", usage, costUsd: 0.01, requests: 2 });
 	});
 
 	it("is busy from the prompt until the turn finishes", () => {

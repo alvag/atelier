@@ -1,9 +1,15 @@
+import { type BackendName, DEFAULT_BACKEND } from "@atelier/core/protocol";
 import { type FormEvent, useCallback, useState } from "react";
 import type { AtelierBridge } from "../../shared/bridge.ts";
 import { Transcript } from "./chat/Transcript.tsx";
 import { useChat } from "./chat/use-chat.ts";
 
-const MODELS = ["opus", "sonnet", "haiku"];
+/** The first model of each backend is its default. */
+const MODELS: Record<BackendName, readonly string[]> = {
+	"claude-code": ["opus", "sonnet", "haiku"],
+	"anthropic-api": ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
+};
+const BACKENDS = Object.keys(MODELS) as BackendName[];
 
 function coreLabel(core: ReturnType<typeof useChat>["state"]["core"]): string {
 	if (core.status === "ready") return `core ${core.version}`;
@@ -14,7 +20,8 @@ function coreLabel(core: ReturnType<typeof useChat>["state"]["core"]): string {
 export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 	const chat = useChat(bridge);
 	const { state } = chat;
-	const [model, setModel] = useState(MODELS[0] as string);
+	const [backend, setBackend] = useState<BackendName>(DEFAULT_BACKEND);
+	const [model, setModel] = useState(MODELS[DEFAULT_BACKEND][0] as string);
 	const [draft, setDraft] = useState("");
 	const onAnswer = useCallback(
 		(callId: string, approved: boolean) => void chat.answerApproval(callId, approved),
@@ -23,7 +30,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 
 	const openFolder = async () => {
 		const cwd = await chat.pickFolder();
-		if (cwd) await chat.openSession(cwd, model);
+		if (cwd) await chat.openSession(cwd, model, backend);
 	};
 	const submit = (event?: FormEvent) => {
 		event?.preventDefault();
@@ -42,9 +49,25 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 				</button>
 				<span className="cwd">{state.session?.cwd ?? "no folder"}</span>
 				<label>
+					backend{" "}
+					<select
+						value={backend}
+						onChange={(event) => {
+							const next = event.target.value as BackendName;
+							setBackend(next);
+							setModel(MODELS[next][0] as string);
+						}}
+						disabled={state.busy}
+					>
+						{BACKENDS.map((name) => (
+							<option key={name}>{name}</option>
+						))}
+					</select>
+				</label>
+				<label>
 					model{" "}
 					<select value={model} onChange={(event) => setModel(event.target.value)} disabled={state.busy}>
-						{MODELS.map((name) => (
+						{MODELS[backend].map((name) => (
 							<option key={name}>{name}</option>
 						))}
 					</select>
@@ -87,7 +110,9 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 			<footer className="status" role="status">
 				<span>{coreLabel(state.core)}</span>
 				{state.model ? <span>{state.model}</span> : null}
-				{state.authSource && state.authSource !== "subscription" ? (
+				{state.backend === "anthropic-api" ? (
+					<span>billed to your Anthropic API key</span>
+				) : state.authSource && state.authSource !== "subscription" ? (
 					<span className="warning">not using a Claude subscription ({state.authSource})</span>
 				) : null}
 				{state.notice ? <span className="warning">{state.notice}</span> : null}
