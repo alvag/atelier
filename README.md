@@ -2,16 +2,23 @@
 
 Coding-agent orchestrator with two first-class clients, a CLI and a desktop app, on top of one headless core.
 
-| Package            | Directory          | Status                                                  |
-| ------------------ | ------------------ | ------------------------------------------------------- |
-| `@atelier/core`    | `atelier-core/`    | M1: event contract, session, tools, Claude Code backend |
-| `@atelier/cli`     | `atelier-cli/`     | M1: `atelier` command                                   |
-| `@atelier/desktop` | `atelier-desktop/` | M2                                                      |
+| Package            | Directory          | Status                                                                                                |
+| ------------------ | ------------------ | ----------------------------------------------------------------------------------------------------- |
+| `@atelier/core`    | `atelier-core/`    | Event contract, session, tools, protocol server; backends `claude-code` (M1) and `anthropic-api` (M3) |
+| `@atelier/cli`     | `atelier-cli/`     | `atelier` command                                                                                     |
+| `@atelier/desktop` | `atelier-desktop/` | Desktop chat app (M2)                                                                                 |
 
 ## Requirements
 
 - Node 22.18+ (TypeScript runs natively; there is no build step) and pnpm.
-- Claude Code logged in with your Claude subscription: run `claude` and use `/login`.
+- For the default `claude-code` backend: Claude Code logged in with your Claude subscription (run `claude` and use `/login`).
+- For the `anthropic-api` backend: an Anthropic API key with credit, stored once in the macOS Keychain. The command asks for the key, so it stays out of your shell history:
+
+  ```bash
+  security add-generic-password -U -s atelier-anthropic -a "$USER" -w
+  ```
+
+  `ANTHROPIC_API_KEY` set for a single command takes priority. Do not export it in your shell profile: Claude Code would then bill the API instead of your subscription.
 
 ## Usage
 
@@ -21,14 +28,15 @@ pnpm atelier "add email validation to src/user.ts and run the tests"   # one tur
 pnpm atelier                                                          # interactive; /exit or Ctrl+D to quit
 ```
 
-| Option                             | Effect                                                                                                 |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `-y`, `--yes`                      | Run `bash` commands without asking. Without it, commands are asked on a terminal and denied otherwise. |
-| `--model <name>`                   | Model to use (default: `opus`).                                                                        |
-| `--cwd <dir>`                      | Working directory (default: current directory).                                                        |
-| `-h`, `--help` / `-v`, `--version` | Help and version.                                                                                      |
+| Option                             | Effect                                                                                                       |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `-y`, `--yes`                      | Run `bash` commands without asking. Without it, commands are asked on a terminal and denied otherwise.       |
+| `--backend <name>`                 | `claude-code` (default, Claude subscription) or `anthropic-api` (Atelier's own loop, billed to the API key). |
+| `--model <name>`                   | Model to use (default: `opus` on `claude-code`, `claude-sonnet-5-5` on `anthropic-api`).                     |
+| `--cwd <dir>`                      | Working directory (default: current directory).                                                              |
+| `-h`, `--help` / `-v`, `--version` | Help and version.                                                                                            |
 
-Output shows streamed text, one line per tool call (`▸ edit src/user.ts (1 edit) ✓`) and the turn's tokens, including prompt cache reads and writes. A warning appears when the session is not using a Claude subscription.
+Output shows streamed text, one line per tool call (`▸ edit src/user.ts (1 edit) ✓`) and the turn's tokens: input, output, cache reads and writes, the share of the prompt served from the cache (`cacheRead / (input + cacheRead + cacheWrite)`), the number of model requests and the cost. A `cache miss` line says why the prompt cache could not be reused. On `claude-code`, a warning appears when the session is not using a Claude subscription.
 
 Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
@@ -41,7 +49,7 @@ pnpm desktop            # dev mode with hot reload
 pnpm -C atelier-desktop smoke   # build + Playwright smoke test (echo backend, no network)
 ```
 
-Open a folder, pick a model and chat. Each tool call shows as a row with its status; `bash` commands ask for approval in a card that shows invisible and control characters as visible markers. Every turn ends with its tokens; the status bar shows the core status, warnings and the latest error. If the core process dies, the app says so and offers a restart.
+Open a folder, pick a backend and a model, and chat. Each tool call shows as a row with its status; `bash` commands ask for approval in a card that shows invisible and control characters as visible markers. Every turn ends with its tokens; the status bar shows the core status, warnings and the latest error. If the core process dies, the app says so and offers a restart.
 
 The desktop starts the core with Electron's own Node (no system Node needed) and talks to it over the Atelier protocol: one JSON message per line on stdin/stdout, a `hello` with the protocol version, an `id` on every command and exactly one response per command, and events tagged with their session. See `../docs/m2-diseno.md`.
 
@@ -50,13 +58,16 @@ The desktop starts the core with Electron's own Node (no system Node needed) and
 - The core emits plain-JSON `AtelierEvent`s; clients only render them. Every turn ends with exactly one `turn_finished`.
 - The agent only has Atelier's tools: `read`, `edit`, `bash`, `grep`. The core executes them and owns approval. File tools are confined to the working directory; `bash` is not confined and is gated by approval instead.
 - `ClaudeCodeBackend` drives Claude Code through the Claude Agent SDK, isolated from your `~/.claude` setup (no settings, hooks, plugins, skills, CLAUDE.md or other MCP servers) and without `ANTHROPIC_API_KEY`, so it uses your subscription.
+- `AnthropicApiBackend` runs Atelier's own loop on the Messages API. It owns the prompt: tools and system prompt are fixed for the session, and three cache breakpoints (last tool, system, last message) keep the prefix cached. Each request asks the API to compare its prefix with the previous response, which is how cache misses are reported. See `../docs/m3-diseno.md`; a measured session is in `../docs/m3-medicion.md`.
+- `bash` runs without `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`. That only filters its environment; it is not isolation (a command could still inspect processes or ask the Keychain). Keep approvals on (no `--yes`) for work you do not trust.
 
-Design and decisions: `../docs/m1-diseno.md`.
+Design and decisions: `../docs/m1-diseno.md`, `../docs/m2-diseno.md`, `../docs/m3-diseno.md`.
 
 ## Development
 
 ```bash
 pnpm check   # lint + typecheck + test (no network, no subscription usage)
+node atelier-core/scripts/measure-cache.ts   # measures the prompt cache on the real API (costs a few cents)
 ```
 
 `ATELIER_RECORD_SDK=<file.jsonl>` appends every raw SDK message during a real run; that is how `atelier-core/test/fixtures/claude-code/` is recorded.

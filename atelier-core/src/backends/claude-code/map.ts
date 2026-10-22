@@ -113,12 +113,15 @@ export function mapSdkMessage(message: SDKMessage, context: MapContext): Atelier
 		case "result": {
 			const costUsd = Math.max(0, message.total_cost_usd - context.previousCostUsd);
 			const usage = toUsage(message.usage);
+			// num_turns counts this turn's model requests (one per assistant message), not the session's.
+			const requests = typeof message.num_turns === "number" ? { requests: message.num_turns } : {};
 			if (message.subtype === "success") {
 				const finished: AtelierEventBody = {
 					type: "turn_finished",
 					stopReason: message.stop_reason ?? "end_turn",
 					usage,
 					costUsd,
+					...requests,
 				};
 				if (!message.is_error) return [finished];
 				return [
@@ -133,7 +136,7 @@ export function mapSdkMessage(message: SDKMessage, context: MapContext): Atelier
 					message: message.errors.join("\n") || message.subtype,
 					recoverable: message.subtype === "error_during_execution",
 				},
-				{ type: "turn_finished", stopReason: message.subtype, usage, costUsd },
+				{ type: "turn_finished", stopReason: message.subtype, usage, costUsd, ...requests },
 			];
 		}
 

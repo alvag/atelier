@@ -6,6 +6,8 @@
  *   pnpm -C atelier-desktop smoke            # echo backend, no network
  *   ATELIER_E2E_REAL=1 pnpm -C atelier-desktop smoke -- <folder> "<prompt>"
  *                                           # real Claude Code run (uses your subscription)
+ *   ATELIER_E2E_REAL=1 ATELIER_E2E_BACKEND=anthropic-api pnpm -C atelier-desktop smoke -- <folder> "<prompt>"
+ *                                           # real run on the API key from the Keychain (costs money)
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -19,6 +21,7 @@ const appDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const real = process.env.ATELIER_E2E_REAL === "1";
 const [folderArg, promptArg] = process.argv.slice(2);
 const shots = process.env.ATELIER_E2E_SHOTS;
+const backend = process.env.ATELIER_E2E_BACKEND ?? "claude-code";
 
 function coreProcesses(): number {
 	const lines = execFileSync("ps", ["-Ao", "command"], { encoding: "utf8" }).split("\n");
@@ -38,6 +41,7 @@ const app = await electron.launch({
 try {
 	const page = await app.firstWindow();
 	await page.getByText(/^core \d/).waitFor({ timeout: 15_000 });
+	await page.getByLabel("backend").selectOption(backend);
 	await page.getByRole("button", { name: "Open folder…" }).click();
 	await page.getByText(folder).waitFor();
 
@@ -74,7 +78,9 @@ try {
 		const tokens = await finished.first().textContent();
 		const tools = await page.getByTestId("tool-row").allTextContents();
 		console.log(JSON.stringify({ status, tokens, tools }, null, 2));
-		assert.ok(!status?.includes("not using a Claude subscription"), "the session is not on the subscription");
+		if (backend === "anthropic-api")
+			assert.ok(status?.includes("billed to your Anthropic API key"), `not on the API key: ${status}`);
+		else assert.ok(!status?.includes("not using a Claude subscription"), "the session is not on the subscription");
 		assert.ok(!status?.includes("error"), `status bar shows an error: ${status}`);
 	}
 } finally {

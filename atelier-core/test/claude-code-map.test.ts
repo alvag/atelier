@@ -35,6 +35,7 @@ describe("mapSdkMessage", () => {
 				stopReason: "end_turn",
 				usage: { input: 1200, output: 85, cacheRead: 9000, cacheWrite: 3100 },
 				costUsd: 0.0421,
+				requests: 2,
 			},
 		]);
 	});
@@ -186,6 +187,8 @@ describe("mapSdkMessage", () => {
 				stopReason: "end_turn",
 				usage: { input: 8, output: 1218, cacheRead: 12508, cacheWrite: 5536 },
 				costUsd: 0.0711816,
+				// num_turns counts the turn's model requests, not the session's (checked on a real two-turn run).
+				requests: 6,
 			},
 		]);
 		const text = events.map((e) => (e.type === "text_delta" ? e.text : "")).join("");
