@@ -15,6 +15,7 @@ export {
 	type SdkQuery,
 } from "./backends/claude-code/backend.ts";
 export { type MapContext, mapSdkMessage } from "./backends/claude-code/map.ts";
+export { type CoreExit, RpcClient, type RpcClientOptions, RpcError } from "./client/rpc-client.ts";
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
 export { SYSTEM_PROMPT_APPEND } from "./prompt.ts";
