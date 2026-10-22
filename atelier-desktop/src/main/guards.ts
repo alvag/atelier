@@ -10,7 +10,13 @@ export function parseCommand(
 ): { ok: true; command: ClientCommand } | Extract<CommandResult, { ok: false }> {
 	if (typeof payload === "object" && payload !== null && !Array.isArray(payload)) {
 		const { id: _id, type: _type, ...command } = payload as Record<string, unknown>;
-		const decoded = decodeClientMessage(JSON.stringify({ ...command, type: "command", id: "renderer" }));
+		let line: string;
+		try {
+			line = JSON.stringify({ ...command, type: "command", id: "renderer" });
+		} catch {
+			return { ok: false, error: { code: "invalid_command", message: "A command must be plain JSON." } };
+		}
+		const decoded = decodeClientMessage(line);
 		if (decoded.ok) {
 			const { id: _decodedId, type: _decodedType, ...valid } = decoded.message;
 			return { ok: true, command: valid as ClientCommand };

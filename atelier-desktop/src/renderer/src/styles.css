@@ -119,10 +119,16 @@ main {
 	border-radius: var(--at-radius);
 }
 
-.approval pre,
 .text pre {
 	font-family: var(--at-mono);
 	overflow-x: auto;
+}
+
+/* The whole command must be readable before Allow: wrap it, never scroll it sideways. */
+.approval pre {
+	font-family: var(--at-mono);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
 }
 
 .approval-actions {

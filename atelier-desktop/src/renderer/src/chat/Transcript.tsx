@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
 import type { Turn, TurnItem } from "./reducer.ts";
+import { visibleText } from "./visible-text.ts";
 
 const numbers = new Intl.NumberFormat("en-US");
 
@@ -23,10 +24,16 @@ function ApprovalCard({
 	item: Extract<TurnItem, { kind: "approval" }>;
 	onAnswer: (callId: string, approved: boolean) => void;
 }) {
+	const command = visibleText(item.command);
 	return (
 		<fieldset className="approval">
 			<legend>Run this command?</legend>
-			<pre>{item.command}</pre>
+			{command.hadHidden ? (
+				<div className="warning">
+					This command contains invisible or control characters, shown below as markers. Check it carefully.
+				</div>
+			) : null}
+			<pre>{command.text}</pre>
 			{item.state === "pending" ? (
 				<div className="approval-actions">
 					<button type="button" onClick={() => onAnswer(item.callId, true)}>
