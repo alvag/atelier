@@ -153,6 +153,23 @@ describe("reduceChat", () => {
 		]);
 	});
 
+	it("tracks the phase and the active feature", () => {
+		const tasks = [
+			{ id: "T1", title: "A", specs: ["S1"], status: "done" },
+			{ id: "T2", title: "B", specs: ["S1"], status: "pending" },
+		];
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "x" },
+			event({ type: "phase_changed", phase: "planning", source: "inferred" }),
+			event({ type: "feature_changed", name: "f", path: "odd/tasks/f.md", title: "F", tasks }),
+		]);
+		expect(state.phase).toBe("planning");
+		expect(state.feature).toEqual({ name: "f", path: "odd/tasks/f.md", title: "F", tasks });
+		expect(state.turns[0]?.items).toEqual([]);
+		expect(run([{ type: "session_opened", sessionId: "s2", cwd: "/w" }], state)).not.toHaveProperty("feature");
+	});
+
 	it("answers a subagent's approval card in place", () => {
 		const state = run([
 			...ready,

@@ -160,6 +160,16 @@ export class Renderer {
 					`cache miss: ${event.reason} (${numbers.format(event.missedTokens)} tokens not read from the cache)`,
 				);
 				return;
+			case "phase_changed":
+				this.#line(this.#style("dim", `· ${event.phase}`));
+				return;
+			case "feature_changed": {
+				const done = event.tasks.filter((task) => task.status === "done").length;
+				const now = event.tasks.find((task) => task.status === "in_progress");
+				const progress = `${done}/${event.tasks.length} done${now ? ` · now ${now.id} ${now.title}` : ""}`;
+				this.#line(`${this.#style("magenta", "◆")} ${event.title} (${event.path}): ${progress}`);
+				return;
+			}
 			case "rate_limit": {
 				if (event.status === "allowed") return;
 				const details = [

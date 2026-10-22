@@ -1,4 +1,4 @@
-import type { AtelierEvent, AuthSource, JsonValue, Usage } from "@atelier/core/protocol";
+import type { AtelierEvent, AuthSource, FeatureTask, JsonValue, Phase, Usage } from "@atelier/core/protocol";
 import type { HostMessage } from "../../../shared/bridge.ts";
 
 const DENIED_SUMMARY = "The user denied this command.";
@@ -48,6 +48,10 @@ export interface ChatState {
 	backend?: string;
 	model?: string;
 	authSource?: AuthSource;
+	/** The ODD phase the agent is in. */
+	phase?: Phase;
+	/** The active ODD feature document, as the core last reported it. */
+	feature?: { name: string; path: string; title: string; tasks: FeatureTask[] };
 	turns: Turn[];
 	/** A turn is running (or its prompt is on the way). */
 	busy: boolean;
@@ -90,8 +94,10 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 			};
 		case "protocol_error":
 			return { ...state, lastError: { code: "protocol_error", message: action.message } };
-		case "session_opened":
-			return { ...state, session: { id: action.sessionId, cwd: action.cwd }, turns: [], busy: false };
+		case "session_opened": {
+			const { feature: _feature, phase: _phase, ...rest } = state;
+			return { ...rest, session: { id: action.sessionId, cwd: action.cwd }, turns: [], busy: false };
+		}
 		case "prompt_sent": {
 			const { lastError: _cleared, notice: _notice, ...rest } = state;
 			return { ...rest, busy: true, turns: [...state.turns, { prompt: action.text, items: [] }] };
@@ -135,6 +141,10 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 				...updateTurn(state, event.turnId, (turn) => ({ ...turn, finished: finishedOf(event) })),
 				busy: false,
 			};
+		case "phase_changed":
+			return { ...state, phase: event.phase };
+		case "feature_changed":
+			return { ...state, feature: { name: event.name, path: event.path, title: event.title, tasks: event.tasks } };
 		case "error": {
 			const updated = updateTurn(state, event.turnId, (turn) => ({ ...turn, items: reduceItems(turn.items, event) }));
 			return { ...updated, lastError: { code: event.code, message: event.message } };

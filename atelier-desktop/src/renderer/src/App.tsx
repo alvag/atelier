@@ -1,6 +1,7 @@
 import { type BackendName, DEFAULT_BACKEND } from "@atelier/core/protocol";
 import { type FormEvent, useCallback, useState } from "react";
 import type { AtelierBridge } from "../../shared/bridge.ts";
+import { FeaturePanel } from "./chat/FeaturePanel.tsx";
 import { Transcript } from "./chat/Transcript.tsx";
 import { useChat } from "./chat/use-chat.ts";
 
@@ -82,9 +83,12 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 				) : null}
 			</header>
 
-			<main>
-				<Transcript turns={state.turns} onAnswer={onAnswer} />
-			</main>
+			<div className="workspace">
+				<main>
+					<Transcript turns={state.turns} onAnswer={onAnswer} />
+				</main>
+				{state.feature ? <FeaturePanel feature={state.feature} /> : null}
+			</div>
 
 			<form className="composer" onSubmit={submit}>
 				<textarea
@@ -110,6 +114,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 			<footer className="status" role="status">
 				<span>{coreLabel(state.core)}</span>
 				{state.model ? <span>{state.model}</span> : null}
+				{state.phase ? <span className="phase">{state.phase}</span> : null}
 				{state.backend === "anthropic-api" ? (
 					<span>billed to your Anthropic API key</span>
 				) : state.authSource && state.authSource !== "subscription" ? (

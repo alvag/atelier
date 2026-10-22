@@ -99,6 +99,33 @@ describe("Renderer", () => {
 		expect(renderer.failed).toBe(false);
 	});
 
+	it("prints the phase when it changes and the feature's progress", () => {
+		const { stdout, stderr } = render([
+			{ type: "phase_changed", phase: "planning", source: "inferred" },
+			{
+				type: "feature_changed",
+				name: "slug-accents",
+				path: "odd/tasks/slug-accents.md",
+				title: "Slug accents",
+				tasks: [
+					{ id: "T1", title: "Transliterate", specs: ["S1"], status: "done", commit: "abc1234" },
+					{ id: "T2", title: "Run the tests", specs: ["S1"], status: "in_progress" },
+					{ id: "T3", title: "Docs", specs: ["S1"], status: "pending" },
+				],
+			},
+			{ type: "phase_changed", phase: "closing", source: "declared" },
+		]);
+		expect(stdout).toBe(
+			[
+				"· planning",
+				"◆ Slug accents (odd/tasks/slug-accents.md): 1/3 done · now T2 Run the tests",
+				"· closing",
+				"",
+			].join("\n"),
+		);
+		expect(stderr).toBe("");
+	});
+
 	it("prints errors to stderr and remembers them", () => {
 		const { stdout, stderr, renderer } = render([
 			{ type: "text_delta", text: "partial" },

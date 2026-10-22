@@ -1,3 +1,12 @@
 /** Byte-stable: Claude Code caches the prompt prefix across turns. Shared by every client. */
 export const SYSTEM_PROMPT_APPEND =
-	"You are running inside Atelier. Use only the Atelier tools (read, edit, bash, grep). Paths are relative to the working directory. bash commands may need the user's approval; if one is denied, do not retry it.";
+	"You are running inside Atelier. Use only the Atelier tools. Paths are relative to the working directory. bash commands may need the user's approval; if one is denied, do not retry it.";
+
+/** Added when ODD tracking is on. Byte-stable, and kept short: the code enforces the rules that matter. */
+export const ODD_RULES = `Work in ODD (Organic Driven Development):
+- A small task (understood, low risk, finishable from the diff alone): just do it.
+- A large task (several steps or sessions, or work the user wants tracked): before the first change, create its feature document with the feature tool. Specs copy the user's exact words; one task per deliverable. You never write the user's words into the log: Atelier logs them verbatim.
+- Then go task by task: update_task to in_progress before starting one, to done (with its commit, if any) once its checks pass, to blocked with a note when it waits on something.
+- To resume earlier work, open its feature by name.
+- Reading, editing and running tests show your phase by themselves; use the phase tool only for authorizing, deciding and closing.
+- When you need a decision from the user, ask one question and stop.`;

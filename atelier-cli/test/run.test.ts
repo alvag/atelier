@@ -67,7 +67,15 @@ describe("run", () => {
 		expect(h.backend.prompts).toEqual(["say hi"]);
 		expect(h.out()).toContain("hello\ntokens: input 1 · output 2 · cache read 3 · cache write 4 · cache 38%\n");
 		expect(h.backend.startOptions?.cwd).toBe(cwd);
-		expect(h.backend.startOptions?.tools.map((t) => t.name)).toEqual(["read", "edit", "bash", "grep", "task"]);
+		expect(h.backend.startOptions?.tools.map((t) => t.name)).toEqual([
+			"read",
+			"edit",
+			"bash",
+			"grep",
+			"task",
+			"feature",
+			"phase",
+		]);
 		expect(h.backend.closed).toBe(true);
 	});
 

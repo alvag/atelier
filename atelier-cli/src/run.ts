@@ -87,6 +87,7 @@ export async function run(
 	const session = await Session.start({
 		backend,
 		subagents: { agents: BUILTIN_AGENTS, createBackend: () => createBackend(args.backend) },
+		odd: true,
 		cwd: args.cwd,
 		...(args.model === undefined ? {} : { model: args.model }),
 		tools: coreTools,

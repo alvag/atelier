@@ -49,7 +49,7 @@ export {
 } from "./odd/feature-doc.ts";
 export { FEATURE_TOOL, ODD_DIR, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
 export { costOfRequest, PRICES, type PriceTier } from "./pricing.ts";
-export { SYSTEM_PROMPT_APPEND } from "./prompt.ts";
+export { ODD_RULES, SYSTEM_PROMPT_APPEND } from "./prompt.ts";
 export * from "./protocol/index.ts";
 export { EchoBackend } from "./server/echo-backend.ts";
 export { RpcServer, type RpcServerOptions } from "./server/rpc-server.ts";

@@ -163,6 +163,29 @@ describe("App", () => {
 		expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
 	});
 
+	it("shows the phase in the status bar and the feature's tasks in a panel", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "phase_changed", phase: "implementing", source: "inferred" });
+		fake.emit({
+			type: "feature_changed",
+			name: "slug-accents",
+			path: "odd/tasks/slug-accents.md",
+			title: "Slug accents",
+			tasks: [
+				{ id: "T1", title: "Transliterate", specs: ["S1"], status: "done", commit: "abc1234" },
+				{ id: "T2", title: "Run the tests", specs: ["S1"], status: "in_progress" },
+			],
+		});
+		expect((await screen.findByRole("status")).textContent).toContain("implementing");
+		const panel = await screen.findByRole("complementary", { name: "Feature" });
+		expect(panel.textContent).toContain("Slug accents");
+		expect(panel.textContent).toContain("odd/tasks/slug-accents.md");
+		expect(panel.textContent).toContain("1/2 done");
+		const rows = screen.getAllByTestId("feature-task").map((row) => row.textContent);
+		expect(rows).toEqual(["✓T1Transliterateabc1234", "▸T2Run the tests"]);
+	});
+
 	it("answers an approval card through session.approve", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

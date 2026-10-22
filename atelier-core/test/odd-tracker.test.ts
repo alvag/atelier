@@ -13,6 +13,7 @@ import {
 	Session,
 	type SessionOptions,
 } from "../src/index.ts";
+import { ODD_RULES, SYSTEM_PROMPT_APPEND } from "../src/prompt.ts";
 import { editTool } from "../src/tools/edit.ts";
 import { defineTool } from "../src/tools/types.ts";
 
@@ -402,5 +403,23 @@ describe("phases", () => {
 		const events = await send("go");
 		await s.close();
 		expect(phases(events)).toEqual(["planning:inferred"]);
+	});
+});
+
+describe("ODD rules in the prompt", () => {
+	it("are appended only when ODD is on, after the session's own text, and stay small", async () => {
+		const plain = new FakeBackend([]);
+		await (await Session.start({ backend: plain, cwd, tools, systemPromptAppend: "BASE" })).close();
+		expect(plain.startOptions?.systemPromptAppend).toBe("BASE");
+
+		const odd = new FakeBackend([]);
+		await (await Session.start({ backend: odd, cwd, tools, systemPromptAppend: "BASE", odd: true })).close();
+		expect(odd.startOptions?.systemPromptAppend).toBe(`BASE\n\n${ODD_RULES}`);
+		expect(Buffer.byteLength(ODD_RULES)).toBeLessThanOrEqual(1200);
+		for (const word of ["feature", "open", "in_progress", "done", "phase"]) expect(ODD_RULES).toContain(word);
+	});
+
+	it("no longer lists a fixed set of tools in the shared prompt", () => {
+		expect(SYSTEM_PROMPT_APPEND).not.toContain("(read, edit, bash, grep)");
 	});
 });
