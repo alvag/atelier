@@ -176,6 +176,8 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	yield { type: "refuter_started", findings: toRefute.length };
 	const prompt = `Findings to refute:\n${JSON.stringify(toRefute, null, 2)}`;
 	const reply = await callRole("refuter", REFUTER_INSTRUCTION, prompt, candidate.tree);
+	// Until the refuter decides, every severe finding stands, so a failed refuter keeps them on record.
+	confirmed = toRefute;
 	if (interrupted()) return stopped();
 	if (!reply.ok) return finish("unavailable", `The refuter failed: ${reply.error}`);
 	const verdicts = parseVerdicts(reply.text);
@@ -189,6 +191,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	// The one correction, by the main agent, measured by the core.
 	const budget = correctionBudget(candidate.changedLines);
 	yield { type: "correction_started", budget, findings: confirmed.length };
+	if (interrupted()) return stopped();
 	let fixed: Awaited<ReturnType<ReviewDeps["correct"]>>;
 	try {
 		fixed = await deps.correct(correctionMessage(confirmed, budget), signal);
@@ -202,6 +205,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		return finish("escalated", "The correction failed.");
 	}
 	const frozen = await deps.freeze();
+	if (interrupted()) return stopped();
 	if (!frozen.ok) {
 		yield { type: "correction_finished", ok: false };
 		return finish("escalated", `The corrected change could not be frozen: ${frozen.reason}`);
@@ -218,6 +222,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	yield { type: "correction_finished", ok: true, used };
 	if (used > budget) return finish("escalated", `The correction changed ${used} lines, over the budget of ${budget}.`);
 
+	if (interrupted()) return stopped();
 	yield { type: "validator_started", findings: confirmed.length };
 	const check = await callRole(
 		"validator",

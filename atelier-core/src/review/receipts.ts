@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { findingSchema } from "./findings.ts";
@@ -58,7 +58,8 @@ function receiptPath(gitDir: string, tree: string): string {
 export async function writeReceipt(gitDir: string, receipt: Receipt): Promise<string> {
 	const file = receiptPath(gitDir, receipt.candidate);
 	const temp = `${file}.${randomBytes(6).toString("hex")}.tmp`;
-	await mkdir(join(gitDir, "atelier", "reviews"), { recursive: true });
+	await ensurePlainDirectory(join(gitDir, "atelier"));
+	await ensurePlainDirectory(join(gitDir, "atelier", "reviews"));
 	try {
 		await writeFile(temp, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600, flag: "wx" });
 		await rename(temp, file);
@@ -67,6 +68,21 @@ export async function writeReceipt(gitDir: string, receipt: Receipt): Promise<st
 		throw error;
 	}
 	return file;
+}
+
+/**
+ * Creates the directory, or checks the one there is a real directory: a symbolic
+ * link could send receipts out of the git directory, into the worktree or anywhere.
+ */
+async function ensurePlainDirectory(path: string): Promise<void> {
+	try {
+		const found = await lstat(path);
+		if (found.isSymbolicLink() || !found.isDirectory())
+			throw new Error(`${path} is not a plain directory; receipts are only written inside the git directory.`);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		await mkdir(path, { mode: 0o700 });
+	}
 }
 
 /** The receipt of a candidate tree; undefined when there is none or the file is unreadable or invalid. */

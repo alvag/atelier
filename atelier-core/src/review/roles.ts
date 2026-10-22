@@ -52,9 +52,14 @@ function parseReply<T>(text: string, schema: z.ZodType<T>, key: string) {
 		return { ok: false as const, error: `The reply is not valid JSON: ${describeError(error)}` };
 	}
 	const parsed = schema.safeParse(value);
-	return parsed.success
-		? { ok: true as const, value: parsed.data }
-		: { ok: false as const, error: z.prettifyError(parsed.error) };
+	if (!parsed.success) return { ok: false as const, error: z.prettifyError(parsed.error) };
+	// Two answers for one finding contradict each other or say nothing new: either way the reply is not trusted.
+	const seen = new Set<string>();
+	for (const entry of (parsed.data as Record<string, { id: string }[]>)[key] ?? []) {
+		if (seen.has(entry.id)) return { ok: false as const, error: `The reply answers ${entry.id} more than once.` };
+		seen.add(entry.id);
+	}
+	return { ok: true as const, value: parsed.data };
 }
 
 /** Same extraction as parseFindings: the last ```json block, else the whole text, else first `{` to last `}`. */

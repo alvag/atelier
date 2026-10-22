@@ -468,4 +468,60 @@ describe("runReview", () => {
 		await drive(env, deps);
 		expect(status()).toBe(before);
 	});
+
+	it.each(["refuter", "validator"] as const)("does not approve contradictory %s results for one id", async (role) => {
+		const env = await setup(20);
+		const { deps } = harness(env, {
+			...severeLens(),
+			refuter: () =>
+				ok(
+					role === "refuter"
+						? verdicts({ id: "RL-001", verdict: "refuted" }, { id: "RL-001", verdict: "confirmed" })
+						: verdicts(),
+				),
+			correct: tweak(1),
+			validator: () => ok(results({ id: "RL-001", resolved: true }, { id: "RL-001", resolved: false })),
+		});
+		const { receipt } = await drive(env, deps);
+		expect(receipt.verdict).toBe(role === "refuter" ? "unavailable" : "escalated");
+	});
+
+	it.each(["correction_started", "freeze"])("starts nothing new after an abort at %s", async (stage) => {
+		const env = await setup(20);
+		const controller = new AbortController();
+		const { deps, calls, corrections } = harness(env, { ...severeLens(), correct: tweak(1) });
+		const originalFreeze = deps.freeze;
+		if (stage === "freeze")
+			deps.freeze = async () => {
+				const frozen = await originalFreeze();
+				controller.abort();
+				return frozen;
+			};
+		let receipt: Receipt | undefined;
+		const run = runReview({ ...env, signal: controller.signal }, deps);
+		for (;;) {
+			const next = await run.next();
+			if (next.done) {
+				receipt = next.value;
+				break;
+			}
+			if (next.value.type === stage) controller.abort();
+		}
+		expect(corrections).toHaveLength(stage === "correction_started" ? 0 : 1);
+		expect(calls.some((call) => call.role === "validator")).toBe(false);
+		expect(receipt?.verdict).toBe("unavailable");
+	});
+
+	it("keeps the severe findings in the receipt when the refuter fails", async () => {
+		const env = await setup(20);
+		const { deps } = harness(env, {
+			...severeLens(),
+			refuter: () => ({ ok: false, error: "offline", usage: usage() }),
+		});
+		const { receipt } = await drive(env, deps);
+		expect(receipt.verdict).toBe("unavailable");
+		expect([...receipt.findings, ...receipt.refuted, ...receipt.followUps]).toEqual(
+			expect.arrayContaining([expect.objectContaining({ id: "RL-001", claim: "Drops the token." })]),
+		);
+	});
 });

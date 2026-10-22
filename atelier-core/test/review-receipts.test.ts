@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -107,5 +107,15 @@ describe("receipts", () => {
 		await writeReceipt(join(root, ".git"), receipt());
 		expect(git("status", "--porcelain")).toBe(before);
 		expect((await readdir(root)).sort()).toEqual([".git", "a.txt", "b.txt"]);
+	});
+
+	it.each(["atelier", "reviews"])("refuses a symlinked %s directory and writes nothing through it", async (part) => {
+		const gitDir = await scratch();
+		const outside = await scratch();
+		if (part === "reviews") await mkdir(join(gitDir, "atelier"));
+		const link = part === "atelier" ? join(gitDir, "atelier") : join(gitDir, "atelier", "reviews");
+		await symlink(outside, link);
+		await expect(writeReceipt(gitDir, receipt())).rejects.toThrow();
+		expect(await readdir(outside)).toEqual([]);
 	});
 });
