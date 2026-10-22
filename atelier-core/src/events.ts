@@ -40,6 +40,15 @@ export type AtelierEventType = AtelierEventBody["type"];
 
 export const ZERO_USAGE: Usage = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
+/**
+ * Share of the prompt served from the cache: cacheRead / (input + cacheRead + cacheWrite).
+ * Cache writes count as input because they are paid for. Undefined when there was no input.
+ */
+export function cacheHitRate(usage: Usage): number | undefined {
+	const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+	return prompt === 0 ? undefined : usage.cacheRead / prompt;
+}
+
 export function errorEvent(code: string, message: string, recoverable = false): AtelierEventBody {
 	return { type: "error", code, message, recoverable };
 }
