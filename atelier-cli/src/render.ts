@@ -10,6 +10,23 @@ export interface RendererOptions {
 type Style = Parameters<typeof styleText>[0];
 
 const numbers = new Intl.NumberFormat("en-US");
+/** Starts every line a subagent produces, so its work reads as nested under the task call. */
+const CHILD = "  │ ";
+
+function tokensLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): string {
+	const { input, output, cacheRead, cacheWrite } = event.usage;
+	const parts = [
+		`input ${numbers.format(input)}`,
+		`output ${numbers.format(output)}`,
+		`cache read ${numbers.format(cacheRead)}`,
+		`cache write ${numbers.format(cacheWrite)}`,
+	];
+	const rate = cacheHitRate(event.usage);
+	if (rate !== undefined) parts.push(`cache ${Math.round(rate * 100)}%`);
+	if (event.requests !== undefined) parts.push(`${event.requests} request${event.requests === 1 ? "" : "s"}`);
+	if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
+	return `tokens: ${parts.join(" · ")}`;
+}
 
 /** Turns core events into terminal output. Keeps track of the line so tool and token lines start clean. */
 export class Renderer {
@@ -47,12 +64,61 @@ export class Renderer {
 		this.write(`${text}\n`);
 	}
 
+	/** A subagent's event: indented, and never a failure of the parent's turn, which judges the task result itself. */
+	#renderChild(event: AtelierEvent): void {
+		switch (event.type) {
+			case "session_started":
+				this.#line(this.#style("dim", `  ↳ ${event.agent ?? "subagent"} · ${event.model}`));
+				return;
+			case "text_delta":
+				this.#writeIndented(event.text);
+				return;
+			case "tool_call_started":
+				this.#tools.set(event.callId, event.tool);
+				return;
+			case "tool_call_finished": {
+				const tool = this.#tools.get(event.callId) ?? "tool";
+				this.#tools.delete(event.callId);
+				const mark = event.ok ? this.#style("green", "✓") : this.#style("red", "✗");
+				this.#line(`${CHILD}${this.#style("cyan", "▸")} ${tool} ${event.summary} ${mark}`);
+				return;
+			}
+			case "turn_finished":
+				this.#line(`${CHILD}${this.#style("dim", tokensLine(event))}`);
+				return;
+			case "cache_miss":
+				this.#warn(
+					`${CHILD}cache miss: ${event.reason} (${numbers.format(event.missedTokens)} tokens not read from the cache)`,
+				);
+				return;
+			case "error":
+				this.endLine();
+				this.#options.stderr(`${CHILD}${this.#style("red", `error: ${event.message}`)}\n`);
+				return;
+			default:
+				return;
+		}
+	}
+
+	#writeIndented(text: string): void {
+		for (const [index, part] of text.split("\n").entries()) {
+			if (index > 0) this.write("\n");
+			if (part === "") continue;
+			if (this.#atLineStart) this.write(CHILD);
+			this.write(part);
+		}
+	}
+
 	#warn(text: string): void {
 		this.endLine();
 		this.#options.stderr(`${this.#style("yellow", text)}\n`);
 	}
 
 	render(event: AtelierEvent): void {
+		if (event.parentCallId !== undefined) {
+			this.#renderChild(event);
+			return;
+		}
 		switch (event.type) {
 			case "session_started":
 				this.#line(this.#style("dim", `atelier · ${event.backend} · ${event.model} · ${event.authSource}`));
@@ -79,22 +145,10 @@ export class Renderer {
 				this.#line(`${this.#style("cyan", "▸")} ${tool} ${event.summary} ${mark}${note}`);
 				return;
 			}
-			case "turn_finished": {
+			case "turn_finished":
 				if (event.stopReason === "error") this.failed = true;
-				const { input, output, cacheRead, cacheWrite } = event.usage;
-				const parts = [
-					`input ${numbers.format(input)}`,
-					`output ${numbers.format(output)}`,
-					`cache read ${numbers.format(cacheRead)}`,
-					`cache write ${numbers.format(cacheWrite)}`,
-				];
-				const rate = cacheHitRate(event.usage);
-				if (rate !== undefined) parts.push(`cache ${Math.round(rate * 100)}%`);
-				if (event.requests !== undefined) parts.push(`${event.requests} request${event.requests === 1 ? "" : "s"}`);
-				if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
-				this.#line(this.#style("dim", `tokens: ${parts.join(" · ")}`));
+				this.#line(this.#style("dim", tokensLine(event)));
 				return;
-			}
 			case "cache_miss":
 				this.#warn(
 					`cache miss: ${event.reason} (${numbers.format(event.missedTokens)} tokens not read from the cache)`,

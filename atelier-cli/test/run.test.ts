@@ -67,7 +67,7 @@ describe("run", () => {
 		expect(h.backend.prompts).toEqual(["say hi"]);
 		expect(h.out()).toContain("hello\ntokens: input 1 · output 2 · cache read 3 · cache write 4 · cache 38%\n");
 		expect(h.backend.startOptions?.cwd).toBe(cwd);
-		expect(h.backend.startOptions?.tools.map((t) => t.name)).toEqual(["read", "edit", "bash", "grep"]);
+		expect(h.backend.startOptions?.tools.map((t) => t.name)).toEqual(["read", "edit", "bash", "grep", "task"]);
 		expect(h.backend.closed).toBe(true);
 	});
 
@@ -245,6 +245,27 @@ describe("run", () => {
 			});
 		}
 		expect(names).toEqual(["anthropic-api", "claude-code"]);
+	});
+
+	it("lets the agent delegate to subagents on the same backend, shown indented", async () => {
+		const parent = harness([
+			[
+				{ toolCall: { tool: "task", input: { agent: "explorer", prompt: "Find it." }, callId: "c1" } },
+				{ event: finished },
+			],
+		]);
+		const child = new FakeBackend([[{ event: { type: "text_delta", text: "It is in a.ts." } }, { event: finished }]]);
+		const names: string[] = [];
+		const code = await run(["--backend", "anthropic-api", "x"], parent.io, (name) => {
+			names.push(name);
+			return names.length === 1 ? parent.backend : child;
+		});
+		expect(code).toBe(0);
+		expect(names).toEqual(["anthropic-api", "anthropic-api"]);
+		expect(child.prompts).toEqual(["Find it."]);
+		expect(child.startOptions?.tools.map((t) => t.name)).toEqual(["read", "grep"]);
+		expect(parent.out()).toContain("  │ It is in a.ts.\n");
+		expect(parent.backend.toolResults[0]).toEqual({ ok: true, output: "It is in a.ts." });
 	});
 
 	it("exits 1 with the instructions when the backend has no API key", async () => {

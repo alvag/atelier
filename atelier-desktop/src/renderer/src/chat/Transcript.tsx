@@ -2,7 +2,7 @@ import { cacheHitRate } from "@atelier/core/protocol";
 import { visibleText } from "@atelier/core/text";
 import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
-import type { Turn, TurnItem } from "./reducer.ts";
+import type { Subagent, Turn, TurnItem } from "./reducer.ts";
 
 const numbers = new Intl.NumberFormat("en-US");
 
@@ -66,36 +66,74 @@ function TokenLine({ finished }: { finished: NonNullable<Turn["finished"]> }) {
 	return <div className="tokens">tokens: {parts.join(" · ")}</div>;
 }
 
-function TurnView({ turn, onAnswer }: { turn: Turn; onAnswer: (callId: string, approved: boolean) => void }) {
+type OnAnswer = (callId: string, approved: boolean) => void;
+
+function Items({ items, onAnswer }: { items: TurnItem[]; onAnswer: OnAnswer }) {
+	return items.map((item, index) => {
+		const key =
+			item.kind === "tool" || item.kind === "approval" ? `${item.kind}-${item.callId}` : `${item.kind}-${index}`;
+		switch (item.kind) {
+			case "text":
+				// biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized by DOMPurify in renderMarkdown
+				return <div key={key} className="text" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }} />;
+			case "tool":
+				return item.subagent ? (
+					<SubagentBlock key={key} item={item} subagent={item.subagent} onAnswer={onAnswer} />
+				) : (
+					<ToolRow key={key} item={item} />
+				);
+			case "approval":
+				return <ApprovalCard key={key} item={item} onAnswer={onAnswer} />;
+			case "error":
+				return (
+					<div key={key} className="turn-error" role="alert">
+						{item.message}
+					</div>
+				);
+			case "cache_miss":
+				return (
+					<div key={key} className="cache-miss">
+						cache miss: {item.reason} · {numbers.format(item.missedTokens)} tokens not read from the cache
+					</div>
+				);
+		}
+		return null;
+	});
+}
+
+/** A task call with its subagent's work. Open while it runs or waits for an answer; folded once done. */
+function SubagentBlock({
+	item,
+	subagent,
+	onAnswer,
+}: {
+	item: Extract<TurnItem, { kind: "tool" }>;
+	subagent: Subagent;
+	onAnswer: OnAnswer;
+}) {
+	const waiting = subagent.items.some((child) => child.kind === "approval" && child.state === "pending");
+	return (
+		<details className="subagent" data-testid="subagent" open={item.status === "running" || waiting}>
+			<summary>
+				<ToolRow item={item} />
+				<span className="subagent-name">
+					{subagent.agent}
+					{subagent.model ? ` · ${subagent.model}` : ""}
+				</span>
+			</summary>
+			<div className="subagent-body">
+				<Items items={subagent.items} onAnswer={onAnswer} />
+				{subagent.finished ? <TokenLine finished={subagent.finished} /> : null}
+			</div>
+		</details>
+	);
+}
+
+function TurnView({ turn, onAnswer }: { turn: Turn; onAnswer: OnAnswer }) {
 	return (
 		<section className="turn">
 			{turn.prompt ? <div className="prompt">{turn.prompt}</div> : null}
-			{turn.items.map((item, index) => {
-				const key =
-					item.kind === "tool" || item.kind === "approval" ? `${item.kind}-${item.callId}` : `${item.kind}-${index}`;
-				switch (item.kind) {
-					case "text":
-						// biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized by DOMPurify in renderMarkdown
-						return <div key={key} className="text" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }} />;
-					case "tool":
-						return <ToolRow key={key} item={item} />;
-					case "approval":
-						return <ApprovalCard key={key} item={item} onAnswer={onAnswer} />;
-					case "error":
-						return (
-							<div key={key} className="turn-error" role="alert">
-								{item.message}
-							</div>
-						);
-					case "cache_miss":
-						return (
-							<div key={key} className="cache-miss">
-								cache miss: {item.reason} · {numbers.format(item.missedTokens)} tokens not read from the cache
-							</div>
-						);
-				}
-				return null;
-			})}
+			<Items items={turn.items} onAnswer={onAnswer} />
 			{turn.finished ? <TokenLine finished={turn.finished} /> : null}
 		</section>
 	);

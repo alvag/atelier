@@ -101,6 +101,78 @@ describe("reduceChat", () => {
 		expect(run([{ type: "turn_accepted", turnId: "t9" }], state).turns).toHaveLength(1);
 	});
 
+	it("nests a subagent's events under its task call without touching the parent's state", () => {
+		const child = (body: Record<string, unknown>) =>
+			event({ ...body, parentCallId: "c1", agent: "explorer" } as unknown as AtelierEventBody);
+		const childUsage = { input: 40, output: 8, cacheRead: 0, cacheWrite: 0 };
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "x" },
+			{ type: "turn_accepted", turnId: "t1" },
+			event({ type: "session_started", backend: "claude-code", model: "opus", authSource: "subscription" }),
+			event({
+				type: "tool_call_started",
+				callId: "c1",
+				tool: "task",
+				input: { agent: "explorer", prompt: "Find it." },
+			}),
+			child({ type: "session_started", backend: "claude-code", model: "haiku", authSource: "subscription" }),
+			child({ type: "tool_call_started", callId: "r1", tool: "read", input: { path: "a.ts" } }),
+			child({ type: "tool_call_finished", callId: "r1", ok: true, summary: "a.ts (3 lines)", truncated: false }),
+			child({ type: "text_delta", text: "Found " }),
+			child({ type: "text_delta", text: "it." }),
+			child({ type: "turn_finished", stopReason: "end_turn", usage: childUsage, costUsd: 0.001, requests: 2 }),
+		]);
+		expect(state.busy).toBe(true);
+		expect(state.model).toBe("opus");
+		expect(state.turns[0]?.items).toEqual([
+			{
+				kind: "tool",
+				callId: "c1",
+				tool: "task",
+				input: { agent: "explorer", prompt: "Find it." },
+				status: "running",
+				subagent: {
+					agent: "explorer",
+					model: "haiku",
+					items: [
+						{
+							kind: "tool",
+							callId: "r1",
+							tool: "read",
+							input: { path: "a.ts" },
+							status: "ok",
+							summary: "a.ts (3 lines)",
+							truncated: false,
+						},
+						{ kind: "text", text: "Found it." },
+					],
+					finished: { stopReason: "end_turn", usage: childUsage, costUsd: 0.001, requests: 2 },
+				},
+			},
+		]);
+	});
+
+	it("answers a subagent's approval card in place", () => {
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "x" },
+			event({ type: "tool_call_started", callId: "c1", tool: "task", input: {} }),
+			event({
+				type: "approval_requested",
+				callId: "b1",
+				command: "rm x",
+				parentCallId: "c1",
+				agent: "worker",
+			} as never),
+			{ type: "approval_answered", callId: "b1", approved: true },
+		]);
+		const task = state.turns[0]?.items[0];
+		expect(task?.kind === "tool" && task.subagent?.items).toEqual([
+			{ kind: "approval", callId: "b1", command: "rm x", state: "approved" },
+		]);
+	});
+
 	it("shows an approval card and the denied tool", () => {
 		const asked = run([
 			...ready,

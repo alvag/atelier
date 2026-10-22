@@ -63,6 +63,40 @@ describe("Renderer", () => {
 		expect(stderr).toBe("cache miss: system_changed (4,200 tokens not read from the cache)\n");
 	});
 
+	it("indents a subagent's work under a header, without failing the parent's turn", () => {
+		const child = (body: Record<string, unknown>) =>
+			({ ...body, parentCallId: "c1", agent: "explorer" }) as unknown as AtelierEventBody;
+		const { stdout, stderr, renderer } = render([
+			{ type: "tool_call_started", callId: "c1", tool: "task", input: { agent: "explorer", prompt: "Find it." } },
+			child({ type: "session_started", backend: "claude-code", model: "haiku", authSource: "api_key" }),
+			child({ type: "tool_call_started", callId: "r1", tool: "read", input: { path: "a.ts" } }),
+			child({ type: "tool_call_finished", callId: "r1", ok: true, summary: "a.ts (3 lines)", truncated: false }),
+			child({ type: "text_delta", text: "Found\n" }),
+			child({ type: "text_delta", text: "it." }),
+			child({ type: "error", code: "x", message: "child hiccup", recoverable: false }),
+			child({
+				type: "turn_finished",
+				stopReason: "error",
+				usage: { input: 40, output: 8, cacheRead: 0, cacheWrite: 0 },
+				requests: 2,
+			}),
+			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "explorer: 9 characters", truncated: false },
+		]);
+		expect(stdout).toBe(
+			[
+				"  ↳ explorer · haiku",
+				"  │ ▸ read a.ts (3 lines) ✓",
+				"  │ Found",
+				"  │ it.",
+				"  │ tokens: input 40 · output 8 · cache read 0 · cache write 0 · cache 0% · 2 requests",
+				"▸ task explorer: 9 characters ✓",
+				"",
+			].join("\n"),
+		);
+		expect(stderr).toBe("  │ error: child hiccup\n");
+		expect(renderer.failed).toBe(false);
+	});
+
 	it("prints errors to stderr and remembers them", () => {
 		const { stdout, stderr, renderer } = render([
 			{ type: "text_delta", text: "partial" },

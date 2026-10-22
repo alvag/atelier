@@ -4,6 +4,7 @@ import type { Readable } from "node:stream";
 import {
 	type AgentBackend,
 	type BackendName,
+	BUILTIN_AGENTS,
 	coreTools,
 	createBackend as createNamedBackend,
 	describeError,
@@ -85,6 +86,7 @@ export async function run(
 	let cancelApproval: (() => void) | undefined;
 	const session = await Session.start({
 		backend,
+		subagents: { agents: BUILTIN_AGENTS, createBackend: () => createBackend(args.backend) },
 		cwd: args.cwd,
 		...(args.model === undefined ? {} : { model: args.model }),
 		tools: coreTools,

@@ -13,17 +13,33 @@ export type TurnItem =
 			status: "running" | "ok" | "error" | "denied";
 			summary?: string;
 			truncated?: boolean;
+			/** A task call's subagent: its work, shown under the call. */
+			subagent?: Subagent;
 	  }
 	| { kind: "approval"; callId: string; command: string; state: "pending" | "approved" | "denied" }
 	| { kind: "error"; code: string; message: string }
 	| { kind: "cache_miss"; reason: string; missedTokens: number };
+
+export interface Finished {
+	stopReason: string;
+	usage: Usage;
+	costUsd?: number;
+	requests?: number;
+}
 
 export interface Turn {
 	/** Undefined until the core assigns the turn id. */
 	id?: string;
 	prompt: string;
 	items: TurnItem[];
-	finished?: { stopReason: string; usage: Usage; costUsd?: number; requests?: number };
+	finished?: Finished;
+}
+
+export interface Subagent {
+	agent: string;
+	model?: string;
+	items: TurnItem[];
+	finished?: Finished;
 }
 
 export interface ChatState {
@@ -106,6 +122,7 @@ function withoutSession(state: ChatState): ChatState {
 }
 
 function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
+	if (event.parentCallId !== undefined) return applySubagentEvent(state, event, event.parentCallId);
 	switch (event.type) {
 		case "session_started":
 			return { ...state, backend: event.backend, model: event.model, authSource: event.authSource };
@@ -113,61 +130,72 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 			if (event.status === "allowed") return state;
 			return { ...state, notice: `Rate limit: ${event.status}${event.window ? ` (${event.window})` : ""}` };
 		}
-		case "thinking_delta":
-			return state;
-		case "cache_miss":
-			return updateTurn(state, event.turnId, (turn) => ({
-				...turn,
-				items: [...turn.items, { kind: "cache_miss", reason: event.reason, missedTokens: event.missedTokens }],
-			}));
-		case "text_delta":
-			return updateTurn(state, event.turnId, (turn) => {
-				const last = turn.items.at(-1);
-				if (last?.kind === "text")
-					return { ...turn, items: [...turn.items.slice(0, -1), { kind: "text", text: last.text + event.text }] };
-				return { ...turn, items: [...turn.items, { kind: "text", text: event.text }] };
-			});
+		case "turn_finished":
+			return {
+				...updateTurn(state, event.turnId, (turn) => ({ ...turn, finished: finishedOf(event) })),
+				busy: false,
+			};
+		case "error": {
+			const updated = updateTurn(state, event.turnId, (turn) => ({ ...turn, items: reduceItems(turn.items, event) }));
+			return { ...updated, lastError: { code: event.code, message: event.message } };
+		}
+		default:
+			return updateTurn(state, event.turnId, (turn) => ({ ...turn, items: reduceItems(turn.items, event) }));
+	}
+}
+
+/** A subagent's event changes only its block under the task call: never the parent's model, busy flag or status bar. */
+function applySubagentEvent(state: ChatState, event: AtelierEvent, parentCallId: string): ChatState {
+	return updateTurn(state, event.turnId, (turn) => ({
+		...turn,
+		items: turn.items.map((item) => {
+			if (item.kind !== "tool" || item.callId !== parentCallId) return item;
+			const subagent = item.subagent ?? { agent: event.agent ?? item.tool, items: [] };
+			if (event.type === "session_started") return { ...item, subagent: { ...subagent, model: event.model } };
+			if (event.type === "turn_finished") return { ...item, subagent: { ...subagent, finished: finishedOf(event) } };
+			return { ...item, subagent: { ...subagent, items: reduceItems(subagent.items, event) } };
+		}),
+	}));
+}
+
+function finishedOf(event: Extract<AtelierEvent, { type: "turn_finished" }>): Finished {
+	return {
+		stopReason: event.stopReason,
+		usage: event.usage,
+		...(event.costUsd === undefined ? {} : { costUsd: event.costUsd }),
+		...(event.requests === undefined ? {} : { requests: event.requests }),
+	};
+}
+
+/** The items of a turn or of a subagent block: text, tool rows, approvals, errors and cache misses. */
+function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
+	switch (event.type) {
+		case "text_delta": {
+			const last = items.at(-1);
+			if (last?.kind === "text") return [...items.slice(0, -1), { kind: "text", text: last.text + event.text }];
+			return [...items, { kind: "text", text: event.text }];
+		}
 		case "tool_call_started":
-			return updateTurn(state, event.turnId, (turn) => ({
-				...turn,
-				items: [
-					...turn.items,
-					{ kind: "tool", callId: event.callId, tool: event.tool, input: event.input, status: "running" },
-				],
-			}));
-		case "approval_requested":
-			return updateTurn(state, event.turnId, (turn) => ({
-				...turn,
-				items: [...turn.items, { kind: "approval", callId: event.callId, command: event.command, state: "pending" }],
-			}));
+			return [
+				...items,
+				{ kind: "tool", callId: event.callId, tool: event.tool, input: event.input, status: "running" },
+			];
 		case "tool_call_finished": {
 			const status = event.ok ? "ok" : event.summary === DENIED_SUMMARY ? "denied" : "error";
-			return updateTurn(state, event.turnId, (turn) => ({
-				...turn,
-				items: turn.items.map((item) =>
-					item.kind === "tool" && item.callId === event.callId
-						? { ...item, status, summary: event.summary, truncated: event.truncated }
-						: item,
-				),
-			}));
+			return items.map((item) =>
+				item.kind === "tool" && item.callId === event.callId
+					? { ...item, status, summary: event.summary, truncated: event.truncated }
+					: item,
+			);
 		}
-		case "error": {
-			const error = { code: event.code, message: event.message };
-			const updated = updateTurn(state, event.turnId, (turn) => ({
-				...turn,
-				items: [...turn.items, { kind: "error", ...error }],
-			}));
-			return { ...updated, lastError: error };
-		}
-		case "turn_finished": {
-			const finished = {
-				stopReason: event.stopReason,
-				usage: event.usage,
-				...(event.costUsd === undefined ? {} : { costUsd: event.costUsd }),
-				...(event.requests === undefined ? {} : { requests: event.requests }),
-			};
-			return { ...updateTurn(state, event.turnId, (turn) => ({ ...turn, finished })), busy: false };
-		}
+		case "approval_requested":
+			return [...items, { kind: "approval", callId: event.callId, command: event.command, state: "pending" }];
+		case "error":
+			return [...items, { kind: "error", code: event.code, message: event.message }];
+		case "cache_miss":
+			return [...items, { kind: "cache_miss", reason: event.reason, missedTokens: event.missedTokens }];
+		default:
+			return items;
 	}
 }
 
@@ -192,6 +220,13 @@ function updateLast(state: ChatState, update: (turn: Turn) => Turn): ChatState {
 	return { ...state, turns: [...state.turns.slice(0, -1), update(state.turns.at(-1) as Turn)] };
 }
 
+/** Maps every item, including the ones inside subagent blocks. */
 function mapItems(state: ChatState, map: (item: TurnItem) => TurnItem): ChatState {
-	return { ...state, turns: state.turns.map((turn) => ({ ...turn, items: turn.items.map(map) })) };
+	const deep = (item: TurnItem): TurnItem => {
+		const mapped = map(item);
+		return mapped.kind === "tool" && mapped.subagent
+			? { ...mapped, subagent: { ...mapped.subagent, items: mapped.subagent.items.map(deep) } }
+			: mapped;
+	};
+	return { ...state, turns: state.turns.map((turn) => ({ ...turn, items: turn.items.map(deep) })) };
 }

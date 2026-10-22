@@ -128,6 +128,41 @@ describe("App", () => {
 		).toBeTruthy();
 	});
 
+	it("shows a subagent's work in a block under its task call, with its own tokens and approvals", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		const child = (body: Record<string, unknown>) =>
+			fake.emit({ ...body, parentCallId: "c1", agent: "worker" } as unknown as AtelierEventBody);
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "task", input: { agent: "worker", prompt: "Fix it." } });
+		child({ type: "session_started", backend: "claude-code", model: "opus", authSource: "subscription" });
+		child({ type: "tool_call_started", callId: "r1", tool: "read", input: { path: "a.ts" } });
+		child({ type: "tool_call_finished", callId: "r1", ok: true, summary: "a.ts (3 lines)", truncated: false });
+		child({ type: "approval_requested", callId: "b1", command: "npm test" });
+		const block = await screen.findByTestId("subagent");
+		expect(block.textContent).toContain("worker · opus");
+		expect(block.textContent).toContain("a.ts (3 lines)");
+		fireEvent.click(screen.getByRole("button", { name: "Allow" }));
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({
+				command: "session.approve",
+				sessionId: "s1",
+				callId: "b1",
+				approved: true,
+			}),
+		);
+		child({
+			type: "turn_finished",
+			stopReason: "end_turn",
+			usage: { input: 10, output: 2, cacheRead: 30, cacheWrite: 0 },
+			requests: 2,
+		});
+		expect(
+			await screen.findByText("tokens: input 10 · output 2 · cache read 30 · cache write 0 · cache 75% · 2 requests"),
+		).toBeTruthy();
+		// The parent's composer stays busy until the parent's own turn ends.
+		expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+	});
+
 	it("answers an approval card through session.approve", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");
