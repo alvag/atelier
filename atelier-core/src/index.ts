@@ -8,6 +8,15 @@ export type {
 	ToolCallResult,
 	ToolExecutor,
 } from "./backend.ts";
+export {
+	ClaudeCodeBackend,
+	type ClaudeCodeBackendOptions,
+	createToolBridge,
+	DEFAULT_MODEL,
+	type QueryFunction,
+	type SdkQuery,
+} from "./backends/claude-code/backend.ts";
+export { type MapContext, mapSdkMessage } from "./backends/claude-code/map.ts";
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
 export { type ApprovalRequest, Session, type SessionOptions } from "./session.ts";
