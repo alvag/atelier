@@ -1,7 +1,7 @@
+import { visibleText } from "@atelier/core/text";
 import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
 import type { Turn, TurnItem } from "./reducer.ts";
-import { visibleText } from "./visible-text.ts";
 
 const numbers = new Intl.NumberFormat("en-US");
 

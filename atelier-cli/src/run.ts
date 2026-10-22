@@ -1,7 +1,15 @@
 import { stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import type { Readable } from "node:stream";
-import { type AgentBackend, ClaudeCodeBackend, coreTools, Session, SYSTEM_PROMPT_APPEND, VERSION } from "@atelier/core";
+import {
+	type AgentBackend,
+	ClaudeCodeBackend,
+	coreTools,
+	Session,
+	SYSTEM_PROMPT_APPEND,
+	VERSION,
+	visibleText,
+} from "@atelier/core";
 import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { Renderer } from "./render.ts";
 
@@ -74,11 +82,16 @@ export async function run(
 		approve: async ({ command }) => {
 			if (!io.isTTY) {
 				renderer.endLine();
-				io.stderr(`bash command needs approval; run with --yes to allow commands: ${command}\n`);
+				io.stderr(`bash command needs approval; run with --yes to allow commands: ${visibleText(command).text}\n`);
 				return false;
 			}
 			renderer.endLine();
-			renderer.write(`Run this command?\n  ${command}\n[y/N] `);
+			// The command comes from the model: show escape sequences and bidi controls instead of letting the terminal run them.
+			const shown = visibleText(command);
+			const warning = shown.hadHidden
+				? "warning: the command contains invisible or control characters, shown as markers.\n"
+				: "";
+			renderer.write(`Run this command?\n  ${shown.text}\n${warning}[y/N] `);
 			const cancelled = new Promise<undefined>((resolve) => {
 				cancelApproval = () => resolve(undefined);
 			});
