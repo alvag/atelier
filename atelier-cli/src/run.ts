@@ -86,10 +86,16 @@ export async function run(
 			const cancelled = new Promise<undefined>((resolve) => {
 				cancelApproval = () => resolve(undefined);
 			});
-			const answer = await Promise.race([lines.next(), cancelled]);
+			const read = lines.next();
+			const answer = await Promise.race([read.then((line) => ({ line })), cancelled]);
 			cancelApproval = undefined;
+			if (answer === undefined) {
+				lines.abandon(read);
+				renderer.write("\n");
+				return false;
+			}
 			renderer.write("\n");
-			return /^y(es)?$/i.test(answer?.trim() ?? "");
+			return /^y(es)?$/i.test(answer.line?.trim() ?? "");
 		},
 	});
 
@@ -152,16 +158,26 @@ export async function run(
 /** Reads stdin line by line on demand; created lazily so a one-shot run without prompts never touches stdin. */
 function createLineReader(stdin: Readable) {
 	let iterator: AsyncIterator<string> | undefined;
+	/** A read whose caller gave up (a cancelled approval); the next caller gets its line. */
+	let abandoned: Promise<string | undefined> | undefined;
 	let close = () => {};
 	return {
-		async next(): Promise<string | undefined> {
+		next(): Promise<string | undefined> {
+			if (abandoned) {
+				const read = abandoned;
+				abandoned = undefined;
+				return read;
+			}
 			if (!iterator) {
 				const rl = createInterface({ input: stdin, terminal: false });
 				iterator = rl[Symbol.asyncIterator]();
 				close = () => rl.close();
 			}
-			const result = await iterator.next();
-			return result.done ? undefined : result.value;
+			return iterator.next().then((result) => (result.done ? undefined : result.value));
+		},
+		/** Gives back a read from next() that will not be consumed. */
+		abandon(read: Promise<string | undefined>): void {
+			abandoned = read;
 		},
 		close: () => close(),
 	};

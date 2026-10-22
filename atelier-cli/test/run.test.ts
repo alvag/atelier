@@ -163,6 +163,28 @@ describe("run", () => {
 			expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
 		});
 
+		it("does not lose the next line after an approval is cancelled", async () => {
+			const h = harness(
+				[
+					[{ toolCall: { tool: "bash", input: { command: "echo hi" } } }, { waitForInterrupt: true }],
+					[{ event: { type: "text_delta", text: "second turn" } }, { event: finished }],
+				],
+				{ isTTY: true, input: [], keepStdinOpen: true },
+			);
+			const stdin = h.io.stdin as PassThrough;
+			const pending = run([], h.io, h.createBackend);
+			stdin.write("first\n");
+			await tick();
+			expect(h.out()).toContain("[y/N] ");
+			h.ctrlC();
+			await tick();
+			stdin.write("next prompt\n");
+			stdin.end();
+			expect(await pending).toBe(0);
+			expect(h.backend.prompts).toEqual(["first", "next prompt"]);
+			expect(h.out()).toContain("second turn");
+		});
+
 		it("closes the session on a second Ctrl+C when the turn does not stop", async () => {
 			const h = harness([[{ hang: true }]]);
 			const pending = run(["x"], h.io, h.createBackend);
