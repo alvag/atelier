@@ -37,6 +37,8 @@ interface ServerSession {
 
 type Result = { [key: string]: JsonValue };
 
+const MAX_REMEMBERED_IDS = 10_000;
+
 /**
  * Serves the protocol over a line stream: one Session per session.start,
  * every command answered exactly once, events forwarded with their
@@ -48,6 +50,7 @@ export class RpcServer {
 	readonly #options: RpcServerOptions;
 	readonly #createId: () => string;
 	readonly #sessions = new Map<string, ServerSession>();
+	/** Recently used command ids, to reject reuse; bounded to the last MAX_REMEMBERED_IDS. */
 	readonly #usedIds = new Set<string>();
 	#stopping = false;
 
@@ -106,6 +109,10 @@ export class RpcServer {
 			return;
 		}
 		this.#usedIds.add(id);
+		if (this.#usedIds.size > MAX_REMEMBERED_IDS) {
+			const oldest = this.#usedIds.values().next().value;
+			if (oldest !== undefined) this.#usedIds.delete(oldest);
+		}
 		try {
 			const result = await this.#execute(decoded.message);
 			this.#send({ type: "response", id, ok: true, result });
@@ -130,7 +137,9 @@ export class RpcServer {
 				const entry = this.#session(message.sessionId);
 				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
 				const turnId = this.#createId();
-				void this.#runTurn(message.sessionId, entry, message.prompt, turnId);
+				this.#runTurn(message.sessionId, entry, message.prompt, turnId).catch((error: unknown) =>
+					process.stderr.write(`atelier-core: turn ${turnId} stopped: ${describeError(error)}\n`),
+				);
 				return { turnId };
 			}
 			case "session.interrupt": {
@@ -162,6 +171,7 @@ export class RpcServer {
 	}
 
 	async #start(cwd: string, model: string | undefined, autoApprove: boolean): Promise<string> {
+		if (this.#stopping) throw new CommandError("shutting_down", "The server is shutting down.");
 		if (
 			!(await stat(cwd).then(
 				(s) => s.isDirectory(),

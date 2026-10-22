@@ -291,6 +291,44 @@ describe("RpcServer", () => {
 		expect(fake.closed).toBe(true);
 	});
 
+	it("does not start a backend for a session.start that arrives with shutdown", async () => {
+		const h = harness([[]]);
+		await h.waitFor(() => true);
+		h.input.write(
+			`${JSON.stringify({ type: "command", id: "bye", command: "shutdown" })}\n${JSON.stringify({ type: "command", id: "late", command: "session.start", cwd })}\n`,
+		);
+		await h.done;
+		expect(h.messages.find((m) => m.type === "response" && m.id === "late")).toMatchObject({
+			ok: false,
+			error: { code: "shutting_down" },
+		});
+		expect(h.backends).toHaveLength(0);
+	});
+
+	it("survives an output that fails while a turn streams", async () => {
+		const input = new PassThrough();
+		let sessionId = "";
+		const server = new RpcServer({
+			input,
+			write: (line) => {
+				const message = decodeServerMessage(line.trimEnd());
+				if (message.type === "response" && message.ok && typeof message.result.sessionId === "string")
+					sessionId = message.result.sessionId;
+				if (message.type === "event") throw new Error("EPIPE");
+			},
+			createBackend: () => new FakeBackend([[{ event: { type: "text_delta", text: "x" } }, { event: finished }]]),
+			tools: [],
+			systemPromptAppend: "",
+		});
+		const done = server.run();
+		input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd })}\n`);
+		for (let i = 0; i < 100 && sessionId === ""; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+		input.write(`${JSON.stringify({ type: "command", id: "t", command: "session.send", sessionId, prompt: "x" })}\n`);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		input.end();
+		await done;
+	});
+
 	it("closes sessions and stops on shutdown", async () => {
 		const h = harness([[]]);
 		await h.start();
