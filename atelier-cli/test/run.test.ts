@@ -18,8 +18,10 @@ afterEach(async () => {
 	await rm(cwd, { recursive: true, force: true });
 });
 
-function harness(turns: FakeStep[][], options: { isTTY?: boolean; input?: string[] } = {}) {
+function harness(turns: FakeStep[][], options: { isTTY?: boolean; input?: string[]; keepStdinOpen?: boolean } = {}) {
 	const backend = new FakeBackend(turns);
+	let interruptHandler: (() => void) | undefined;
+	const exits: number[] = [];
 	const stdin = new PassThrough();
 	let stdout = "";
 	let stderr = "";
@@ -34,10 +36,27 @@ function harness(turns: FakeStep[][], options: { isTTY?: boolean; input?: string
 		},
 		cwd,
 		color: false,
+		onInterrupt: (handler: () => void) => {
+			interruptHandler = handler;
+			return () => {
+				interruptHandler = undefined;
+			};
+		},
+		exit: (code: number) => {
+			exits.push(code);
+		},
 	};
 	for (const line of options.input ?? []) stdin.write(`${line}\n`);
-	if (options.input) stdin.end();
-	return { backend, io, out: () => stdout, err: () => stderr, createBackend: () => backend };
+	if (options.input && !options.keepStdinOpen) stdin.end();
+	return {
+		backend,
+		io,
+		exits,
+		out: () => stdout,
+		err: () => stderr,
+		createBackend: () => backend,
+		ctrlC: () => interruptHandler?.(),
+	};
 }
 
 describe("run", () => {
@@ -114,6 +133,58 @@ describe("run", () => {
 		const h = harness([[{ event: finished }]], { input: ["/exit", "never"] });
 		expect(await run([], h.io, h.createBackend)).toBe(0);
 		expect(h.backend.prompts).toEqual([]);
+	});
+
+	describe("Ctrl+C", () => {
+		const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+		it("interrupts the turn and exits 130", async () => {
+			const h = harness([[{ event: { type: "text_delta", text: "a" } }, { waitForInterrupt: true }]]);
+			const pending = run(["x"], h.io, h.createBackend);
+			await tick();
+			h.ctrlC();
+			expect(await pending).toBe(130);
+			expect(h.backend.interrupts).toBe(1);
+			expect(h.backend.closed).toBe(true);
+			expect(h.exits).toEqual([]);
+		});
+
+		it("answers no to a pending approval and interrupts the turn", async () => {
+			const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo hi" } } }, { waitForInterrupt: true }]], {
+				isTTY: true,
+				input: [],
+				keepStdinOpen: true,
+			});
+			const pending = run(["x"], h.io, h.createBackend);
+			await tick();
+			expect(h.out()).toContain("[y/N] ");
+			h.ctrlC();
+			expect(await pending).toBe(130);
+			expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+		});
+
+		it("closes the session on a second Ctrl+C when the turn does not stop", async () => {
+			const h = harness([[{ hang: true }]]);
+			const pending = run(["x"], h.io, h.createBackend);
+			await tick();
+			h.ctrlC();
+			await tick();
+			expect(h.backend.closed).toBe(false);
+			h.ctrlC();
+			expect(await pending).toBe(130);
+			expect(h.backend.closed).toBe(true);
+			expect(h.exits).toEqual([]);
+		});
+
+		it("leaves an idle interactive session cleanly", async () => {
+			const h = harness([], { input: [], keepStdinOpen: true });
+			const pending = run([], h.io, h.createBackend);
+			await tick();
+			h.ctrlC();
+			expect(await pending).toBe(130);
+			expect(h.backend.closed).toBe(true);
+			expect(h.exits).toEqual([]);
+		});
 	});
 
 	it("prints help and the version", async () => {

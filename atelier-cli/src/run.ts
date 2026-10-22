@@ -15,6 +15,8 @@ export interface CliIO {
 	color: boolean;
 	/** Registers a Ctrl+C handler; returns a function that removes it. */
 	onInterrupt?: (handler: () => void) => () => void;
+	/** Last resort when Claude Code does not stop after the session is closed. */
+	exit?: (code: number) => void;
 }
 
 export type BackendFactory = () => AgentBackend;
@@ -23,6 +25,7 @@ export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
 export const EXIT_USAGE = 2;
 export const EXIT_INTERRUPTED = 130;
+const FORCE_EXIT_MS = 3000;
 
 /** Byte-stable: Claude Code caches the prompt prefix across turns. */
 export const SYSTEM_PROMPT_APPEND =
@@ -61,6 +64,8 @@ export async function run(
 
 	const renderer = new Renderer({ stdout: io.stdout, stderr: io.stderr, color: io.color });
 	const lines = createLineReader(io.stdin);
+	/** Cancels a pending approval question, answering no. */
+	let cancelApproval: (() => void) | undefined;
 	const session = await Session.start({
 		backend: createBackend(),
 		cwd: args.cwd,
@@ -76,20 +81,37 @@ export async function run(
 			}
 			renderer.endLine();
 			renderer.write(`Run this command?\n  ${command}\n[y/N] `);
-			const answer = await lines.next();
+			const cancelled = new Promise<undefined>((resolve) => {
+				cancelApproval = () => resolve(undefined);
+			});
+			const answer = await Promise.race([lines.next(), cancelled]);
+			cancelApproval = undefined;
 			renderer.write("\n");
 			return /^y(es)?$/i.test(answer?.trim() ?? "");
 		},
 	});
 
+	// Ctrl+C: the first press interrupts the turn (and answers no to a pending
+	// approval); a press with no turn running, or a second one, closes the
+	// session so Claude Code exits; io.exit is only a fallback if that hangs.
 	let interrupted = false;
-	const removeInterrupt = io.onInterrupt?.(() => {
-		if (!session.busy || interrupted) {
-			io.stderr("\n");
-			process.exit(EXIT_INTERRUPTED);
-		}
+	let quitting = false;
+	let forceExit: NodeJS.Timeout | undefined;
+	const quit = () => {
+		if (quitting) return io.exit?.(EXIT_INTERRUPTED);
+		quitting = true;
 		interrupted = true;
-		io.stderr("\ninterrupting... (Ctrl+C again to quit)\n");
+		cancelApproval?.();
+		lines.close();
+		void session.close();
+		if (io.exit) forceExit = setTimeout(() => io.exit?.(EXIT_INTERRUPTED), FORCE_EXIT_MS).unref();
+	};
+	const removeInterrupt = io.onInterrupt?.(() => {
+		renderer.endLine();
+		if (!session.busy || interrupted) return quit();
+		interrupted = true;
+		io.stderr("interrupting... (Ctrl+C again to quit)\n");
+		cancelApproval?.();
 		void session.interrupt();
 	});
 
@@ -109,12 +131,15 @@ export async function run(
 		while (true) {
 			if (io.isTTY) renderer.write("> ");
 			const line = await lines.next();
+			if (quitting) return EXIT_INTERRUPTED;
 			if (line === undefined || line.trim() === "/exit") break;
 			if (line.trim() === "") continue;
 			await runTurn(line);
+			if (quitting) return EXIT_INTERRUPTED;
 		}
 		return EXIT_OK;
 	} finally {
+		clearTimeout(forceExit);
 		removeInterrupt?.();
 		lines.close();
 		await session.close();

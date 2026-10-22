@@ -13,5 +13,9 @@ const exitCode = await run(process.argv.slice(2), {
 		process.on("SIGINT", handler);
 		return () => process.off("SIGINT", handler);
 	},
+	exit: (code) => process.exit(code),
 });
-process.exit(exitCode);
+
+// Exit only after stdout is flushed, so piped output is never cut short.
+process.exitCode = exitCode;
+process.stdout.write("", () => process.exit(exitCode));

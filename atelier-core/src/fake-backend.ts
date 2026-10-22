@@ -7,7 +7,9 @@ export type FakeStep =
 	| { toolCall: ToolCall }
 	| { throw: string }
 	/** Blocks until `interrupt()` is called, then yields `turn_finished` with stopReason "interrupted". */
-	| { waitForInterrupt: true };
+	| { waitForInterrupt: true }
+	/** Ignores `interrupt()` and blocks until `close()`, then ends the turn without finishing it. */
+	| { hang: true };
 
 /** Scripted backend for tests: each `send` plays the next turn of the script. */
 export class FakeBackend implements AgentBackend {
@@ -26,19 +28,26 @@ export class FakeBackend implements AgentBackend {
 	async start(options: BackendStartOptions): Promise<BackendSession> {
 		this.startOptions = options;
 		let release: (() => void) | undefined;
+		let interruptRequested = false;
+		const closeWaiters: (() => void)[] = [];
 		const backend = this;
 		return {
 			async *send(prompt: string): AsyncIterable<AtelierEventBody> {
 				backend.prompts.push(prompt);
+				interruptRequested = false;
 				const steps = backend.#turns.shift() ?? [];
 				for (const step of steps) {
 					if ("event" in step) yield step.event;
 					else if ("toolCall" in step) backend.toolResults.push(await options.executeTool(step.toolCall));
 					else if ("throw" in step) throw new Error(step.throw);
-					else {
-						await new Promise<void>((resolve) => {
-							release = resolve;
-						});
+					else if ("hang" in step) {
+						if (!backend.closed) await new Promise<void>((resolve) => closeWaiters.push(resolve));
+						return;
+					} else {
+						if (!interruptRequested)
+							await new Promise<void>((resolve) => {
+								release = resolve;
+							});
 						yield {
 							type: "turn_finished",
 							stopReason: "interrupted",
@@ -50,11 +59,13 @@ export class FakeBackend implements AgentBackend {
 			},
 			async interrupt() {
 				backend.interrupts++;
+				interruptRequested = true;
 				release?.();
 				release = undefined;
 			},
 			async close() {
 				backend.closed = true;
+				for (const resolve of closeWaiters.splice(0)) resolve();
 			},
 		};
 	}
