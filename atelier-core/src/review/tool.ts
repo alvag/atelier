@@ -9,10 +9,12 @@ export const REASON_LIMIT_BYTES = 500;
 export class RiskRequests {
 	escalations: Escalation[] = [];
 	lens: Lens | undefined;
+	lensReason: string | undefined;
 
 	clear(): void {
 		this.escalations = [];
 		this.lens = undefined;
+		this.lensReason = undefined;
 	}
 }
 
@@ -28,9 +30,10 @@ export function createRiskTool(state: RiskRequests): ToolDefinition {
 		inputShape: {
 			items: z.array(z.number().int().min(1).max(6)).min(1).max(6).optional().describe("High-risk items that apply"),
 			reason: z.string().optional().describe(`Why, at most ${REASON_LIMIT_BYTES} bytes`),
-			lens: z.enum(LENSES).optional().describe("The lens for a medium-risk review"),
+			lenses: z.array(z.enum(LENSES)).length(1).optional().describe("The one lens for a medium-risk review"),
 		},
-		execute: async ({ items, reason, lens }) => {
+		execute: async ({ items, reason, lenses }) => {
+			const lens = lenses?.[0];
 			if (items === undefined && lens === undefined)
 				return fail("Give items with a reason to raise the risk, or a lens for a medium-risk review.");
 			if (items !== undefined && (reason === undefined || reason.trim() === ""))
@@ -38,17 +41,19 @@ export function createRiskTool(state: RiskRequests): ToolDefinition {
 			const bytes = Buffer.byteLength(reason ?? "", "utf8");
 			if (bytes > REASON_LIMIT_BYTES) return fail(`The reason is ${bytes} bytes; the limit is ${REASON_LIMIT_BYTES}.`);
 
+			const why = reason?.trim() || undefined;
 			const lines: string[] = [];
 			if (items !== undefined) {
 				const unique = [...new Set(items)].sort((a, b) => a - b);
-				state.escalations.push({ items: unique, reason: (reason as string).trim() });
+				state.escalations.push({ items: unique, reason: why as string });
 				lines.push(
-					`Risk raised to high: ${unique.length === 1 ? "item" : "items"} ${unique.join(", ")} (${(reason as string).trim()}). It applies until this change is reviewed or declined.`,
+					`Risk raised to high: ${unique.length === 1 ? "item" : "items"} ${unique.join(", ")} (${why}). It applies until this change is reviewed or declined.`,
 				);
 			}
 			if (lens !== undefined) {
 				state.lens = lens;
-				lines.push(`Lens for a medium-risk review: ${lens}.`);
+				state.lensReason = why;
+				lines.push(`Lens for a medium-risk review: ${lens}${why === undefined ? "" : ` (${why})`}.`);
 			}
 			return { ok: true, output: lines.join("\n"), summary: lines[0] as string, truncated: false };
 		},

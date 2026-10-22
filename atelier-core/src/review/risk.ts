@@ -1,4 +1,5 @@
 import type { Candidate, ChangedFile, Manifest } from "./candidate.ts";
+import { isDocumentationPath, contentSignals as signalsIn } from "./signals.ts";
 
 export const LENSES = ["risk", "resilience", "readability", "reliability"] as const;
 export type Lens = (typeof LENSES)[number];
@@ -28,8 +29,6 @@ export interface Assessment {
 	empty: boolean;
 }
 
-const DOC_EXTENSIONS = /\.(md|mdx|markdown|txt|rst|adoc)$/i;
-const TEST_PATH = /(^|\/)(test|tests|__tests__|spec)\/|\.(test|spec)\.[^/]+$/i;
 const PATH_WORDS = [
 	"auth",
 	"security",
@@ -60,14 +59,6 @@ const ENVIRONMENT = [
 	/(^|\/)\.github\/workflows\//,
 	/(^|\/)\.gitlab-ci\.yml$/,
 ];
-const CONTENT: readonly (readonly [RegExp, string])[] = [
-	[/\bchild_process\b/, "child_process"],
-	[/\bexec(Sync|File|FileSync)?\s*\(/, "exec"],
-	[/\beval\s*\(/, "eval"],
-	[/\brm\s+-(?=[a-z]*r)(?=[a-z]*f)[a-z]+\b/i, "rm -rf"],
-	[/\bdrop\s+table\b/i, "DROP TABLE"],
-	[/\bdelete\s+from\b/i, "DELETE FROM"],
-];
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] as const;
 const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall", "prepare"] as const;
 
@@ -87,7 +78,6 @@ export function assessRisk(candidate: Candidate, options: RiskOptions = {}): Ass
 		...contentSignals(candidate),
 		...manifestSignals(candidate.manifests),
 	];
-	if (candidate.scanTruncated) signals.push("unscanned: the diff is too large to scan all of it");
 	for (const escalation of options.escalations ?? []) {
 		const items = escalation.items.join(", ");
 		signals.push(`agent: ${escalation.items.length === 1 ? "item" : "items"} ${items} (${escalation.reason})`);
@@ -106,19 +96,14 @@ export function assessRisk(candidate: Candidate, options: RiskOptions = {}): Ass
 	};
 }
 
+/** Documentation only: Markdown or text files (or documentation under docs/), plain mode, no code fences. */
 function isPassive(candidate: Candidate): boolean {
-	const docs = candidate.files.every(
-		(file) =>
-			!file.binary &&
-			(file.status === "D" || file.mode === "100644") &&
-			(DOC_EXTENSIONS.test(file.path) || isUnderDocs(file.path)) &&
-			!/\.(json|ya?ml|toml|ini|env|js|ts|sh)$/i.test(file.path),
+	return (
+		candidate.fencedDocs.length === 0 &&
+		candidate.files.every(
+			(file) => !file.binary && (file.status === "D" || file.mode === "100644") && isDocumentationPath(file.path),
+		)
 	);
-	return docs && !candidate.addedLines.some((line) => line.text.trimStart().startsWith("```"));
-}
-
-function isUnderDocs(path: string): boolean {
-	return path.startsWith("docs/") || path.includes("/docs/");
 }
 
 function fileSignals(files: readonly ChangedFile[]): string[] {
@@ -127,7 +112,7 @@ function fileSignals(files: readonly ChangedFile[]): string[] {
 		const name = file.path.split("/").pop() ?? file.path;
 		if (LOCKFILES.has(name)) signals.push(`lockfile: ${file.path}`);
 		else if (ENVIRONMENT.some((pattern) => pattern.test(file.path))) signals.push(`environment: ${file.path}`);
-		else if (!TEST_PATH.test(file.path)) {
+		else {
 			const lower = file.path.toLowerCase();
 			const word = PATH_WORDS.find((candidate) => lower.includes(candidate));
 			if (word !== undefined) signals.push(`path: ${file.path} (${word})`);
@@ -138,11 +123,8 @@ function fileSignals(files: readonly ChangedFile[]): string[] {
 
 function contentSignals(candidate: Candidate): string[] {
 	const found = new Set<string>();
-	for (const line of candidate.addedLines) {
-		if (TEST_PATH.test(line.path)) continue;
-		for (const [pattern, label] of CONTENT)
-			if (pattern.test(line.text)) found.add(`content: ${line.path} adds ${label}`);
-	}
+	for (const line of candidate.signalLines)
+		for (const label of signalsIn(line.text)) found.add(`content: ${line.path} adds ${label}`);
 	return [...found];
 }
 

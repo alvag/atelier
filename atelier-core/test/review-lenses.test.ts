@@ -116,9 +116,9 @@ const fakeCandidate = (): Candidate => ({
 		{ path: "logo.png", status: "A", added: 0, deleted: 0, binary: true, mode: "100644" },
 	],
 	changedLines: 4,
-	addedLines: [],
+	signalLines: [],
 	manifests: [],
-	scanTruncated: false,
+	fencedDocs: [],
 });
 
 describe("buildLensPrompt", () => {

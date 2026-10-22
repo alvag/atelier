@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { freezeCandidate, readTreeFile } from "../src/review/candidate.ts";
+import { assessRisk } from "../src/review/risk.ts";
+import { createRiskTool, RiskRequests } from "../src/review/tool.ts";
 
 let root: string;
 let repo: string;
@@ -40,7 +42,7 @@ afterEach(async () => {
 
 describe("freezeCandidate", () => {
 	it("freezes tracked and untracked changes, without ignored files, against HEAD", async () => {
-		await write("src/a.ts", "export const a = 2;\nexport const b = 3;\n");
+		await write("src/a.ts", 'export const a = 2;\nexport const b = eval("3");\n');
 		await write("src/new.ts", "export const n = 1;\n");
 		await write("ignored.log", "noise\n");
 		await rm(join(repo, "README.md"));
@@ -57,12 +59,8 @@ describe("freezeCandidate", () => {
 			["src/new.ts", "A", 1, 0],
 		]);
 		expect(candidate.changedLines).toBe(5);
-		expect(candidate.addedLines).toEqual([
-			{ path: "src/a.ts", text: "export const a = 2;" },
-			{ path: "src/a.ts", text: "export const b = 3;" },
-			{ path: "src/new.ts", text: "export const n = 1;" },
-		]);
-		expect(candidate.scanTruncated).toBe(false);
+		expect(candidate.signalLines).toEqual([{ path: "src/a.ts", text: 'export const b = eval("3");' }]);
+		expect(candidate.fencedDocs).toEqual([]);
 		expect(await readTreeFile(candidate.root, candidate.tree, "src/new.ts")).toBe("export const n = 1;\n");
 		expect(await readTreeFile(candidate.root, candidate.tree, "ignored.log")).toBeUndefined();
 		expect(await readTreeFile(candidate.root, candidate.base, "README.md")).toBe("# demo\n");
@@ -163,13 +161,97 @@ describe("freezeCandidate", () => {
 		}
 		expect(await indexHash()).toBe(indexBefore);
 	});
+});
 
-	it("stops scanning added lines past the scan limit and says so", async () => {
-		await write("big.txt", `${"x".repeat(99)}\n`.repeat(200));
-		const result = await freezeCandidate(repo, { scanLimitBytes: 4096 });
+describe("independent verification regressions (U1)", () => {
+	it("S3: write-back clean filters cannot change worktree bytes", async () => {
+		await write(".gitattributes", "*.ts filter=normalize\n");
+		git("config", "filter.normalize.clean", `sh -c 'printf "normalized\\n" > "$1"; cat' -- %f`);
+		git("config", "filter.normalize.required", "true");
+		await write("src/a.ts", "not normalized\n");
+		const result = await freezeCandidate(repo);
+		expect(result.ok).toBe(true);
+		expect(await readFile(join(repo, "src/a.ts"), "utf8")).toBe("not normalized\n");
+		if (result.ok) expect(await readTreeFile(repo, result.candidate.tree, "src/a.ts")).toBe("not normalized\n");
+	});
+
+	it("S3: the repository root may end with a space", async () => {
+		const moved = `${repo} `;
+		execFileSync("mv", [repo, moved]);
+		repo = moved;
+		await write("src/a.ts", "export const a = 5;\n");
+		const result = await freezeCandidate(repo);
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.candidate.root.endsWith(" ")).toBe(true);
+	});
+
+	it.each(["src/a space.ts", "src/é.ts", 'src/quote".ts'])("S4: patch paths are exact: %s", async (path) => {
+		await write(path, "eval(source);\r\n");
+		const result = await freezeCandidate(repo);
 		if (!result.ok) throw new Error(result.reason);
-		expect(result.candidate.scanTruncated).toBe(true);
-		expect(result.candidate.addedLines.length).toBeLessThan(200);
-		expect(result.candidate.files[0]?.added).toBe(200);
+		expect(result.candidate.signalLines).toContainEqual({ path, text: "eval(source);\r" });
+	});
+
+	it("S4: size alone never raises risk, and a signal past 8 MiB is still found", async () => {
+		await write("src/comment.ts", `// ${"x".repeat(8 * 1024 * 1024)}\n`);
+		let result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(assessRisk(result.candidate).level).toBe("medium");
+		await write("src/late.ts", "eval(source);\n");
+		result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(assessRisk(result.candidate).reasons).toContain("content: src/late.ts adds eval");
+	});
+
+	it("S4: specified signals also apply in tests", async () => {
+		await write("test/auth.test.ts", "eval(source);\n");
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(assessRisk(result.candidate).level).toBe("high");
+	});
+
+	it.each([
+		["docs/guide.md", "~~~sh\necho hi\n~~~\n"],
+		["docs/config.xml", "<configuration/>\n"],
+		["guide.rst", "Notes\n"],
+	])("S4: %s is not passive", async (path, text) => {
+		await write(path, text);
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(assessRisk(result.candidate).level).toBe("medium");
+	});
+
+	it("S4: edits inside an existing code fence are not passive", async () => {
+		await write("README.md", "```sh\necho before\n```\n");
+		await commitAll();
+		await write("README.md", "```sh\necho after\n```\n");
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(assessRisk(result.candidate).level).toBe("medium");
+	});
+
+	it("S4: plain documentation changes stay passive", async () => {
+		await write("README.md", "# demo\n\nMore words.\n");
+		await write("docs/notes.txt", "notes\n");
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(assessRisk(result.candidate).level).toBe("passive");
+	});
+
+	it("S4: the documented lenses input selects the medium lens", async () => {
+		const state = new RiskRequests();
+		const result = await createRiskTool(state).execute({ lenses: ["resilience"] }, { cwd: repo });
+		expect(result.ok).toBe(true);
+		expect(state.lens).toBe("resilience");
+	});
+
+	it("S4: a reason given with a lens is kept and reported", async () => {
+		const state = new RiskRequests();
+		const result = await createRiskTool(state).execute(
+			{ lenses: ["readability"], reason: "explain lens" },
+			{ cwd: repo },
+		);
+		expect(result.output).toBe("Lens for a medium-risk review: readability (explain lens).");
+		expect(state.lensReason).toBe("explain lens");
 	});
 });

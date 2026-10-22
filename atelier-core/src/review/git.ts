@@ -67,6 +67,56 @@ export function runGit(args: readonly string[], options: GitOptions): Promise<Gi
 	});
 }
 
+/**
+ * Runs git and hands each stdout line (split on `\n` only, so a `\r` stays in
+ * the line) to `onLine` as it arrives, never holding the whole output.
+ */
+export function streamGitLines(
+	args: readonly string[],
+	options: Omit<GitOptions, "limitBytes">,
+	onLine: (line: Buffer) => void,
+): Promise<{ code: number; stderr: string }> {
+	return new Promise((resolve, reject) => {
+		const child = spawn("git", args, {
+			cwd: options.cwd,
+			env: gitEnv(options.env),
+			stdio: ["ignore", "pipe", "pipe"],
+			timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+		});
+		let pending: Buffer[] = [];
+		let stderr = "";
+		let failed: unknown;
+		const emit = (line: Buffer) => {
+			if (failed !== undefined) return;
+			try {
+				onLine(line);
+			} catch (error) {
+				failed = error;
+				child.kill();
+			}
+		};
+		child.stdout.on("data", (chunk: Buffer) => {
+			let start = 0;
+			for (let end = chunk.indexOf(0x0a); end !== -1; end = chunk.indexOf(0x0a, start)) {
+				pending.push(chunk.subarray(start, end));
+				emit(Buffer.concat(pending));
+				pending = [];
+				start = end + 1;
+			}
+			if (start < chunk.length) pending.push(chunk.subarray(start));
+		});
+		child.stderr.on("data", (chunk: Buffer) => {
+			if (stderr.length < STDERR_LIMIT) stderr += chunk.toString("utf8");
+		});
+		child.on("error", reject);
+		child.on("close", (code) => {
+			if (pending.length > 0) emit(Buffer.concat(pending));
+			if (failed !== undefined) reject(failed);
+			else resolve({ code: code ?? 1, stderr });
+		});
+	});
+}
+
 /** Runs git and returns its stdout as text, or throws with git's own message. */
 export async function gitText(args: readonly string[], options: GitOptions): Promise<string> {
 	const result = await runGit(args, options);

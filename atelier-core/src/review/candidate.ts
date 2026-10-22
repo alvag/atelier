@@ -2,12 +2,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describeError } from "../events.ts";
-import { gitText, runGit } from "./git.ts";
+import { gitText, runGit, streamGitLines } from "./git.ts";
+import { contentSignals, FENCE, isDocumentationPath } from "./signals.ts";
 
-/** Added lines past this many bytes of patch are not scanned; the candidate says so. */
-export const SCAN_LIMIT_BYTES = 8 * 1024 * 1024;
 /** package.json files larger than this are kept out of the dependency check, which then treats them as unreadable. */
 const MANIFEST_LIMIT_BYTES = 1024 * 1024;
+/** Documentation larger than this is not searched for code fences and counts as having one. */
+const DOC_LIMIT_BYTES = 1024 * 1024;
 
 export interface ChangedFile {
 	/** Relative to the repository root, with forward slashes. */
@@ -48,17 +49,14 @@ export interface Candidate {
 	tree: string;
 	files: ChangedFile[];
 	changedLines: number;
-	addedLines: AddedLine[];
+	/** Added lines that carry a content signal; the whole patch is scanned, whatever its size. */
+	signalLines: AddedLine[];
 	manifests: Manifest[];
-	/** The patch was larger than the scan limit, so not every added line is in addedLines. */
-	scanTruncated: boolean;
+	/** Changed documentation files whose new text has a code fence (or is too large to tell). */
+	fencedDocs: string[];
 }
 
 export type FreezeResult = { ok: true; candidate: Candidate } | { ok: false; reason: string };
-
-export interface FreezeOptions {
-	scanLimitBytes?: number;
-}
 
 /**
  * Freezes the uncommitted changes under `cwd`'s repository against HEAD. The
@@ -66,29 +64,57 @@ export interface FreezeOptions {
  * staged changes and files stay exactly as they were. Only new git objects are
  * added to the repository, which `git gc` cleans up like any other.
  */
-export async function freezeCandidate(cwd: string, options: FreezeOptions = {}): Promise<FreezeResult> {
-	const top = await runGit(["rev-parse", "--show-toplevel"], { cwd });
-	if (top.code !== 0) return { ok: false, reason: "The folder is not inside a git repository." };
-	const root = top.stdout.toString("utf8").trim();
-	const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { cwd: root });
-	if (head.code !== 0)
-		return { ok: false, reason: "The repository has no commits yet, so there is no HEAD to compare with." };
-	const base = head.stdout.toString("utf8").trim();
-
+export async function freezeCandidate(cwd: string): Promise<FreezeResult> {
 	let scratch: string | undefined;
 	try {
-		const gitDir = (await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root })).trim();
+		const top = await runGit(["rev-parse", "--show-toplevel"], { cwd });
+		if (top.code !== 0) return { ok: false, reason: "The folder is not inside a git repository." };
+		const root = withoutNewline(top.stdout.toString("utf8"));
+		const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { cwd: root });
+		if (head.code !== 0)
+			return { ok: false, reason: "The repository has no commits yet, so there is no HEAD to compare with." };
+		const base = head.stdout.toString("utf8").trim();
+		const gitDir = withoutNewline(
+			await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root }),
+		);
 		scratch = await mkdtemp(join(tmpdir(), "atelier-freeze-"));
 		const env = { GIT_INDEX_FILE: join(scratch, "index") };
-		await gitText(["read-tree", base], { cwd: root, env });
-		await gitText(["add", "--all"], { cwd: root, env });
-		const tree = (await gitText(["write-tree"], { cwd: root, env })).trim();
-		return { ok: true, candidate: await describeCandidate(root, gitDir, base, tree, options) };
+		// write-tree re-hashes racily clean entries through the filters too, so every step gets the overrides.
+		const safe = await withoutUserCommands(root);
+		await gitText([...safe, "read-tree", base], { cwd: root, env });
+		await gitText([...safe, "add", "--all"], { cwd: root, env });
+		const tree = (await gitText([...safe, "write-tree"], { cwd: root, env })).trim();
+		return { ok: true, candidate: await describeCandidate(root, gitDir, base, tree) };
 	} catch (error) {
 		return { ok: false, reason: `Could not freeze the changes: ${describeError(error)}` };
 	} finally {
 		if (scratch !== undefined) await rm(scratch, { recursive: true, force: true });
 	}
+}
+
+/** git ends a printed path with one newline; a path may itself end in spaces or newlines. */
+function withoutNewline(text: string): string {
+	return text.endsWith("\n") ? text.slice(0, -1) : text;
+}
+
+/**
+ * Config overrides so `git add` runs none of the user's commands: every
+ * configured filter driver is emptied (a clean filter could rewrite the files
+ * it is given) and fsmonitor is off. The frozen tree then holds the files' bytes
+ * as they are on disk.
+ */
+async function withoutUserCommands(root: string): Promise<string[]> {
+	const listed = await runGit(["config", "--name-only", "-z", "--get-regexp", "^filter\\."], { cwd: root });
+	const drivers = new Set<string>();
+	for (const key of listed.stdout.toString("utf8").split("\0")) {
+		const match = /^filter\.(.+)\.[^.]+$/s.exec(key);
+		if (match) drivers.add(match[1] as string);
+	}
+	const args = ["-c", "core.fsmonitor=false"];
+	for (const driver of drivers)
+		for (const key of ["clean", "smudge", "process"]) args.push("-c", `filter.${driver}.${key}=`);
+	for (const driver of drivers) args.push("-c", `filter.${driver}.required=false`);
+	return args;
 }
 
 /** Reads a file from a frozen tree; undefined when the tree has no such file. */
@@ -99,13 +125,7 @@ export async function readTreeFile(root: string, tree: string, path: string): Pr
 
 const DIFF = ["diff-tree", "-r", "--no-renames", "--no-ext-diff", "--no-textconv"];
 
-async function describeCandidate(
-	root: string,
-	gitDir: string,
-	base: string,
-	tree: string,
-	options: FreezeOptions,
-): Promise<Candidate> {
+async function describeCandidate(root: string, gitDir: string, base: string, tree: string): Promise<Candidate> {
 	const raw = parseRaw(await gitText([...DIFF, "-z", "--raw", base, tree], { cwd: root }));
 	const counts = parseNumstat(await gitText([...DIFF, "-z", "--numstat", base, tree], { cwd: root }));
 	const files: ChangedFile[] = raw.map((entry) => {
@@ -119,16 +139,20 @@ async function describeCandidate(
 			mode: entry.status === "D" ? entry.oldMode : entry.newMode,
 		};
 	});
-	const patch = await runGit([...DIFF, "-p", "-U0", "--no-color", base, tree], {
-		cwd: root,
-		limitBytes: options.scanLimitBytes ?? SCAN_LIMIT_BYTES,
-	});
+	const signalLines = await scanPatch(root, base, tree);
+	const fencedDocs: string[] = [];
+	for (const entry of raw) {
+		const file = files.find((candidate) => candidate.path === entry.path);
+		if (entry.status === "D" || file?.binary || !isDocumentationPath(entry.path)) continue;
+		const text = await readBlob(root, entry.newSha, DOC_LIMIT_BYTES);
+		if (text === undefined || FENCE.test(text)) fencedDocs.push(entry.path);
+	}
 	const manifests: Manifest[] = [];
 	for (const entry of raw) {
 		if (basename(entry.path) !== "package.json") continue;
 		const manifest: Manifest = { path: entry.path };
-		const before = entry.status === "A" ? undefined : await readBlob(root, entry.oldSha);
-		const after = entry.status === "D" ? undefined : await readBlob(root, entry.newSha);
+		const before = entry.status === "A" ? undefined : await readBlob(root, entry.oldSha, MANIFEST_LIMIT_BYTES);
+		const after = entry.status === "D" ? undefined : await readBlob(root, entry.newSha, MANIFEST_LIMIT_BYTES);
 		if (before !== undefined) manifest.before = before;
 		if (after !== undefined) manifest.after = after;
 		manifests.push(manifest);
@@ -140,14 +164,14 @@ async function describeCandidate(
 		tree,
 		files,
 		changedLines: files.reduce((sum, file) => sum + file.added + file.deleted, 0),
-		addedLines: parseAddedLines(patch.stdout.toString("utf8"), patch.truncated),
+		signalLines,
 		manifests,
-		scanTruncated: patch.truncated,
+		fencedDocs,
 	};
 }
 
-async function readBlob(root: string, sha: string): Promise<string | undefined> {
-	const result = await runGit(["cat-file", "blob", sha], { cwd: root, limitBytes: MANIFEST_LIMIT_BYTES });
+async function readBlob(root: string, sha: string, limitBytes: number): Promise<string | undefined> {
+	const result = await runGit(["cat-file", "blob", sha], { cwd: root, limitBytes });
 	return result.code === 0 && !result.truncated ? result.stdout.toString("utf8") : undefined;
 }
 
@@ -196,38 +220,66 @@ function parseNumstat(text: string): Map<string, { added: number; deleted: numbe
 }
 
 /**
- * The `+` lines of a -U0 patch, by file. File headers are recognised only
- * before a file's first hunk, so an added line that itself starts with `++`
- * is never taken for a header. A patch cut at the scan limit drops its last,
- * possibly partial line.
+ * Streams the whole -U0 patch and keeps the added lines that carry a content
+ * signal. File headers are recognised only before a file's first hunk, so an
+ * added line that itself starts with `++` is never taken for a header.
  */
-function parseAddedLines(patch: string, truncated: boolean): AddedLine[] {
-	const lines = patch.split("\n");
-	if (truncated) lines.pop();
-	const added: AddedLine[] = [];
+async function scanPatch(root: string, base: string, tree: string): Promise<AddedLine[]> {
+	const found: AddedLine[] = [];
 	let path: string | undefined;
 	let inHunk = false;
-	for (const line of lines) {
+	const result = await streamGitLines([...DIFF, "-p", "-U0", "--no-color", base, tree], { cwd: root }, (bytes) => {
+		const first = bytes[0];
+		if (first === 0x2b /* + */ && inHunk) {
+			const text = bytes.subarray(1).toString("utf8");
+			if (path !== undefined && contentSignals(text).length > 0) found.push({ path, text });
+			return;
+		}
+		if (first !== 0x2b && first !== 0x2d && first !== 0x40 && first !== 0x64) return;
+		const line = bytes.toString("utf8");
 		if (line.startsWith("diff --git ")) {
 			path = undefined;
 			inHunk = false;
 		} else if (!inHunk && line.startsWith("+++ ")) {
-			path = line === "+++ /dev/null" ? undefined : unquote(line.slice(4)).replace(/^b\//, "");
+			path = line === "+++ /dev/null" ? undefined : headerPath(line.slice(4));
 		} else if (line.startsWith("@@")) {
 			inHunk = true;
-		} else if (inHunk && path !== undefined && line.startsWith("+")) {
-			added.push({ path, text: line.slice(1) });
 		}
-	}
-	return added;
+	});
+	if (result.code !== 0) throw new Error(result.stderr.trim() || `git diff-tree exited with ${result.code}`);
+	return found;
 }
 
-/** git quotes unusual paths C-style; JSON covers the common escapes. */
-function unquote(text: string): string {
-	if (!text.startsWith('"')) return text;
-	try {
-		return JSON.parse(text) as string;
-	} catch {
-		return text.slice(1, -1);
+/**
+ * The path of a `+++ b/<path>` header. git C-quotes unusual paths (octal bytes
+ * for non-ASCII, \\t, \\", ...) and ends an unquoted path that has a space with
+ * a tab; an unquoted path can never itself end in a tab, which would be quoted.
+ */
+function headerPath(text: string): string {
+	const name = text.startsWith('"') ? unquoteC(text) : text.replace(/\t$/, "");
+	return name.replace(/^b\//, "");
+}
+
+const C_ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+
+function unquoteC(text: string): string {
+	const body = Buffer.from(text.slice(1, text.lastIndexOf('"')), "utf8");
+	const bytes: number[] = [];
+	for (let i = 0; i < body.length; i++) {
+		const byte = body[i] as number;
+		if (byte !== 92) {
+			bytes.push(byte);
+			continue;
+		}
+		const next = String.fromCharCode(body[i + 1] ?? 0);
+		const octal = body.subarray(i + 1, i + 4).toString("latin1");
+		if (/^[0-7]{3}$/.test(octal)) {
+			bytes.push(Number.parseInt(octal, 8));
+			i += 3;
+		} else {
+			bytes.push(C_ESCAPES[next] ?? (body[i + 1] as number));
+			i += 1;
+		}
 	}
+	return Buffer.from(bytes).toString("utf8");
 }

@@ -21,9 +21,9 @@ function candidate(files: ChangedFile[], over: Partial<Candidate> = {}): Candida
 		tree: "c".repeat(40),
 		files,
 		changedLines: files.reduce((sum, item) => sum + item.added + item.deleted, 0),
-		addedLines: [],
+		signalLines: [],
 		manifests: [],
-		scanTruncated: false,
+		fencedDocs: [],
 		...over,
 	};
 }
@@ -36,17 +36,15 @@ describe("assessRisk", () => {
 
 	it("documentation only is passive, with no lenses", () => {
 		const result = assessRisk(
-			candidate([file("README.md"), file("docs/guide/setup.txt"), file("docs/notes"), file("CHANGELOG.rst")]),
+			candidate([file("README.md"), file("docs/guide/setup.txt"), file("docs/notes"), file("docs/api.rst")]),
 		);
 		expect(result).toMatchObject({ level: "passive", lenses: [], reviewDue: false, empty: false });
 		expect(result.reasons).toEqual(["documentation only"]);
 	});
 
 	it.each([
-		[
-			"a code block added to documentation",
-			candidate([file("README.md")], { addedLines: [{ path: "README.md", text: "```sh" }] }),
-		],
+		["documentation with a code fence", candidate([file("README.md")], { fencedDocs: ["README.md"] })],
+		["reStructuredText outside docs/", candidate([file("guide.rst")])],
 		["an executable documentation file", candidate([file("docs/run.md", { mode: "100755" })])],
 		["a binary file in docs", candidate([file("docs/logo.png", { binary: true })])],
 		["a configuration file in docs", candidate([file("docs/config.json")])],
@@ -86,11 +84,9 @@ describe("assessRisk", () => {
 		expect(result.reasons).toContain(reason);
 	});
 
-	it("risky path words in test files do not count", () => {
-		const result = assessRisk(
-			candidate([file("test/auth.test.ts"), file("src/__tests__/security.ts"), file("src/credentials.spec.ts")]),
-		);
-		expect(result.level).toBe("medium");
+	it("risky path words count in test files too", () => {
+		const result = assessRisk(candidate([file("test/auth.test.ts")]));
+		expect(result.reasons).toEqual(["path: test/auth.test.ts (auth)"]);
 	});
 
 	it.each([
@@ -102,18 +98,18 @@ describe("assessRisk", () => {
 		["await db.query('drop table users')", "DROP TABLE"],
 		["DELETE FROM sessions WHERE 1=1", "DELETE FROM"],
 	])("added content %s is high risk", (text, signal) => {
-		const result = assessRisk(candidate([file("src/run.ts")], { addedLines: [{ path: "src/run.ts", text }] }));
+		const result = assessRisk(candidate([file("src/run.ts")], { signalLines: [{ path: "src/run.ts", text }] }));
 		expect(result.level).toBe("high");
 		expect(result.reasons).toContain(`content: src/run.ts adds ${signal}`);
 	});
 
-	it("risky content in test files does not count", () => {
+	it("risky content counts in test files too", () => {
 		const result = assessRisk(
 			candidate([file("test/run.test.ts")], {
-				addedLines: [{ path: "test/run.test.ts", text: 'execFileSync("git", ["init"]);' }],
+				signalLines: [{ path: "test/run.test.ts", text: 'execFileSync("git", ["init"]);' }],
 			}),
 		);
-		expect(result.level).toBe("medium");
+		expect(result.reasons).toEqual(["content: test/run.test.ts adds exec"]);
 	});
 
 	it("changed dependencies or install scripts in package.json are high risk; other fields are not", () => {
@@ -144,12 +140,6 @@ describe("assessRisk", () => {
 		expect(result.reasons).toContain("dependencies: package.json (unreadable)");
 	});
 
-	it("a diff too large to scan is high risk", () => {
-		const result = assessRisk(candidate([file("src/a.ts")], { scanTruncated: true }));
-		expect(result.level).toBe("high");
-		expect(result.reasons).toContain("unscanned: the diff is too large to scan all of it");
-	});
-
 	it("size alone never changes the level", () => {
 		const huge = assessRisk(candidate([file("src/a.ts", { added: 50_000, deleted: 20_000 })]));
 		expect(huge.level).toBe("medium");
@@ -175,7 +165,7 @@ describe("assessRisk", () => {
 
 	it("is deterministic: same candidate, same result", () => {
 		const input = candidate([file("src/b.ts"), file("src/auth/a.ts")], {
-			addedLines: [{ path: "src/b.ts", text: "eval(x)" }],
+			signalLines: [{ path: "src/b.ts", text: "eval(x)" }],
 		});
 		expect(assessRisk(input)).toEqual(assessRisk(input));
 		expect(assessRisk(input).files).toEqual(["src/auth/a.ts", "src/b.ts"]);
@@ -198,7 +188,7 @@ describe("risk tool", () => {
 	});
 
 	it("records the lens for medium risk", async () => {
-		const { outcome, state } = await run({ lens: "resilience" });
+		const { outcome, state } = await run({ lenses: ["resilience"] });
 		expect(outcome.output).toBe("Lens for a medium-risk review: resilience.");
 		expect(state.lens).toBe("resilience");
 	});
@@ -216,16 +206,18 @@ describe("risk tool", () => {
 		expect(state.lens).toBeUndefined();
 	});
 
-	it("rejects items outside 1-6 through input validation", async () => {
+	it("rejects items outside 1-6 and more than one lens through input validation", async () => {
+		await expect(run({ lenses: ["risk", "resilience"] })).rejects.toThrow();
 		await expect(run({ items: [7], reason: "x" })).rejects.toThrow();
 		await expect(run({ items: [], reason: "x" })).rejects.toThrow();
 	});
 
 	it("clear forgets escalations and the lens", async () => {
 		const state = new RiskRequests();
-		await run({ items: [1], reason: "x", lens: "risk" }, state);
+		await run({ items: [1], reason: "x", lenses: ["risk"] }, state);
 		state.clear();
 		expect(state.escalations).toEqual([]);
 		expect(state.lens).toBeUndefined();
+		expect(state.lensReason).toBeUndefined();
 	});
 });
