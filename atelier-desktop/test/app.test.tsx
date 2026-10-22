@@ -177,7 +177,8 @@ describe("App", () => {
 				{ id: "T2", title: "Run the tests", specs: ["S1"], status: "in_progress" },
 			],
 		});
-		expect((await screen.findByRole("status")).textContent).toContain("implementing");
+		// Host messages are applied once per frame: wait for the batch, not just for the status bar.
+		await waitFor(() => expect(screen.getByRole("status").textContent).toContain("implementing"));
 		const panel = await screen.findByRole("complementary", { name: "Feature" });
 		expect(panel.textContent).toContain("Slug accents");
 		expect(panel.textContent).toContain("odd/tasks/slug-accents.md");
