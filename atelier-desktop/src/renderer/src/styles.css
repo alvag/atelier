@@ -1,0 +1,173 @@
+:root {
+	--at-bg: #ffffff;
+	--at-fg: #1d1f23;
+	--at-muted: #6b7280;
+	--at-border: #e5e7eb;
+	--at-surface: #f6f7f9;
+	--at-accent: #4f46e5;
+	--at-ok: #15803d;
+	--at-error: #b91c1c;
+	--at-warning: #b45309;
+	--at-radius: 6px;
+	--at-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	--at-mono: ui-monospace, "SF Mono", Menlo, monospace;
+	color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--at-bg: #16181d;
+		--at-fg: #e6e8eb;
+		--at-muted: #9aa0aa;
+		--at-border: #2b2f37;
+		--at-surface: #1e2128;
+		--at-accent: #8b85ff;
+		--at-ok: #4ade80;
+		--at-error: #f87171;
+		--at-warning: #fbbf24;
+	}
+}
+
+body {
+	margin: 0;
+	background: var(--at-bg);
+	color: var(--at-fg);
+	font: 14px / 1.5 var(--at-font);
+}
+
+.app {
+	display: grid;
+	grid-template-rows: auto 1fr auto auto;
+	height: 100vh;
+}
+
+.toolbar,
+.status {
+	display: flex;
+	gap: 12px;
+	align-items: center;
+	padding: 8px 16px;
+	border-bottom: 1px solid var(--at-border);
+	background: var(--at-surface);
+}
+
+.status {
+	border-top: 1px solid var(--at-border);
+	border-bottom: none;
+	font-size: 12px;
+	color: var(--at-muted);
+}
+
+.cwd {
+	flex: 1;
+	font-family: var(--at-mono);
+	color: var(--at-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+main {
+	overflow-y: auto;
+	padding: 16px;
+}
+
+.turn {
+	max-width: 860px;
+	margin: 0 auto 24px;
+}
+
+.prompt {
+	padding: 8px 12px;
+	border-radius: var(--at-radius);
+	background: var(--at-surface);
+	white-space: pre-wrap;
+}
+
+.tool {
+	display: flex;
+	gap: 8px;
+	font-family: var(--at-mono);
+	font-size: 12px;
+	padding: 2px 0;
+}
+
+.tool-ok .tool-mark {
+	color: var(--at-ok);
+}
+
+.tool-error .tool-mark,
+.tool-denied .tool-mark {
+	color: var(--at-error);
+}
+
+.tool-summary {
+	color: var(--at-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tool-note {
+	color: var(--at-warning);
+}
+
+.approval {
+	margin: 8px 0;
+	padding: 12px;
+	border: 1px solid var(--at-warning);
+	border-radius: var(--at-radius);
+}
+
+.approval pre,
+.text pre {
+	font-family: var(--at-mono);
+	overflow-x: auto;
+}
+
+.approval-actions {
+	display: flex;
+	gap: 8px;
+}
+
+.turn-error,
+.error {
+	color: var(--at-error);
+}
+
+.warning {
+	color: var(--at-warning);
+}
+
+.tokens {
+	margin-top: 6px;
+	font-size: 12px;
+	color: var(--at-muted);
+}
+
+.composer {
+	display: flex;
+	gap: 8px;
+	padding: 12px 16px;
+	border-top: 1px solid var(--at-border);
+}
+
+.composer textarea {
+	flex: 1;
+	min-height: 48px;
+	resize: vertical;
+	font: inherit;
+	color: inherit;
+	background: var(--at-bg);
+	border: 1px solid var(--at-border);
+	border-radius: var(--at-radius);
+	padding: 8px;
+}
+
+button {
+	font: inherit;
+}
+
+a {
+	color: var(--at-accent);
+}

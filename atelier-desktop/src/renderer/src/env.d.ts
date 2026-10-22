@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import type { AtelierBridge } from "../../shared/bridge.ts";
 
 declare global {
