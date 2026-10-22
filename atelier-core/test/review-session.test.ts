@@ -638,6 +638,13 @@ describe("RpcServer review", () => {
 		expect(types(off.events(offId)).filter((type) => type.startsWith("review_"))).toEqual([]);
 	});
 
+	it("refuses an explicit review:true when the server has review off", async () => {
+		const off = await serve([], { review: false });
+		const response = await off.answerOf(off.send({ command: "session.start", cwd: off.cwd, review: true }));
+		expect(response).toMatchObject({ ok: false, error: { code: "review_unavailable" } });
+		expect(off.messages.filter((m) => m.type === "event")).toEqual([]);
+	});
+
 	it("reviews by default when the server has review on", async () => {
 		const h = await serve([MEDIUM_TURN], { review: true });
 		const sessionId = await h.begin();

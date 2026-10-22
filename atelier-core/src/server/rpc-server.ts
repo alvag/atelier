@@ -161,7 +161,7 @@ export class RpcServer {
 						message.model,
 						message.autoApprove ?? false,
 						message.backend ?? DEFAULT_BACKEND,
-						message.review ?? true,
+						message.review,
 					),
 				};
 			case "session.send": {
@@ -226,9 +226,13 @@ export class RpcServer {
 		model: string | undefined,
 		autoApprove: boolean,
 		backend: BackendName,
-		review: boolean,
+		/** Absent means the server's default; an explicit true the server cannot honor is refused, never dropped. */
+		requested: boolean | undefined,
 	): Promise<string> {
 		if (this.#stopping) throw new CommandError("shutting_down", "The server is shutting down.");
+		if (requested === true && !this.#options.review)
+			throw new CommandError("review_unavailable", "Review is off on this server (ATELIER_REVIEW=off).");
+		const review = (requested ?? true) && this.#options.review === true;
 		if (
 			!(await stat(cwd).then(
 				(s) => s.isDirectory(),
@@ -261,7 +265,7 @@ export class RpcServer {
 				autoApprove,
 				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
 				odd: true,
-				...(review && this.#options.review
+				...(review
 					? {
 							review: {
 								createBackend: () => this.#options.createBackend(backend),
