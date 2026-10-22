@@ -34,6 +34,17 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 Ctrl+C interrupts the running turn (and answers no to a pending approval); with no turn running, or pressed twice, it closes the session.
 
+## Desktop app
+
+```bash
+pnpm desktop            # dev mode with hot reload
+pnpm -C atelier-desktop smoke   # build + Playwright smoke test (echo backend, no network)
+```
+
+Open a folder, pick a model and chat. Each tool call shows as a row with its status; `bash` commands ask for approval in a card that shows invisible and control characters as visible markers. Every turn ends with its tokens; the status bar shows the core status, warnings and the latest error. If the core process dies, the app says so and offers a restart.
+
+The desktop starts the core with Electron's own Node (no system Node needed) and talks to it over the Atelier protocol: one JSON message per line on stdin/stdout, a `hello` with the protocol version, an `id` on every command and exactly one response per command, and events tagged with their session. See `../docs/m2-diseno.md`.
+
 ## How it works
 
 - The core emits plain-JSON `AtelierEvent`s; clients only render them. Every turn ends with exactly one `turn_finished`.

@@ -63,6 +63,8 @@ ipcMain.handle(IPC.request, (_event, payload: unknown) => {
 ipcMain.handle(IPC.restart, () => host.restart());
 ipcMain.handle(IPC.status, () => host.status());
 ipcMain.handle(IPC.pickFolder, async () => {
+	// End-to-end tests cannot drive the native dialog; they name the folder instead.
+	if (process.env.ATELIER_E2E_FOLDER) return process.env.ATELIER_E2E_FOLDER;
 	const options = { properties: ["openDirectory" as const] };
 	const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
 	return result.canceled ? undefined : result.filePaths[0];

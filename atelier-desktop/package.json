@@ -7,7 +7,8 @@
 	"scripts": {
 		"dev": "electron-vite dev",
 		"build": "electron-vite build",
-		"start": "electron-vite preview"
+		"start": "electron-vite preview",
+		"smoke": "electron-vite build && node e2e/smoke.ts"
 	},
 	"dependencies": {
 		"@atelier/core": "workspace:*",
@@ -17,6 +18,7 @@
 		"react-dom": "19.3.1"
 	},
 	"devDependencies": {
+		"@playwright/test": "1.64.1",
 		"@testing-library/react": "16.3.3",
 		"@types/react": "^19.3.0",
 		"@types/react-dom": "^19.3.0",
