@@ -36,7 +36,14 @@ export { SYSTEM_PROMPT_APPEND } from "./prompt.ts";
 export * from "./protocol/index.ts";
 export { EchoBackend } from "./server/echo-backend.ts";
 export { RpcServer, type RpcServerOptions } from "./server/rpc-server.ts";
-export { type ApprovalRequest, Session, type SessionOptions } from "./session.ts";
+export { type ApprovalRequest, Session, type SessionOptions, type SubagentOptions } from "./session.ts";
+export {
+	BUILTIN_AGENTS,
+	boundReport,
+	REPORT_LIMIT,
+	type SubagentDefinition,
+	TASK_TOOL,
+} from "./subagents/definitions.ts";
 export { visibleText } from "./text.ts";
 export * from "./tools/index.ts";
 export { UsageMeter } from "./usage-meter.ts";

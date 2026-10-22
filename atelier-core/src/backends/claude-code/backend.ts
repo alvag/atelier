@@ -126,6 +126,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 				allowDangerouslySkipPermissions: true,
 				systemPrompt: { type: "preset", preset: "claude_code", append: start.systemPromptAppend },
 				includePartialMessages: true,
+				...(start.maxRequestsPerTurn === undefined ? {} : { maxTurns: start.maxRequestsPerTurn }),
 				persistSession: false,
 				env: childEnv(this.#options),
 				...(this.#options.pathToClaudeCodeExecutable === undefined

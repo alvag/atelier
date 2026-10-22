@@ -331,6 +331,25 @@ describe("AnthropicApiBackend", () => {
 		expect(finished(events)).toEqual([expect.objectContaining({ stopReason: "turn_limit" })]);
 	});
 
+	it("lets the start options cap a turn's requests below the backend's own limit", async () => {
+		const loop = (id: string): Reply => ({
+			blocks: [{ type: "tool_use", id, name: "echo", input: { text: id } }],
+			stopReason: "tool_use",
+		});
+		const api = fakeApi([loop("a"), loop("b")]);
+		const backend = new AnthropicApiBackend({ apiKey: API_KEY, fetch: api.fetch, maxRetries: 0 });
+		const session = await backend.start({
+			cwd: "/work",
+			systemPromptAppend: "",
+			tools: [echoTool],
+			executeTool: async () => ({ ok: true, output: "" }),
+			maxRequestsPerTurn: 1,
+		});
+		const events = await collect(session.send("loop"));
+		expect(api.bodies).toHaveLength(1);
+		expect(events.filter((e) => e.type === "error")).toEqual([expect.objectContaining({ code: "turn_limit" })]);
+	});
+
 	it.each([
 		[429, "rate_limit_error", "rate_limited", true],
 		[529, "overloaded_error", "overloaded", true],

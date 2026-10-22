@@ -146,6 +146,19 @@ describe("ClaudeCodeBackend options", () => {
 			executeTool: async () => ({ ok: true, output: "" }),
 		});
 		expect(calls.options.model).toBe("sonnet");
+		expect(calls.options).not.toHaveProperty("maxTurns");
+	});
+
+	it("caps a turn's model requests with maxTurns when asked", async () => {
+		const { query, calls } = fakeQuery([], []);
+		await new ClaudeCodeBackend({ query, env: {} }).start({
+			cwd: "/w",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+			maxRequestsPerTurn: 30,
+		});
+		expect(calls.options.maxTurns).toBe(30);
 	});
 
 	it("drops ANTHROPIC_API_KEY so the subscription is used, unless asked to keep it", async () => {

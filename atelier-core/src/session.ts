@@ -5,7 +5,8 @@ import { join } from "node:path";
 import type { AgentBackend, BackendSession, ToolCall, ToolCallResult } from "./backend.ts";
 import { Channel } from "./channel.ts";
 import { type AtelierEvent, type AtelierEventBody, describeError, errorEvent, ZERO_USAGE } from "./events.ts";
-import { type ToolDefinition, ToolInputError } from "./tools/types.ts";
+import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
+import { type ToolDefinition, ToolInputError, type ToolOutcome } from "./tools/types.ts";
 
 export interface ApprovalRequest {
 	callId: string;
@@ -23,6 +24,16 @@ export interface SessionOptions {
 	/** Asks the user; without it, calls that need approval are denied. */
 	approve?: (request: ApprovalRequest) => Promise<boolean>;
 	createId?: () => string;
+	/** Enables the task tool. Children get no subagents: they do not delegate. */
+	subagents?: SubagentOptions;
+	/** Passed to the backend: caps the model requests of one turn. */
+	maxRequestsPerTurn?: number;
+}
+
+export interface SubagentOptions {
+	agents: readonly SubagentDefinition[];
+	/** A fresh backend of the same kind as the parent's, for each child. */
+	createBackend: () => AgentBackend | Promise<AgentBackend>;
 }
 
 /**
@@ -42,8 +53,15 @@ export class Session {
 	#scratchDir: string | undefined;
 
 	private constructor(options: SessionOptions) {
-		this.#options = options;
-		this.#tools = new Map(options.tools.map((tool) => [tool.name, tool]));
+		const subagents = options.subagents;
+		const tools = subagents
+			? [
+					...options.tools,
+					createTaskTool(subagents.agents, (agent, prompt) => this.#runSubagent(subagents, agent, prompt)),
+				]
+			: options.tools;
+		this.#options = { ...options, tools };
+		this.#tools = new Map(tools.map((tool) => [tool.name, tool]));
 		this.#createId = options.createId ?? randomUUID;
 	}
 
@@ -56,8 +74,9 @@ export class Session {
 				cwd: options.cwd,
 				...(options.model === undefined ? {} : { model: options.model }),
 				systemPromptAppend: options.systemPromptAppend ?? "",
-				tools: options.tools,
+				tools: session.#options.tools,
 				executeTool: (call) => session.#executeTool(call),
+				...(options.maxRequestsPerTurn === undefined ? {} : { maxRequestsPerTurn: options.maxRequestsPerTurn }),
 			});
 		} catch (error) {
 			await rm(scratchDir, { recursive: true, force: true });
@@ -182,6 +201,57 @@ export class Session {
 		} catch (error) {
 			const prefix = error instanceof ToolInputError ? "Invalid input" : "Tool failed";
 			return fail(`${prefix}: ${describeError(error)}`);
+		}
+	}
+
+	/** Runs one child turn with its own context and turns its final text into the report. */
+	async #runSubagent(options: SubagentOptions, agent: SubagentDefinition, prompt: string): Promise<ToolOutcome> {
+		const fail = (output: string): ToolOutcome => ({ ok: false, output, summary: output, truncated: false });
+		let child: Session;
+		try {
+			const backend = await options.createBackend();
+			const model = agent.models[backend.id] ?? this.#options.model;
+			child = await Session.start({
+				backend,
+				cwd: this.#options.cwd,
+				...(model === undefined ? {} : { model }),
+				// In the definition's order; a tool the parent lacks is skipped, and task never: children do not delegate.
+				tools: agent.tools.flatMap((name) => {
+					const tool = name === TASK_TOOL ? undefined : this.#tools.get(name);
+					return tool ? [tool] : [];
+				}),
+				systemPromptAppend: agent.prompt,
+				maxRequestsPerTurn: agent.maxRequests,
+				...(this.#options.autoApprove === undefined ? {} : { autoApprove: this.#options.autoApprove }),
+				...(this.#options.approve === undefined ? {} : { approve: this.#options.approve }),
+				createId: this.#createId,
+			});
+		} catch (error) {
+			return fail(`The ${agent.name} subagent could not start: ${describeError(error)}`);
+		}
+		try {
+			// Only the text after the child's last tool call is its answer.
+			let report = "";
+			let failure: string | undefined;
+			let stopReason = "incomplete";
+			for await (const event of child.send(prompt)) {
+				if (event.type === "text_delta") report += event.text;
+				else if (event.type === "tool_call_started") report = "";
+				else if (event.type === "error") failure ??= `${event.code}: ${event.message}`;
+				else if (event.type === "turn_finished") stopReason = event.stopReason;
+			}
+			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined)
+				return fail(`The ${agent.name} subagent failed (${stopReason}): ${failure ?? "no details"}`);
+			if (report.trim() === "") return fail(`The ${agent.name} subagent returned no report.`);
+			const bounded = boundReport(report);
+			return {
+				ok: true,
+				output: bounded.text,
+				summary: `${agent.name}: ${bounded.text.length} characters`,
+				truncated: bounded.truncated,
+			};
+		} finally {
+			await child.close();
 		}
 	}
 }

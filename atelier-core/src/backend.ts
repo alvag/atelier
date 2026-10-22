@@ -24,6 +24,8 @@ export interface BackendStartOptions {
 	systemPromptAppend: string;
 	tools: readonly ToolDefinition[];
 	executeTool: ToolExecutor;
+	/** Caps the model requests of one turn; backends without such a cap ignore it. */
+	maxRequestsPerTurn?: number;
 }
 
 export interface BackendSession {

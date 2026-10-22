@@ -102,7 +102,7 @@ export class AnthropicApiBackend implements AgentBackend {
 			tools: Object.freeze(toAnthropicTools(start.tools)),
 			messages: [],
 		};
-		const maxRequests = this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
+		const maxRequests = start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
 		return new AnthropicApiSession(client, state, start.executeTool, maxRequests, this.#options.apiKey);
 	}
 }
