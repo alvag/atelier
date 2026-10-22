@@ -1,10 +1,10 @@
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { RpcClient } from "@atelier/core/client";
-import type { ClientCommand } from "@atelier/core/protocol";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC } from "../shared/bridge.ts";
 import { CoreHost } from "./core-host.ts";
+import { externalUrl, parseCommand } from "./guards.ts";
 
 const QUIT_TIMEOUT_MS = 4000;
 
@@ -37,11 +37,18 @@ function createWindow(): BrowserWindow {
 		},
 	});
 	// Links open in the system browser, and only http(s); the app window never navigates away.
+	const openOutside = (url: string) => {
+		const target = externalUrl(url);
+		if (target) void shell.openExternal(target);
+	};
 	created.webContents.setWindowOpenHandler(({ url }) => {
-		if (/^https?:\/\//.test(url)) void shell.openExternal(url);
+		openOutside(url);
 		return { action: "deny" };
 	});
-	created.webContents.on("will-navigate", (event) => event.preventDefault());
+	created.webContents.on("will-navigate", (event, url) => {
+		event.preventDefault();
+		openOutside(url);
+	});
 	// Every load (including reloads) makes sure the core runs; the renderer asks for the status itself.
 	created.webContents.on("did-finish-load", () => void host.start());
 	if (process.env.ELECTRON_RENDERER_URL) void created.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -49,7 +56,10 @@ function createWindow(): BrowserWindow {
 	return created;
 }
 
-ipcMain.handle(IPC.request, (_event, command: ClientCommand) => host.request(command));
+ipcMain.handle(IPC.request, (_event, payload: unknown) => {
+	const parsed = parseCommand(payload);
+	return parsed.ok ? host.request(parsed.command) : parsed;
+});
 ipcMain.handle(IPC.restart, () => host.restart());
 ipcMain.handle(IPC.status, () => host.status());
 ipcMain.handle(IPC.pickFolder, async () => {
