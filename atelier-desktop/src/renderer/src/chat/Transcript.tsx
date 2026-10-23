@@ -136,7 +136,7 @@ function ReviewBlock({ item, onAnswer }: { item: Extract<TurnItem, { kind: "revi
 			</ul>
 			{item.roles.map((role) => {
 				// A role's block reuses the subagent block; it stays folded unless the role asks for an answer.
-				const done = role.finished !== undefined || item.result !== undefined;
+				const done = role.finished !== undefined || item.result !== undefined || item.ended === true;
 				const row: Extract<TurnItem, { kind: "tool" }> = {
 					kind: "tool",
 					callId: `${item.reviewId}-${role.agent}`,
@@ -147,7 +147,9 @@ function ReviewBlock({ item, onAnswer }: { item: Extract<TurnItem, { kind: "revi
 				};
 				return <SubagentBlock key={role.agent} item={row} subagent={role} onAnswer={onAnswer} />;
 			})}
-			{item.reviewId && !item.result ? <div className="review-verdict">Reviewing…</div> : null}
+			{item.reviewId && !item.result ? (
+				<div className="review-verdict">{item.ended ? "The review stopped without a result." : "Reviewing…"}</div>
+			) : null}
 			{item.result ? <ReviewVerdict result={item.result} /> : null}
 		</section>
 	);

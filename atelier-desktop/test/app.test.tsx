@@ -351,6 +351,23 @@ describe("App", () => {
 			expect(block.textContent).not.toContain("left in your worktree");
 		});
 
+		it("stops showing Reviewing… when the turn ends without a result", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "/review");
+			fake.emit({ type: "review_progress", reviewId: "r1", step: { type: "lens_started", lens: "risk" } });
+			const block = await screen.findByTestId("review");
+			expect(block.textContent).toContain("Reviewing…");
+			fake.emit({ type: "error", code: "review_failed", message: "git failed", recoverable: true });
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			});
+			// A finished turn is rendered anew, so the block is looked up again.
+			await waitFor(() => expect(screen.getByTestId("review").textContent).not.toContain("Reviewing…"));
+			expect(screen.getByTestId("review").textContent).toContain("The review stopped without a result.");
+		});
+
 		it("warns plainly that an escalated review left its correction in the worktree", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");

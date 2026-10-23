@@ -45,6 +45,8 @@ export type TurnItem =
 			/** Each lens, the refuter and the validator, in the order they first spoke. */
 			roles: Subagent[];
 			result?: ReviewResult;
+			/** The turn ended without a result (the review failed): it is no longer running. */
+			ended?: boolean;
 	  }
 	| { kind: "error"; code: string; message: string }
 	/** `expected`: it follows a compaction, which rewrote the history on purpose. */
@@ -215,7 +217,7 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 			const finished: ChatState = {
 				...updateTurn(state, event.turnId, (turn) => ({
 					...turn,
-					items: closeConsents(turn.items),
+					items: endReviews(closeConsents(turn.items)),
 					finished: finishedOf(event),
 				})),
 				busy: false,
@@ -409,6 +411,15 @@ function updateReview(items: TurnItem[], reviewId: string, update: (review: Revi
 }
 
 /** Pending consent cards of this review (any, without an id) can no longer be answered. */
+/** A review still without a result when its turn ends will never get one. */
+function endReviews(items: TurnItem[]): TurnItem[] {
+	return items.map((item) =>
+		item.kind === "review" && item.reviewId !== undefined && item.result === undefined
+			? { ...item, ended: true }
+			: item,
+	);
+}
+
 function closeConsents(items: TurnItem[], reviewId?: string): TurnItem[] {
 	return items.map((item) =>
 		item.kind === "review_consent" && item.state === "pending" && (reviewId === undefined || item.reviewId === reviewId)

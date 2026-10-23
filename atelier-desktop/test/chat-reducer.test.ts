@@ -419,6 +419,41 @@ describe("reduceChat: review", () => {
 		expect(items(state)).toContainEqual(expect.objectContaining({ kind: "review_consent", state: "closed" }));
 	});
 
+	it("ends a review that never reported a result when its turn finishes", () => {
+		const state = run([
+			...opened,
+			event(assessed),
+			event({ type: "review_progress", reviewId: "r1", step: { type: "lens_started", lens: "risk" } }),
+			event({ type: "error", code: "review_failed", message: "git failed", recoverable: true }),
+			event({ type: "turn_finished", stopReason: "end_turn", usage }),
+		]);
+		const review = items(state).find((item) => item.kind === "review");
+		expect(review).toMatchObject({ kind: "review", reviewId: "r1", ended: true });
+		expect(review?.kind === "review" && review.result).toBeUndefined();
+	});
+
+	it("does not mark a review with a result as ended without one", () => {
+		const state = run([
+			...opened,
+			event(assessed),
+			event({ type: "review_progress", reviewId: "r1", step: { type: "lens_started", lens: "risk" } }),
+			event({
+				type: "review_finished",
+				reviewId: "r1",
+				verdict: "approved",
+				findings: [],
+				refuted: [],
+				followUps: [],
+				correction: null,
+				usage,
+			}),
+			event({ type: "turn_finished", stopReason: "end_turn", usage }),
+		]);
+		const review = items(state).find((item) => item.kind === "review");
+		expect(review).toMatchObject({ result: { verdict: "approved" } });
+		expect(review?.kind === "review" && review.ended).toBeFalsy();
+	});
+
 	it("nests each role's work in its own block under the review, not under a tool call", () => {
 		const state = run([
 			...opened,
