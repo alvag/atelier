@@ -62,7 +62,7 @@ describe("reduceChat", () => {
 					},
 					{ kind: "text", text: "Done." },
 				],
-				finished: { stopReason: "end_turn", usage, costUsd: 0.07 },
+				finished: { stopReason: "end_turn", usage, costUsd: 0.07, model: "claude-opus-5-5" },
 			},
 		]);
 	});
@@ -78,7 +78,29 @@ describe("reduceChat", () => {
 		]);
 		expect(state.backend).toBe("anthropic-api");
 		expect(state.turns[0]?.items).toEqual([{ kind: "cache_miss", reason: "tools_changed", missedTokens: 900 }]);
-		expect(state.turns[0]?.finished).toEqual({ stopReason: "end_turn", usage, costUsd: 0.01, requests: 2 });
+		expect(state.turns[0]?.finished).toEqual({
+			stopReason: "end_turn",
+			usage,
+			costUsd: 0.01,
+			requests: 2,
+			model: "claude-sonnet-5-5",
+		});
+	});
+
+	it("keeps each finished turn's model when a later session_started reports another", () => {
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "one" },
+			{ type: "turn_accepted", turnId: "t1" },
+			event({ type: "session_started", backend: "claude-code", model: "opus", authSource: "subscription" }),
+			event({ type: "turn_finished", stopReason: "end_turn", usage }),
+			{ type: "prompt_sent", text: "two" },
+			{ type: "turn_accepted", turnId: "t2" },
+			event({ type: "session_started", backend: "claude-code", model: "sonnet", authSource: "subscription" }, "t2"),
+			event({ type: "turn_finished", stopReason: "end_turn", usage }, "t2"),
+		]);
+		expect(state.model).toBe("sonnet");
+		expect(state.turns.map((turn) => turn.finished?.model)).toEqual(["opus", "sonnet"]);
 	});
 
 	it("is busy from the prompt until the turn finishes", () => {

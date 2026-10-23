@@ -189,7 +189,7 @@ function CompactionRow({ item }: { item: Extract<TurnItem, { kind: "compaction" 
 	return <div className="compaction">Context compacted · {parts.join(" · ")}</div>;
 }
 
-/** A finished turn in one line: model, wall time, total tokens and cost; the token breakdown folds under it. */
+/** A finished turn in one line: model, wall time, total tokens and cost; the token breakdown, without the cost, folds under it. */
 function UsageSummary({ finished, model }: { finished: NonNullable<Turn["finished"]>; model?: string | undefined }) {
 	const { input, output, cacheRead, cacheWrite } = finished.usage;
 	const head: string[] = [];
@@ -216,7 +216,6 @@ function TokenLine({ finished }: { finished: NonNullable<Turn["finished"]> }) {
 	const rate = cacheHitRate(finished.usage);
 	if (rate !== undefined) parts.push(`cache ${Math.round(rate * 100)}%`);
 	if (finished.requests !== undefined) parts.push(`${finished.requests} request${finished.requests === 1 ? "" : "s"}`);
-	if (finished.costUsd !== undefined) parts.push(`$${finished.costUsd.toFixed(4)}`);
 	return <div className="tokens">tokens: {parts.join(" · ")}</div>;
 }
 
@@ -297,22 +296,12 @@ function SubagentBlock({
 	);
 }
 
-function TurnView({
-	turn,
-	model,
-	onAnswer,
-	onConsent,
-}: {
-	turn: Turn;
-	model?: string | undefined;
-	onAnswer: OnAnswer;
-	onConsent?: OnConsent;
-}) {
+function TurnView({ turn, onAnswer, onConsent }: { turn: Turn; onAnswer: OnAnswer; onConsent?: OnConsent }) {
 	return (
 		<section className="turn">
 			{turn.prompt ? <div className="prompt">{turn.prompt}</div> : null}
 			<Items items={turn.items} onAnswer={onAnswer} {...(onConsent ? { onConsent } : {})} />
-			{turn.finished ? <UsageSummary finished={turn.finished} model={model} /> : null}
+			{turn.finished ? <UsageSummary finished={turn.finished} model={turn.finished.model} /> : null}
 		</section>
 	);
 }
@@ -322,13 +311,10 @@ const FinishedTurn = memo(TurnView);
 
 export function Transcript({
 	turns,
-	model,
 	onAnswer,
 	onConsent,
 }: {
 	turns: Turn[];
-	/** The session's model, shown on each finished turn; subagents show their own. */
-	model?: string | undefined;
 	onAnswer: (callId: string, approved: boolean) => void;
 	onConsent?: OnConsent;
 }) {
@@ -337,9 +323,9 @@ export function Transcript({
 		<div className="transcript">
 			{turns.map((turn, index) =>
 				turn.finished ? (
-					<FinishedTurn key={turn.id ?? index} turn={turn} model={model} onAnswer={onAnswer} {...consent} />
+					<FinishedTurn key={turn.id ?? index} turn={turn} onAnswer={onAnswer} {...consent} />
 				) : (
-					<TurnView key={turn.id ?? index} turn={turn} model={model} onAnswer={onAnswer} {...consent} />
+					<TurnView key={turn.id ?? index} turn={turn} onAnswer={onAnswer} {...consent} />
 				),
 			)}
 		</div>

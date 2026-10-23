@@ -80,6 +80,8 @@ export interface Finished {
 	costUsd?: number;
 	requests?: number;
 	durationMs?: number;
+	/** The session's model when the turn finished, so a later session with another model does not relabel it. */
+	model?: string;
 }
 
 export interface Turn {
@@ -219,7 +221,7 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 				...updateTurn(state, event.turnId, (turn) => ({
 					...turn,
 					items: endReviews(closeConsents(turn.items)),
-					finished: finishedOf(event),
+					finished: { ...finishedOf(event), ...(state.model === undefined ? {} : { model: state.model }) },
 				})),
 				busy: false,
 				...(event.context === undefined ? {} : { context: event.context }),

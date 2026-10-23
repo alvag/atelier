@@ -85,7 +85,7 @@ describe("App", () => {
 		expect((await screen.findByText("there")).tagName).toBe("STRONG");
 		expect(screen.getByTestId("tool-row").textContent).toContain("a.ts (3 lines)");
 		expect(
-			screen.getByText("tokens: input 1,200 · output 85 · cache read 9,000 · cache write 3,100 · cache 68% · $0.0421"),
+			screen.getByText("tokens: input 1,200 · output 85 · cache read 9,000 · cache write 3,100 · cache 68%"),
 		).toBeTruthy();
 	});
 
@@ -132,7 +132,39 @@ describe("App", () => {
 		expect(usage.tagName).toBe("DETAILS");
 		expect(usage.hasAttribute("open")).toBe(false);
 		expect(usage.querySelector("summary")?.textContent).toBe("claude-opus-5-5 · 1m 12s · 48.2K tokens · $0.0312");
-		expect(usage.textContent).toContain("tokens: input 1,200 · output 85 · cache read 45,000 · cache write 1,900");
+		expect(usage.querySelector(".tokens")?.textContent).toBe(
+			"tokens: input 1,200 · output 85 · cache read 45,000 · cache write 1,900 · cache 94%",
+		);
+	});
+
+	it("labels each finished turn with the model it ran on, not the current one", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		const finish = () =>
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+			});
+		fake.emit({
+			type: "session_started",
+			backend: "claude-code",
+			model: "claude-opus-5-5",
+			authSource: "subscription",
+		});
+		finish();
+		await screen.findByTestId("usage");
+		fake.emit({
+			type: "session_started",
+			backend: "claude-code",
+			model: "claude-haiku-5-5",
+			authSource: "subscription",
+		});
+		await waitFor(() =>
+			expect(screen.getAllByTestId("usage").map((usage) => usage.querySelector("summary")?.textContent)).toEqual([
+				"claude-opus-5-5 · 2 tokens",
+			]),
+		);
 	});
 
 	it("shows why the cache missed and how many requests the turn made", async () => {
