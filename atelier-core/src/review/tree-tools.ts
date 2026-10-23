@@ -75,7 +75,8 @@ function readTool(root: string, tree: string): ToolDefinition {
 				if (blob.stdout.includes(0)) return failure(`Binary file: ${path}`);
 
 				const all = blob.stdout.toString("utf8").split("\n");
-				if (all.at(-1) === "") all.pop();
+				// A blob cut at BLOB_LIMIT_BYTES ends in a partial line: it is dropped, never shown as whole.
+				if (blob.truncated || all.at(-1) === "") all.pop();
 				const total = all.length;
 				const start = offset ?? 1;
 				if (start > Math.max(total, 1))
@@ -87,7 +88,14 @@ function readTool(root: string, tree: string): ToolDefinition {
 				if (last < total)
 					output += `\n\n[Showing lines ${start}-${last} of ${total}. Use offset=${last + 1} to continue.]`;
 				else if (shown.clipped) output += `\n\n[Line ${last} is too long and was clipped. Use grep to inspect it.]`;
-				return { ok: true, output, summary: `${path} (${total} lines)`, truncated: last < total || shown.clipped };
+				if (blob.truncated)
+					output += `\n\n[Only the first 8 MiB of ${path} were read: ${total} complete lines. Use grep to search the rest.]`;
+				return {
+					ok: true,
+					output,
+					summary: blob.truncated ? `${path} (first ${total} lines of a file over 8 MiB)` : `${path} (${total} lines)`,
+					truncated: last < total || shown.clipped || blob.truncated,
+				};
 			} catch (error) {
 				return failure(errorMessage(error));
 			}

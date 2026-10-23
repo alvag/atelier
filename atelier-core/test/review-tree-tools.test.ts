@@ -149,4 +149,25 @@ describe("createTreeTools", () => {
 		expect(outcome.output.split("\n").filter((line) => line.startsWith("many.txt:"))).toHaveLength(MAX_GREP_MATCHES);
 		expect(outcome.output).toContain("[Showing the first 100 matches.");
 	});
+
+	it("says when a file over 8 MiB was read only in part, without its cut last line", async () => {
+		const line = `${"x".repeat(99)}\n`;
+		await write("big.txt", line.repeat(Math.ceil((9 * 1024 * 1024) / line.length)));
+		const frozen = await freezeCandidate(repo);
+		if (!frozen.ok) throw new Error(frozen.reason);
+		const [bigRead] = createTreeTools(frozen.candidate.root, frozen.candidate.tree) as [ToolDefinition];
+		const fullLines = Math.floor((8 * 1024 * 1024) / line.length);
+		const outcome = await run(bigRead, { path: "big.txt", offset: fullLines - 1 });
+		expect(outcome.ok).toBe(true);
+		expect(outcome.truncated).toBe(true);
+		expect(outcome.summary).toBe(`big.txt (first ${fullLines} lines of a file over 8 MiB)`);
+		expect(outcome.output).toBe(
+			[
+				`${fullLines - 1}\t${"x".repeat(99)}`,
+				`${fullLines}\t${"x".repeat(99)}`,
+				"",
+				`[Only the first 8 MiB of big.txt were read: ${fullLines} complete lines. Use grep to search the rest.]`,
+			].join("\n"),
+		);
+	});
 });
