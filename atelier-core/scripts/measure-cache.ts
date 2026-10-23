@@ -26,6 +26,7 @@ import {
 	SYSTEM_PROMPT_APPEND,
 	type Usage,
 } from "../src/index.ts";
+import { sumCosts, usd } from "./cost.ts";
 
 const PROMPTS = [
 	"Read src/slug.js and test/slug.test.js and explain in two sentences why the second test fails. Do not edit anything.",
@@ -134,10 +135,8 @@ try {
 	await rm(cwd, { recursive: true, force: true });
 }
 
-const usd = (value: number | undefined) => (value === undefined ? "—" : `$${value.toFixed(4)}`);
 const pct = (value: number | undefined) => (value === undefined ? "—" : `${Math.round(value * 100)}%`);
-const sum = (pick: (r: TurnReport) => number | undefined, rows: TurnReport[]) =>
-	rows.reduce((total, r) => total + (pick(r) ?? 0), 0);
+const sum = (pick: (r: TurnReport) => number, rows: TurnReport[]) => rows.reduce((total, r) => total + pick(r), 0);
 const measured = reports.slice(0, PROMPTS.length);
 
 const lines = [
@@ -150,7 +149,7 @@ const lines = [
 			`| ${r.turn} | ${r.requests} | ${r.usage.input} | ${r.usage.cacheRead} | ${r.usage.cacheWrite} | ${r.usage.output} | ${pct(r.cacheRate)} | ${usd(r.costUsd)} | ${usd(r.costWithoutCacheUsd)} | ${r.cacheMisses.map((m) => `${m.reason} (${m.missedTokens})`).join(", ") || "—"} |`,
 	),
 	"",
-	`Session (turns 1-${PROMPTS.length}): cost ${usd(sum((r) => r.costUsd, measured))}, without cache ${usd(sum((r) => r.costWithoutCacheUsd, measured))}, cache ${pct(
+	`Session (turns 1-${PROMPTS.length}): cost ${usd(sumCosts(measured.map((r) => r.costUsd)))}, without cache ${usd(sumCosts(measured.map((r) => r.costWithoutCacheUsd)))}, cache ${pct(
 		cacheHitRate({
 			input: sum((r) => r.usage.input, measured),
 			output: 0,

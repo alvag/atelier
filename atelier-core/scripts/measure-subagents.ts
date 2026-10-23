@@ -27,6 +27,7 @@ import {
 	SYSTEM_PROMPT_APPEND,
 	type Usage,
 } from "../src/index.ts";
+import { addCost, usd } from "./cost.ts";
 
 const QUESTION =
 	"How does Session make sure every turn ends with exactly one turn_finished event, even when the backend throws, the turn is interrupted or the backend never sends one? Answer with path:line references.";
@@ -36,7 +37,8 @@ const FOLLOW_UP = "In one sentence: which file holds that logic?";
 interface Measure {
 	usage: Usage;
 	requests: number;
-	costUsd: number;
+	/** Unknown as soon as one turn did not report its cost. */
+	costUsd: number | undefined;
 }
 
 interface ModeReport {
@@ -45,7 +47,7 @@ interface ModeReport {
 	subagents: Measure;
 	/** Prompt tokens of the follow-up's request: about the size of the parent's context. */
 	followUpPrompt: number;
-	followUpCostUsd: number;
+	followUpCostUsd: number | undefined;
 	answer: string;
 	errors: string[];
 }
@@ -62,7 +64,7 @@ function add(measure: Measure, event: Extract<AtelierEvent, { type: "turn_finish
 	measure.usage.cacheRead += event.usage.cacheRead;
 	measure.usage.cacheWrite += event.usage.cacheWrite;
 	measure.requests += event.requests ?? 0;
-	measure.costUsd += event.costUsd ?? 0;
+	measure.costUsd = addCost(measure.costUsd, event.costUsd);
 }
 const prompt = (u: Usage) => u.input + u.cacheRead + u.cacheWrite;
 
@@ -97,7 +99,7 @@ async function measure(mode: ModeReport["mode"]): Promise<ModeReport> {
 		for await (const event of session.send(FOLLOW_UP)) {
 			if (event.type === "turn_finished" && event.parentCallId === undefined) {
 				report.followUpPrompt = prompt(event.usage);
-				report.followUpCostUsd = event.costUsd ?? 0;
+				report.followUpCostUsd = event.costUsd;
 			}
 		}
 	} finally {
@@ -109,9 +111,8 @@ async function measure(mode: ModeReport["mode"]): Promise<ModeReport> {
 
 const reports = [await measure("direct"), await measure("delegated")];
 
-const usd = (value: number) => `$${value.toFixed(4)}`;
 const row = (r: ModeReport) =>
-	`| ${r.mode} | ${r.parent.requests} | ${prompt(r.parent.usage)} | ${r.parent.usage.output} | ${usd(r.parent.costUsd)} | ${r.subagents.requests} | ${prompt(r.subagents.usage)} | ${usd(r.subagents.costUsd)} | ${usd(r.parent.costUsd + r.subagents.costUsd)} | ${r.followUpPrompt} | ${usd(r.followUpCostUsd)} |`;
+	`| ${r.mode} | ${r.parent.requests} | ${prompt(r.parent.usage)} | ${r.parent.usage.output} | ${usd(r.parent.costUsd)} | ${r.subagents.requests} | ${prompt(r.subagents.usage)} | ${usd(r.subagents.costUsd)} | ${usd(addCost(r.parent.costUsd, r.subagents.costUsd))} | ${r.followUpPrompt} | ${usd(r.followUpCostUsd)} |`;
 const lines = [
 	`Model: ${model} (subagent: explorer's model on this backend).`,
 	"",

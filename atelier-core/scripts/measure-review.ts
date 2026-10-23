@@ -28,6 +28,7 @@ import {
 	SYSTEM_PROMPT_APPEND,
 	type Usage,
 } from "../src/index.ts";
+import { usd } from "./cost.ts";
 
 const BASE_FILES: Record<string, string> = {
 	"package.json":
@@ -118,7 +119,8 @@ const END_OF_TURN_PROMPT =
 interface Measure {
 	usage: Usage;
 	requests: number;
-	costUsd: number;
+	/** Unknown when the backend did not report it. */
+	costUsd: number | undefined;
 }
 
 type Finished = Extract<AtelierEvent, { type: "review_finished" }>;
@@ -211,7 +213,7 @@ function collect(report: ScenarioReport, event: AtelierEvent): void {
 	if (event.type === "turn_finished" && event.parentCallId === undefined && event.agent === undefined) {
 		report.turn.usage = { ...event.usage };
 		report.turn.requests = event.requests ?? 0;
-		report.turn.costUsd = event.costUsd ?? 0;
+		report.turn.costUsd = event.costUsd;
 	}
 	if (event.type !== "review_progress") return;
 	const step = event.step;
@@ -295,12 +297,11 @@ for (const scenario of [() => onDemand("high"), () => onDemand("medium"), endOfT
 	}
 }
 
-const usd = (value: number) => `$${value.toFixed(4)}`;
 const prompt = (u: Usage) => u.input + u.cacheRead + u.cacheWrite;
 const row = (r: ScenarioReport) => {
 	const f = r.finished;
 	const correction = f?.correction ? `${f.correction.used}/${f.correction.budget}` : "-";
-	return `| ${r.scenario} | ${r.lenses.map((l) => `${l.lens}${l.ok ? "" : "!"}(${l.findings})`).join(" ") || "-"} | ${f?.findings.length ?? 0} | ${f?.refuted.length ?? 0} | ${correction} | ${r.validator ? `${r.validator.resolved}/${r.validator.unresolved}` : "-"} | ${f?.verdict ?? "-"} | ${f ? prompt(f.usage) : 0} | ${f?.usage.output ?? 0} | ${f?.usage.cacheRead ?? 0} | ${f?.usage.cacheWrite ?? 0} | ${usd(f?.costUsd ?? 0)} | ${r.turn.requests} | ${usd(r.turn.costUsd)} | ${r.wallSeconds.toFixed(0)}s | ${r.testsAfter ? (r.testsAfter.passed ? "pass" : "fail") : "-"} |`;
+	return `| ${r.scenario} | ${r.lenses.map((l) => `${l.lens}${l.ok ? "" : "!"}(${l.findings})`).join(" ") || "-"} | ${f?.findings.length ?? 0} | ${f?.refuted.length ?? 0} | ${correction} | ${r.validator ? `${r.validator.resolved}/${r.validator.unresolved}` : "-"} | ${f?.verdict ?? "-"} | ${f ? prompt(f.usage) : 0} | ${f?.usage.output ?? 0} | ${f?.usage.cacheRead ?? 0} | ${f?.usage.cacheWrite ?? 0} | ${usd(f?.costUsd)} | ${r.turn.requests} | ${usd(r.turn.costUsd)} | ${r.wallSeconds.toFixed(0)}s | ${r.testsAfter ? (r.testsAfter.passed ? "pass" : "fail") : "-"} |`;
 };
 const lines = [
 	`Backend: ${backendName}${values.model ? `, model ${values.model}` : ""}.`,
