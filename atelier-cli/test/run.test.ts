@@ -11,7 +11,7 @@ import {
 	MemoryUnavailableError,
 	MissingApiKeyError,
 } from "@atelier/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../src/run.ts";
 
 const usage = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 };
@@ -416,8 +416,8 @@ describe("run: review", () => {
 		await repoWithChange("src/auth.ts");
 		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: [], keepStdinOpen: true });
 		const pending = run(["change it"], h.io, h.createBackend);
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		expect(h.out()).toContain("Review this change?");
+		// Waits for the question itself: a fixed delay raced the turn under load.
+		await vi.waitFor(() => expect(h.out()).toContain("Review this change?"), { timeout: 5000 });
 		h.ctrlC();
 		expect(await pending).toBe(130);
 		expect(h.backend.prompts).toHaveLength(1);
