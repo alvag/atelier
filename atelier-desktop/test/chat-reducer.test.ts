@@ -700,3 +700,140 @@ describe("reduceChat: review", () => {
 		});
 	});
 });
+
+describe("reduceChat: verification", () => {
+	const opened = [
+		...ready,
+		{ type: "prompt_sent", text: "x" } as ChatAction,
+		{ type: "turn_accepted", turnId: "t1" } as ChatAction,
+	];
+	const defect = {
+		id: "D1",
+		severity: "blocker" as const,
+		summary: "A pasted y approves the command",
+		reproduction: "printf 'ls\\ny' | node cli.ts",
+		candidate: "ran ls",
+		base: "asked again",
+		onBase: false,
+	};
+	const requirement = {
+		id: "R1",
+		requirement: "approval needs a keypress",
+		verdict: "unmet" as const,
+		evidence: "ran it",
+	};
+	const started: AtelierEventBody = {
+		type: "verification_started",
+		verifyId: "v1",
+		items: [2],
+		declaration: [{ items: [2], reason: "guards approvals" }],
+	};
+	const round: AtelierEventBody = {
+		type: "verification_round",
+		verifyId: "v1",
+		round: 1,
+		ok: true,
+		requirements: [requirement],
+		defects: [defect],
+		blocking: ["D1"],
+		correcting: true,
+		usage,
+		costUsd: 0.02,
+	};
+	const finished: AtelierEventBody = {
+		type: "verification_finished",
+		verifyId: "v1",
+		outcome: "needs_decision",
+		rounds: 2,
+		openDefects: [defect],
+		usage,
+		costUsd: 0.05,
+	};
+	const items = (state: ChatState) => state.turns.at(-1)?.items ?? [];
+
+	it("adds a block with the declared items, each round's verdicts and defects, and the outcome", () => {
+		const state = run([
+			...opened,
+			event(started),
+			event(round),
+			event({ ...round, round: 2, correcting: false } as never),
+			event(finished),
+		]);
+		expect(items(state)).toHaveLength(1);
+		expect(items(state)[0]).toMatchObject({
+			kind: "verification",
+			verifyId: "v1",
+			items: [2],
+			declaration: [{ items: [2], reason: "guards approvals" }],
+			rounds: [
+				{ round: 1, ok: true, requirements: [requirement], defects: [defect], blocking: ["D1"], correcting: true },
+				{ round: 2, correcting: false },
+			],
+			result: { outcome: "needs_decision", rounds: 2, openDefects: [defect], costUsd: 0.05 },
+		});
+	});
+
+	it("keeps the failure of a round", () => {
+		const state = run([
+			...opened,
+			event(started),
+			event({
+				...round,
+				ok: false,
+				error: "invalid report",
+				defects: [],
+				requirements: [],
+				blocking: [],
+				correcting: false,
+			} as never),
+		]);
+		expect(items(state)[0]).toMatchObject({ rounds: [{ ok: false, error: "invalid report" }] });
+	});
+
+	it("nests the verifier's own work in the block, not under a task call", () => {
+		const state = run([
+			...opened,
+			event(started),
+			event({
+				type: "session_started",
+				backend: "fake",
+				model: "opus",
+				authSource: "subscription",
+				parentCallId: "v1",
+				agent: "verify:verifier",
+			} as never),
+			event({ type: "text_delta", text: "probing", parentCallId: "v1", agent: "verify:verifier" } as never),
+			event({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				parentCallId: "v1",
+				agent: "verify:verifier",
+			} as never),
+		]);
+		expect(items(state)).toHaveLength(1);
+		expect(items(state)[0]).toMatchObject({
+			kind: "verification",
+			roles: [
+				{
+					agent: "verify:verifier",
+					model: "opus",
+					items: [{ kind: "text", text: "probing" }],
+					finished: { stopReason: "end_turn" },
+				},
+			],
+		});
+	});
+
+	it("ends a verification that never reported an outcome when its turn finishes", () => {
+		const state = run([...opened, event(started), event({ type: "turn_finished", stopReason: "interrupted", usage })]);
+		expect(items(state)[0]).toMatchObject({ kind: "verification", ended: true });
+		const done = run([
+			...opened,
+			event(started),
+			event(finished),
+			event({ type: "turn_finished", stopReason: "end_turn", usage }),
+		]);
+		expect((items(done)[0] as { ended?: boolean }).ended).toBeUndefined();
+	});
+});

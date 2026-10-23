@@ -480,4 +480,130 @@ describe("Renderer", () => {
 			expect(stdout).toContain(" · context 45,000 / 200,000 (23%)\n");
 		});
 	});
+
+	describe("verification", () => {
+		const defect = (over: Record<string, unknown> = {}) => ({
+			id: "D1",
+			severity: "blocker" as const,
+			summary: "A pasted y approves the command",
+			reproduction: "printf 'ls\\ny' | node cli.ts",
+			candidate: "ran ls",
+			base: "asked again",
+			onBase: false,
+			...over,
+		});
+		const requirement = (verdict: "met" | "unmet" | "unverified", id = "R1") => ({
+			id,
+			requirement: "approval needs a keypress",
+			verdict,
+			evidence: "ran it",
+		});
+		const round = (over: Record<string, unknown> = {}): AtelierEventBody =>
+			({
+				type: "verification_round",
+				verifyId: "v1",
+				round: 1,
+				ok: true,
+				requirements: [],
+				defects: [],
+				blocking: [],
+				correcting: false,
+				usage,
+				...over,
+			}) as AtelierEventBody;
+		const done = (over: Record<string, unknown> = {}): AtelierEventBody =>
+			({
+				type: "verification_finished",
+				verifyId: "v1",
+				outcome: "passed",
+				rounds: 1,
+				openDefects: [],
+				usage,
+				...over,
+			}) as AtelierEventBody;
+
+		it("says what is being verified", () => {
+			const { stdout } = render([
+				{ type: "verification_started", verifyId: "v1", items: [2, 5], declaration: [{ items: [2, 5], reason: "x" }] },
+			]);
+			expect(stdout).toBe("◇ verifying · items 2, 5\n");
+		});
+
+		it("shows a round with its defects and severities, and that they go to the agent", () => {
+			const { stdout } = render([
+				round({
+					defects: [defect(), defect({ id: "D2", severity: "major" })],
+					blocking: ["D1", "D2"],
+					correcting: true,
+				}),
+			]);
+			expect(stdout).toBe("◇ verify · round 1 · 2 defects (blocker, major) · asking the agent to fix them\n");
+		});
+
+		it("counts the requirements, the defects that are also on the base, and a round without defects", () => {
+			const { stdout } = render([
+				round({ requirements: [requirement("met"), requirement("unmet", "R2"), requirement("unverified", "R3")] }),
+				round({ round: 2, defects: [defect({ onBase: true }), defect({ id: "D2", severity: "minor" })] }),
+			]);
+			expect(stdout).toBe(
+				[
+					"◇ verify · round 1 · no defects · 1 met, 1 unmet, 1 unverified",
+					"◇ verify · round 2 · 2 defects (blocker, minor), 1 also on the base",
+					"",
+				].join("\n"),
+			);
+		});
+
+		it("says a verifier that failed did not pass", () => {
+			const { stdout } = render([round({ ok: false, error: "The verifier returned an invalid report: no JSON" })]);
+			expect(stdout).toBe("◇ verify · round 1 · failed: The verifier returned an invalid report: no JSON\n");
+		});
+
+		it("ends passed, passed after a correction, or failed", () => {
+			const { stdout } = render([
+				done(),
+				done({ outcome: "corrected", rounds: 2, costUsd: 0.0421 }),
+				done({ outcome: "failed", reason: "model down" }),
+			]);
+			expect(stdout).toBe(
+				[
+					"✓ verify passed",
+					"✓ verify passed after a correction · 2 rounds · $0.0421",
+					"✗ verify failed: model down · needs your decision",
+					"",
+				].join("\n"),
+			);
+		});
+
+		it("lists the open defects when the user must decide", () => {
+			const { stdout } = render([
+				done({ outcome: "needs_decision", rounds: 2, openDefects: [defect({ id: "D2", severity: "major" })] }),
+				done({
+					outcome: "needs_decision",
+					reason: "The correction failed.",
+					openDefects: [defect(), defect({ id: "D2" })],
+				}),
+			]);
+			expect(stdout).toBe(
+				[
+					"✗ verify: needs your decision · 1 open defect",
+					"  D2 major — A pasted y approves the command",
+					"    reproduce: printf 'ls\\ny' | node cli.ts",
+					"✗ verify: needs your decision · 2 open defects · The correction failed.",
+					"  D1 blocker — A pasted y approves the command",
+					"    reproduce: printf 'ls\\ny' | node cli.ts",
+					"  D2 blocker — A pasted y approves the command",
+					"    reproduce: printf 'ls\\ny' | node cli.ts",
+					"",
+				].join("\n"),
+			);
+		});
+
+		it("nests the verifier's own work like a subagent", () => {
+			const { stdout } = render([
+				{ type: "text_delta", text: "probing", parentCallId: "v1", agent: "verify:verifier" },
+			] as never);
+			expect(stdout).toBe("  │ probing");
+		});
+	});
 });

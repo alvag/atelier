@@ -34,7 +34,7 @@ Options:
       --model <name>     Model to use (default: opus on claude-code,
                          claude-sonnet-5-5 on anthropic-api)
       --cwd <dir>        Working directory (default: current directory)
-      --no-review        Do not review uncommitted changes (see below)
+      --no-review        Do not review or verify changes (see below)
   -h, --help             Show this help
   -v, --version          Show the version
 
@@ -52,7 +52,7 @@ anything.
 
 Environment:
   ATELIER_MEMORY=off     Run without long-term memory
-  ATELIER_REVIEW=off     Run without reviewing changes, like --no-review
+  ATELIER_REVIEW=off     Run without reviewing or verifying changes, like --no-review
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
                          older history (default: the model's window minus a reserve,
                          at most 200000; never more than the window minus the reserve)

@@ -310,6 +310,102 @@ describe("App", () => {
 		await waitFor(() => expect(fake.commands.at(-1)).toEqual({ command: "session.interrupt", sessionId: "s1" }));
 	});
 
+	describe("verification", () => {
+		const defect = {
+			id: "D1",
+			severity: "blocker" as const,
+			summary: "A pasted y approves the command",
+			reproduction: "printf 'ls\\ny' | node cli.ts",
+			candidate: "ran ls",
+			base: "asked again",
+			onBase: false,
+		};
+		const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
+		const started: AtelierEventBody = {
+			type: "verification_started",
+			verifyId: "v1",
+			items: [2],
+			declaration: [{ items: [2], reason: "guards approvals" }],
+		};
+		const round = (over: Record<string, unknown> = {}) =>
+			({
+				type: "verification_round",
+				verifyId: "v1",
+				round: 1,
+				ok: true,
+				requirements: [
+					{ id: "R1", requirement: "approval needs a keypress", verdict: "unmet", evidence: "a pasted y approved it" },
+					{ id: "R2", requirement: "Ctrl+C cancels", verdict: "met", evidence: "ran it" },
+				],
+				defects: [defect, { ...defect, id: "D2", severity: "minor", onBase: true }],
+				blocking: ["D1"],
+				correcting: true,
+				usage,
+				...over,
+			}) as AtelierEventBody;
+		const finished = (over: Record<string, unknown> = {}) =>
+			({
+				type: "verification_finished",
+				verifyId: "v1",
+				outcome: "needs_decision",
+				rounds: 2,
+				openDefects: [defect],
+				usage,
+				...over,
+			}) as AtelierEventBody;
+
+		it("shows the declared item, each round's verdicts and defects, and that the user must decide", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit(started);
+			fake.emit(round());
+			fake.emit({
+				type: "text_delta",
+				text: "probing",
+				parentCallId: "v1",
+				agent: "verify:verifier",
+			} as unknown as AtelierEventBody);
+			fake.emit(round({ round: 2, correcting: false }));
+			fake.emit(finished());
+			const block = await screen.findByTestId("verification");
+			expect(block.textContent).toContain("Verification · item 2");
+			expect(block.textContent).toContain("guards approvals");
+			expect(block.textContent).toContain("Round 1");
+			expect(block.textContent).toContain("unmet");
+			expect(block.textContent).toContain("approval needs a keypress");
+			expect(block.textContent).toContain("a pasted y approved it");
+			expect(block.textContent).toContain("D1 blocker A pasted y approves the command");
+			expect(block.textContent).toContain("printf 'ls\\ny' | node cli.ts");
+			expect(block.textContent).toContain("D2 minor");
+			expect(block.textContent).toContain("also on the base");
+			expect(within(block).getAllByTestId("subagent")[0]?.textContent).toContain("verify:verifier");
+			expect(within(block).getByRole("alert").textContent).toContain("Needs your decision: 1 open defect");
+		});
+
+		it.each([
+			["passed", {}, "Verification passed"],
+			["corrected", { openDefects: [] }, "Verification passed after a correction"],
+			["failed", { reason: "model down", openDefects: [] }, "Verification failed: model down. Needs your decision."],
+		])("says %s", async (outcome, over, text) => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit(started);
+			fake.emit(finished({ outcome, ...over }));
+			expect((await screen.findByTestId("verification")).textContent).toContain(text);
+		});
+
+		it("says it is verifying until the outcome arrives, and that it stopped when the turn ends first", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit(started);
+			expect((await screen.findByTestId("verification")).textContent).toContain("Verifying…");
+			fake.emit({ type: "turn_finished", stopReason: "interrupted", usage });
+			await waitFor(() =>
+				expect(screen.getByTestId("verification").textContent).toContain("The verification stopped without a result."),
+			);
+		});
+	});
+
 	describe("review", () => {
 		const consent: AtelierEventBody = {
 			type: "review_consent_requested",

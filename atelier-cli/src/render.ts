@@ -213,6 +213,64 @@ export class Renderer {
 		}
 	}
 
+	#renderVerificationRound(event: Extract<AtelierEvent, { type: "verification_round" }>): void {
+		const head = `verify · round ${event.round}`;
+		if (!event.ok) {
+			this.#line(this.#style("yellow", `◇ ${head} · failed: ${event.error ?? "no reason given"}`));
+			return;
+		}
+		const parts = [head];
+		const { defects } = event;
+		const onBase = defects.filter((defect) => defect.onBase).length;
+		const found =
+			defects.length === 0
+				? "no defects"
+				: `${plural(defects.length, "defect")} (${defects.map((defect) => defect.severity).join(", ")})${
+						onBase > 0 ? `, ${onBase} also on the base` : ""
+					}`;
+		parts.push(found);
+		const verdicts = (["met", "unmet", "unverified"] as const)
+			.map((verdict) => [verdict, event.requirements.filter((entry) => entry.verdict === verdict).length] as const)
+			.filter(([, count]) => count > 0)
+			.map(([verdict, count]) => `${count} ${verdict}`);
+		if (verdicts.length > 0) parts.push(verdicts.join(", "));
+		if (event.correcting) parts.push("asking the agent to fix them");
+		this.#line(this.#style("dim", `◇ ${parts.join(" · ")}`));
+	}
+
+	#renderVerificationFinished(event: Extract<AtelierEvent, { type: "verification_finished" }>): void {
+		const cost = event.costUsd === undefined ? "" : ` · $${event.costUsd.toFixed(4)}`;
+		switch (event.outcome) {
+			case "passed":
+				this.#line(`${this.#style("green", "✓")} verify passed${cost}`);
+				return;
+			case "corrected":
+				this.#line(
+					`${this.#style("green", "✓")} verify passed after a correction · ${plural(event.rounds, "round")}${cost}`,
+				);
+				return;
+			case "failed":
+				this.#line(
+					this.#style("red", `✗ verify failed: ${event.reason ?? "no reason given"} · needs your decision${cost}`),
+				);
+				return;
+			case "needs_decision":
+				this.#line(
+					this.#style(
+						"red",
+						`✗ verify: needs your decision · ${plural(event.openDefects.length, "open defect")}${
+							event.reason === undefined ? "" : ` · ${event.reason}`
+						}${cost}`,
+					),
+				);
+				for (const defect of event.openDefects) {
+					this.#line(`  ${defect.id} ${defect.severity} — ${defect.summary}`);
+					this.#line(`    reproduce: ${defect.reproduction}`);
+				}
+				return;
+		}
+	}
+
 	render(event: AtelierEvent): void {
 		if (event.parentCallId !== undefined) {
 			this.#renderChild(event);
@@ -290,6 +348,17 @@ export class Renderer {
 						}${event.baseNote === undefined ? "" : ` · ${event.baseNote}`}`,
 					),
 				);
+				return;
+			case "verification_started":
+				this.#line(
+					this.#style("dim", `◇ verifying · ${event.items.length === 1 ? "item" : "items"} ${event.items.join(", ")}`),
+				);
+				return;
+			case "verification_round":
+				this.#renderVerificationRound(event);
+				return;
+			case "verification_finished":
+				this.#renderVerificationFinished(event);
 				return;
 			case "review_progress":
 				this.#line(this.#style("dim", `◇ review: ${stepText(event.step)}`));

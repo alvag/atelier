@@ -55,6 +55,19 @@ export type TurnItem =
 			/** The turn ended without a result (the review failed): it is no longer running. */
 			ended?: boolean;
 	  }
+	| {
+			kind: "verification";
+			verifyId: string;
+			/** The high-risk items the agent declared, and why. */
+			items: number[];
+			declaration: { items: number[]; reason: string }[];
+			rounds: VerificationRound[];
+			/** The verifier's own work, as a block like a review role. */
+			roles: Subagent[];
+			result?: VerificationResult;
+			/** The turn ended without an outcome: it is no longer running. */
+			ended?: boolean;
+	  }
 	| { kind: "error"; code: string; message: string }
 	/** `expected`: it follows a compaction, which rewrote the history on purpose. */
 	| { kind: "cache_miss"; reason: string; missedTokens: number; expected?: boolean }
@@ -68,6 +81,16 @@ export type TurnItem =
 			state: "running" | "done" | "failed";
 			error?: string;
 	  };
+
+type VerificationEvent = Extract<AtelierEvent, { type: "verification_round" }>;
+export type VerificationRound = Pick<
+	VerificationEvent,
+	"round" | "ok" | "requirements" | "defects" | "blocking" | "correcting"
+> & { error?: string };
+export type VerificationResult = Pick<
+	Extract<AtelierEvent, { type: "verification_finished" }>,
+	"outcome" | "rounds" | "openDefects"
+> & { reason?: string; costUsd?: number };
 
 type ReviewFinding = Extract<AtelierEvent, { type: "review_finished" }>["findings"][number];
 
@@ -294,6 +317,23 @@ function applySubagentEvent(state: ChatState, event: AtelierEvent, parentCallId:
 
 /** A review's roles share one parent id, so each gets its own block; any other child belongs to its task call. */
 function reduceChildItems(items: TurnItem[], event: AtelierEvent, parentCallId: string): TurnItem[] {
+	if (event.agent?.startsWith("verify:")) {
+		const agent = event.agent;
+		return updateVerification(items, parentCallId, (verification) => {
+			const known = verification.roles.find((role) => role.agent === agent);
+			const role: Subagent = known ?? { agent, items: [] };
+			const next =
+				event.type === "session_started"
+					? { ...role, model: event.model }
+					: event.type === "turn_finished"
+						? { ...role, finished: finishedOf(event) }
+						: { ...role, items: reduceItems(role.items, event) };
+			return {
+				...verification,
+				roles: known ? verification.roles.map((r) => (r === known ? next : r)) : [...verification.roles, next],
+			};
+		});
+	}
 	if (event.agent?.startsWith("review:")) {
 		const agent = event.agent;
 		return updateReview(items, parentCallId, (review) => {
@@ -399,6 +439,39 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					state: "pending",
 				},
 			];
+		case "verification_started":
+			return updateVerification(items, event.verifyId, (verification) => ({
+				...verification,
+				items: event.items,
+				declaration: event.declaration,
+			}));
+		case "verification_round":
+			return updateVerification(items, event.verifyId, (verification) => ({
+				...verification,
+				rounds: [
+					...verification.rounds,
+					{
+						round: event.round,
+						ok: event.ok,
+						...(event.error === undefined ? {} : { error: event.error }),
+						requirements: event.requirements,
+						defects: event.defects,
+						blocking: event.blocking,
+						correcting: event.correcting,
+					},
+				],
+			}));
+		case "verification_finished":
+			return updateVerification(items, event.verifyId, (verification) => ({
+				...verification,
+				result: {
+					outcome: event.outcome,
+					rounds: event.rounds,
+					openDefects: event.openDefects,
+					...(event.reason === undefined ? {} : { reason: event.reason }),
+					...(event.costUsd === undefined ? {} : { costUsd: event.costUsd }),
+				},
+			}));
 		case "review_progress":
 			return updateReview(items, event.reviewId, (review) => review);
 		case "review_finished":
@@ -435,16 +508,31 @@ function updateReview(items: TurnItem[], reviewId: string, update: (review: Revi
 	return items.map((item, i) => (i === index ? update({ ...(item as ReviewItem), reviewId }) : item));
 }
 
-/** Pending consent cards of this review (any, without an id) can no longer be answered. */
-/** A review still without a result when its turn ends will never get one. */
+type VerificationItem = Extract<TurnItem, { kind: "verification" }>;
+
+/** Applies `update` to the verification block with this id, starting one when there is none. */
+function updateVerification(
+	items: TurnItem[],
+	verifyId: string,
+	update: (verification: VerificationItem) => VerificationItem,
+): TurnItem[] {
+	const index = items.findIndex((item) => item.kind === "verification" && item.verifyId === verifyId);
+	if (index === -1)
+		return [...items, update({ kind: "verification", verifyId, items: [], declaration: [], rounds: [], roles: [] })];
+	return items.map((item, i) => (i === index ? update(item as VerificationItem) : item));
+}
+
+/** A review or verification still without a result when its turn ends will never get one. */
 function endReviews(items: TurnItem[]): TurnItem[] {
 	return items.map((item) =>
-		item.kind === "review" && item.reviewId !== undefined && item.result === undefined
+		(item.kind === "review" && item.reviewId !== undefined && item.result === undefined) ||
+		(item.kind === "verification" && item.result === undefined)
 			? { ...item, ended: true }
 			: item,
 	);
 }
 
+/** Pending consent cards of this review (any, without an id) can no longer be answered. */
 function closeConsents(items: TurnItem[], reviewId?: string): TurnItem[] {
 	return items.map((item) =>
 		item.kind === "review_consent" && item.state === "pending" && (reviewId === undefined || item.reviewId === reviewId)

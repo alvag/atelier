@@ -167,6 +167,91 @@ function ReviewBlock({ item, onAnswer }: { item: Extract<TurnItem, { kind: "revi
 	);
 }
 
+function VerificationBlock({
+	item,
+	onAnswer,
+}: {
+	item: Extract<TurnItem, { kind: "verification" }>;
+	onAnswer: OnAnswer;
+}) {
+	const { result } = item;
+	const open = result?.openDefects.length ?? 0;
+	return (
+		<section className="review verification" data-testid="verification">
+			<div className="review-risk">
+				Verification · {item.items.length === 1 ? "item" : "items"} {item.items.join(", ")}
+			</div>
+			<ul>
+				{item.declaration.map((entry) => (
+					<li key={`${entry.items.join(",")}-${entry.reason}`}>{entry.reason}</li>
+				))}
+			</ul>
+			{item.rounds.map((round) => (
+				<div key={round.round} className="verification-round">
+					<div className="review-risk">
+						Round {round.round}
+						{round.ok
+							? ` · ${round.defects.length === 0 ? "no defects" : `${round.defects.length} defect${round.defects.length === 1 ? "" : "s"}`}`
+							: " · failed"}
+						{round.correcting ? " · the agent is asked to fix them" : ""}
+					</div>
+					{round.ok ? null : <div className="warning">{round.error ?? "no reason given"}</div>}
+					<ul>
+						{round.requirements.map((req) => (
+							<li key={req.id} className={`requirement ${req.verdict}`}>
+								{req.verdict} · {req.requirement} — {req.evidence}
+							</li>
+						))}
+					</ul>
+					{round.defects.map((defect) => (
+						<div key={defect.id} className="review-finding">
+							{defect.id} {defect.severity} {defect.summary}
+							{defect.onBase ? " (also on the base)" : ""}
+							<div>
+								Reproduce: <code>{defect.reproduction}</code>
+							</div>
+							<div>On the change: {defect.candidate}</div>
+							<div>On the base: {defect.base}</div>
+						</div>
+					))}
+				</div>
+			))}
+			{item.roles.map((role) => {
+				// The verifier's block reuses the subagent block; it stays folded once it is done.
+				const done = role.finished !== undefined || item.result !== undefined || item.ended === true;
+				const row: Extract<TurnItem, { kind: "tool" }> = {
+					kind: "tool",
+					callId: `${item.verifyId}-${role.agent}`,
+					tool: role.agent,
+					input: {},
+					status: done ? "ok" : "running",
+					summary: done ? "done" : "working",
+				};
+				return <SubagentBlock key={role.agent} item={row} subagent={role} onAnswer={onAnswer} />;
+			})}
+			{result ? (
+				result.outcome === "passed" ? (
+					<div className="review-verdict">Verification passed</div>
+				) : result.outcome === "corrected" ? (
+					<div className="review-verdict">Verification passed after a correction</div>
+				) : result.outcome === "failed" ? (
+					<div className="warning" role="alert">
+						Verification failed: {result.reason ?? "no reason given"}. Needs your decision.
+					</div>
+				) : (
+					<div className="warning" role="alert">
+						Needs your decision: {open} open defect{open === 1 ? "" : "s"}
+						{result.reason === undefined ? "" : ` · ${result.reason}`}
+					</div>
+				)
+			) : (
+				<div className="review-verdict">{item.ended ? "The verification stopped without a result." : "Verifying…"}</div>
+			)}
+			{result?.costUsd === undefined ? null : <div>Verification cost ${result.costUsd.toFixed(4)}</div>}
+		</section>
+	);
+}
+
 /** A separator in the transcript: older history above it was summarized. */
 function CompactionRow({ item }: { item: Extract<TurnItem, { kind: "compaction" }> }) {
 	if (item.state === "running")
@@ -248,6 +333,8 @@ function Items({ items, onAnswer, onConsent }: { items: TurnItem[]; onAnswer: On
 				return <ConsentCard key={key} item={item} onConsent={onConsent ?? (() => {})} />;
 			case "review":
 				return <ReviewBlock key={key} item={item} onAnswer={onAnswer} />;
+			case "verification":
+				return <VerificationBlock key={`${item.kind}-${item.verifyId}`} item={item} onAnswer={onAnswer} />;
 			case "error":
 				return (
 					<div key={key} className="turn-error" role="alert">
