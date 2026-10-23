@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { AgentBackend, BackendSession, BackendStartOptions } from "../src/backend.ts";
+import type { AgentBackend, BackendSession, BackendStartOptions, ToolCall } from "../src/backend.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -20,6 +20,7 @@ import {
 import { RISK_RULES } from "../src/prompt.ts";
 import { LENS_INSTRUCTIONS } from "../src/review/lenses.ts";
 import { REFUTER_INSTRUCTION, VALIDATOR_INSTRUCTION } from "../src/review/roles.ts";
+import { VERIFIER_INSTRUCTION } from "../src/review/verifier.ts";
 import { reviewEnabled } from "../src/server/rpc-server.ts";
 import type { SubagentDefinition } from "../src/subagents/definitions.ts";
 import { defineTool } from "../src/tools/types.ts";
@@ -96,24 +97,43 @@ type Reply = string | typeof HOLD;
 /** The review roles' backend: answers by role, recording what each one saw. */
 class RoleBackend implements AgentBackend {
 	readonly id = "fake";
-	readonly roles: { role: string; tools: string[]; model?: string; prompt: string }[] = [];
+	readonly roles: { role: string; tools: string[]; model?: string; prompt: string; cwd: string }[] = [];
+	/** What the tool calls a role made through `probes` answered, in order. */
+	readonly probed: { ok: boolean; output: string }[] = [];
 	interrupts = 0;
 	readonly #reply: (role: string, prompt: string) => Reply;
+	readonly #probes: (role: string, prompt: string) => ToolCall[];
 
-	constructor(reply: (role: string, prompt: string) => Reply = defaultReply) {
+	constructor(
+		reply: (role: string, prompt: string) => Reply = defaultReply,
+		probes: (role: string, prompt: string) => ToolCall[] = () => [],
+	) {
 		this.#reply = reply;
+		this.#probes = probes;
 	}
 
 	async start(options: BackendStartOptions): Promise<BackendSession> {
 		const role = roleOf(options.systemPromptAppend);
 		const reply = this.#reply;
 		const roles = this.roles;
+		const probed = this.probed;
+		const probes = this.#probes;
 		const tools = options.tools.map((tool) => tool.name);
 		let release: (() => void) | undefined;
 		const backend = this;
 		return {
 			async *send(prompt: string): AsyncIterable<AtelierEventBody> {
-				roles.push({ role, tools, prompt, ...(options.model === undefined ? {} : { model: options.model }) });
+				roles.push({
+					role,
+					tools,
+					prompt,
+					cwd: options.cwd,
+					...(options.model === undefined ? {} : { model: options.model }),
+				});
+				for (const probe of probes(role, prompt)) {
+					const result = await options.executeTool(probe);
+					probed.push({ ok: result.ok, output: result.output });
+				}
 				const answer = reply(role, prompt);
 				if (answer === HOLD) {
 					await new Promise<void>((resolve) => {
@@ -142,6 +162,7 @@ class RoleBackend implements AgentBackend {
 function roleOf(instruction: string): string {
 	if (instruction === REFUTER_INSTRUCTION) return "refuter";
 	if (instruction === VALIDATOR_INSTRUCTION) return "validator";
+	if (instruction === VERIFIER_INSTRUCTION) return "verifier";
 	return Object.entries(LENS_INSTRUCTIONS).find(([, value]) => value === instruction)?.[0] ?? "unknown";
 }
 
@@ -157,6 +178,7 @@ const severe = {
 };
 /** No findings, except one severe finding from the reliability lens; the refuter confirms and the validator resolves. */
 function defaultReply(role: string, prompt: string): string {
+	if (role === "verifier") return vreport();
 	if (role === "refuter")
 		return JSON.stringify({ verdicts: idsIn(prompt).map((id) => ({ id, verdict: "confirmed", reason: "it holds" })) });
 	if (role === "validator")
@@ -164,7 +186,31 @@ function defaultReply(role: string, prompt: string): string {
 	return JSON.stringify({ findings: role === "reliability" ? [{ lens: role, ...severe }] : [] });
 }
 const clean = (role: string, prompt: string) =>
-	role === "refuter" || role === "validator" ? defaultReply(role, prompt) : JSON.stringify({ findings: [] });
+	role === "refuter" || role === "validator" || role === "verifier"
+		? defaultReply(role, prompt)
+		: JSON.stringify({ findings: [] });
+
+const vrequirement = { id: "R1", requirement: "the approval needs a keypress", verdict: "met", evidence: "ran it" };
+const vdefect = (over: Record<string, unknown> = {}) => ({
+	id: "D1",
+	severity: "blocker",
+	summary: "A pasted y approves the command",
+	reproduction: "printf 'ls\\ny' | node cli.ts",
+	candidate: "ran ls",
+	base: "asked again",
+	onBase: false,
+	...over,
+});
+/** A verifier report; clean unless given defects. */
+const vreport = (defects: unknown[] = [], requirements: unknown[] = [vrequirement]) =>
+	JSON.stringify({ requirements, defects });
+/** The verifier's reply by round (the last one repeats); every other role answers as by default. */
+const verifying = (...reports: string[]) =>
+	(() => {
+		let round = 0;
+		return (role: string, prompt: string): Reply =>
+			role === "verifier" ? (reports[Math.min(round++, reports.length - 1)] as string) : defaultReply(role, prompt);
+	})();
 
 async function collect(stream: AsyncIterable<AtelierEvent>): Promise<AtelierEvent[]> {
 	const events: AtelierEvent[] = [];
@@ -979,5 +1025,340 @@ describe("/review against a ref", () => {
 		const [assessed] = ofType(await collect(s.session.review()), "review_assessed");
 		expect(assessed?.files).toEqual(["a.ts"]);
 		expect(assessed?.since).toBeUndefined();
+	});
+});
+
+describe("independent verification", () => {
+	const DECLARED = call("risk", { items: [2], reason: "guards the bash approval" });
+	const VERIFY_TURN: FakeStep[] = [DECLARED, change("a.ts", "base\ncandidate\n"), text("done"), { event: finished }];
+	const FIX_TURN: FakeStep[] = [change("a.ts", "base\nfixed\n"), text("fixed"), { event: finished }];
+	const verifierRuns = (roles: RoleBackend) => roles.roles.filter((role) => role.role === "verifier");
+	const verification = (events: AtelierEvent[]) =>
+		events.filter((event) => event.type.startsWith("verification_")).map((event) => event.type);
+	const bash = (command: string): ToolCall => ({ tool: "bash", input: { command }, callId: `p-${command.length}` });
+	const probing =
+		(...commands: string[]) =>
+		(role: string) =>
+			role === "verifier" ? commands.map(bash) : [];
+
+	describe("when it runs", () => {
+		it("runs on a declared high-risk item, before the review, and does not ask for consent", async () => {
+			const roles = new RoleBackend(verifying(vreport()));
+			const s = await start({ turns: [VERIFY_TURN], roles, consent: "declined" });
+			const events = await s.send("make the approval need a keypress");
+			expect(verifierRuns(roles)).toHaveLength(1);
+			expect(verification(events)).toEqual(["verification_started", "verification_round", "verification_finished"]);
+			const finishedAt = events.findIndex((event) => event.type === "verification_finished");
+			expect(finishedAt).toBeGreaterThan(-1);
+			expect(finishedAt).toBeLessThan(events.findIndex((event) => event.type === "review_assessed"));
+			// The only question the user got is the review's.
+			expect(s.asked).toHaveLength(1);
+			expect(ofType(events, "review_consent_requested")).toHaveLength(1);
+			expect(events.filter((event) => event.type === "turn_finished" && event.agent === undefined)).toHaveLength(1);
+		});
+
+		it.each([
+			["declared none", [call("risk", { none: true, reason: "x" }), change("a.ts", "base\nmore\n")]],
+			["no declaration", [change("a.ts", "base\nmore\n")]],
+			["a native-only high", [DECLARED_NONE, change("src/auth.ts", "export const a = 1;\n")]],
+		])("does not run for %s", async (_name, work) => {
+			const roles = new RoleBackend();
+			const s = await start({
+				turns: [[...work, text("done"), { event: finished }], [{ event: finished }]],
+				roles,
+				consent: "declined",
+			});
+			const events = await s.send("edit");
+			expect(verifierRuns(roles)).toEqual([]);
+			expect(verification(events)).toEqual([]);
+		});
+
+		it("does not run for an on-demand review, nor when review is off", async () => {
+			const roles = new RoleBackend(clean);
+			const s = await start({ roles });
+			await writeFile(join(s.cwd, "a.ts"), "base\nmore\n");
+			expect(verification(await collect(s.session.review()))).toEqual([]);
+			expect(verifierRuns(roles)).toEqual([]);
+
+			const off = await start({ review: false, turns: [VERIFY_TURN] });
+			expect(verification(await off.send("edit"))).toEqual([]);
+		});
+	});
+
+	describe("where it works", () => {
+		it("gets read, grep and bash, in a temporary directory that holds the candidate and the base, removed afterwards", async () => {
+			const roles = new RoleBackend(
+				verifying(vreport()),
+				probing("cat candidate/a.ts; echo ---; cat base/a.ts; ls -A candidate | tr '\\n' ' '"),
+			);
+			const s = await start({ turns: [VERIFY_TURN], roles, consent: "declined" });
+			await s.send("edit");
+			const [run] = verifierRuns(roles);
+			expect(run?.tools).toEqual(["read", "grep", "bash"]);
+			expect(basename(run?.cwd ?? "")).toMatch(/^atelier-verify-/);
+			expect(run?.cwd).not.toBe(s.cwd);
+			expect(roles.probed[0]?.output).toContain("base\ncandidate\n---\nbase\n");
+			expect(roles.probed[0]?.output).not.toContain(".git");
+			await expect(stat(run?.cwd ?? "")).rejects.toThrow();
+		});
+
+		it("never touches the user's worktree, index or refs", async () => {
+			const roles = new RoleBackend(
+				verifying(vreport()),
+				probing("echo scratch > scratch.txt; echo more >> candidate/a.ts"),
+			);
+			const s = await start({ turns: [VERIFY_TURN], roles, consent: "declined" });
+			const state = async () => ({
+				index: (await readFile(join(s.cwd, ".git", "index"))).toString("base64"),
+				refs: gitIn(s.cwd, "for-each-ref") + gitIn(s.cwd, "rev-parse", "HEAD"),
+			});
+			const before = await state();
+			await s.send("edit");
+			expect(await state()).toEqual(before);
+			expect(await readFile(join(s.cwd, "a.ts"), "utf8")).toBe("base\ncandidate\n");
+			expect(await stat(join(s.cwd, "scratch.txt")).catch(() => undefined)).toBeUndefined();
+		});
+
+		it("links the project's installed dependencies into the copy and tells the verifier", async () => {
+			const cwd = await repo();
+			await writeFile(join(cwd, ".gitignore"), "node_modules\n");
+			await mkdir(join(cwd, "node_modules/dep"), { recursive: true });
+			await writeFile(join(cwd, "node_modules/dep/index.js"), "installed\n");
+			gitIn(cwd, "add", "-A");
+			gitIn(cwd, "commit", "-qm", "ignore");
+			const roles = new RoleBackend(verifying(vreport()), probing("cat candidate/node_modules/dep/index.js"));
+			const s = await start({ cwd, turns: [VERIFY_TURN], roles, consent: "declined" });
+			await s.send("edit");
+			expect(roles.probed[0]?.output).toContain("installed");
+			expect(verifierRuns(roles)[0]?.prompt).toContain("installed dependencies are linked");
+		});
+
+		it("is removed when the verifier fails and when the turn is interrupted", async () => {
+			const failing = new RoleBackend((role, prompt) => {
+				if (role === "verifier") throw new Error("boom");
+				return defaultReply(role, prompt);
+			});
+			const s = await start({ turns: [VERIFY_TURN], roles: failing, consent: "declined" });
+			await s.send("edit");
+			await expect(stat(verifierRuns(failing)[0]?.cwd ?? "")).rejects.toThrow();
+
+			const held = new RoleBackend(() => HOLD);
+			const h = await start({ turns: [VERIFY_TURN], roles: held, consent: "declined" });
+			const running = h.send("edit");
+			for (let i = 0; i < 200 && held.roles.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+			await h.session.interrupt();
+			const events = await running;
+			await expect(stat(held.roles[0]?.cwd ?? "")).rejects.toThrow();
+			expect(ofType(events, "verification_finished")[0]).toMatchObject({ outcome: "failed", reason: "interrupted" });
+			expect(ofType(events, "review_assessed")).toEqual([]);
+		});
+	});
+
+	describe("what it may do", () => {
+		it("runs bash without asking, with the filtered environment and package managers kept offline", async () => {
+			const previous = process.env.ANTHROPIC_API_KEY;
+			process.env.ANTHROPIC_API_KEY = "sk-secret";
+			try {
+				const roles = new RoleBackend(
+					verifying(vreport()),
+					probing(
+						'echo "[$npm_config_offline][$NO_UPDATE_NOTIFIER][$ANTHROPIC_API_KEY]"; echo "[$npm_config_registry]"',
+					),
+				);
+				const approvals: unknown[] = [];
+				const s = await start({
+					turns: [VERIFY_TURN],
+					roles,
+					consent: "declined",
+					extra: {
+						approve: async (request) => {
+							approvals.push(request);
+							return false;
+						},
+					},
+				});
+				const events = await s.send("edit");
+				expect(roles.probed[0]).toMatchObject({ ok: true });
+				expect(roles.probed[0]?.output).toContain("[true][1][]");
+				expect(roles.probed[0]?.output).toMatch(/\[http:\/\/127\.0\.0\.1:\d+\/?\]/);
+				expect(approvals).toEqual([]);
+				expect(ofType(events, "approval_requested")).toEqual([]);
+			} finally {
+				if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+				else process.env.ANTHROPIC_API_KEY = previous;
+			}
+		});
+
+		it("gets its mandate as instructions and the request, the declaration and the feature document as its prompt", async () => {
+			const START = {
+				action: "start",
+				name: "approvals",
+				title: "Approvals",
+				header: "Make approvals need a keypress.",
+				specs: ['User, verbatim: "que la aprobación pida una tecla"'],
+				tasks: [{ title: "Read the key", specs: ["S1"], route: "inline" }],
+			};
+			const roles = new RoleBackend(verifying(vreport()), probing("cat feature/approvals.md"));
+			const s = await start({
+				turns: [[call("feature", START), ...VERIFY_TURN]],
+				roles,
+				consent: "declined",
+				extra: { odd: true },
+			});
+			await s.send("que la aprobación pida una tecla");
+			const [run] = verifierRuns(roles);
+			expect(run?.prompt).toContain("<request>\nque la aprobación pida una tecla\n</request>");
+			expect(run?.prompt).toContain("- item 2: guards the bash approval");
+			expect(run?.prompt).toContain("feature/approvals.md");
+			expect(roles.probed[0]?.output).toContain("Approvals");
+		});
+	});
+
+	describe("rounds", () => {
+		it("hands blocking defects to the agent once, freezes the corrected work, and verifies again", async () => {
+			const roles = new RoleBackend(verifying(vreport([vdefect()]), vreport()), probing("cat candidate/a.ts"));
+			const s = await start({ turns: [VERIFY_TURN, FIX_TURN], roles, consent: "declined" });
+			const events = await s.send("edit");
+			expect(s.main.prompts).toHaveLength(2);
+			expect(s.main.prompts[1]).toContain("- D1 [blocker] A pasted y approves the command");
+			expect(s.main.prompts[1]).toContain("reproduce: printf");
+			expect(verifierRuns(roles)).toHaveLength(2);
+			expect(verifierRuns(roles)[1]?.prompt).toContain("Round 2 of 2.");
+			expect(verifierRuns(roles)[1]?.prompt).toContain("- D1 [blocker] A pasted y approves the command");
+			expect(roles.probed.map((p) => p.output)).toEqual(
+				["base\ncandidate\n", "base\nfixed\n"].map((t) => expect.stringContaining(t)),
+			);
+			const rounds = ofType(events, "verification_round");
+			expect(rounds.map((r) => [r.round, r.ok, r.blocking, r.correcting])).toEqual([
+				[1, true, ["D1"], true],
+				[2, true, [], false],
+			]);
+			expect(rounds[0]?.defects[0]).toMatchObject({ id: "D1", severity: "blocker", onBase: false });
+			expect(rounds[0]?.requirements[0]).toMatchObject({ id: "R1", verdict: "met" });
+			expect(ofType(events, "verification_finished")[0]).toMatchObject({
+				outcome: "corrected",
+				rounds: 2,
+				openDefects: [],
+			});
+			expect(events.filter((event) => event.type === "turn_finished" && event.agent === undefined)).toHaveLength(1);
+		});
+
+		it("ends needing the user's decision when defects remain after round 2, without a third round", async () => {
+			const roles = new RoleBackend(
+				verifying(vreport([vdefect()]), vreport([vdefect({ id: "D2", severity: "major" })])),
+			);
+			const s = await start({ turns: [VERIFY_TURN, FIX_TURN, [text("never")]], roles, consent: "declined" });
+			const events = await s.send("edit");
+			expect(verifierRuns(roles)).toHaveLength(2);
+			expect(s.main.prompts).toHaveLength(2);
+			expect(ofType(events, "verification_round")[1]?.correcting).toBe(false);
+			expect(ofType(events, "verification_finished")[0]).toMatchObject({
+				outcome: "needs_decision",
+				rounds: 2,
+				openDefects: [{ id: "D2", severity: "major" }],
+			});
+			expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+		});
+
+		it("passes when the defects are minor or also on the base, advisory only", async () => {
+			const roles = new RoleBackend(
+				verifying(vreport([vdefect({ id: "D1", onBase: true }), vdefect({ id: "D2", severity: "minor" })])),
+			);
+			const s = await start({ turns: [VERIFY_TURN, [text("never")]], roles, consent: "declined" });
+			const events = await s.send("edit");
+			expect(s.main.prompts).toHaveLength(1);
+			expect(ofType(events, "verification_round")[0]).toMatchObject({ blocking: [], correcting: false });
+			expect(ofType(events, "verification_round")[0]?.defects).toHaveLength(2);
+			expect(ofType(events, "verification_finished")[0]).toMatchObject({
+				outcome: "passed",
+				rounds: 1,
+				openDefects: [],
+			});
+		});
+
+		it.each([
+			["a reply that is not a report", "looks fine to me"],
+			["a report missing a reproduction", vreport([vdefect({ reproduction: "" })])],
+		])("is a failed verifier, never a pass, for %s", async (_name, reply) => {
+			const roles = new RoleBackend(verifying(reply));
+			const s = await start({ turns: [VERIFY_TURN, [text("never")]], roles, consent: "declined" });
+			const events = await s.send("edit");
+			expect(s.main.prompts).toHaveLength(1);
+			expect(ofType(events, "verification_round")[0]).toMatchObject({ round: 1, ok: false });
+			expect(ofType(events, "verification_round")[0]?.error).toBeTruthy();
+			expect(ofType(events, "verification_finished")[0]).toMatchObject({ outcome: "failed", rounds: 1 });
+			expect(ofType(events, "verification_finished")[0]?.reason).toBeTruthy();
+		});
+
+		it("fails when the verifier cannot run, and needs a decision when the correction fails", async () => {
+			const crashing = new RoleBackend((role, prompt) => {
+				if (role === "verifier") throw new Error("model down");
+				return defaultReply(role, prompt);
+			});
+			const a = await start({ turns: [VERIFY_TURN], roles: crashing, consent: "declined" });
+			const failed = ofType(await a.send("edit"), "verification_finished")[0];
+			expect(failed).toMatchObject({ outcome: "failed" });
+			expect(failed?.reason).toContain("model down");
+
+			const roles = new RoleBackend(verifying(vreport([vdefect()])));
+			const b = await start({ turns: [VERIFY_TURN, [{ throw: "boom" }]], roles, consent: "declined" });
+			const events = await b.send("edit");
+			expect(verifierRuns(roles)).toHaveLength(1);
+			expect(ofType(events, "verification_finished")[0]).toMatchObject({
+				outcome: "needs_decision",
+				reason: "The correction failed.",
+				openDefects: [{ id: "D1" }],
+			});
+		});
+	});
+
+	describe("before the review, on the final candidate", () => {
+		it("assesses and offers for review the corrected candidate, with a receipt for it", async () => {
+			const roles = new RoleBackend(verifying(vreport([vdefect()]), vreport()));
+			const s = await start({ turns: [VERIFY_TURN, FIX_TURN], roles, consent: "declined" });
+			const events = await s.send("edit");
+			const [assessed] = ofType(events, "review_assessed");
+			expect(assessed).toMatchObject({ level: "high", reviewDue: true });
+			expect(gitIn(s.cwd, "show", `${assessed?.tree}:a.ts`)).toBe("base\nfixed\n");
+			expect(await readFile(join(s.cwd, "a.ts"), "utf8")).toBe("base\nfixed\n");
+			expect(s.asked).toHaveLength(1);
+			expect((await receipts(s.cwd)).map(({ file }) => file)).toEqual([`${assessed?.tree}.json`]);
+		});
+
+		it("skips the review when the correction undoes the whole change", async () => {
+			const roles = new RoleBackend(verifying(vreport([vdefect()]), vreport()));
+			const s = await start({
+				turns: [VERIFY_TURN, [change("a.ts", "base\n"), text("reverted"), { event: finished }]],
+				roles,
+			});
+			const events = await s.send("edit");
+			expect(ofType(events, "verification_finished")[0]).toMatchObject({ outcome: "corrected" });
+			expect(ofType(events, "review_assessed")).toEqual([]);
+			expect(s.asked).toEqual([]);
+		});
+	});
+
+	describe("events", () => {
+		it("describes the start, each round and the end, and adds the cost to the turn", async () => {
+			const roles = new RoleBackend(verifying(vreport([vdefect()]), vreport()));
+			const s = await start({ turns: [VERIFY_TURN, FIX_TURN], roles, consent: "declined" });
+			const events = await s.send("edit");
+			const [started] = ofType(events, "verification_started");
+			expect(started).toMatchObject({ items: [2], declaration: [{ items: [2], reason: "guards the bash approval" }] });
+			const verifyId = started?.verifyId;
+			expect(verifyId).toBeTruthy();
+			const [one, two] = ofType(events, "verification_round");
+			expect([one?.verifyId, two?.verifyId]).toEqual([verifyId, verifyId]);
+			expect(one?.usage).toEqual({ input: 2, output: 2, cacheRead: 0, cacheWrite: 0 });
+			const [done] = ofType(events, "verification_finished");
+			expect(done?.verifyId).toBe(verifyId);
+			// Two verifier runs and one correction turn.
+			expect(done?.usage).toEqual({ input: 5, output: 5, cacheRead: 0, cacheWrite: 0 });
+			expect(events.at(-1)).toMatchObject({ type: "turn_finished", usage: { input: 6, output: 6 }, requests: 2 });
+			// The verifier's own events are nested under the verification.
+			const nested = events.filter((event) => event.parentCallId === verifyId);
+			expect(nested.length).toBeGreaterThan(0);
+			expect(nested.every((event) => event.agent === "verify:verifier")).toBe(true);
+		});
 	});
 });

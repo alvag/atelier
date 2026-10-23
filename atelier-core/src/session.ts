@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { AgentBackend, BackendSession, ToolCall, ToolCallResult } from "./backend.ts";
 import { Channel } from "./channel.ts";
 import {
@@ -195,7 +195,7 @@ export class Session {
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
 			const logged = this.#odd?.userMessage(prompt);
 			// What the agent declared in an earlier turn does not cover this one, and its candidate starts from today's HEAD.
-			this.#review?.startTurn(this.#options.cwd);
+			this.#review?.startTurn(this.#options.cwd, prompt);
 			// The first turn says whether memory works and gives the model the recent memory, outside the system prompt.
 			let sent = prompt;
 			if (!this.#announced) {
@@ -338,9 +338,11 @@ export class Session {
 
 	/** What a review may use of this session: the turn's stream, its signal, one correction turn and child sessions. */
 	#reviewHost(turn: Channel<TurnEvent>, signal: AbortSignal, backendSession: BackendSession): ReviewHost {
+		const feature = this.#odd?.snapshot().path;
 		return {
 			cwd: this.#options.cwd,
 			model: this.#options.model,
+			...(feature === undefined ? {} : { feature: resolve(this.#options.cwd, feature) }),
 			signal,
 			push: (event) => turn.push(event),
 			correct: async (message) => {

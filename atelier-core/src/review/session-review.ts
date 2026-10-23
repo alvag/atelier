@@ -11,15 +11,25 @@ import {
 } from "../events.ts";
 import { DECLARE_RISK_REQUEST } from "../prompt.ts";
 import type { Session, SessionOptions } from "../session.ts";
+import { createBashTool, grepTool, readTool } from "../tools/index.ts";
 import type { ToolDefinition } from "../tools/types.ts";
 import { type Candidate, type FreezeOptions, freezeCandidate } from "./candidate.ts";
 import type { Finding } from "./findings.ts";
 import { runGit } from "./git.ts";
 import { findReceipt, type Receipt, writeReceipt } from "./receipts.ts";
 import { type ReviewDeps, type RoleResult, runReview } from "./reviewer.ts";
-import { type Assessment, assessRisk } from "./risk.ts";
+import { type Assessment, assessRisk, type Escalation } from "./risk.ts";
 import { createRiskTool, RiskRequests } from "./tool.ts";
 import { createTreeTools } from "./tree-tools.ts";
+import { verify } from "./verification.ts";
+import {
+	buildVerifierPrompt,
+	VERIFIER_ENV,
+	VERIFIER_INSTRUCTION,
+	VERIFIER_MAX_REQUESTS,
+	type VerifierDefect,
+} from "./verifier.ts";
+import { createWorkspace } from "./workspace.ts";
 
 export interface ReviewConsentRequest {
 	reviewId: string;
@@ -48,6 +58,8 @@ export interface Spent {
 export interface ReviewHost {
 	cwd: string;
 	model: string | undefined;
+	/** The active ODD feature document, absolute. */
+	feature?: string;
 	signal: AbortSignal;
 	push(event: AtelierEventBody & SubagentTag): void;
 	/** One turn of the main agent inside this turn. */
@@ -65,6 +77,8 @@ export class SessionReview {
 	readonly #children = new Set<Session>();
 	/** The commit HEAD pointed at when the current turn started; undefined without one. */
 	#turnStart: string | undefined;
+	/** What the user asked in the current turn, verbatim: the verifier's brief. */
+	#turnPrompt = "";
 	#starting: Promise<void> = Promise.resolve();
 
 	constructor(options: ReviewOptions) {
@@ -75,8 +89,9 @@ export class SessionReview {
 	 * A main-agent turn begins: what the agent declared before no longer counts, and the base of its candidate is
 	 * today's HEAD. The lookup runs beside the turn and is awaited when the turn ends.
 	 */
-	startTurn(cwd: string): void {
+	startTurn(cwd: string, prompt: string): void {
 		this.#requests.clear();
+		this.#turnPrompt = prompt;
 		this.#turnStart = undefined;
 		this.#starting = runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd }).then(
 			(head) => {
@@ -129,7 +144,7 @@ export class SessionReview {
 			return manual ? refuse("review_unavailable", describeError(error)) : none;
 		}
 
-		const paid = (spent: Spent): Spent => (asked === undefined ? spent : addSpent(asked, spent));
+		const paid = (spent: Spent): Spent => (extra === undefined ? spent : addSpent(extra, spent));
 		const assess = () =>
 			assessRisk(candidate, {
 				escalations: this.#requests.escalations,
@@ -138,10 +153,10 @@ export class SessionReview {
 			});
 		let assessment = assess();
 		// A code change nobody declared the risk of: ask the agent once, inside this turn, then take its word or lack of it.
-		let asked: Spent | undefined;
+		let extra: Spent | undefined;
 		if (!manual && assessment.declaration?.kind === "missing" && !host.signal.aborted) {
 			const answer = await host.correct(DECLARE_RISK_REQUEST);
-			asked = {
+			extra = {
 				usage: answer.usage,
 				...(answer.costUsd === undefined ? {} : { costUsd: answer.costUsd }),
 				...(answer.requests === undefined ? {} : { requests: answer.requests }),
@@ -152,6 +167,15 @@ export class SessionReview {
 				candidate = again.candidate;
 				if (candidate.files.length === 0 || (await findReceipt(candidate.gitDir, candidate.tree))) return paid(none);
 			}
+			assessment = assess();
+		}
+		// A declared high-risk item gets an independent verifier before the review; what it makes the agent change is what the review sees.
+		if (!manual && assessment.declaration?.kind === "items" && !host.signal.aborted) {
+			const verified = await this.#verify(host, candidate, freezing);
+			extra = extra === undefined ? verified.spent : addSpent(extra, verified.spent);
+			candidate = verified.candidate;
+			if (host.signal.aborted) return paid(none);
+			if (candidate.files.length === 0 || (await findReceipt(candidate.gitDir, candidate.tree))) return paid(none);
 			assessment = assess();
 		}
 		host.push({
@@ -271,6 +295,86 @@ export class SessionReview {
 		if (store) this.#requests.clear();
 	}
 
+	/** The independent verifier over the turn's candidate, up to two rounds with a correction between them. */
+	async #verify(
+		host: ReviewHost,
+		candidate: Candidate,
+		freezing: FreezeOptions,
+	): Promise<{ candidate: Candidate; spent: Spent }> {
+		let requests: number | undefined;
+		const count = (more: number | undefined) => {
+			if (more !== undefined) requests = (requests ?? 0) + more;
+		};
+		const declaration = [...this.#requests.escalations];
+		const result = await verify(
+			{ candidate, declaration, count },
+			{
+				runVerifier: (call) => this.#runVerifier(host, declaration, call, count),
+				correct: (message) => host.correct(message),
+				freeze: () => freezeCandidate(host.cwd, freezing),
+				push: (event) => host.push(event),
+				createId: host.createId,
+				aborted: () => host.signal.aborted,
+			},
+		);
+		return {
+			candidate: result.candidate,
+			spent: { ...result.cost, ...(requests === undefined ? {} : { requests }) },
+		};
+	}
+
+	/** One verifier run: a child session in a throwaway copy of the base and the candidate, removed when it ends. */
+	async #runVerifier(
+		host: ReviewHost,
+		declaration: readonly Escalation[],
+		call: { verifyId: string; candidate: Candidate; round: number; handedBack?: readonly VerifierDefect[] },
+		count: (requests: number | undefined) => void,
+	): Promise<RoleResult> {
+		const { candidate } = call;
+		let workspace: Awaited<ReturnType<typeof createWorkspace>>;
+		try {
+			workspace = await createWorkspace({
+				root: candidate.root,
+				base: candidate.base,
+				tree: candidate.tree,
+				...(host.feature === undefined ? {} : { feature: host.feature }),
+			});
+		} catch (error) {
+			return { ok: false, error: `The verifier's copy could not be made: ${describeError(error)}`, usage: ZERO_USAGE };
+		}
+		try {
+			const prompt = buildVerifierPrompt({
+				request: this.#turnPrompt,
+				...(workspace.feature === undefined ? {} : { feature: workspace.feature }),
+				declaration,
+				candidate,
+				round: call.round,
+				...(call.handedBack === undefined ? {} : { handedBack: call.handedBack }),
+				dependencies: workspace.dependencies,
+			});
+			return await this.#runChild(
+				host,
+				{ parentCallId: call.verifyId, agent: "verify:verifier" },
+				{
+					backend: await this.#options.createBackend(),
+					cwd: workspace.dir,
+					...(host.model === undefined ? {} : { model: host.model }),
+					tools: [readTool, grepTool, createBashTool({ withoutApproval: true, env: VERIFIER_ENV })],
+					systemPromptAppend: VERIFIER_INSTRUCTION,
+					maxRequestsPerTurn: VERIFIER_MAX_REQUESTS,
+					createId: host.createId,
+				},
+				"verifier",
+				prompt,
+				count,
+			);
+		} catch (error) {
+			return { ok: false, error: `The verifier could not start: ${describeError(error)}`, usage: ZERO_USAGE };
+		} finally {
+			await workspace.remove();
+		}
+	}
+
 	/** One read-only role: a child session over the frozen tree, its events nested under the review. */
 	async #runRole(
 		host: ReviewHost,
@@ -279,39 +383,58 @@ export class SessionReview {
 		call: Parameters<ReviewDeps["runRole"]>[0],
 		count: (requests: number | undefined) => void,
 	): Promise<RoleResult> {
-		const failed = (error: string, usage: Usage = ZERO_USAGE, costUsd?: number): RoleResult => ({
-			ok: false,
-			error,
-			usage,
-			...(costUsd === undefined ? {} : { costUsd }),
-		});
-		let child: Session;
+		let options: SessionOptions;
 		try {
-			child = await host.startChild({
+			options = {
 				backend: await this.#options.createBackend(),
 				cwd: host.cwd,
 				...(host.model === undefined ? {} : { model: host.model }),
 				tools: createTreeTools(candidate.root, call.tree),
 				systemPromptAppend: call.instruction,
 				createId: host.createId,
-			});
+			};
 		} catch (error) {
-			return failed(`The ${call.role} role could not start: ${describeError(error)}`);
+			return failedRole(`The ${call.role} role could not start: ${describeError(error)}`);
+		}
+		return this.#runChild(
+			host,
+			{ parentCallId: reviewId, agent: `review:${call.role}` },
+			options,
+			call.role,
+			call.prompt,
+			count,
+			call.signal,
+		);
+	}
+
+	/** Runs one child session to its final message; its events join the turn's stream under `tag`. */
+	async #runChild(
+		host: ReviewHost,
+		tag: SubagentTag,
+		options: SessionOptions,
+		role: string,
+		prompt: string,
+		count: (requests: number | undefined) => void,
+		signal: AbortSignal | undefined = host.signal,
+	): Promise<RoleResult> {
+		let child: Session;
+		try {
+			child = await host.startChild(options);
+		} catch (error) {
+			return failedRole(`The ${role} role could not start: ${describeError(error)}`);
 		}
 		this.#children.add(child);
-		const signal = call.signal;
 		const stop = () => void child.interrupt();
 		signal?.addEventListener("abort", stop, { once: true });
-		const tag: SubagentTag = { parentCallId: reviewId, agent: `review:${call.role}` };
 		try {
-			if (signal?.aborted) return failed("interrupted");
+			if (signal?.aborted) return failedRole("interrupted");
 			// Only the text after the role's last tool call is its answer.
 			let report = "";
 			let failure: string | undefined;
 			let stopReason = "incomplete";
 			let usage: Usage = ZERO_USAGE;
 			let costUsd: number | undefined;
-			for await (const event of child.send(call.prompt)) {
+			for await (const event of child.send(prompt)) {
 				const { seq: _seq, turnId: _turnId, ...body } = event;
 				host.push({ ...body, ...tag });
 				if (event.type === "text_delta") report += event.text;
@@ -325,8 +448,8 @@ export class SessionReview {
 				}
 			}
 			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined)
-				return failed(`${stopReason}: ${failure ?? "no details"}`, usage, costUsd);
-			if (report.trim() === "") return failed("The role returned no reply.", usage, costUsd);
+				return failedRole(`${stopReason}: ${failure ?? "no details"}`, usage, costUsd);
+			if (report.trim() === "") return failedRole("The role returned no reply.", usage, costUsd);
 			return { ok: true, text: report, usage, ...(costUsd === undefined ? {} : { costUsd }) };
 		} finally {
 			signal?.removeEventListener("abort", stop);
@@ -334,6 +457,10 @@ export class SessionReview {
 			await child.close();
 		}
 	}
+}
+
+function failedRole(error: string, usage: Usage = ZERO_USAGE, costUsd?: number): RoleResult {
+	return { ok: false, error, usage, ...(costUsd === undefined ? {} : { costUsd }) };
 }
 
 function addSpent(a: Spent, b: Spent): Spent {

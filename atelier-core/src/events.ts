@@ -73,6 +73,27 @@ export type RiskDeclaration =
 	| { kind: "none"; reason: string }
 	| { kind: "missing" };
 
+/** What the independent verifier concluded about one requirement it derived from the user's request. */
+export interface VerifyRequirement {
+	id: string;
+	requirement: string;
+	verdict: "met" | "unmet" | "unverified";
+	evidence: string;
+}
+
+/** A defect the verifier reproduced on the candidate; `onBase`: it happens on the version before the turn too, so it is advisory. */
+export interface VerifyDefect {
+	id: string;
+	severity: "blocker" | "major" | "minor";
+	summary: string;
+	reproduction: string;
+	candidate: string;
+	base: string;
+	onBase: boolean;
+}
+
+export type VerifyOutcome = "passed" | "corrected" | "needs_decision" | "failed";
+
 export type ReviewVerdict = "approved" | "escalated" | "declined" | "unavailable";
 
 export type AtelierEventBody =
@@ -159,6 +180,41 @@ export type AtelierEventBody =
 			correction: { budget: number; used: number } | null;
 			/** Absent when no receipt was written (an interrupted review). */
 			receiptPath?: string;
+			usage: Usage;
+			costUsd?: number;
+	  }
+	/** The core launched the independent verifier for a declared high-risk item; its events follow tagged `agent: "verify:verifier"` under `verifyId`. */
+	| {
+			type: "verification_started";
+			verifyId: string;
+			items: number[];
+			declaration: { items: number[]; reason: string }[];
+	  }
+	/**
+	 * One verifier run. `ok: false` (with `error`): it failed or its report was malformed; nothing else is known.
+	 * `blocking`: ids of the defects the agent must fix (blocker or major, not on the base); `correcting`: they were handed to the agent.
+	 */
+	| {
+			type: "verification_round";
+			verifyId: string;
+			round: number;
+			ok: boolean;
+			error?: string;
+			requirements: VerifyRequirement[];
+			defects: VerifyDefect[];
+			blocking: string[];
+			correcting: boolean;
+			usage: Usage;
+			costUsd?: number;
+	  }
+	/** The verification ended: `openDefects` are the blocking defects left; `usage` and `costUsd` include the verifier runs and the correction. */
+	| {
+			type: "verification_finished";
+			verifyId: string;
+			outcome: VerifyOutcome;
+			reason?: string;
+			rounds: number;
+			openDefects: VerifyDefect[];
 			usage: Usage;
 			costUsd?: number;
 	  }

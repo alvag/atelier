@@ -1,8 +1,30 @@
 import { z } from "zod";
-import { describeError } from "../events.ts";
+import { describeError, type VerifyDefect, type VerifyRequirement } from "../events.ts";
 import type { Candidate } from "./candidate.ts";
 import type { Escalation } from "./risk.ts";
 import { extractJson } from "./roles.ts";
+
+/** Makes package managers and the other common tools refuse to install or fetch: set on the verifier's bash. */
+export const VERIFIER_ENV: Readonly<Record<string, string>> = {
+	npm_config_offline: "true",
+	pnpm_config_offline: "true",
+	// Whatever would still reach for the registry finds nothing listening.
+	npm_config_registry: "http://127.0.0.1:9/",
+	npm_config_fetch_retries: "0",
+	npm_config_manage_package_manager_versions: "false",
+	npm_config_update_notifier: "false",
+	npm_config_audit: "false",
+	npm_config_fund: "false",
+	NO_UPDATE_NOTIFIER: "1",
+	COREPACK_ENABLE_NETWORK: "0",
+	COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+	YARN_ENABLE_NETWORK: "0",
+	PIP_NO_INDEX: "1",
+	CARGO_NET_OFFLINE: "true",
+	GOPROXY: "off",
+};
+/** Model requests one verifier run may make. */
+export const VERIFIER_MAX_REQUESTS = 80;
 
 /** The verifier gets at most this many rounds: one report, one correction by the main agent, one more report. */
 export const VERIFIER_ROUNDS = 2;
@@ -40,8 +62,8 @@ const defectSchema = z.object({
 });
 const reportSchema = z.object({ requirements: z.array(requirementSchema), defects: z.array(defectSchema) });
 
-export type VerifierRequirement = z.infer<typeof requirementSchema>;
-export type VerifierDefect = z.infer<typeof defectSchema>;
+export type VerifierRequirement = VerifyRequirement;
+export type VerifierDefect = VerifyDefect;
 export interface VerifierReport {
 	requirements: VerifierRequirement[];
 	defects: VerifierDefect[];
