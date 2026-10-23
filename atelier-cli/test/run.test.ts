@@ -731,3 +731,27 @@ describe("run: review", () => {
 		expect(h.err().match(/This backend cannot compact its context\./g)).toHaveLength(2);
 	});
 });
+
+describe("M9 baseline non-TTY output", () => {
+	it.each([false, true])("preserves 5ac658d output with --no-review (interactive=%s)", async (interactive) => {
+		const done: FakeStep = {
+			event: {
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+			},
+		};
+		const reply = (value: string): FakeStep[] => [{ event: { type: "text_delta", text: value } }, done];
+		const h = harness(
+			interactive ? [reply("first answer"), reply("second answer")] : [reply("hello")],
+			interactive ? { input: ["first", "", "second"] } : {},
+		);
+		const code = await run(interactive ? ["--no-review"] : ["--no-review", "say hi"], h.io, h.createBackend);
+		const tokens = "tokens: input 1 · output 1 · cache read 0 · cache write 0 · cache 0%\n";
+		expect({ code, stdout: h.out(), stderr: h.err() }).toEqual({
+			code: 0,
+			stdout: interactive ? `first answer\n${tokens}second answer\n${tokens}` : `hello\n${tokens}`,
+			stderr: "no review: Review is off (--no-review or ATELIER_REVIEW=off).\n",
+		});
+	});
+});

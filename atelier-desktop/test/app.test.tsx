@@ -394,6 +394,18 @@ describe("App", () => {
 			expect((await screen.findByTestId("verification")).textContent).toContain(text);
 		});
 
+		it("says what could not be verified when no defect is open", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit(started);
+			fake.emit(
+				finished({ reason: "1 unverified requirement: R1 the approval needs a keypress (no tests)", openDefects: [] }),
+			);
+			expect((await screen.findByRole("alert")).textContent).toBe(
+				"Needs your decision: 1 unverified requirement: R1 the approval needs a keypress (no tests)",
+			);
+		});
+
 		it("says it is verifying until the outcome arrives, and that it stopped when the turn ends first", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");

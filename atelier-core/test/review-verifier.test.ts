@@ -56,7 +56,14 @@ describe("parseVerifierReport", () => {
 			ok: true,
 			report: { requirements: [{ verdict: "unmet" }], defects: [{ id: "D1" }] },
 		});
-		expect(parseVerifierReport(report([], []))).toMatchObject({ ok: true, report: { defects: [] } });
+		expect(parseVerifierReport(report([], [requirement]))).toMatchObject({ ok: true, report: { defects: [] } });
+	});
+
+	it("rejects a report with no requirements: that is no verdict at all", () => {
+		expect(parseVerifierReport(report([], []))).toEqual({
+			ok: false,
+			error: "The report lists no requirements: a verdict per requirement is required.",
+		});
 	});
 
 	it.each([

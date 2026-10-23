@@ -240,8 +240,10 @@ function VerificationBlock({
 					</div>
 				) : (
 					<div className="warning" role="alert">
-						Needs your decision: {open} open defect{open === 1 ? "" : "s"}
-						{result.reason === undefined ? "" : ` · ${result.reason}`}
+						Needs your decision:{" "}
+						{open === 0 && result.reason !== undefined
+							? result.reason
+							: `${open} open defect${open === 1 ? "" : "s"}${result.reason === undefined ? "" : ` · ${result.reason}`}`}
 					</div>
 				)
 			) : (

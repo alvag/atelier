@@ -1,5 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	link,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readFile,
+	readlink,
+	realpath,
+	rm,
+	stat,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -115,7 +128,53 @@ describe("createWorkspace", () => {
 		);
 		expect(workspace.dependencies).toContain("node_modules");
 		expect(workspace.dependencies).toContain("pkgs/app/node_modules");
-		expect(workspace.dependencies).toContain("installing is not possible");
+		expect(workspace.dependencies).toContain("Installing is not possible");
+	});
+
+	it("gives the copies their own files: writing in them leaves the user's dependencies and a hard-linked store alone", async () => {
+		await write("node_modules/dep/index.js", "original\n");
+		await mkdir(join(root, "store"));
+		await writeFile(join(root, "store/file.js"), "store\n");
+		await link(join(root, "store/file.js"), join(repo, "node_modules/dep/linked.js"));
+		await symlink("dep/index.js", join(repo, "node_modules/alias.js"));
+		const workspace = await workspaceOf();
+		const copy = join(workspace.dir, "candidate/node_modules");
+
+		expect(await readlink(join(copy, "alias.js"))).toBe("dep/index.js");
+		await writeFile(join(copy, "dep/index.js"), "changed\n");
+		await writeFile(join(copy, "dep/linked.js"), "changed\n");
+		await writeFile(join(copy, "alias.js"), "changed\n");
+		expect(await readFile(join(repo, "node_modules/dep/index.js"), "utf8")).toBe("original\n");
+		expect(await readFile(join(root, "store/file.js"), "utf8")).toBe("store\n");
+		expect(workspace.dependencies).toContain("copied");
+	});
+
+	it("leaves no link that leads outside the directory: the project's are re-pointed at the copy, the others removed", async () => {
+		await write("node_modules/dep/index.js", "dep\n");
+		await write("lib/index.js", "base lib\n");
+		await mkdir(join(root, "outside"));
+		await writeFile(join(root, "outside/secret"), "secret\n");
+		await symlink(join(repo, "lib"), join(repo, "node_modules/abs-lib"));
+		await symlink(join(root, "outside/secret"), join(repo, "node_modules/abs-outside"));
+		await symlink("../../../outside/secret", join(repo, "node_modules/rel-outside"));
+		await commitAll();
+		const workspace = await workspaceOf();
+		const copy = join(workspace.dir, "candidate/node_modules");
+
+		expect(await readFile(join(copy, "abs-lib/index.js"), "utf8")).toBe("base lib\n");
+		expect(await realpath(join(copy, "abs-lib"))).toBe(await realpath(join(workspace.dir, "candidate/lib")));
+		expect(await lstat(join(copy, "abs-outside")).catch(() => undefined)).toBeUndefined();
+		expect(await lstat(join(copy, "rel-outside")).catch(() => undefined)).toBeUndefined();
+		expect(workspace.dependencies).toContain("2 symbolic links that pointed outside the project were left out.");
+	});
+
+	it("also drops a symbolic link of the tracked files that leaves the directory", async () => {
+		await mkdir(join(root, "outside"));
+		await symlink("../../outside", join(repo, "escape"));
+		await commitAll();
+		const workspace = await workspaceOf();
+		expect(await lstat(join(workspace.dir, "candidate/escape")).catch(() => undefined)).toBeUndefined();
+		expect(workspace.dependencies).toContain("1 symbolic link that pointed outside the project was left out.");
 	});
 
 	it("never deletes the user's dependencies when the copy is removed", async () => {

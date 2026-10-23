@@ -1130,7 +1130,7 @@ describe("independent verification", () => {
 			const s = await start({ cwd, turns: [VERIFY_TURN], roles, consent: "declined" });
 			await s.send("edit");
 			expect(roles.probed[0]?.output).toContain("installed");
-			expect(verifierRuns(roles)[0]?.prompt).toContain("installed dependencies are linked");
+			expect(verifierRuns(roles)[0]?.prompt).toContain("installed dependencies are copied");
 		});
 
 		it("is removed when the verifier fails and when the turn is interrupted", async () => {
@@ -1241,6 +1241,42 @@ describe("independent verification", () => {
 				openDefects: [],
 			});
 			expect(events.filter((event) => event.type === "turn_finished" && event.agent === undefined)).toHaveLength(1);
+		});
+
+		it("hands an unmet requirement to the agent like a blocking defect, with its evidence", async () => {
+			const unmet = { ...vrequirement, verdict: "unmet", evidence: "a pasted y still approved it" };
+			const roles = new RoleBackend(verifying(vreport([], [unmet]), vreport()));
+			const s = await start({ turns: [VERIFY_TURN, FIX_TURN], roles, consent: "declined" });
+			const events = await s.send("edit");
+			expect(s.main.prompts).toHaveLength(2);
+			expect(s.main.prompts[1]).toContain("- R1 [blocker] Requirement not met: the approval needs a keypress");
+			expect(s.main.prompts[1]).toContain("a pasted y still approved it");
+			expect(ofType(events, "verification_round")[0]).toMatchObject({ blocking: ["R1"], correcting: true });
+			expect(ofType(events, "verification_finished")[0]).toMatchObject({ outcome: "corrected", rounds: 2 });
+		});
+
+		it("keeps an unmet requirement open after round 2 as a decision for the user", async () => {
+			const unmet = { ...vrequirement, verdict: "unmet", evidence: "still approves" };
+			const roles = new RoleBackend(verifying(vreport([], [unmet])));
+			const s = await start({ turns: [VERIFY_TURN, FIX_TURN], roles, consent: "declined" });
+			const events = await s.send("edit");
+			expect(ofType(events, "verification_finished")[0]).toMatchObject({
+				outcome: "needs_decision",
+				openDefects: [{ id: "R1", severity: "blocker", reproduction: "still approves" }],
+			});
+		});
+
+		it("needs the user's decision, listing them, when a requirement stays unverified, even if the rest is met", async () => {
+			const unverified = { ...vrequirement, id: "R2", verdict: "unverified", evidence: "no dependencies to run it" };
+			const roles = new RoleBackend(verifying(vreport([], [vrequirement, unverified])));
+			const s = await start({ turns: [VERIFY_TURN, [text("never")]], roles, consent: "declined" });
+			const events = await s.send("edit");
+			expect(verifierRuns(roles)).toHaveLength(1);
+			expect(ofType(events, "verification_finished")[0]).toMatchObject({
+				outcome: "needs_decision",
+				reason: "1 unverified requirement: R2 the approval needs a keypress (no dependencies to run it)",
+				openDefects: [],
+			});
 		});
 
 		it("ends needing the user's decision when defects remain after round 2, without a third round", async () => {
@@ -1360,5 +1396,151 @@ describe("independent verification", () => {
 			expect(nested.length).toBeGreaterThan(0);
 			expect(nested.every((event) => event.agent === "verify:verifier")).toBe(true);
 		});
+	});
+});
+
+describe("independent M9 specification probes", () => {
+	it("S4 re-freezes the base as well as the tree after asking for a declaration", async () => {
+		const cwd = await repo();
+		await writeFile(join(cwd, "b.ts"), "second\n");
+		gitIn(cwd, "add", "-A");
+		gitIn(cwd, "commit", "-qm", "second");
+		const from = gitIn(cwd, "rev-parse", "HEAD").trim();
+		const s = await start({
+			cwd,
+			turns: [
+				MEDIUM_TURN,
+				[DECLARED_NONE, call("git", { args: ["reset", "-q", "--soft", "HEAD~1"] }), { event: finished }],
+			],
+		});
+		const [assessed] = ofType(await s.send("edit"), "review_assessed");
+		expect(assessed?.files.slice().sort()).toEqual(["a.ts", "b.ts"]);
+		expect(assessed?.baseNote).toBe(
+			`HEAD no longer descends from ${from.slice(0, 7)}, where the turn started: the base is the current HEAD`,
+		);
+		await s.session.close();
+	});
+
+	it("S5 does not claim a pass when the verifier omits all requirement verdicts", async () => {
+		const roles = new RoleBackend(verifying(vreport([], [])));
+		const s = await start({
+			turns: [[call("risk", { items: [2], reason: "approval guard" }), ...MEDIUM_TURN]],
+			roles,
+			consent: "declined",
+		});
+		const events = await s.send("Require a keypress for approval");
+		expect(ofType(events, "verification_finished")[0]?.outcome).toBe("failed");
+		await s.session.close();
+	});
+
+	it.each(["unmet", "unverified"])("S5 does not call an %s requirement a pass", async (verdict) => {
+		const roles = new RoleBackend(
+			verifying(
+				vreport([], [{ ...vrequirement, verdict, evidence: "candidate still accepts pasted y, or cannot be checked" }]),
+			),
+		);
+		const s = await start({
+			turns: [[call("risk", { items: [2], reason: "approval guard" }), ...MEDIUM_TURN]],
+			roles,
+			consent: "declined",
+		});
+		const events = await s.send("Require a keypress for approval");
+		expect(["needs_decision", "failed"]).toContain(ofType(events, "verification_finished")[0]?.outcome);
+		await s.session.close();
+	});
+});
+
+describe("independent M9 dependency-write isolation", () => {
+	it.each(["success", "failure", "interrupt"])("S5 preserves dependencies after %s", async (mode) => {
+		const cwd = await repo();
+		await writeFile(join(cwd, ".gitignore"), "node_modules\n");
+		await mkdir(join(cwd, "node_modules/dep"), { recursive: true });
+		await writeFile(join(cwd, "node_modules/dep/index.js"), "original\n");
+		gitIn(cwd, "add", "-A");
+		gitIn(cwd, "commit", "-qm", "dependencies");
+		const before = {
+			index: await readFile(join(cwd, ".git/index")),
+			refs: gitIn(cwd, "for-each-ref") + gitIn(cwd, "rev-parse", "HEAD"),
+			dep: await readFile(join(cwd, "node_modules/dep/index.js")),
+		};
+		const roles = new RoleBackend(
+			(role, prompt) => {
+				if (role !== "verifier") return clean(role, prompt);
+				if (mode === "failure") throw new Error("probe failure");
+				return mode === "interrupt" ? HOLD : vreport();
+			},
+			(role) =>
+				role === "verifier"
+					? [
+							{
+								tool: "bash",
+								input: { command: "printf 'changed\\n' > candidate/node_modules/dep/index.js" },
+								callId: "dependency-write",
+							},
+						]
+					: [],
+		);
+		const s = await start({
+			cwd,
+			roles,
+			consent: "declined",
+			turns: [[call("risk", { items: [2], reason: "guard" }), ...MEDIUM_TURN]],
+		});
+		try {
+			const pending = s.send("Implement the approval guard");
+			if (mode === "interrupt") {
+				for (let i = 0; i < 400 && roles.probed.length === 0; i++)
+					await new Promise((resolve) => setTimeout(resolve, 5));
+				expect(roles.probed).toHaveLength(1);
+				await s.session.interrupt();
+			}
+			await pending;
+			expect(roles.probed[0]?.ok).toBe(true);
+			await expect(stat(roles.roles[0]?.cwd ?? "")).rejects.toThrow();
+			expect(await readFile(join(cwd, ".git/index"))).toEqual(before.index);
+			expect(gitIn(cwd, "for-each-ref") + gitIn(cwd, "rev-parse", "HEAD")).toBe(before.refs);
+			expect(await readFile(join(cwd, "a.ts"), "utf8")).toBe("base\nmore\n");
+			expect(await readFile(join(cwd, "node_modules/dep/index.js"))).toEqual(before.dep);
+		} finally {
+			await s.session.close();
+		}
+	});
+});
+
+describe("independent M9 approval regression", () => {
+	it("S5 keeps main and worker commands behind approval", async () => {
+		const { bashTool, BUILTIN_AGENTS } = await import("../src/index.ts");
+		const child = new FakeBackend([
+			[call("bash", { command: "echo forbidden > marker" }), text("worker report"), { event: finished }],
+		]);
+		const approvals: string[] = [];
+		const s = await start({
+			review: false,
+			turns: [
+				[
+					call("bash", { command: "echo forbidden > marker" }),
+					call("task", { agent: "worker", prompt: "check" }),
+					{ event: finished },
+				],
+			],
+			extra: {
+				tools: [bashTool],
+				approve: async ({ command }) => {
+					approvals.push(command);
+					return false;
+				},
+				subagents: { agents: BUILTIN_AGENTS, createBackend: () => child },
+			},
+		});
+		try {
+			const events = await s.send("check approvals");
+			expect(approvals).toEqual(["echo forbidden > marker", "echo forbidden > marker"]);
+			expect(ofType(events, "approval_requested").map((event) => event.agent ?? "main")).toEqual(["main", "worker"]);
+			expect(s.main.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+			expect(child.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+			await expect(stat(join(s.cwd, "marker"))).rejects.toThrow();
+		} finally {
+			await s.session.close();
+		}
 	});
 });

@@ -1,5 +1,17 @@
 import { spawn } from "node:child_process";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	copyFile,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readlink,
+	realpath,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { describeError } from "../events.ts";
@@ -8,6 +20,10 @@ import { gitEnv, gitText } from "./git.ts";
 /** Directories visited while looking for node_modules; a bigger tree is searched no further and the verifier is told. */
 const SEARCH_LIMIT = 3000;
 const SEARCH_DEPTH = 4;
+/** More installed dependencies than this are not copied: the verifier gets none and is told. */
+export const DEPENDENCY_LIMIT_BYTES = 4 * 1024 ** 3;
+/** Time for copying all the dependencies of both copies. */
+export const DEPENDENCY_LIMIT_MS = 120_000;
 
 /** What the verifier's tools see: a throwaway directory with the project before and after the turn. */
 export interface Workspace {
@@ -22,7 +38,7 @@ export interface Workspace {
 }
 
 export interface WorkspaceInput {
-	/** The repository's worktree root: its objects hold both trees, and its node_modules are linked. */
+	/** The repository's worktree root: its objects hold both trees, and its node_modules are copied. */
 	root: string;
 	base: string;
 	tree: string;
@@ -33,7 +49,8 @@ export interface WorkspaceInput {
 /**
  * Writes the base tree and the candidate tree from git's objects into a new
  * temporary directory, never touching the user's worktree, index or refs, and
- * links the project's installed dependencies into both copies.
+ * copies the project's installed dependencies into both copies: the verifier
+ * writes in its own files and never in the user's.
  */
 export async function createWorkspace(input: WorkspaceInput): Promise<Workspace> {
 	const dir = await mkdtemp(join(tmpdir(), "atelier-verify-"));
@@ -43,7 +60,12 @@ export async function createWorkspace(input: WorkspaceInput): Promise<Workspace>
 			materializeTree(input.root, input.tree, join(dir, "candidate")),
 			materializeTree(input.root, input.base, join(dir, "base")),
 		]);
-		const dependencies = await linkDependencies(input.root, [join(dir, "candidate"), join(dir, "base")]);
+		const copies = [join(dir, "candidate"), join(dir, "base")];
+		let dependencies = await copyDependencies(input.root, copies);
+		// Last, so that nothing that arrived with the trees or the dependencies leads out of the directory.
+		const left = Math.max(...(await Promise.all(copies.map((copy) => confineLinks(copy, dir, input.root)))));
+		if (left > 0)
+			dependencies += ` ${left} symbolic ${left === 1 ? "link" : "links"} that pointed outside the project ${left === 1 ? "was" : "were"} left out.`;
 		const feature = input.feature === undefined ? undefined : await copyFeature(input.feature, dir);
 		return { dir, dependencies, ...(feature === undefined ? {} : { feature }), remove };
 	} catch (error) {
@@ -169,25 +191,14 @@ async function writeEntry(
 	}
 }
 
-/**
- * Links every node_modules of the worktree (the root's and each workspace
- * package's) into the copies, entry by entry: a link that points at another
- * workspace package is pointed at that package's copy, so the verifier runs the
- * candidate's code and not the user's. Nothing is installed or downloaded.
- * Returns the sentence for the verifier's prompt.
- */
-async function linkDependencies(root: string, copies: string[]): Promise<string> {
-	const top = await realpath(root);
+/** Every directory of the worktree that holds a node_modules, as paths relative to the root ("" for the root). */
+async function findNodeModules(top: string): Promise<{ found: string[]; capped: boolean }> {
 	const found: string[] = [];
 	let visited = 0;
-	let capped = false;
 	const queue: { rel: string; depth: number }[] = [{ rel: "", depth: 0 }];
 	for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
 		const names = await readdir(join(top, next.rel), { withFileTypes: true }).catch(() => []);
-		if (++visited > SEARCH_LIMIT) {
-			capped = true;
-			break;
-		}
+		if (++visited > SEARCH_LIMIT) return { found, capped: true };
 		for (const entry of names) {
 			if (!entry.isDirectory()) continue;
 			if (entry.name === "node_modules") found.push(next.rel);
@@ -195,56 +206,150 @@ async function linkDependencies(root: string, copies: string[]): Promise<string>
 				queue.push({ rel: join(next.rel, entry.name), depth: next.depth + 1 });
 		}
 	}
-	const linked = new Set<string>();
-	const problems: string[] = [];
-	for (const rel of found) {
-		for (const copy of copies) {
-			if (
-				!(await lstat(join(copy, rel)).then(
-					(s) => s.isDirectory(),
-					() => false,
-				))
-			)
-				continue;
-			try {
-				await linkEntries(join(top, rel, "node_modules"), join(copy, rel, "node_modules"), top, copy);
-				linked.add(rel === "" ? "node_modules" : `${rel}/node_modules`);
-			} catch (error) {
-				problems.push(`${rel === "" ? "." : rel}: ${describeError(error)}`);
-			}
-		}
-	}
-	const parts: string[] = [];
-	if (linked.size > 0)
-		parts.push(
-			`the project's installed dependencies are linked into both copies (${[...linked].sort().join(", ")}); installing is not possible, use what is there.`,
-		);
-	else
-		parts.push(
-			"no node_modules directory was found in the project, so nothing is installed in the copies: anything that needs installed dependencies cannot run here; mark those requirements unverified and say so.",
-		);
-	if (capped) parts.push(`The search stopped after ${SEARCH_LIMIT} directories, so some node_modules may be missing.`);
-	if (problems.length > 0) parts.push(`Not linked: ${problems.join("; ")}.`);
-	return parts.join(" ");
+	return { found, capped: false };
 }
 
-const inside = (root: string, path: string) => {
+function run(command: string, args: string[], signal: AbortSignal): Promise<string> {
+	return new Promise((done, fail) => {
+		const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], signal });
+		let out = "";
+		let err = "";
+		child.stdout.on("data", (chunk: Buffer) => {
+			if (out.length < 4096) out += chunk.toString("utf8");
+		});
+		child.stderr.on("data", (chunk: Buffer) => {
+			if (err.length < 4096) err += chunk.toString("utf8");
+		});
+		child.on("error", fail);
+		child.on("close", (code) =>
+			code === 0 ? done(out) : fail(new Error(err.trim() || `${command} exited with ${code}`)),
+		);
+	});
+}
+
+/** Disk use of a directory in bytes, links not followed; hard links count once. */
+async function sizeOf(path: string, signal: AbortSignal): Promise<number> {
+	const kilobytes = Number.parseInt((await run("du", ["-sk", path], signal)).split(/\s/)[0] ?? "", 10);
+	if (!Number.isFinite(kilobytes)) throw new Error(`could not measure ${path}`);
+	return kilobytes * 1024;
+}
+
+/**
+ * Copies `source` into `dest` keeping links as links: a clone on APFS, a
+ * reflink where the file system has them, a plain copy otherwise. Every file is
+ * a new one, so a hard link to a shared store is broken, which is the point.
+ */
+async function copyDirectory(source: string, dest: string, signal: AbortSignal): Promise<void> {
+	const attempts =
+		process.platform === "darwin" ? [["-c"], []] : process.platform === "linux" ? [["--reflink=auto"], []] : [[]];
+	let last: unknown;
+	for (const flags of attempts) {
+		await rm(dest, { recursive: true, force: true });
+		await mkdir(dest, { recursive: true });
+		try {
+			await run("cp", ["-P", "-R", ...flags, `${source}/.`, `${dest}/`], signal);
+			return;
+		} catch (error) {
+			last = error;
+			if (signal.aborted) break;
+		}
+	}
+	throw last;
+}
+
+/**
+ * Copies every node_modules of the worktree (the root's and each workspace
+ * package's) into the same place of both copies. Nothing is installed or
+ * downloaded, and nothing the verifier writes reaches the user's files. Links
+ * that lead to another workspace package end up at that package's copy (see
+ * `confineLinks`). Over the size or time limit, or on a failed copy, no
+ * dependencies are left in the copies. Returns the sentence for the verifier's prompt.
+ */
+async function copyDependencies(root: string, copies: string[]): Promise<string> {
+	const top = await realpath(root);
+	const { found, capped } = await findNodeModules(top);
+	const none = (why: string) =>
+		`${why}, so no installed dependencies are available in the copies: anything that needs them cannot run here; mark those requirements unverified and say so.`;
+	const searched = capped
+		? ` The search stopped after ${SEARCH_LIMIT} directories, so some node_modules may be missing.`
+		: "";
+	if (found.length === 0) return `${none("no node_modules directory was found in the project")}${searched}`;
+	const signal = AbortSignal.timeout(DEPENDENCY_LIMIT_MS);
+	const copied: string[] = [];
+	const names = (rels: string[]) => [...new Set(rels)].sort().join(", ");
+	try {
+		let bytes = 0;
+		for (const rel of found) bytes += await sizeOf(join(top, rel, "node_modules"), signal);
+		const mb = (n: number) => `${Math.round(n / 1024 ** 2)} MB`;
+		if (bytes > DEPENDENCY_LIMIT_BYTES)
+			return `${none(`the installed dependencies take ${mb(bytes)}, over the limit of ${mb(DEPENDENCY_LIMIT_BYTES)}`)}${searched}`;
+		for (const rel of found) {
+			for (const copy of copies) {
+				const isDirectory = await lstat(join(copy, rel)).then(
+					(s) => s.isDirectory(),
+					() => false,
+				);
+				if (!isDirectory) continue;
+				const dest = join(copy, rel, "node_modules");
+				copied.push(dest);
+				await copyDirectory(join(top, rel, "node_modules"), dest, signal);
+			}
+		}
+	} catch (error) {
+		await Promise.all(copied.map((path) => rm(path, { recursive: true, force: true })));
+		return `${none(`the installed dependencies could not be copied (${signal.aborted ? `over ${DEPENDENCY_LIMIT_MS / 1000} seconds` : describeError(error)})`)}${searched}`;
+	}
+	const places = found.map((rel) => (rel === "" ? "node_modules" : `${rel}/node_modules`));
+	return `the project's installed dependencies are copied into both copies (${names(places)}); what you change in them stays in the copies. Installing is not possible, use what is there.${searched}`;
+}
+
+/** `realpath` of the deepest part of `path` that exists, with the rest appended. */
+async function realish(path: string): Promise<string> {
+	const rest: string[] = [];
+	for (let current = resolve(path); ; current = dirname(current)) {
+		try {
+			return join(await realpath(current), ...rest);
+		} catch {
+			if (dirname(current) === current) return resolve(path);
+			rest.unshift(basename(current));
+		}
+	}
+}
+
+const within = (root: string, path: string) => {
 	const rel = relative(root, path);
-	return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 };
 
-async function linkEntries(source: string, dest: string, top: string, copy: string): Promise<void> {
-	await mkdir(dest, { recursive: true });
-	for (const entry of await readdir(source, { withFileTypes: true })) {
-		const from = join(source, entry.name);
-		const to = join(dest, entry.name);
-		if (entry.isSymbolicLink()) {
-			const real = await realpath(from).catch(() => undefined);
-			if (real === undefined) continue;
-			// A workspace package lives in the project, outside any node_modules: use the copy's version of it.
-			const workspace = inside(top, real) && !relative(top, real).split(sep).includes("node_modules");
-			await symlink(workspace ? join(copy, relative(top, real)) : real, to);
-		} else if (entry.isDirectory() && entry.name.startsWith("@")) await linkEntries(from, to, top, copy);
-		else await symlink(from, to);
-	}
+/**
+ * Makes sure no symbolic link under `copy` leads outside `boundary`, where the
+ * verifier could write through it into the user's files. A link into the
+ * project is pointed at the same place of the copy (which makes a link to
+ * another workspace package use the candidate's code); a link anywhere else is
+ * removed. Returns how many it removed.
+ */
+async function confineLinks(copy: string, boundary: string, root: string): Promise<number> {
+	const project = await realpath(root);
+	const realBoundary = await realpath(boundary);
+	const realCopy = await realpath(copy);
+	let removed = 0;
+	const visit = async (dir: string): Promise<void> => {
+		for (const entry of await readdir(dir, { withFileTypes: true })) {
+			const path = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				await visit(path);
+				continue;
+			}
+			if (!entry.isSymbolicLink()) continue;
+			const target = await readlink(path);
+			// Where the link leads, with the links on the way followed, even if the last part does not exist.
+			const resolved = await realish(isAbsolute(target) ? target : resolve(dir, target));
+			if (within(realBoundary, resolved)) continue;
+			await rm(path);
+			if (within(project, resolved)) await symlink(join(realCopy, relative(project, resolved)), path);
+			else removed++;
+		}
+	};
+	await visit(copy);
+	return removed;
 }

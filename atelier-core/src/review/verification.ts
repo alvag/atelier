@@ -5,14 +5,16 @@ import {
 	type Usage,
 	type VerifyDefect,
 	type VerifyOutcome,
+	type VerifyRequirement,
 	ZERO_USAGE,
 } from "../events.ts";
 import type { Candidate, FreezeResult } from "./candidate.ts";
 import type { RoleResult } from "./reviewer.ts";
 import type { Escalation } from "./risk.ts";
 import {
-	blockingDefects,
+	blockingIssues,
 	parseVerifierReport,
+	unverifiedRequirements,
 	VERIFIER_ROUNDS,
 	type VerifierDefect,
 	verifierCorrectionMessage,
@@ -33,6 +35,11 @@ export interface VerificationDeps {
 	push(event: AtelierEventBody & SubagentTag): void;
 	createId(): string;
 	aborted(): boolean;
+}
+
+function unverifiedReason(unverified: readonly VerifyRequirement[]): string {
+	const listed = unverified.map((r) => `${r.id} ${r.requirement} (${r.evidence})`).join("; ");
+	return `${unverified.length} unverified ${unverified.length === 1 ? "requirement" : "requirements"}: ${listed}`;
 }
 
 /** What the verification cost, to be added to the turn. */
@@ -126,7 +133,8 @@ export async function verify(
 		if (!reply.ok) return failed(reply.error);
 		const parsed = parseVerifierReport(reply.text);
 		if (!parsed.ok) return failed(`The verifier returned an invalid report: ${parsed.error}`);
-		const blocking = blockingDefects(parsed.report);
+		const blocking = blockingIssues(parsed.report);
+		const unverified = unverifiedRequirements(parsed.report);
 		const correcting = blocking.length > 0 && round < VERIFIER_ROUNDS;
 		deps.push({
 			type: "verification_round",
@@ -139,8 +147,13 @@ export async function verify(
 			correcting,
 			...spent,
 		});
-		if (blocking.length === 0) return finish(round === 1 ? "passed" : "corrected");
-		if (!correcting) return finish("needs_decision", undefined, blocking);
+		// Proof that is partial or missing is a decision for the user, never a pass.
+		if (blocking.length === 0) {
+			if (unverified.length > 0) return finish("needs_decision", unverifiedReason(unverified));
+			return finish(round === 1 ? "passed" : "corrected");
+		}
+		if (!correcting)
+			return finish("needs_decision", unverified.length > 0 ? unverifiedReason(unverified) : undefined, blocking);
 
 		let fixed: Awaited<ReturnType<VerificationDeps["correct"]>>;
 		try {

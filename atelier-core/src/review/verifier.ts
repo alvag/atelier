@@ -34,7 +34,7 @@ const SUMMARY_FILES = 200;
 export const VERIFIER_INSTRUCTION = [
 	"You are an independent verifier. Another agent changed a high-risk part of this project and declared its risk. You check that the work does what the user asked and that it holds up against hostile input. You did not write it and you owe it nothing.",
 	"Your working directory holds two copies of the project: candidate/ (the agent's work at the end of the turn) and base/ (the project before the turn). You have read, grep and bash. bash runs without asking, only inside this directory, and you may write scratch files only here. You cannot edit the user's repository and must not try.",
-	"Never install packages and never use the network: no install, add, update or download with pnpm, npm, yarn, pip or any other tool, no curl or wget. The project's installed dependencies are linked into both copies; use those. If something you need is missing, mark the requirement unverified and say what is missing.",
+	"Never install packages and never use the network: no install, add, update or download with pnpm, npm, yarn, pip or any other tool, no curl or wget. The project's installed dependencies are copied into both copies, so what you change there stays there; use them. If something you need is missing, mark the requirement unverified and say what is missing.",
 	"Do this, in order:",
 	"1. Derive the requirements from the user's request (and the feature document, when one is given). Keep the user's own words where you can.",
 	"2. Run probes against candidate/ for each requirement; reading code is not a probe. Include hostile and adversarial inputs aimed at what the declared risk item protects: for a guard or an approval, inputs that try to bypass it; for parsing, malformed, pasted, empty and boundary input; for data, repeated or interrupted operations.",
@@ -82,6 +82,8 @@ export function parseVerifierReport(text: string): ParsedReport {
 	}
 	const parsed = reportSchema.safeParse(value);
 	if (!parsed.success) return { ok: false, error: z.prettifyError(parsed.error) };
+	if (parsed.data.requirements.length === 0)
+		return { ok: false, error: "The report lists no requirements: a verdict per requirement is required." };
 	for (const [name, entries] of [
 		["requirement", parsed.data.requirements],
 		["defect", parsed.data.defects],
@@ -100,6 +102,32 @@ export function blockingDefects(report: VerifierReport): VerifierDefect[] {
 	return report.defects.filter(
 		(defect) => !defect.onBase && (defect.severity === "blocker" || defect.severity === "major"),
 	);
+}
+
+/**
+ * What the main agent must fix: the blocking defects, and every requirement
+ * the verifier found unmet, which counts as a blocker even without a defect.
+ */
+export function blockingIssues(report: VerifierReport): VerifierDefect[] {
+	const unmet = report.requirements
+		.filter((requirement) => requirement.verdict === "unmet")
+		.map(
+			(requirement): VerifierDefect => ({
+				id: requirement.id,
+				severity: "blocker",
+				summary: `Requirement not met: ${requirement.requirement}`,
+				reproduction: requirement.evidence,
+				candidate: requirement.evidence,
+				base: "not compared: this is a requirement of the request, not a regression",
+				onBase: false,
+			}),
+		);
+	return [...blockingDefects(report), ...unmet];
+}
+
+/** The requirements the verifier could not check; they keep a turn from passing. */
+export function unverifiedRequirements(report: VerifierReport): VerifierRequirement[] {
+	return report.requirements.filter((requirement) => requirement.verdict === "unverified");
 }
 
 export interface VerifierPromptInput {

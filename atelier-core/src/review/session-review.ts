@@ -163,7 +163,13 @@ export class SessionReview {
 			};
 			// The agent may have edited while answering: those edits are part of what gets assessed.
 			const again = await freezeCandidate(host.cwd, freezing);
-			if (again.ok && again.candidate.tree !== candidate.tree) {
+			// The base can move too (a reset or a commit while answering), so it counts as much as the tree.
+			if (
+				again.ok &&
+				(again.candidate.tree !== candidate.tree ||
+					again.candidate.baseCommit !== candidate.baseCommit ||
+					again.candidate.baseNote !== candidate.baseNote)
+			) {
 				candidate = again.candidate;
 				if (candidate.files.length === 0 || (await findReceipt(candidate.gitDir, candidate.tree))) return paid(none);
 			}

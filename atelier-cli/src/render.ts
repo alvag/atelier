@@ -258,8 +258,10 @@ export class Renderer {
 				this.#line(
 					this.#style(
 						"red",
-						`✗ verify: needs your decision · ${plural(event.openDefects.length, "open defect")}${
-							event.reason === undefined ? "" : ` · ${event.reason}`
+						`✗ verify: needs your decision · ${
+							event.openDefects.length === 0 && event.reason !== undefined
+								? event.reason
+								: `${plural(event.openDefects.length, "open defect")}${event.reason === undefined ? "" : ` · ${event.reason}`}`
 						}${cost}`,
 					),
 				);

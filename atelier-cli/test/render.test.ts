@@ -575,6 +575,18 @@ describe("Renderer", () => {
 			);
 		});
 
+		it("says what could not be verified when nothing else is open", () => {
+			const { stdout } = render([
+				done({
+					outcome: "needs_decision",
+					reason: "1 unverified requirement: R1 the approval needs a keypress (could not run it)",
+				}),
+			]);
+			expect(stdout).toBe(
+				"✗ verify: needs your decision · 1 unverified requirement: R1 the approval needs a keypress (could not run it)\n",
+			);
+		});
+
 		it("lists the open defects when the user must decide", () => {
 			const { stdout } = render([
 				done({ outcome: "needs_decision", rounds: 2, openDefects: [defect({ id: "D2", severity: "major" })] }),
