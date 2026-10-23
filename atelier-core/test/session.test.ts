@@ -75,9 +75,9 @@ describe("Session", () => {
 		expect(first).toEqual([
 			{ type: "text_delta", text: "a", seq: 1, turnId: "id-1" },
 			{ type: "text_delta", text: "b", seq: 2, turnId: "id-1" },
-			{ ...finished, seq: 3, turnId: "id-1" },
+			{ ...finished, durationMs: expect.any(Number), seq: 3, turnId: "id-1" },
 		]);
-		expect(second).toEqual([{ ...finished, seq: 1, turnId: "id-2" }]);
+		expect(second).toEqual([{ ...finished, durationMs: expect.any(Number), seq: 1, turnId: "id-2" }]);
 	});
 
 	it("produces only JSON-serializable events", async () => {
@@ -99,7 +99,7 @@ describe("Session", () => {
 		expect(events.map(({ seq: _seq, turnId: _turnId, ...body }) => body)).toEqual([
 			{ type: "tool_call_started", callId: "c1", tool: "echo", input: { text: "hi" } },
 			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "echoed hi", truncated: false },
-			finished,
+			{ ...finished, durationMs: expect.any(Number) },
 		]);
 	});
 
@@ -207,7 +207,12 @@ describe("Session", () => {
 			expect(events.map(({ seq: _seq, turnId: _turnId, ...body }) => body)).toEqual([
 				{ type: "text_delta", text: "a" },
 				{ type: "error", code: "backend_error", message: "network down", recoverable: false },
-				{ type: "turn_finished", stopReason: "error", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+				{
+					type: "turn_finished",
+					stopReason: "error",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					durationMs: expect.any(Number),
+				},
 			]);
 		});
 
@@ -229,6 +234,26 @@ describe("Session", () => {
 			expect(events.filter((e) => e.type === "turn_finished")).toHaveLength(1);
 			expect(events.at(-1)).toMatchObject(finished);
 			expect(events.map((e) => e.seq)).toEqual([1, 2]);
+		});
+
+		it("reports the turn's wall time in durationMs, tool time included", async () => {
+			const slow = defineTool({
+				name: "slow",
+				description: "Waits a bit",
+				inputShape: {},
+				execute: async () => {
+					await new Promise((resolve) => setTimeout(resolve, 30));
+					return { ok: true, output: "", summary: "waited", truncated: false };
+				},
+			});
+			const { session } = await start([[{ toolCall: { tool: "slow", input: {} } }, { event: finished }]], {
+				tools: [slow],
+			});
+			const events = await collect(session.send("x"));
+			const last = events.at(-1);
+			const durationMs = last?.type === "turn_finished" ? last.durationMs : undefined;
+			expect(Number.isInteger(durationMs)).toBe(true);
+			expect(durationMs).toBeGreaterThanOrEqual(25);
 		});
 	});
 

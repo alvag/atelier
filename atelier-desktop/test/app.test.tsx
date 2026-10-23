@@ -112,6 +112,29 @@ describe("App", () => {
 		expect(screen.queryByText(/not using a Claude subscription/)).toBeNull();
 	});
 
+	it("sums up a finished turn in one line and folds the token breakdown under it", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({
+			type: "session_started",
+			backend: "claude-code",
+			model: "claude-opus-5-5",
+			authSource: "subscription",
+		});
+		fake.emit({
+			type: "turn_finished",
+			stopReason: "end_turn",
+			usage: { input: 1200, output: 85, cacheRead: 45_000, cacheWrite: 1900 },
+			costUsd: 0.0312,
+			durationMs: 72_400,
+		});
+		const usage = await screen.findByTestId("usage");
+		expect(usage.tagName).toBe("DETAILS");
+		expect(usage.hasAttribute("open")).toBe(false);
+		expect(usage.querySelector("summary")?.textContent).toBe("claude-opus-5-5 · 1m 12s · 48.2K tokens · $0.0312");
+		expect(usage.textContent).toContain("tokens: input 1,200 · output 85 · cache read 45,000 · cache write 1,900");
+	});
+
 	it("shows why the cache missed and how many requests the turn made", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

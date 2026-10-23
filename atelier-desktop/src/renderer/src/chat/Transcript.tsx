@@ -5,6 +5,15 @@ import { renderMarkdown } from "./markdown.ts";
 import type { Subagent, Turn, TurnItem } from "./reducer.ts";
 
 const numbers = new Intl.NumberFormat("en-US");
+const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+
+/** "0.4s", "12.3s", "1m 12s". */
+function formatDuration(ms: number): string {
+	// Below 59.95 s, so toFixed never rounds up to "60.0s".
+	if (ms < 59_950) return `${(ms / 1000).toFixed(1)}s`;
+	const seconds = Math.round(ms / 1000);
+	return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
 
 function ToolRow({ item }: { item: Extract<TurnItem, { kind: "tool" }> }) {
 	const mark = { running: "…", ok: "✓", error: "✗", denied: "⊘" }[item.status];
@@ -180,6 +189,22 @@ function CompactionRow({ item }: { item: Extract<TurnItem, { kind: "compaction" 
 	return <div className="compaction">Context compacted · {parts.join(" · ")}</div>;
 }
 
+/** A finished turn in one line: model, wall time, total tokens and cost; the token breakdown folds under it. */
+function UsageSummary({ finished, model }: { finished: NonNullable<Turn["finished"]>; model?: string | undefined }) {
+	const { input, output, cacheRead, cacheWrite } = finished.usage;
+	const head: string[] = [];
+	if (model) head.push(model);
+	if (finished.durationMs !== undefined) head.push(formatDuration(finished.durationMs));
+	head.push(`${compact.format(input + output + cacheRead + cacheWrite)} tokens`);
+	if (finished.costUsd !== undefined) head.push(`$${finished.costUsd.toFixed(4)}`);
+	return (
+		<details className="usage" data-testid="usage">
+			<summary>{head.join(" · ")}</summary>
+			<TokenLine finished={finished} />
+		</details>
+	);
+}
+
 function TokenLine({ finished }: { finished: NonNullable<Turn["finished"]> }) {
 	const { input, output, cacheRead, cacheWrite } = finished.usage;
 	const parts = [
@@ -266,18 +291,28 @@ function SubagentBlock({
 			</summary>
 			<div className="subagent-body">
 				<Items items={subagent.items} onAnswer={onAnswer} />
-				{subagent.finished ? <TokenLine finished={subagent.finished} /> : null}
+				{subagent.finished ? <UsageSummary finished={subagent.finished} model={subagent.model} /> : null}
 			</div>
 		</details>
 	);
 }
 
-function TurnView({ turn, onAnswer, onConsent }: { turn: Turn; onAnswer: OnAnswer; onConsent?: OnConsent }) {
+function TurnView({
+	turn,
+	model,
+	onAnswer,
+	onConsent,
+}: {
+	turn: Turn;
+	model?: string | undefined;
+	onAnswer: OnAnswer;
+	onConsent?: OnConsent;
+}) {
 	return (
 		<section className="turn">
 			{turn.prompt ? <div className="prompt">{turn.prompt}</div> : null}
 			<Items items={turn.items} onAnswer={onAnswer} {...(onConsent ? { onConsent } : {})} />
-			{turn.finished ? <TokenLine finished={turn.finished} /> : null}
+			{turn.finished ? <UsageSummary finished={turn.finished} model={model} /> : null}
 		</section>
 	);
 }
@@ -287,10 +322,13 @@ const FinishedTurn = memo(TurnView);
 
 export function Transcript({
 	turns,
+	model,
 	onAnswer,
 	onConsent,
 }: {
 	turns: Turn[];
+	/** The session's model, shown on each finished turn; subagents show their own. */
+	model?: string | undefined;
 	onAnswer: (callId: string, approved: boolean) => void;
 	onConsent?: OnConsent;
 }) {
@@ -299,9 +337,9 @@ export function Transcript({
 		<div className="transcript">
 			{turns.map((turn, index) =>
 				turn.finished ? (
-					<FinishedTurn key={turn.id ?? index} turn={turn} onAnswer={onAnswer} {...consent} />
+					<FinishedTurn key={turn.id ?? index} turn={turn} model={model} onAnswer={onAnswer} {...consent} />
 				) : (
-					<TurnView key={turn.id ?? index} turn={turn} onAnswer={onAnswer} {...consent} />
+					<TurnView key={turn.id ?? index} turn={turn} model={model} onAnswer={onAnswer} {...consent} />
 				),
 			)}
 		</div>

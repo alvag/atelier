@@ -79,6 +79,7 @@ export interface Finished {
 	usage: Usage;
 	costUsd?: number;
 	requests?: number;
+	durationMs?: number;
 }
 
 export interface Turn {
@@ -308,6 +309,7 @@ function finishedOf(event: Extract<AtelierEvent, { type: "turn_finished" }>): Fi
 		usage: event.usage,
 		...(event.costUsd === undefined ? {} : { costUsd: event.costUsd }),
 		...(event.requests === undefined ? {} : { requests: event.requests }),
+		...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
 	};
 }
 

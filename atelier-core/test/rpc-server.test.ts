@@ -119,7 +119,7 @@ describe("RpcServer", () => {
 				turnId,
 			},
 			{ type: "text_delta", text: "hi", seq: 2, turnId },
-			{ ...finished, seq: 3, turnId },
+			{ ...finished, durationMs: expect.any(Number), seq: 3, turnId },
 		]);
 	});
 

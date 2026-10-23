@@ -289,15 +289,16 @@ export class Session {
 		this.#turn = turn;
 		const abort = new AbortController();
 		this.#abort = abort;
+		const started = performance.now();
 		const pump = (async () => {
-			let finish: AtelierEventBody;
+			let finish: Extract<AtelierEventBody, { type: "turn_finished" }>;
 			try {
 				finish = await work(turn, abort.signal, backendSession);
 			} catch (error) {
 				turn.push(errorEvent("turn_failed", describeError(error)));
 				finish = { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
 			}
-			turn.push(finish);
+			turn.push({ ...finish, durationMs: Math.round(performance.now() - started) });
 			turn.close();
 		})();
 

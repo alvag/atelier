@@ -83,13 +83,17 @@ export type AtelierEventBody =
 			fullOutputPath?: string;
 	  }
 	| { type: "approval_requested"; callId: string; command: string }
-	/** `requests`: model requests the turn made, when the backend knows it; `context`: how full the context is, when known. */
+	/**
+	 * `requests`: model requests the turn made, when the backend knows it; `context`: how full the context is, when known.
+	 * `durationMs`: wall time of the whole turn, tools and end-of-turn review included; set by the session.
+	 */
 	| {
 			type: "turn_finished";
 			stopReason: string;
 			usage: Usage;
 			costUsd?: number;
 			requests?: number;
+			durationMs?: number;
 			context?: ContextUsage;
 	  }
 	/** The core started summarizing the older history; `tokens` is the context size that led to it. */

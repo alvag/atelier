@@ -175,8 +175,19 @@ main {
 	color: var(--at-warning);
 }
 
-.tokens {
+.usage {
 	margin-top: 6px;
+	font-size: 12px;
+	color: var(--at-muted);
+}
+
+.usage > summary {
+	cursor: pointer;
+	width: fit-content;
+}
+
+.tokens {
+	margin-top: 2px;
 	font-size: 12px;
 	color: var(--at-muted);
 }

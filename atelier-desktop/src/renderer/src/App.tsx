@@ -99,7 +99,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 
 			<div className="workspace">
 				<main>
-					<Transcript turns={state.turns} onAnswer={onAnswer} onConsent={onConsent} />
+					<Transcript turns={state.turns} model={state.model} onAnswer={onAnswer} onConsent={onConsent} />
 				</main>
 				{state.feature ? <FeaturePanel feature={state.feature} /> : null}
 			</div>
