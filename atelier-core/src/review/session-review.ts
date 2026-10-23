@@ -37,6 +37,8 @@ export interface ReviewOptions {
 export interface Spent {
 	usage: Usage;
 	costUsd?: number;
+	/** Model requests of the roles and the correction, when their backends report them. */
+	requests?: number;
 	refused?: boolean;
 }
 
@@ -47,7 +49,7 @@ export interface ReviewHost {
 	signal: AbortSignal;
 	push(event: AtelierEventBody & SubagentTag): void;
 	/** One turn of the main agent inside this turn. */
-	correct(message: string): Promise<{ ok: boolean; usage: Usage; costUsd?: number }>;
+	correct(message: string): Promise<{ ok: boolean; usage: Usage; costUsd?: number; requests?: number }>;
 	startChild(options: SessionOptions): Promise<Session>;
 	createId(): string;
 }
@@ -149,9 +151,17 @@ export class SessionReview {
 	}
 
 	async #cycle(host: ReviewHost, reviewId: string, candidate: Candidate, assessment: Assessment): Promise<Spent> {
+		let requests: number | undefined;
+		const count = (more: number | undefined) => {
+			if (more !== undefined) requests = (requests ?? 0) + more;
+		};
 		const deps: ReviewDeps = {
-			runRole: (call) => this.#runRole(host, reviewId, candidate, call),
-			correct: (message) => host.correct(message),
+			runRole: (call) => this.#runRole(host, reviewId, candidate, call, count),
+			correct: async (message) => {
+				const result = await host.correct(message);
+				count(result.requests);
+				return result;
+			},
 			freeze: () => freezeCandidate(host.cwd),
 			now: () => new Date(),
 			createId: host.createId,
@@ -172,7 +182,11 @@ export class SessionReview {
 		}
 		const interrupted = receipt.verdict === "unavailable" && receipt.unavailableReason === "interrupted";
 		await this.#finish(host, reviewId, candidate.gitDir, receipt, !interrupted);
-		return { usage: receipt.usage, ...(receipt.costUsd === undefined ? {} : { costUsd: receipt.costUsd }) };
+		return {
+			usage: receipt.usage,
+			...(receipt.costUsd === undefined ? {} : { costUsd: receipt.costUsd }),
+			...(requests === undefined ? {} : { requests }),
+		};
 	}
 
 	/** Stores the receipt (not for an interrupted review), announces the end, and forgets what the agent raised. */
@@ -211,6 +225,7 @@ export class SessionReview {
 		reviewId: string,
 		candidate: Candidate,
 		call: Parameters<ReviewDeps["runRole"]>[0],
+		count: (requests: number | undefined) => void,
 	): Promise<RoleResult> {
 		const failed = (error: string, usage: Usage = ZERO_USAGE, costUsd?: number): RoleResult => ({
 			ok: false,
@@ -254,6 +269,7 @@ export class SessionReview {
 					stopReason = event.stopReason;
 					usage = event.usage;
 					costUsd = event.costUsd;
+					count(event.requests);
 				}
 			}
 			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined)

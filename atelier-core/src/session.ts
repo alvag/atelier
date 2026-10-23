@@ -320,6 +320,7 @@ export class Session {
 			correct: async (message) => {
 				let usage = ZERO_USAGE;
 				let costUsd: number | undefined;
+				let requests: number | undefined;
 				let ok = false;
 				let failed = false;
 				try {
@@ -327,6 +328,7 @@ export class Session {
 						if (event.type === "turn_finished") {
 							usage = event.usage;
 							costUsd = event.costUsd;
+							requests = event.requests;
 							ok = !NOT_REVIEWED.has(event.stopReason);
 						} else {
 							if (event.type === "error") failed = true;
@@ -337,7 +339,12 @@ export class Session {
 					failed = true;
 					turn.push(errorEvent("backend_error", describeError(error)));
 				}
-				return { ok: ok && !failed, usage, ...(costUsd === undefined ? {} : { costUsd }) };
+				return {
+					ok: ok && !failed,
+					usage,
+					...(costUsd === undefined ? {} : { costUsd }),
+					...(requests === undefined ? {} : { requests }),
+				};
 			},
 			startChild: (options) => Session.start(options),
 			createId: this.#createId,
@@ -524,8 +531,13 @@ function addSpent(
 		ended.costUsd === undefined && spent.costUsd === undefined
 			? undefined
 			: (ended.costUsd ?? 0) + (spent.costUsd ?? 0);
+	const requests =
+		ended.requests === undefined && spent.requests === undefined
+			? undefined
+			: (ended.requests ?? 0) + (spent.requests ?? 0);
 	return {
 		...ended,
+		...(requests === undefined ? {} : { requests }),
 		usage: {
 			input: usage.input + spent.usage.input,
 			output: usage.output + spent.usage.output,

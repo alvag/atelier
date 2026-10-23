@@ -105,7 +105,12 @@ class RoleBackend implements AgentBackend {
 					return;
 				}
 				yield { type: "text_delta", text: answer };
-				yield { type: "turn_finished", stopReason: "end_turn", usage: { ...usage, input: 2, output: 2 } };
+				yield {
+					type: "turn_finished",
+					stopReason: "end_turn",
+					usage: { ...usage, input: 2, output: 2 },
+					requests: 1,
+				};
 			},
 			async interrupt() {
 				backend.interrupts++;
@@ -352,6 +357,8 @@ describe("consent and the cycle", () => {
 			cacheRead: 0,
 			cacheWrite: 0,
 		});
+		// The roles' model requests count too: 4 lenses, the refuter and the validator.
+		expect(last?.type === "turn_finished" && last.requests).toBe(6);
 		expect(await receipts(s.cwd)).toHaveLength(2);
 
 		// Neither the reviewed nor the corrected change is offered again.
@@ -431,7 +438,7 @@ describe("Session.review", () => {
 		expect(ofType(events, "review_finished")[0]).toMatchObject({ verdict: "approved" });
 		expect(s.roles.roles.map((role) => role.role)).toEqual(["reliability"]);
 		expect(events.filter((event) => event.type === "turn_finished" && event.agent === undefined)).toHaveLength(1);
-		expect(events.at(-1)).toMatchObject({ type: "turn_finished", usage: { input: 2, output: 2 } });
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", usage: { input: 2, output: 2 }, requests: 1 });
 	});
 
 	it("reviews a documentation-only change without a model call", async () => {
