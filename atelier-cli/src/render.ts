@@ -285,7 +285,9 @@ export class Renderer {
 						"dim",
 						`◇ review ${event.level} · ${event.lenses.length} ${event.lenses.length === 1 ? "lens" : "lenses"}${
 							event.reasons.length > 0 ? ` (${event.reasons.join("; ")})` : ""
-						}${event.declaration?.kind === "none" ? ` · declared none: ${event.declaration.reason}` : ""}`,
+						}${event.declaration?.kind === "none" ? ` · declared none: ${event.declaration.reason}` : ""}${
+							event.since === undefined ? "" : ` · since ${event.since}`
+						}${event.baseNote === undefined ? "" : ` · ${event.baseNote}`}`,
 					),
 				);
 				return;

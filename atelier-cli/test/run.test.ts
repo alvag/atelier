@@ -683,6 +683,28 @@ describe("run: review", () => {
 		expect(h.out()).toContain("tokens: ");
 	});
 
+	it("runs /review <ref> against that ref and names the commit on the risk line", async () => {
+		await repoWithChange("notes.ts");
+		const git = (...args: string[]) =>
+			execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, encoding: "utf8" });
+		await writeFile(join(cwd, "second.ts"), "export const y = 2;\n");
+		git("add", "second.ts");
+		git("commit", "-qm", "second");
+		const h = harness([noFindings], { input: ["/review HEAD~1"] });
+		expect(await run([], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toHaveLength(1);
+		expect(h.backend.prompts[0]).toContain("second.ts");
+		expect(h.out()).toContain(`since ${git("rev-parse", "HEAD~1").trim().slice(0, 7)}`);
+	});
+
+	it("refuses /review with an unknown ref without starting a review", async () => {
+		await repoWithChange("notes.ts");
+		const h = harness([noFindings], { input: ["/review nope"] });
+		expect(await run([], h.io, h.createBackend)).toBe(0);
+		expect(h.err()).toContain('Unknown git ref "nope": there is nothing to review against.');
+		expect(h.backend.prompts).toEqual([]);
+	});
+
 	it("says so when /review finds nothing to review", async () => {
 		const git = (...args: string[]) =>
 			execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd });

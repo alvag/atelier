@@ -138,6 +138,10 @@ export type AtelierEventBody =
 			lenses: string[];
 			reviewDue: boolean;
 			declaration?: RiskDeclaration;
+			/** Short id of the commit the change is measured against, when it is not the current HEAD (the turn's commits are included). */
+			since?: string;
+			/** Why the base is the current HEAD although the turn started earlier (a reset or rebase). */
+			baseNote?: string;
 	  }
 	/** The core waits for session.review_consent; the turn stays open until it is answered. */
 	| { type: "review_consent_requested"; reviewId: string; level: string; reasons: string[]; lenses: string[] }

@@ -359,10 +359,11 @@ function createLineReader(stdin: Readable): LineReader {
 	};
 }
 
-/** The interactive commands that are turns of their own: /review and /compact [instructions]. */
+/** The interactive commands that are turns of their own: /review [ref] and /compact [instructions]. */
 function commandTurn(session: Session, line: string): AsyncIterable<AtelierEvent> | undefined {
 	const text = line.trim();
-	if (text === "/review") return session.review();
+	const review = /^\/review(?:\s+(\S+))?$/.exec(text);
+	if (review) return session.review(undefined, review[1]);
 	const compact = /^\/compact(?:\s+([\s\S]*))?$/.exec(text);
 	if (compact) return session.compact(compact[1]?.trim() || undefined);
 	return undefined;

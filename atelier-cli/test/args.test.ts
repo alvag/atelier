@@ -48,7 +48,7 @@ describe("parseCliArgs", () => {
 	it("documents both ways to turn the review off in the help", () => {
 		expect(USAGE).toContain("--no-review");
 		expect(USAGE).toContain("ATELIER_REVIEW=off");
-		expect(USAGE).toContain("/review");
+		expect(USAGE).toContain("/review <ref>");
 		expect(USAGE).toContain("/compact [instructions]");
 		expect(USAGE).toContain("ATELIER_COMPACT_AT=<n>");
 	});

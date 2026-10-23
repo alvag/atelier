@@ -110,6 +110,7 @@ const fakeCandidate = (): Candidate => ({
 	root: "/r",
 	gitDir: "/r/.git",
 	base: "b",
+	baseCommit: "a",
 	tree: "t",
 	files: [
 		{ path: "src/a.ts", status: "M", added: 3, deleted: 1, binary: false, mode: "100644" },

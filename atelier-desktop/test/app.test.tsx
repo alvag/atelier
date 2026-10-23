@@ -433,6 +433,26 @@ describe("App", () => {
 			expect(block.textContent).toContain("Declared none: no shared code");
 		});
 
+		it("shows the base of the candidate when the turn's commits are included or the base fell back to HEAD", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({
+				type: "review_assessed",
+				tree: "t",
+				level: "medium",
+				reasons: [],
+				files: ["a.ts"],
+				changedLines: 1,
+				lenses: ["reliability"],
+				reviewDue: false,
+				since: "1a2b3c4",
+				baseNote: "HEAD no longer descends from 9f8e7d6, where the turn started: the base is the current HEAD",
+			});
+			const block = await screen.findByTestId("review");
+			expect(block.textContent).toContain("since 1a2b3c4");
+			expect(block.textContent).toContain("HEAD no longer descends from 9f8e7d6");
+		});
+
 		it("stops showing Reviewing… when the turn ends without a result", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "/review");

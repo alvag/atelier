@@ -18,6 +18,7 @@ function candidate(files: ChangedFile[], over: Partial<Candidate> = {}): Candida
 		root: "/repo",
 		gitDir: "/repo/.git",
 		base: "b".repeat(40),
+		baseCommit: "a".repeat(40),
 		tree: "c".repeat(40),
 		files,
 		changedLines: files.reduce((sum, item) => sum + item.added + item.deleted, 0),

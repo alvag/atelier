@@ -46,8 +46,9 @@ whether to review them (the question needs a terminal; --yes does not answer it)
 In an interactive session, /compact [instructions] summarizes the older history now,
 keeping the latest messages and what the instructions ask for.
 
-In an interactive session, /review reviews the current changes at any risk. A review
-never commits anything.
+In an interactive session, /review reviews the current changes at any risk, against
+HEAD; /review <ref> reviews them against that git ref instead. A review never commits
+anything.
 
 Environment:
   ATELIER_MEMORY=off     Run without long-term memory

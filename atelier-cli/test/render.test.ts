@@ -255,6 +255,29 @@ describe("Renderer", () => {
 			);
 		});
 
+		it("says which commit the change is measured from, and why when the base fell back to HEAD", () => {
+			const base = {
+				type: "review_assessed" as const,
+				tree: "t",
+				level: "medium" as const,
+				reasons: [],
+				files: ["a.ts"],
+				changedLines: 1,
+				lenses: ["reliability"],
+				reviewDue: false,
+			};
+			const { stdout } = render([
+				{ ...base, since: "1a2b3c4" },
+				{
+					...base,
+					baseNote: "HEAD no longer descends from 1a2b3c4, where the turn started: the base is the current HEAD",
+				},
+			]);
+			expect(stdout).toBe(
+				"◇ review medium · 1 lens · since 1a2b3c4\n◇ review medium · 1 lens · HEAD no longer descends from 1a2b3c4, where the turn started: the base is the current HEAD\n",
+			);
+		});
+
 		it("leaves the consent question to the prompt", () => {
 			const { stdout, stderr } = render([
 				{ type: "review_consent_requested", reviewId: "r1", level: "high", reasons: ["x"], lenses: ["risk"] },

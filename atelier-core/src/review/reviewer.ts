@@ -248,7 +248,7 @@ function correctionMessage(findings: readonly Finding[], budget: number): string
 		(f) => `- ${f.id} [${f.severity}] ${f.path}${f.line ? `:${f.line}` : ""}: ${f.claim} (evidence: ${f.evidence})`,
 	);
 	return [
-		"A review of your uncommitted changes confirmed these defects that the change introduced:",
+		"A review of your changes confirmed these defects that the change introduced:",
 		...list,
 		"",
 		`Fix them in this one turn. The correction may change at most ${budget} lines (added plus deleted) compared with the reviewed change; a larger one is not accepted and the review is handed back to the user. Do not commit.`,

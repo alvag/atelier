@@ -45,6 +45,10 @@ export type TurnItem =
 			lenses: string[];
 			/** What the agent declared about the risk; absent for documentation. */
 			declaration?: RiskDeclaration;
+			/** Short id of the commit the change is measured from, when it is not the current HEAD. */
+			since?: string;
+			/** Why the base is the current HEAD although the turn started earlier. */
+			baseNote?: string;
 			/** Each lens, the refuter and the validator, in the order they first spoke. */
 			roles: Subagent[];
 			result?: ReviewResult;
@@ -378,6 +382,8 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					reasons: event.reasons,
 					lenses: event.lenses,
 					...(event.declaration === undefined ? {} : { declaration: event.declaration }),
+					...(event.since === undefined ? {} : { since: event.since }),
+					...(event.baseNote === undefined ? {} : { baseNote: event.baseNote }),
 					roles: [],
 				},
 			];

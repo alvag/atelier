@@ -420,6 +420,15 @@ describe("reduceChat: review", () => {
 		expect(items(run([...opened, event(assessed)]))[0]).not.toHaveProperty("declaration");
 	});
 
+	it("keeps the base of the candidate on the review block", () => {
+		const note = "HEAD no longer descends from 1a2b3c4, where the turn started: the base is the current HEAD";
+		const state = run([...opened, event({ ...assessed, since: "1a2b3c4", baseNote: note })]);
+		expect(items(state)[0]).toMatchObject({ kind: "review", since: "1a2b3c4", baseNote: note });
+		const plain = items(run([...opened, event(assessed)]))[0];
+		expect(plain).not.toHaveProperty("since");
+		expect(plain).not.toHaveProperty("baseNote");
+	});
+
 	it("marks the card with the answer", () => {
 		const state = run([
 			...opened,

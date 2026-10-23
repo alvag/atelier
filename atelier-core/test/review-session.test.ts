@@ -49,6 +49,24 @@ const changeTool = defineTool({
 	},
 });
 
+const gitIn = (root: string, ...args: string[]) =>
+	execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
+
+/** The main agent running git in the worktree: commit everything, or any other command. */
+const gitTool = defineTool({
+	name: "git",
+	description: "Runs git",
+	inputShape: { args: z.array(z.string()) },
+	execute: async ({ args }, { cwd }) => {
+		gitIn(cwd, ...args);
+		return { ok: true, output: "done", summary: args.join(" "), truncated: false };
+	},
+});
+const commit = (message = "work"): FakeStep[] => [
+	call("git", { args: ["add", "-A"] }, `c-add-${message}`),
+	call("git", { args: ["commit", "-qm", message] }, `c-commit-${message}`),
+];
+
 /** A git repo with one commit and a clean worktree. */
 async function repo(): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), "atelier-review-session-"));
@@ -182,7 +200,7 @@ async function start(setup: Setup = {}) {
 	const session = await Session.start({
 		backend: main,
 		cwd,
-		tools: [changeTool],
+		tools: [changeTool, gitTool],
 		...(setup.review === false
 			? {}
 			: { review: { createBackend: () => roles, ...(consent ? { consent: consent as never } : {}) } }),
@@ -778,5 +796,188 @@ describe("RpcServer review", () => {
 		h.send({ command: "session.send", sessionId, prompt: "edit" });
 		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
 		expect(types(h.events(sessionId))).toContain("review_assessed");
+	});
+});
+
+describe("the turn's candidate", () => {
+	const TERMINAL = "export const input = 1;\n";
+
+	it("reviews code the turn committed, not only what is left uncommitted (run 4)", async () => {
+		const cwd = await repo();
+		const from = gitIn(cwd, "rev-parse", "HEAD").trim();
+		const turn = [
+			DECLARED_NONE,
+			change("src/terminal-input.ts", TERMINAL),
+			...commit("add the terminal reader"),
+			text("done"),
+			{ event: finished },
+		];
+		const s = await start({ cwd, turns: [turn] });
+		const events = await s.send("write the reader");
+		const [assessed] = ofType(events, "review_assessed");
+		expect(assessed).toMatchObject({ level: "medium", files: ["src/terminal-input.ts"], lenses: ["reliability"] });
+		expect(assessed?.reasons).not.toContain("no changes");
+		expect(assessed?.since).toBe(from.slice(0, 7));
+		expect(assessed?.baseNote).toBeUndefined();
+	});
+
+	it("reviews the commits and the uncommitted edits of the turn together", async () => {
+		const cwd = await repo();
+		const turn = [
+			DECLARED_NONE,
+			change("src/one.ts", "export const one = 1;\n"),
+			...commit("one"),
+			change("src/two.ts", "export const two = 2;\n"),
+			text("done"),
+			{ event: finished },
+		];
+		const s = await start({ cwd, turns: [turn] });
+		const [assessed] = ofType(await s.send("go"), "review_assessed");
+		expect([...(assessed?.files ?? [])].sort()).toEqual(["src/one.ts", "src/two.ts"]);
+	});
+
+	it("shows no base when the turn committed nothing", async () => {
+		const s = await start({ turns: [[DECLARED_NONE, ...MEDIUM_TURN]] });
+		const [assessed] = ofType(await s.send("edit"), "review_assessed");
+		expect(assessed?.since).toBeUndefined();
+	});
+
+	it("uses the current HEAD and says so when HEAD no longer descends from where the turn started", async () => {
+		const cwd = await repo();
+		await writeFile(join(cwd, "b.ts"), "second\n");
+		gitIn(cwd, "add", "-A");
+		gitIn(cwd, "commit", "-qm", "second");
+		const from = gitIn(cwd, "rev-parse", "HEAD").trim();
+		const turn = [
+			DECLARED_NONE,
+			call("git", { args: ["reset", "-q", "--hard", "HEAD~1"] }),
+			change("a.ts", "base\nmore\n"),
+			text("done"),
+			{ event: finished },
+		];
+		const s = await start({ cwd, turns: [turn] });
+		const [assessed] = ofType(await s.send("rewind"), "review_assessed");
+		expect(assessed?.files).toEqual(["a.ts"]);
+		expect(assessed?.since).toBeUndefined();
+		expect(assessed?.baseNote).toBe(
+			`HEAD no longer descends from ${from.slice(0, 7)}, where the turn started: the base is the current HEAD`,
+		);
+	});
+
+	it("does not offer the same candidate twice when a later turn commits it unchanged", async () => {
+		const cwd = await repo();
+		const turns = [HIGH_TURN, [text("committing"), ...commit("auth"), { event: finished }]];
+		const s = await start({ cwd, turns, roles: new RoleBackend(clean) });
+		await s.send("add auth");
+		expect(s.asked).toHaveLength(1);
+		const second = await s.send("commit it");
+		expect(s.asked).toHaveLength(1);
+		expect(ofType(second, "review_consent_requested")).toEqual([]);
+		expect(await receipts(cwd)).toHaveLength(1);
+	});
+});
+
+describe("the declaration of a turn", () => {
+	const ASK =
+		"Declare the risk of this change now: call the risk tool with the high-risk items that apply and a reason, or with none and a reason.";
+
+	it("does not carry over: a none from an earlier turn never covers a later turn's code", async () => {
+		// The first turn declares and changes nothing, so its declaration is never consumed by a review.
+		const turns = [
+			[call("risk", { none: true, reason: "docs only" }), text("nothing to do"), { event: finished }],
+			MEDIUM_TURN,
+			[text("no declaration"), { event: finished }],
+		];
+		const s = await start({ turns });
+		await s.send("look");
+		const events = await s.send("edit");
+		expect(s.main.prompts.at(-1)).toBe(ASK);
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({ declaration: { kind: "missing" } });
+	});
+
+	it("does not carry over escalations either", async () => {
+		const turns = [
+			[call("risk", { items: [2], reason: "sessions" }), text("nothing to do"), { event: finished }],
+			[DECLARED_NONE, ...MEDIUM_TURN],
+		];
+		const s = await start({ turns });
+		await s.send("look");
+		const [assessed] = ofType(await s.send("edit"), "review_assessed");
+		expect(assessed).toMatchObject({ level: "medium", declaration: { kind: "none" } });
+	});
+
+	it("keeps a declaration for the review of its own turn", async () => {
+		const s = await start({ turns: [[call("risk", { items: [2], reason: "sessions" }), ...MEDIUM_TURN]] });
+		const [assessed] = ofType(await s.send("edit"), "review_assessed");
+		expect(assessed).toMatchObject({ level: "high", declaration: { kind: "items" } });
+	});
+
+	it("freezes the candidate again after the ask: edits made while answering are assessed", async () => {
+		const turns = [
+			MEDIUM_TURN,
+			[DECLARED_NONE, change("src/auth.ts", "export const a = 1;\n"), text("declared"), { event: finished }],
+		];
+		const s = await start({ turns, consent: "declined" });
+		const events = await s.send("edit");
+		expect(s.main.prompts.at(-1)).toBe(ASK);
+		const assessed = ofType(events, "review_assessed");
+		expect(assessed).toHaveLength(1);
+		expect([...(assessed[0]?.files ?? [])].sort()).toEqual(["a.ts", "src/auth.ts"]);
+		expect(assessed[0]).toMatchObject({ level: "high", reviewDue: true, declaration: { kind: "none" } });
+		expect(s.asked).toHaveLength(1);
+		expect((await receipts(s.cwd)).map(({ file }) => file)).toEqual([`${assessed[0]?.tree}.json`]);
+	});
+
+	it("stops quietly when the answer to the ask undoes the change", async () => {
+		const turns = [MEDIUM_TURN, [DECLARED_NONE, change("a.ts", "base\n"), text("reverted"), { event: finished }]];
+		const s = await start({ turns });
+		const events = await s.send("edit");
+		expect(ofType(events, "review_assessed")).toEqual([]);
+		expect(events.at(-1)?.type).toBe("turn_finished");
+	});
+});
+
+describe("/review against a ref", () => {
+	it("freezes the worktree against the ref's tree", async () => {
+		const cwd = await repo();
+		await mkdir(join(cwd, "src"), { recursive: true });
+		await writeFile(join(cwd, "src/old.ts"), "old\n");
+		gitIn(cwd, "add", "-A");
+		gitIn(cwd, "commit", "-qm", "second");
+		await writeFile(join(cwd, "a.ts"), "base\nmore\n");
+		const s = await start({ cwd, roles: new RoleBackend(clean) });
+		const events = await collect(s.session.review(undefined, "HEAD~1"));
+		const [assessed] = ofType(events, "review_assessed");
+		expect([...(assessed?.files ?? [])].sort()).toEqual(["a.ts", "src/old.ts"]);
+		expect(assessed?.since).toBe(gitIn(cwd, "rev-parse", "HEAD~1").trim().slice(0, 7));
+		expect(ofType(events, "review_finished")[0]).toMatchObject({ verdict: "approved" });
+	});
+
+	it("refuses an unknown ref and reviews nothing", async () => {
+		const s = await start({ roles: new RoleBackend(clean) });
+		const events = await collect(s.session.review(undefined, "no-such-ref"));
+		expect(events.find((event) => event.type === "error")).toMatchObject({
+			code: "review_unavailable",
+			message: 'Unknown git ref "no-such-ref": there is nothing to review against.',
+			recoverable: true,
+		});
+		expect(ofType(events, "review_assessed")).toEqual([]);
+		expect(s.roles.roles).toEqual([]);
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
+	});
+
+	it("does not take an option for a ref", async () => {
+		const s = await start({ roles: new RoleBackend(clean) });
+		const events = await collect(s.session.review(undefined, "--help"));
+		expect(events.find((event) => event.type === "error")).toMatchObject({ code: "review_unavailable" });
+	});
+
+	it("keeps reviewing against HEAD without a ref", async () => {
+		const cwd = await repo();
+		await writeFile(join(cwd, "a.ts"), "base\nmore\n");
+		const s = await start({ cwd, roles: new RoleBackend(clean) });
+		const [assessed] = ofType(await collect(s.session.review()), "review_assessed");
+		expect(assessed?.files).toEqual(["a.ts"]);
+		expect(assessed?.since).toBeUndefined();
 	});
 });

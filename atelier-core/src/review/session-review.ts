@@ -12,8 +12,9 @@ import {
 import { DECLARE_RISK_REQUEST } from "../prompt.ts";
 import type { Session, SessionOptions } from "../session.ts";
 import type { ToolDefinition } from "../tools/types.ts";
-import { type Candidate, freezeCandidate } from "./candidate.ts";
+import { type Candidate, type FreezeOptions, freezeCandidate } from "./candidate.ts";
 import type { Finding } from "./findings.ts";
+import { runGit } from "./git.ts";
 import { findReceipt, type Receipt, writeReceipt } from "./receipts.ts";
 import { type ReviewDeps, type RoleResult, runReview } from "./reviewer.ts";
 import { type Assessment, assessRisk } from "./risk.ts";
@@ -62,9 +63,28 @@ export class SessionReview {
 	readonly tool: ToolDefinition = createRiskTool(this.#requests);
 	readonly #unavailable = new Set<string>();
 	readonly #children = new Set<Session>();
+	/** The commit HEAD pointed at when the current turn started; undefined without one. */
+	#turnStart: string | undefined;
+	#starting: Promise<void> = Promise.resolve();
 
 	constructor(options: ReviewOptions) {
 		this.#options = options;
+	}
+
+	/**
+	 * A main-agent turn begins: what the agent declared before no longer counts, and the base of its candidate is
+	 * today's HEAD. The lookup runs beside the turn and is awaited when the turn ends.
+	 */
+	startTurn(cwd: string): void {
+		this.#requests.clear();
+		this.#turnStart = undefined;
+		this.#starting = runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd }).then(
+			(head) => {
+				if (head.code === 0) this.#turnStart = head.stdout.toString("utf8").trim();
+			},
+			// Not a git repository, or no git: the review reports it when the turn ends.
+			() => {},
+		);
 	}
 
 	/** Ends a turn that finished well: assesses the change for free and, if it is due and the user agrees, reviews it. */
@@ -72,24 +92,27 @@ export class SessionReview {
 		return this.#run(host, false);
 	}
 
-	/** The user asked: any risk, no consent, and a receipt does not stop it. */
-	onDemand(host: ReviewHost): Promise<Spent> {
-		return this.#run(host, true);
+	/** The user asked: any risk, no consent, and a receipt does not stop it. With a `ref`, against that ref's commit instead of HEAD. */
+	onDemand(host: ReviewHost, ref?: string): Promise<Spent> {
+		return this.#run(host, true, ref);
 	}
 
 	async close(): Promise<void> {
 		await Promise.allSettled([...this.#children].map((child) => child.close()));
 	}
 
-	async #run(host: ReviewHost, manual: boolean): Promise<Spent> {
+	async #run(host: ReviewHost, manual: boolean, ref?: string): Promise<Spent> {
 		const none: Spent = { usage: { ...ZERO_USAGE } };
 		const refuse = (code: string, message: string): Spent => {
 			host.push(errorEvent(code, message, true));
 			return { ...none, refused: true };
 		};
+		await this.#starting;
+		// The user's /review measures against HEAD or the ref they gave; the end of a turn, against where the turn started.
+		const freezing: FreezeOptions = ref !== undefined ? { ref } : manual ? {} : this.#startOf();
 		let candidate: Candidate;
 		try {
-			const frozen = await freezeCandidate(host.cwd);
+			const frozen = await freezeCandidate(host.cwd, freezing);
 			if (!frozen.ok) {
 				if (manual) return refuse("review_unavailable", frozen.reason);
 				if (!this.#unavailable.has(frozen.reason)) {
@@ -106,6 +129,7 @@ export class SessionReview {
 			return manual ? refuse("review_unavailable", describeError(error)) : none;
 		}
 
+		const paid = (spent: Spent): Spent => (asked === undefined ? spent : addSpent(asked, spent));
 		const assess = () =>
 			assessRisk(candidate, {
 				escalations: this.#requests.escalations,
@@ -122,9 +146,14 @@ export class SessionReview {
 				...(answer.costUsd === undefined ? {} : { costUsd: answer.costUsd }),
 				...(answer.requests === undefined ? {} : { requests: answer.requests }),
 			};
+			// The agent may have edited while answering: those edits are part of what gets assessed.
+			const again = await freezeCandidate(host.cwd, freezing);
+			if (again.ok && again.candidate.tree !== candidate.tree) {
+				candidate = again.candidate;
+				if (candidate.files.length === 0 || (await findReceipt(candidate.gitDir, candidate.tree))) return paid(none);
+			}
 			assessment = assess();
 		}
-		const paid = (spent: Spent): Spent => (asked === undefined ? spent : addSpent(asked, spent));
 		host.push({
 			type: "review_assessed",
 			tree: candidate.tree,
@@ -135,6 +164,8 @@ export class SessionReview {
 			lenses: assessment.lenses,
 			reviewDue: assessment.reviewDue,
 			...(assessment.declaration === undefined ? {} : { declaration: assessment.declaration }),
+			...(candidate.since === undefined ? {} : { since: candidate.since }),
+			...(candidate.baseNote === undefined ? {} : { baseNote: candidate.baseNote }),
 		});
 		const reviewId = host.createId();
 		if (!manual) {
@@ -161,6 +192,10 @@ export class SessionReview {
 		return paid(await this.#cycle(host, reviewId, candidate, assessment));
 	}
 
+	#startOf(): FreezeOptions {
+		return this.#turnStart === undefined ? {} : { turnStart: this.#turnStart };
+	}
+
 	async #declined(host: ReviewHost, reviewId: string, candidate: Candidate, assessment: Assessment): Promise<Spent> {
 		const receipt = receiptOf(host, candidate, assessment, "declined");
 		await this.#finish(host, reviewId, candidate.gitDir, receipt);
@@ -179,7 +214,7 @@ export class SessionReview {
 				count(result.requests);
 				return result;
 			},
-			freeze: () => freezeCandidate(host.cwd),
+			freeze: () => freezeCandidate(host.cwd, { ref: candidate.baseCommit }),
 			now: () => new Date(),
 			createId: host.createId,
 		};

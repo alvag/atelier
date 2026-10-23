@@ -194,6 +194,8 @@ export class Session {
 			// The user's words reach the feature log as the turn starts, without delaying the backend;
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
 			const logged = this.#odd?.userMessage(prompt);
+			// What the agent declared in an earlier turn does not cover this one, and its candidate starts from today's HEAD.
+			this.#review?.startTurn(this.#options.cwd);
 			// The first turn says whether memory works and gives the model the recent memory, outside the system prompt.
 			let sent = prompt;
 			if (!this.#announced) {
@@ -239,14 +241,17 @@ export class Session {
 		});
 	}
 
-	/** Reviews the current uncommitted change on request: any risk, no consent. A turn like `send`, with one `turn_finished`. */
-	async *review(turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
+	/**
+	 * Reviews the current change on request: any risk, no consent. Against HEAD, or against the commit `base` names.
+	 * A turn like `send`, with one `turn_finished`.
+	 */
+	async *review(turnId: string = this.#createId(), base?: string): AsyncGenerator<AtelierEvent> {
 		yield* this.#stream(turnId, async (turn, signal, backendSession) => {
 			if (!this.#review) {
 				turn.push(errorEvent("review_unavailable", "Review is off for this session.", true));
 				return { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
 			}
-			const spent = await this.#review.onDemand(this.#reviewHost(turn, signal, backendSession));
+			const spent = await this.#review.onDemand(this.#reviewHost(turn, signal, backendSession), base);
 			const stopReason = signal.aborted ? "interrupted" : spent.refused ? "error" : "end_turn";
 			return addSpent({ type: "turn_finished", stopReason, usage: { ...ZERO_USAGE } }, spent);
 		});

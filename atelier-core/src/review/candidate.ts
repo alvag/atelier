@@ -43,8 +43,14 @@ export interface Candidate {
 	root: string;
 	/** The repository's common git directory, absolute. */
 	gitDir: string;
-	/** HEAD's tree. */
+	/** The tree of the base commit: HEAD, the commit the turn started at, or the ref asked for. */
 	base: string;
+	/** The base commit, in full. */
+	baseCommit: string;
+	/** The base commit's short id, present when the base is not the current HEAD. */
+	since?: string;
+	/** Why the base is the current HEAD when it was meant to be an earlier commit. */
+	baseNote?: string;
 	/** The worktree as a tree: tracked and untracked files, without ignored ones. */
 	tree: string;
 	files: ChangedFile[];
@@ -58,22 +64,32 @@ export interface Candidate {
 
 export type FreezeResult = { ok: true; candidate: Candidate } | { ok: false; reason: string };
 
+export interface FreezeOptions {
+	/** Freeze against this ref's commit instead of HEAD; an unknown ref is refused. */
+	ref?: string;
+	/** The commit a turn started at: the base while HEAD still descends from it, the current HEAD (with a note) otherwise. */
+	turnStart?: string;
+}
+
 /**
- * Freezes the uncommitted changes under `cwd`'s repository against HEAD. The
+ * Freezes the worktree under `cwd`'s repository against HEAD (or the base the
+ * options name), so commits made since that base are part of the candidate. The
  * worktree is written into a temporary index, never the user's: their index,
  * staged changes and files stay exactly as they were. Only new git objects are
  * added to the repository, which `git gc` cleans up like any other.
  */
-export async function freezeCandidate(cwd: string): Promise<FreezeResult> {
+export async function freezeCandidate(cwd: string, options: FreezeOptions = {}): Promise<FreezeResult> {
 	let scratch: string | undefined;
 	try {
 		const top = await runGit(["rev-parse", "--show-toplevel"], { cwd });
 		if (top.code !== 0) return { ok: false, reason: "The folder is not inside a git repository." };
 		const root = withoutNewline(top.stdout.toString("utf8"));
-		const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { cwd: root });
-		if (head.code !== 0)
+		const head = await commitOf(root, "HEAD");
+		if (head === undefined)
 			return { ok: false, reason: "The repository has no commits yet, so there is no HEAD to compare with." };
-		const base = head.stdout.toString("utf8").trim();
+		const chosen = await chooseBase(root, head, options);
+		if (!chosen.ok) return chosen;
+		const base = (await gitText(["rev-parse", `${chosen.commit}^{tree}`], { cwd: root })).trim();
 		const gitDir = withoutNewline(
 			await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root }),
 		);
@@ -84,12 +100,49 @@ export async function freezeCandidate(cwd: string): Promise<FreezeResult> {
 		await gitText([...safe, "read-tree", base], { cwd: root, env });
 		await gitText([...safe, "add", "--all"], { cwd: root, env });
 		const tree = (await gitText([...safe, "write-tree"], { cwd: root, env })).trim();
-		return { ok: true, candidate: await describeCandidate(root, gitDir, base, tree) };
+		const candidate = await describeCandidate(root, gitDir, chosen.commit, base, tree);
+		return {
+			ok: true,
+			candidate: {
+				...candidate,
+				...(chosen.commit === head ? {} : { since: chosen.commit.slice(0, SHORT_ID) }),
+				...(chosen.note === undefined ? {} : { baseNote: chosen.note }),
+			},
+		};
 	} catch (error) {
 		return { ok: false, reason: `Could not freeze the changes: ${describeError(error)}` };
 	} finally {
 		if (scratch !== undefined) await rm(scratch, { recursive: true, force: true });
 	}
+}
+
+const SHORT_ID = 7;
+
+/** The commit a revision names, or undefined when there is none. A revision starting with `-` is never passed to git. */
+async function commitOf(root: string, revision: string): Promise<string | undefined> {
+	if (revision.startsWith("-")) return undefined;
+	const found = await runGit(["rev-parse", "--verify", "--quiet", `${revision}^{commit}`], { cwd: root });
+	return found.code === 0 ? found.stdout.toString("utf8").trim() : undefined;
+}
+
+type Base = { ok: true; commit: string; note?: string } | { ok: false; reason: string };
+
+async function chooseBase(root: string, head: string, options: FreezeOptions): Promise<Base> {
+	if (options.ref !== undefined) {
+		const commit = await commitOf(root, options.ref);
+		if (commit === undefined)
+			return { ok: false, reason: `Unknown git ref "${options.ref}": there is nothing to review against.` };
+		return { ok: true, commit };
+	}
+	const start = options.turnStart;
+	if (start === undefined || start === head) return { ok: true, commit: head };
+	const ancestor = await runGit(["merge-base", "--is-ancestor", start, head], { cwd: root });
+	if (ancestor.code === 0) return { ok: true, commit: start };
+	return {
+		ok: true,
+		commit: head,
+		note: `HEAD no longer descends from ${start.slice(0, SHORT_ID)}, where the turn started: the base is the current HEAD`,
+	};
 }
 
 /** git ends a printed path with one newline; a path may itself end in spaces or newlines. */
@@ -125,7 +178,13 @@ export async function readTreeFile(root: string, tree: string, path: string): Pr
 
 const DIFF = ["diff-tree", "-r", "--no-renames", "--no-ext-diff", "--no-textconv"];
 
-async function describeCandidate(root: string, gitDir: string, base: string, tree: string): Promise<Candidate> {
+async function describeCandidate(
+	root: string,
+	gitDir: string,
+	baseCommit: string,
+	base: string,
+	tree: string,
+): Promise<Candidate> {
 	const raw = parseRaw(await gitText([...DIFF, "-z", "--raw", base, tree], { cwd: root }));
 	const counts = parseNumstat(await gitText([...DIFF, "-z", "--numstat", base, tree], { cwd: root }));
 	const files: ChangedFile[] = raw.map((entry) => {
@@ -161,6 +220,7 @@ async function describeCandidate(root: string, gitDir: string, base: string, tre
 		root,
 		gitDir,
 		base,
+		baseCommit,
 		tree,
 		files,
 		changedLines: files.reduce((sum, file) => sum + file.added + file.deleted, 0),
