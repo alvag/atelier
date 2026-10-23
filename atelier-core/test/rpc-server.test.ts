@@ -89,7 +89,7 @@ describe("RpcServer", () => {
 	it("greets with the protocol version first", async () => {
 		const h = harness([]);
 		await h.waitFor(() => true);
-		expect(h.messages[0]).toEqual({ type: "hello", protocol: 5, core: "0.0.0" });
+		expect(h.messages[0]).toEqual({ type: "hello", protocol: 6, core: "0.0.0" });
 	});
 
 	it("offers subagents in every session, on the session's own backend", async () => {
@@ -356,5 +356,46 @@ describe("RpcServer", () => {
 			expect(line.slice(0, -1)).not.toContain("\n");
 			expect(decodeServerMessage(line.trimEnd()).type).not.toBe("unknown");
 		}
+	});
+});
+
+describe("session.compact", () => {
+	it("runs as a turn and says when the backend cannot compact", async () => {
+		const h = harness([[]]);
+		const sessionId = await h.start();
+		const response = await h.responseTo(
+			h.send({ command: "session.compact", sessionId, instructions: "Keep decisions." }),
+		);
+		expect(response).toMatchObject({ ok: true, result: { turnId: expect.any(String) } });
+		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
+		expect(h.events(sessionId).map((e) => e.type)).toEqual(["error", "turn_finished"]);
+		expect(h.events(sessionId)[0]).toMatchObject({ code: "compaction_unavailable", recoverable: true });
+		expect(h.events(sessionId)[1]).toMatchObject({ stopReason: "error" });
+	});
+
+	it("refuses instructions over 2000 bytes and keeps the session idle", async () => {
+		const h = harness([[]]);
+		const sessionId = await h.start();
+		const response = await h.responseTo(
+			h.send({ command: "session.compact", sessionId, instructions: "é".repeat(1001) }),
+		);
+		expect(response).toMatchObject({
+			ok: false,
+			error: { code: "invalid_command", message: expect.stringMatching(/2000 bytes/) },
+		});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(h.events(sessionId)).toEqual([]);
+		const ok = await h.responseTo(h.send({ command: "session.compact", sessionId, instructions: "x".repeat(2000) }));
+		expect(ok).toMatchObject({ ok: true });
+	});
+
+	it("is refused while a turn is running", async () => {
+		const h = harness([[[{ waitForInterrupt: true }]]]);
+		const sessionId = await h.start();
+		await h.responseTo(h.send({ command: "session.send", sessionId, prompt: "one" }));
+		const compact = await h.responseTo(h.send({ command: "session.compact", sessionId }));
+		expect(compact).toMatchObject({ ok: false, error: { code: "busy" } });
+		await h.responseTo(h.send({ command: "session.interrupt", sessionId }));
+		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
 	});
 });

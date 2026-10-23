@@ -1,6 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { buildRequest, type RequestState } from "../backends/anthropic-api/backend.ts";
 import type { Usage } from "../events.ts";
+import { MAX_COMPACT_INSTRUCTIONS_BYTES } from "../protocol/types.ts";
 
 /**
  * Context compaction for the anthropic-api backend, as pure functions: when to
@@ -14,7 +15,7 @@ export const RESERVE_TOKENS = 16_384;
 export const MAX_COMPACT_AT = 200_000;
 /** Size of the history tail that stays verbatim. */
 export const KEEP_RECENT_TOKENS = 20_000;
-export const MAX_INSTRUCTIONS_BYTES = 2000;
+export const MAX_INSTRUCTIONS_BYTES = MAX_COMPACT_INSTRUCTIONS_BYTES;
 
 export const SUMMARY_HEADINGS = [
 	"## Goal",

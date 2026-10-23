@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { createBackend as createNamedBackend } from "../backend-factory.ts";
+import { parseCompactAt } from "../compaction/compactor.ts";
+import { describeError } from "../events.ts";
 import { connectMemory, MemoryUnavailableError } from "../memory/index.ts";
 import { SYSTEM_PROMPT_APPEND } from "../prompt.ts";
 import type { BackendName } from "../protocol/types.ts";
@@ -22,6 +24,9 @@ Environment:
   ANTHROPIC_API_KEY      API key for anthropic-api sessions, instead of the Keychain
   ATELIER_MEMORY=off     Run sessions without long-term memory
   ATELIER_REVIEW=off     Run sessions without the review of uncommitted changes (RDD)
+  ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
+                         older history (default: the model's window minus a reserve,
+                         at most 200000)
 `;
 
 if (process.argv.length !== 3 || process.argv[2] !== "serve") {
@@ -35,8 +40,18 @@ console.log = toStderr;
 console.info = toStderr;
 console.debug = toStderr;
 
+let compactAt: number | undefined;
+try {
+	compactAt = parseCompactAt(process.env.ATELIER_COMPACT_AT);
+} catch (error) {
+	process.stderr.write(`atelier-core: ${describeError(error)}\n`);
+	process.exit(2);
+}
+
 const createBackend = (name: BackendName) =>
-	process.env.ATELIER_BACKEND === "echo" ? new EchoBackend() : createNamedBackend(name);
+	process.env.ATELIER_BACKEND === "echo"
+		? new EchoBackend()
+		: createNamedBackend(name, compactAt === undefined ? {} : { anthropicApi: { compactAt } });
 
 // The echo backend (tests) and ATELIER_MEMORY=off run without long-term memory.
 const memoryOff = process.env.ATELIER_BACKEND === "echo" || process.env.ATELIER_MEMORY === "off";

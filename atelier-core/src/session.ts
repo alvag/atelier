@@ -217,7 +217,32 @@ export class Session {
 		});
 	}
 
-	/** The turn machinery both `send` and `review` share: closed/busy rules, the channel, and exactly one `turn_finished`. */
+	/** Summarizes the older history now. A turn like `send`, with one `turn_finished`; no review follows it. */
+	async *compact(instructions?: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
+		yield* this.#stream(turnId, async (turn, _signal, backendSession) => {
+			if (!backendSession.compact) {
+				turn.push(errorEvent("compaction_unavailable", "This backend cannot compact its context.", true));
+				return { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
+			}
+			let finish: Extract<AtelierEventBody, { type: "turn_finished" }> | undefined;
+			let failed = false;
+			try {
+				for await (const event of backendSession.compact(instructions)) {
+					if (event.type === "turn_finished") finish ??= event;
+					else {
+						if (event.type === "error") failed = true;
+						turn.push(event);
+					}
+				}
+			} catch (error) {
+				failed = true;
+				turn.push(errorEvent("backend_error", describeError(error)));
+			}
+			return finish ?? { type: "turn_finished", stopReason: failed ? "error" : "incomplete", usage: { ...ZERO_USAGE } };
+		});
+	}
+
+	/** The turn machinery `send`, `review` and `compact` share: closed/busy rules, the channel, and exactly one `turn_finished`. */
 	async *#stream(
 		turnId: string,
 		work: (

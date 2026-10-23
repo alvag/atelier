@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BACKEND_NAMES, type ClientMessage, type ServerMessage } from "./types.ts";
+import { BACKEND_NAMES, type ClientMessage, MAX_COMPACT_INSTRUCTIONS_BYTES, type ServerMessage } from "./types.ts";
 
 /**
  * Splits a stream of text into lines on "\n" only (other Unicode line
@@ -53,6 +53,16 @@ const commandSchema = z.discriminatedUnion("command", [
 		sessionId,
 		reviewId: z.string().min(1),
 		answer: z.enum(["granted", "declined"]),
+	}),
+	z.object({
+		command: z.literal("session.compact"),
+		sessionId,
+		instructions: z
+			.string()
+			.refine((text) => new TextEncoder().encode(text).length <= MAX_COMPACT_INSTRUCTIONS_BYTES, {
+				message: `instructions must be at most ${MAX_COMPACT_INSTRUCTIONS_BYTES} bytes`,
+			})
+			.optional(),
 	}),
 	z.object({ command: z.literal("session.close"), sessionId }),
 	z.object({ command: z.literal("shutdown") }),

@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import type { Readable } from "node:stream";
 import type { AgentBackend } from "../backend.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
-import { describeError, type JsonValue } from "../events.ts";
+import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { MemoryPort } from "../memory/index.ts";
 import { decodeClientMessage, encodeMessage, LineSplitter } from "../protocol/codec.ts";
 import {
@@ -168,7 +168,8 @@ export class RpcServer {
 				const entry = this.#session(message.sessionId);
 				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
 				const turnId = this.#createId();
-				this.#runTurn(message.sessionId, entry, message.prompt, turnId).catch((error: unknown) =>
+				const prompt = message.prompt;
+				this.#runTurn(message.sessionId, entry, () => entry.session.send(prompt, turnId)).catch((error: unknown) =>
 					process.stderr.write(`atelier-core: turn ${turnId} stopped: ${describeError(error)}\n`),
 				);
 				return { turnId };
@@ -177,8 +178,19 @@ export class RpcServer {
 				const entry = this.#session(message.sessionId);
 				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
 				const turnId = this.#createId();
-				this.#runTurn(message.sessionId, entry, undefined, turnId).catch((error: unknown) =>
+				this.#runTurn(message.sessionId, entry, () => entry.session.review(turnId)).catch((error: unknown) =>
 					process.stderr.write(`atelier-core: review turn ${turnId} stopped: ${describeError(error)}\n`),
+				);
+				return { turnId };
+			}
+			case "session.compact": {
+				const entry = this.#session(message.sessionId);
+				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
+				const turnId = this.#createId();
+				const instructions = message.instructions;
+				this.#runTurn(message.sessionId, entry, () => entry.session.compact(instructions, turnId)).catch(
+					(error: unknown) =>
+						process.stderr.write(`atelier-core: compaction turn ${turnId} stopped: ${describeError(error)}\n`),
 				);
 				return { turnId };
 			}
@@ -293,11 +305,10 @@ export class RpcServer {
 		return sessionId;
 	}
 
-	/** A turn for `prompt`, or the review of the current change when there is none. */
-	async #runTurn(sessionId: string, entry: ServerSession, prompt: string | undefined, turnId: string): Promise<void> {
+	/** Forwards one turn's events: a prompt, a review or a compaction. */
+	async #runTurn(sessionId: string, entry: ServerSession, turn: () => AsyncIterable<AtelierEvent>): Promise<void> {
 		try {
-			const events = prompt === undefined ? entry.session.review(turnId) : entry.session.send(prompt, turnId);
-			for await (const event of events) this.#send({ type: "event", sessionId, event });
+			for await (const event of turn()) this.#send({ type: "event", sessionId, event });
 		} finally {
 			denyAll(entry);
 			entry.consents.clear();

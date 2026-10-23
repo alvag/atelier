@@ -58,6 +58,15 @@ export type ReviewStep =
 	| { type: "validator_started"; findings: number }
 	| { type: "validator_finished"; resolved: number; unresolved: number };
 
+/** Context tokens the next request carries, the model's window, and where compaction starts. */
+export interface ContextUsage {
+	tokens: number;
+	window: number;
+	compactAt: number;
+}
+
+export type CompactionReason = "threshold" | "overflow" | "manual";
+
 export type ReviewVerdict = "approved" | "escalated" | "declined" | "unavailable";
 
 export type AtelierEventBody =
@@ -74,8 +83,29 @@ export type AtelierEventBody =
 			fullOutputPath?: string;
 	  }
 	| { type: "approval_requested"; callId: string; command: string }
-	/** `requests`: model requests the turn made, when the backend knows it. */
-	| { type: "turn_finished"; stopReason: string; usage: Usage; costUsd?: number; requests?: number }
+	/** `requests`: model requests the turn made, when the backend knows it; `context`: how full the context is, when known. */
+	| {
+			type: "turn_finished";
+			stopReason: string;
+			usage: Usage;
+			costUsd?: number;
+			requests?: number;
+			context?: ContextUsage;
+	  }
+	/** The core started summarizing the older history; `tokens` is the context size that led to it. */
+	| { type: "compaction_started"; reason: CompactionReason; tokens: number }
+	/** `tokensAfter` is an estimate until the next request measures it; `kept`: messages kept verbatim. */
+	| {
+			type: "compaction_finished";
+			ok: boolean;
+			reason: CompactionReason;
+			tokensBefore: number;
+			tokensAfter?: number;
+			kept: number;
+			usage: Usage;
+			costUsd?: number;
+			error?: string;
+	  }
 	/** The prompt cache could not reuse the previous prefix; `reason` is the API's (`system_changed`...). */
 	| { type: "cache_miss"; reason: string; missedTokens: number }
 	| { type: "phase_changed"; phase: Phase; source: "inferred" | "declared" }

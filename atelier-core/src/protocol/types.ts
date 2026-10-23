@@ -1,7 +1,10 @@
 import type { AtelierEvent, JsonValue } from "../events.ts";
 
 /** Bumped on any incompatible change; sent first by the server in `hello`. */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
+
+/** Limit of the instructions a client may give `session.compact`. */
+export const MAX_COMPACT_INSTRUCTIONS_BYTES = 2000;
 
 export const BACKEND_NAMES = ["claude-code", "anthropic-api"] as const;
 /** claude-code uses the Claude subscription; anthropic-api runs Atelier's own loop on an API key. */
@@ -23,6 +26,8 @@ export type ClientCommand =
 	/** Reviews the current uncommitted change at any risk; answers like session.send. */
 	| { command: "session.review"; sessionId: string }
 	| { command: "session.review_consent"; sessionId: string; reviewId: string; answer: "granted" | "declined" }
+	/** Summarizes the older history now; answers like session.send. `instructions`: at most 2000 bytes. */
+	| { command: "session.compact"; sessionId: string; instructions?: string }
 	| { command: "session.close"; sessionId: string }
 	| { command: "shutdown" };
 

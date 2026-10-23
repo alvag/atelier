@@ -31,6 +31,8 @@ export interface BackendStartOptions {
 export interface BackendSession {
 	/** Runs one turn. The core stamps `seq` and `turnId` on every yielded event. */
 	send(prompt: string): AsyncIterable<AtelierEventBody>;
+	/** Summarizes the older history now, like a turn ending in `turn_finished`; absent when the backend cannot. */
+	compact?(instructions?: string): AsyncIterable<AtelierEventBody>;
 	interrupt(): Promise<void>;
 	close(): Promise<void>;
 }

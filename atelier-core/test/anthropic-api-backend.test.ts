@@ -109,10 +109,29 @@ function sseOf(reply: Reply): { head: string; tail: string } {
 }
 
 /** A fake Messages API: answers each request with the next scripted reply and records the request bodies. */
-function fakeApi(script: Scripted[]) {
+function fakeApi(script: Scripted[], options: { modelWindow?: number } = {}) {
 	const bodies: Record<string, unknown>[] = [];
 	const headers: Headers[] = [];
-	const fetch = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+	const lookups: string[] = [];
+	const fetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+		// The models API: the window lookup when a session starts, answered apart from the script.
+		if ((init?.method ?? "GET") === "GET") {
+			lookups.push(String(url));
+			if (options.modelWindow === undefined)
+				return new Response(JSON.stringify({ type: "error", error: { type: "not_found_error", message: "no" } }), {
+					status: 404,
+					headers: { "content-type": "application/json" },
+				});
+			return new Response(
+				JSON.stringify({
+					type: "model",
+					id: "claude-sonnet-5-5",
+					max_input_tokens: options.modelWindow,
+					max_tokens: 64_000,
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}
 		bodies.push(JSON.parse(String(init?.body)));
 		headers.push(new Headers(init?.headers));
 		const next = script.shift();
@@ -148,7 +167,7 @@ function fakeApi(script: Scripted[]) {
 		});
 		return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 	};
-	return { fetch: fetch as typeof globalThis.fetch, bodies, headers };
+	return { fetch: fetch as typeof globalThis.fetch, bodies, headers, lookups };
 }
 
 const echoTool = defineTool({
@@ -222,6 +241,7 @@ describe("AnthropicApiBackend", () => {
 				usage: { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 },
 				costUsd: 12,
 				requests: 1,
+				context: { tokens: 2000000, window: 200_000, compactAt: 167_616 },
 			},
 		]);
 		const body = api.bodies[0];
@@ -284,6 +304,7 @@ describe("AnthropicApiBackend", () => {
 				usage: { input: 170, output: 17, cacheRead: 200, cacheWrite: 30 },
 				costUsd: (170 * 2 + 17 * 10 + 200 * 0.1 + 30 * 2.5) / 1_000_000,
 				requests: 3,
+				context: { tokens: 52, window: 200_000, compactAt: 167_616 },
 			},
 		]);
 		expect(api.bodies).toHaveLength(3);
@@ -369,6 +390,7 @@ describe("AnthropicApiBackend", () => {
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				costUsd: 0,
 				requests: 0,
+				context: { tokens: 14, window: 200_000, compactAt: 167_616 },
 			},
 		]);
 	});
@@ -582,6 +604,198 @@ describe("AnthropicApiBackend", () => {
 			]);
 		} finally {
 			await session.close();
+		}
+	});
+});
+
+const SUMMARY = [
+	"## Goal",
+	"- refactor",
+	"## Constraints & Preferences",
+	"## Progress",
+	"### Done",
+	"### In Progress",
+	"### Blocked",
+	"## Key Decisions",
+	"## Next Steps",
+	"## Critical Context",
+].join("\n");
+const summaryReply = (stopReason = "end_turn"): Reply => ({
+	blocks: [{ type: "text", text: SUMMARY }],
+	stopReason,
+	usage: { input: 100, cacheRead: 2000, output: 300 },
+});
+const overflow = {
+	status: 400,
+	errorType: "invalid_request_error",
+	message: "prompt is too long: 250000 tokens > 200000 maximum",
+};
+function compactOf(session: BackendSession, instructions?: string): AsyncIterable<AtelierEventBody> {
+	if (!session.compact) throw new Error("This backend session cannot compact.");
+	return session.compact(instructions);
+}
+const textOfBody = (body: Record<string, unknown> | undefined) => JSON.stringify(messagesOf(body));
+const ofType = <T extends AtelierEventBody["type"]>(events: AtelierEventBody[], type: T) =>
+	events.filter((e): e is Extract<AtelierEventBody, { type: T }> => e.type === type);
+
+describe("AnthropicApiBackend compaction", () => {
+	/** A small window so a test history crosses it; `keepRecentTokens: 1` keeps only the last exchange. */
+	async function compacting(script: Scripted[], options: Partial<AnthropicApiBackendOptions> = {}) {
+		return start(script, async () => ({ ok: true, output: "x".repeat(400) }), {
+			contextWindow: 200_000,
+			compactAt: 1000,
+			keepRecentTokens: 1,
+			...options,
+		});
+	}
+
+	it("compacts between requests of a turn and goes on with the summary and the verbatim tail", async () => {
+		const { session, api } = await compacting([
+			{
+				blocks: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "a" } }],
+				stopReason: "tool_use",
+				usage: { input: 2000 },
+			},
+			summaryReply(),
+			{ blocks: [{ type: "text", text: "done" }] },
+		]);
+		const events = await collect(session.send("Refactor the parser"));
+		// The last response measured 2005 tokens; the tool result appended since is estimated on top.
+		const [started] = ofType(events, "compaction_started");
+		expect(started).toMatchObject({ reason: "threshold" });
+		expect(started?.tokens).toBeGreaterThan(2005);
+		const [done] = ofType(events, "compaction_finished");
+		expect(done).toMatchObject({ ok: true, reason: "threshold", tokensBefore: started?.tokens, kept: 2 });
+		expect(done?.usage).toEqual({ input: 100, output: 300, cacheRead: 2000, cacheWrite: 0 });
+		expect(done?.tokensAfter).toBeGreaterThan(0);
+		// The summary request: the prefix before the cut plus the instruction, with no tool use allowed.
+		const summary = api.bodies[1];
+		expect(summary?.tool_choice).toEqual({ type: "none" });
+		expect(messagesOf(summary)).toHaveLength(1);
+		expect(textOfBody(summary)).toContain("Summarize the conversation above");
+		// The next request: one summary message, then the assistant's tool call and its result, unchanged.
+		const next = messagesOf(api.bodies[2]);
+		expect(next.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+		expect(JSON.stringify(next[0])).toContain("compacted into the following summary");
+		expect(JSON.stringify(next[0])).toContain("<request>\\nRefactor the parser\\n</request>");
+		expect(JSON.stringify(next[1])).toContain("tu_1");
+		const [turn] = finished(events);
+		expect(finished(events)).toHaveLength(1);
+		expect(turn).toMatchObject({ stopReason: "end_turn", requests: 3 });
+		expect(turn?.type === "turn_finished" && turn.usage.output).toBe(5 + 300 + 5);
+		expect(turn?.type === "turn_finished" && turn.context).toEqual({ tokens: 15, window: 200_000, compactAt: 1000 });
+	});
+
+	it("keeps the whole history when the summary is cut short, and does not retry it in the same turn", async () => {
+		const { session, api } = await compacting([
+			{
+				blocks: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "a" } }],
+				stopReason: "tool_use",
+				usage: { input: 2000 },
+			},
+			summaryReply("max_tokens"),
+			{
+				blocks: [{ type: "tool_use", id: "tu_2", name: "echo", input: { text: "b" } }],
+				stopReason: "tool_use",
+				usage: { input: 3000 },
+			},
+			{ blocks: [{ type: "text", text: "done" }] },
+		]);
+		const events = await collect(session.send("Refactor"));
+		const [failed] = ofType(events, "compaction_finished");
+		expect(failed).toMatchObject({ ok: false, reason: "threshold", kept: 0 });
+		expect(failed?.error).toMatch(/max_tokens/);
+		expect(ofType(events, "compaction_started")).toHaveLength(1);
+		// The next request carries the original prompt, call and result, not a summary.
+		expect(JSON.stringify(messagesOf(api.bodies[2])[0])).toContain("Refactor");
+		expect(textOfBody(api.bodies[2])).not.toContain("compacted into the following summary");
+		expect(messagesOf(api.bodies[2])).toHaveLength(3);
+		expect(finished(events)[0]).toMatchObject({ stopReason: "end_turn" });
+	});
+
+	it("compacts once on a context overflow and retries the request", async () => {
+		const { session, api } = await compacting(
+			[
+				{ blocks: [{ type: "text", text: "first answer" }] },
+				overflow,
+				summaryReply(),
+				{ blocks: [{ type: "text", text: "second" }] },
+			],
+			{ compactAt: 1_000_000 },
+		);
+		await collect(session.send("first"));
+		const events = await collect(session.send("second"));
+		expect(ofType(events, "compaction_started")).toMatchObject([{ reason: "overflow" }]);
+		expect(ofType(events, "compaction_finished")).toMatchObject([{ ok: true, reason: "overflow" }]);
+		expect(ofType(events, "error")).toEqual([]);
+		expect(finished(events)[0]).toMatchObject({ stopReason: "end_turn" });
+		const retried = messagesOf(api.bodies[3]);
+		expect(retried.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+		expect(JSON.stringify(retried[2])).toContain("second");
+		// The request of this turn stays a message of its own, so it is not repeated in the summary.
+		expect(JSON.stringify(retried[0])).not.toContain("<request>");
+	});
+
+	it("gives up after one overflow compaction and reports today's error", async () => {
+		const { session } = await compacting(
+			[{ blocks: [{ type: "text", text: "first answer" }] }, overflow, summaryReply(), overflow],
+			{ compactAt: 1_000_000 },
+		);
+		await collect(session.send("first"));
+		const events = await collect(session.send("second"));
+		expect(ofType(events, "compaction_started")).toHaveLength(1);
+		expect(ofType(events, "error")).toMatchObject([{ code: "invalid_request", recoverable: false }]);
+		expect(finished(events)[0]).toMatchObject({ stopReason: "error" });
+	});
+
+	it("compacts on request with the user's instructions, as a turn of its own", async () => {
+		const { session, api } = await compacting(
+			[
+				{ blocks: [{ type: "text", text: "first answer" }] },
+				{ blocks: [{ type: "text", text: "second answer" }] },
+				summaryReply(),
+			],
+			{ compactAt: 1_000_000 },
+		);
+		await collect(session.send("first"));
+		await collect(session.send("second"));
+		const events = await collect(compactOf(session, "Keep the API decisions."));
+		expect(events.map((e) => e.type)).toEqual(["compaction_started", "compaction_finished", "turn_finished"]);
+		expect(ofType(events, "compaction_finished")[0]).toMatchObject({ ok: true, reason: "manual", kept: 1 });
+		expect(finished(events)[0]).toMatchObject({ stopReason: "end_turn", requests: 1 });
+		expect(textOfBody(api.bodies[2])).toContain("Keep the API decisions.");
+		// Between turns no request is carried into the summary.
+		expect(textOfBody(api.bodies[2])).not.toContain("<request>");
+	});
+
+	it("says there is nothing to compact in a short history, and keeps it", async () => {
+		const { session } = await compacting([{ blocks: [{ type: "text", text: "hi" }] }], { keepRecentTokens: 20_000 });
+		await collect(session.send("hello"));
+		const events = await collect(compactOf(session));
+		expect(ofType(events, "compaction_finished")[0]).toMatchObject({ ok: false, reason: "manual", kept: 0 });
+		expect(ofType(events, "compaction_finished")[0]?.error).toMatch(/not enough history/);
+		expect(finished(events)[0]).toMatchObject({ stopReason: "error" });
+	});
+
+	it("takes the window from the models API, and falls back when it does not answer", async () => {
+		for (const [modelWindow, window, compactAt] of [
+			[500_000, 500_000, 200_000],
+			[undefined, 200_000, 200_000 - 16_000 - 16_384],
+		] as const) {
+			const api = fakeApi(
+				[{ blocks: [{ type: "text", text: "hi" }] }],
+				modelWindow === undefined ? {} : { modelWindow },
+			);
+			const backend = new AnthropicApiBackend({ apiKey: API_KEY, fetch: api.fetch, maxRetries: 0 });
+			const session = await backend.start({
+				cwd: "/work",
+				systemPromptAppend: "",
+				tools: [],
+				executeTool: async () => ({ ok: true, output: "" }),
+			});
+			const events = await collect(session.send("hi"));
+			expect(api.lookups).toEqual(["https://api.anthropic.com/v1/models/claude-sonnet-5-5"]);
+			expect(finished(events)[0]).toMatchObject({ context: { window, compactAt } });
 		}
 	});
 });

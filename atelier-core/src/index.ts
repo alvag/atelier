@@ -23,6 +23,15 @@ export {
 export { type MapContext, mapSdkMessage } from "./backends/claude-code/map.ts";
 export { type CoreExit, RpcClient, type RpcClientOptions, RpcError } from "./client/rpc-client.ts";
 export {
+	compactThreshold,
+	contextTokens,
+	type FileActivity,
+	KEEP_RECENT_TOKENS,
+	MAX_COMPACT_AT,
+	parseCompactAt,
+	RESERVE_TOKENS,
+} from "./compaction/compactor.ts";
+export {
 	KEYCHAIN_SERVICE,
 	KeychainError,
 	MissingApiKeyError,
