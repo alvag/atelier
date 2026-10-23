@@ -52,6 +52,8 @@ export interface SessionOptions {
 	memory?: MemoryPort;
 	/** Why there is no memory, when the caller tried and failed; reported in memory_status. */
 	memoryUnavailable?: string;
+	/** Why there is no review in this session (it is off); said once, in the first turn. */
+	reviewUnavailable?: string;
 	/** Turns on RDD: the risk tool, the assessment at the end of each turn and `Session.review`. Never given to subagents. */
 	review?: ReviewOptions;
 }
@@ -190,6 +192,8 @@ export class Session {
 				if (memory) turn.push({ type: "memory_status", available: true, project: memory.project });
 				else if (this.#options.memoryUnavailable !== undefined)
 					turn.push({ type: "memory_status", available: false, reason: this.#options.memoryUnavailable });
+				if (!this.#options.review && this.#options.reviewUnavailable !== undefined)
+					turn.push({ type: "review_status", available: false, reason: this.#options.reviewUnavailable });
 				if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
 			}
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }> | undefined;

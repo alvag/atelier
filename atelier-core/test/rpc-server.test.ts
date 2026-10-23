@@ -109,9 +109,17 @@ describe("RpcServer", () => {
 		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
 		expect(h.backends[0]?.prompts).toEqual(["hello"]);
 		expect(h.backends[0]?.startOptions?.cwd).toBe(cwd);
+		// This server has review off, so the first turn says so once.
 		expect(h.events(sessionId)).toEqual([
-			{ type: "text_delta", text: "hi", seq: 1, turnId },
-			{ ...finished, seq: 2, turnId },
+			{
+				type: "review_status",
+				available: false,
+				reason: "Review is off on this server (ATELIER_REVIEW=off).",
+				seq: 1,
+				turnId,
+			},
+			{ type: "text_delta", text: "hi", seq: 2, turnId },
+			{ ...finished, seq: 3, turnId },
 		]);
 	});
 
@@ -265,8 +273,8 @@ describe("RpcServer", () => {
 		h.send({ command: "session.send", sessionId: two, prompt: "b" });
 		await h.waitFor((m) => m.type === "event" && m.sessionId === one && m.event.type === "turn_finished");
 		await h.waitFor((m) => m.type === "event" && m.sessionId === two && m.event.type === "turn_finished");
-		expect(h.events(one)[0]).toMatchObject({ type: "text_delta", text: "from one" });
-		expect(h.events(two)[0]).toMatchObject({ type: "text_delta", text: "from two" });
+		expect(h.events(one)[1]).toMatchObject({ type: "text_delta", text: "from one" });
+		expect(h.events(two)[1]).toMatchObject({ type: "text_delta", text: "from two" });
 	});
 
 	it("closes a session whose start was still running when the client disconnected", async () => {

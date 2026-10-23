@@ -284,7 +284,11 @@ export class RpcServer {
 								consent: ({ reviewId }) => new Promise((resolve) => consents.set(reviewId, resolve)),
 							},
 						}
-					: {}),
+					: {
+							reviewUnavailable: this.#options.review
+								? "Review is off for this session."
+								: "Review is off on this server (ATELIER_REVIEW=off).",
+						}),
 				subagents: {
 					agents: this.#options.subagents ?? BUILTIN_AGENTS,
 					createBackend: () => this.#options.createBackend(backend),

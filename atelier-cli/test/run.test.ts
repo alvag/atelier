@@ -433,7 +433,8 @@ describe("run: review", () => {
 		expect(h.backend.prompts).toHaveLength(1);
 		expect(h.backend.startOptions?.tools.map((t) => t.name)).not.toContain("risk");
 		expect(h.out()).not.toContain("review");
-		expect(h.err()).not.toContain("review");
+		// The only mention: why there is no review, once.
+		expect(h.err()).toBe("no review: Review is off (--no-review or ATELIER_REVIEW=off).\n");
 	});
 
 	it("gives the main agent the risk tool by default and says why there is no review outside git", async () => {

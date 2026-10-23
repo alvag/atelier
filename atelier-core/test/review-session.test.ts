@@ -628,12 +628,14 @@ describe("RpcServer review", () => {
 		expect((await receipts(h.cwd))[0]?.receipt.verdict).toBe("declined");
 	});
 
-	it("gives no review to a session started with review:false, nor when the server has it off", async () => {
+	it("gives no review to a session started with review:false, nor when the server has it off, and says so once", async () => {
 		const h = await serve([MEDIUM_TURN], { review: true });
 		const sessionId = await h.begin({ review: false });
 		h.send({ command: "session.send", sessionId, prompt: "edit" });
 		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
-		expect(types(h.events(sessionId)).filter((type) => type.startsWith("review_"))).toEqual([]);
+		expect(h.events(sessionId).filter((event) => event.type.startsWith("review_"))).toMatchObject([
+			{ type: "review_status", available: false, reason: "Review is off for this session." },
+		]);
 		await h.answerOf(h.send({ command: "session.review", sessionId }));
 		const refused = await h.eventOf("error");
 		expect(refused.event).toMatchObject({ code: "review_unavailable" });
@@ -642,7 +644,9 @@ describe("RpcServer review", () => {
 		const offId = await off.begin();
 		off.send({ command: "session.send", sessionId: offId, prompt: "edit" });
 		await off.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
-		expect(types(off.events(offId)).filter((type) => type.startsWith("review_"))).toEqual([]);
+		expect(off.events(offId).filter((event) => event.type.startsWith("review_"))).toMatchObject([
+			{ type: "review_status", available: false, reason: "Review is off on this server (ATELIER_REVIEW=off)." },
+		]);
 	});
 
 	it("refuses an explicit review:true when the server has review off", async () => {

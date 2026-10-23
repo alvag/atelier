@@ -146,7 +146,9 @@ export async function run(
 		...(memory ? { memory } : {}),
 		...(memoryUnavailable === undefined ? {} : { memoryUnavailable }),
 		subagents: { agents: BUILTIN_AGENTS, createBackend: () => createBackend(args.backend) },
-		...(args.review ? { review: { createBackend: () => createBackend(args.backend), consent } } : {}),
+		...(args.review
+			? { review: { createBackend: () => createBackend(args.backend), consent } }
+			: { reviewUnavailable: "Review is off (--no-review or ATELIER_REVIEW=off)." }),
 		odd: true,
 		cwd: args.cwd,
 		...(args.model === undefined ? {} : { model: args.model }),
