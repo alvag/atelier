@@ -283,7 +283,9 @@ class AnthropicApiSession implements BackendSession {
 				const miss = cacheMiss(message);
 				if (miss) yield miss;
 				// Only complete messages enter the history; an interrupted stream leaves nothing behind.
-				this.#state.messages.push({ role: "assistant", content: message.content });
+				// The API rejects empty text blocks and empty assistant messages, so neither is kept.
+				const content = message.content.filter((block) => block.type !== "text" || block.text !== "");
+				if (content.length > 0) this.#state.messages.push({ role: "assistant", content });
 				this.#measured = { tokens: contextTokens(usage), length: this.#state.messages.length };
 				this.#unmeasured = false;
 				if (message.stop_reason !== "tool_use") {

@@ -325,6 +325,25 @@ describe("AnthropicApiBackend", () => {
 		expect(withoutBreakpoints(last.slice(0, 3))).toEqual(withoutBreakpoints(messagesOf(api.bodies[1])));
 	});
 
+	it.each([
+		["no content", []],
+		["only an empty text block", [{ type: "text" as const, text: "" }]],
+	])("keeps an empty assistant reply (%s) out of the history so the next request stays valid", async (_, blocks) => {
+		const { session, api } = await start([{ blocks }, { blocks: [{ type: "text", text: "Here." }] }]);
+		const first = await collect(session.send("Hi"));
+		expect(finished(first)).toMatchObject([{ type: "turn_finished", stopReason: "end_turn", requests: 1 }]);
+		await collect(session.send("again"));
+		expect(withoutBreakpoints(messagesOf(api.bodies[1]))).toEqual([
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "Hi" },
+					{ type: "text", text: "again" },
+				],
+			},
+		]);
+	});
+
 	it("sends a denied tool back as an error result", async () => {
 		const { session, api } = await start(
 			[
