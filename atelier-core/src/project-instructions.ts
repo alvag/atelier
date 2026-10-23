@@ -27,9 +27,12 @@ function folders(cwd: string, home: string): string[] {
 	return found;
 }
 
-/** `AGENTS.md`, or `CLAUDE.md` when there is none; anything unreadable counts as absent. */
-async function readInstructions(dir: string): Promise<{ path: string; text: string } | undefined> {
-	for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+/** The first of `names` in `dir` that can be read; anything unreadable counts as absent. */
+async function readInstructions(
+	dir: string,
+	names = ["AGENTS.md", "CLAUDE.md"],
+): Promise<{ path: string; text: string } | undefined> {
+	for (const name of names) {
 		const path = join(dir, name);
 		try {
 			return { path, text: (await readFile(path, "utf8")).trim() };
@@ -39,14 +42,19 @@ async function readInstructions(dir: string): Promise<{ path: string; text: stri
 }
 
 /**
- * Reads the instruction files from `cwd` up to `home` (excluded), once. The closest comes last so it wins
- * a contradiction; over the cap, the outermost files are dropped first.
+ * Reads the user's `~/.agents/AGENTS.md` and the instruction files from `cwd` up to `home` (excluded), once.
+ * The user's file comes first and the closest project file last, so it wins a contradiction; over the cap,
+ * the outermost files are dropped first, the user's before any project file.
  */
 export async function loadProjectInstructions(cwd: string, home: string): Promise<ProjectInstructions> {
-	const read = await Promise.all(folders(cwd, home).map(readInstructions));
-	const blocks = read.flatMap((file) =>
+	const [user, ...project] = await Promise.all([
+		readInstructions(join(home, ".agents"), ["AGENTS.md"]),
+		...folders(cwd, home).map((dir) => readInstructions(dir)),
+	]);
+	const labelled = [{ label: "User", file: user }, ...project.map((file) => ({ label: "Project", file }))];
+	const blocks = labelled.flatMap(({ label, file }) =>
 		file && file.text !== ""
-			? [{ path: file.path, block: `Project instructions from ${file.path}:\n\n${file.text}` }]
+			? [{ path: file.path, block: `${label} instructions from ${file.path}:\n\n${file.text}` }]
 			: [],
 	);
 	const joiner = "\n\n";

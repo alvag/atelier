@@ -82,6 +82,29 @@ describe("project instructions", () => {
 		expect(prompt).not.toContain("home rules");
 	});
 
+	it("adds the user's ~/.agents/AGENTS.md first, before the project's files", async () => {
+		await put(".agents/AGENTS.md", "Answer in Spanish.");
+		await put("proj/AGENTS.md", "Use tabs.");
+		const { prompt, loaded } = await start(join(home, "proj"));
+		const user = join(home, ".agents", "AGENTS.md");
+		const project = join(home, "proj", "AGENTS.md");
+		expect(prompt).toBe(
+			`${BASE}\n\nUser instructions from ${user}:\n\nAnswer in Spanish.\n\nProject instructions from ${project}:\n\nUse tabs.`,
+		);
+		expect(loaded).toMatchObject({ files: [user, project], dropped: [] });
+	});
+
+	it("drops the user's instructions before any project file when over the cap", async () => {
+		await put(".agents/AGENTS.md", "u".repeat(MAX_INSTRUCTIONS_BYTES));
+		await put("proj/AGENTS.md", "Use tabs.");
+		const { prompt, loaded } = await start(join(home, "proj"));
+		expect(prompt).not.toContain("User instructions");
+		expect(loaded).toMatchObject({
+			files: [join(home, "proj", "AGENTS.md")],
+			dropped: [join(home, ".agents", "AGENTS.md")],
+		});
+	});
+
 	it("changes nothing when no folder has instructions", async () => {
 		await mkdir(join(home, "proj"), { recursive: true });
 		const { prompt, loaded } = await start(join(home, "proj"));

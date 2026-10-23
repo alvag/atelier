@@ -55,7 +55,7 @@ export interface SessionOptions {
 	memoryUnavailable?: string;
 	/** Why there is no review in this session (it is off); said once, in the first turn. */
 	reviewUnavailable?: string;
-	/** Adds the AGENTS.md / CLAUDE.md files from `cwd` up to `home` (excluded) to the system prompt, read once at start. Never given to subagents. */
+	/** Adds `home`/.agents/AGENTS.md and the AGENTS.md / CLAUDE.md files from `cwd` up to `home` (excluded) to the system prompt, read once at start. Never given to subagents. */
 	projectInstructions?: { home: string };
 	/** Turns on RDD: the risk tool, the assessment at the end of each turn and `Session.review`. Never given to subagents. */
 	review?: ReviewOptions;
