@@ -109,7 +109,7 @@ function sseOf(reply: Reply): { head: string; tail: string } {
 }
 
 /** A fake Messages API: answers each request with the next scripted reply and records the request bodies. */
-function fakeApi(script: Scripted[], options: { modelWindow?: number } = {}) {
+function fakeApi(script: Scripted[], options: { modelWindow?: number; modelsAnswer?: Promise<void> } = {}) {
 	const bodies: Record<string, unknown>[] = [];
 	const headers: Headers[] = [];
 	const lookups: string[] = [];
@@ -117,6 +117,7 @@ function fakeApi(script: Scripted[], options: { modelWindow?: number } = {}) {
 		// The models API: the window lookup when a session starts, answered apart from the script.
 		if ((init?.method ?? "GET") === "GET") {
 			lookups.push(String(url));
+			await options.modelsAnswer;
 			if (options.modelWindow === undefined)
 				return new Response(JSON.stringify({ type: "error", error: { type: "not_found_error", message: "no" } }), {
 					status: 404,
@@ -808,6 +809,34 @@ describe("AnthropicApiBackend compaction", () => {
 		expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
 		expect(JSON.stringify(messages[0]).split(JSON.stringify(state).slice(1, -1))).toHaveLength(2);
 		expect(JSON.stringify(messages[2])).not.toContain("<state>");
+	});
+
+	it("starts without waiting for the window, and waits for it only before the first request", async () => {
+		let answer: () => void = () => {};
+		const modelsAnswer = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		const api = fakeApi([{ blocks: [{ type: "text", text: "hi" }] }], { modelWindow: 500_000, modelsAnswer });
+		const backend = new AnthropicApiBackend({ apiKey: API_KEY, fetch: api.fetch, maxRetries: 0 });
+		const started = await Promise.race([
+			backend.start({
+				cwd: "/work",
+				systemPromptAppend: "",
+				tools: [],
+				executeTool: async () => ({ ok: true, output: "" }),
+			}),
+			new Promise<"waited">((resolve) => setTimeout(() => resolve("waited"), 200)),
+		]);
+		expect(started).not.toBe("waited");
+		if (started === "waited") return;
+		const turn = collect(started.send("hi"));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		// The lookup is under way and the first request waits for it.
+		expect(api.lookups).toHaveLength(1);
+		expect(api.bodies).toEqual([]);
+		answer();
+		const events = await turn;
+		expect(finished(events)[0]).toMatchObject({ context: { window: 500_000, compactAt: 200_000 } });
 	});
 
 	it("takes the window from the models API, and falls back when it does not answer", async () => {

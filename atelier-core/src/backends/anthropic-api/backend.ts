@@ -141,12 +141,15 @@ export class AnthropicApiBackend implements AgentBackend {
 			messages: [],
 		};
 		const maxRequests = start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
-		const window = this.#options.contextWindow ?? (await lookupWindow(client, state.model));
-		const compaction: CompactionConfig = {
+		// The window lookup runs while the session starts; the first request waits for it, never the start.
+		const { contextWindow, compactAt, keepRecentTokens } = this.#options;
+		const compaction: Promise<CompactionConfig> = (
+			contextWindow === undefined ? lookupWindow(client, state.model) : Promise.resolve(contextWindow)
+		).then((window) => ({
 			window,
-			compactAt: compactThreshold({ window, maxTokens: state.maxTokens, override: this.#options.compactAt }),
-			keepRecent: this.#options.keepRecentTokens ?? KEEP_RECENT_TOKENS,
-		};
+			compactAt: compactThreshold({ window, maxTokens: state.maxTokens, override: compactAt }),
+			keepRecent: keepRecentTokens ?? KEEP_RECENT_TOKENS,
+		}));
 		return new AnthropicApiSession(
 			client,
 			state,
@@ -182,7 +185,9 @@ class AnthropicApiSession implements BackendSession {
 	readonly #executeTool: ToolExecutor;
 	readonly #maxRequests: number;
 	readonly #apiKey: string;
-	readonly #compaction: CompactionConfig;
+	readonly #compactionReady: Promise<CompactionConfig>;
+	/** Set once the window lookup answered, before the first request. */
+	#config: CompactionConfig | undefined;
 	readonly #compactionState: (() => string | undefined) | undefined;
 	#abort: AbortController | undefined;
 	#announced = false;
@@ -203,7 +208,7 @@ class AnthropicApiSession implements BackendSession {
 		executeTool: ToolExecutor,
 		maxRequests: number,
 		apiKey: string,
-		compaction: CompactionConfig,
+		compaction: Promise<CompactionConfig>,
 		compactionState?: () => string | undefined,
 	) {
 		this.#client = client;
@@ -211,7 +216,7 @@ class AnthropicApiSession implements BackendSession {
 		this.#executeTool = executeTool;
 		this.#maxRequests = maxRequests;
 		this.#apiKey = apiKey;
-		this.#compaction = compaction;
+		this.#compactionReady = compaction;
 		this.#compactionState = compactionState;
 	}
 
@@ -221,6 +226,7 @@ class AnthropicApiSession implements BackendSession {
 			this.#announced = true;
 			yield { type: "session_started", backend: BACKEND_ID, model: this.#state.model, authSource: "api_key" };
 		}
+		this.#config ??= await this.#compactionReady;
 		const abort = new AbortController();
 		this.#abort = abort;
 		const meter = new UsageMeter(this.#state.model);
@@ -299,6 +305,7 @@ class AnthropicApiSession implements BackendSession {
 
 	async *compact(instructions?: string): AsyncIterable<AtelierEventBody> {
 		if (this.#closed) throw new Error("The anthropic-api session is closed.");
+		this.#config ??= await this.#compactionReady;
 		const abort = new AbortController();
 		this.#abort = abort;
 		const meter = new UsageMeter(this.#state.model);
@@ -321,6 +328,12 @@ class AnthropicApiSession implements BackendSession {
 			requests: meter.requests,
 			context: this.#context(),
 		};
+	}
+
+	/** The compaction settings; only read after `send` or `compact` awaited them. */
+	get #compaction(): CompactionConfig {
+		if (!this.#config) throw new Error("The context window is not known yet.");
+		return this.#config;
 	}
 
 	#context(): ContextUsage {
