@@ -1,0 +1,225 @@
+import type { Readable } from "node:stream";
+
+/** Reads the person's input one line (or one pasted block) at a time. */
+export interface LineReader {
+	/** Starts reading, so lines typed from now on are known to be early. */
+	open(): void;
+	/** The next line; `column` is where the cursor sits after the prompt, used to redraw while editing. */
+	next(column?: number): Promise<string | undefined>;
+	/** Stops waiting for a read that will not be consumed (a cancelled question); its line goes to the next caller. */
+	abandon(): void;
+	/** Drops the lines typed so far, the one being typed included, and says how many. */
+	discardTyped(): number;
+	close(): void;
+}
+
+export interface TerminalReaderOptions {
+	/** A terminal in raw mode: every key arrives as typed, Enter as "\r" and Ctrl+C as "\x03". */
+	stdin: Readable;
+	/** Echoes what is typed; only while a read is pending, so type-ahead does not mix with the output. */
+	write: (text: string) => void;
+	onInterrupt: () => void;
+}
+
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
+const CTRL_C = "\x03";
+const CTRL_D = "\x04";
+const CTRL_U = "\x15";
+const CTRL_W = "\x17";
+
+/**
+ * A small line editor for a terminal in raw mode. A bracketed paste becomes
+ * part of one line, line breaks included, and Enter sends it. Editing is
+ * Backspace, Ctrl+U and Ctrl+W, as in a terminal's own line mode; other keys
+ * and escape sequences are ignored. Redrawing assumes lines do not wrap.
+ */
+export function createTerminalReader({ stdin, write, onInterrupt }: TerminalReaderOptions): LineReader {
+	/** Lines entered before anyone asked for them: type-ahead for the next prompt. */
+	const typed: string[] = [];
+	/** The line being typed. */
+	let buffer = "";
+	/** Input not handled yet: an escape sequence cut by the end of a read. */
+	let pending = "";
+	let pasting = false;
+	/** The paste in progress began before a question, so none of it is an answer. */
+	let droppingPaste = false;
+	let waiting: ((line: string | undefined) => void) | undefined;
+	/** The line handed to the last read, in case its caller gives it up. */
+	let handed: string | undefined;
+	let column = 0;
+	let ended = false;
+	let opened = false;
+
+	const echo = (text: string) => {
+		if (waiting && text !== "") write(text);
+	};
+	/** The column where the line at `index` (counted by line breaks in the buffer) starts. */
+	const startOf = (index: number) => (index === 0 ? column : 0);
+	const lines = () => buffer.split("\n");
+	const width = (text: string) => Array.from(text).length;
+	const redrawLastLine = () => {
+		const all = lines();
+		echo(`\x1b[${startOf(all.length - 1) + 1}G\x1b[K${all.at(-1)}`);
+	};
+
+	const finish = () => {
+		ended = true;
+		const resolve = waiting;
+		waiting = undefined;
+		resolve?.(undefined);
+	};
+	const enter = () => {
+		const line = buffer;
+		buffer = "";
+		const resolve = waiting;
+		waiting = undefined;
+		if (resolve) {
+			handed = line;
+			resolve(line);
+		} else typed.push(line);
+	};
+	const insert = (text: string) => {
+		buffer += text;
+		echo(text);
+	};
+	const backspace = () => {
+		const chars = Array.from(buffer);
+		const last = chars.pop();
+		if (last === undefined) return;
+		buffer = chars.join("");
+		if (last !== "\n") return echo("\b \b");
+		const all = lines();
+		echo(`\x1b[A\x1b[${startOf(all.length - 1) + width(all.at(-1) ?? "") + 1}G`);
+	};
+	const eraseLine = () => {
+		buffer = buffer.slice(0, buffer.lastIndexOf("\n") + 1);
+		redrawLastLine();
+	};
+	const eraseWord = () => {
+		buffer = buffer.replace(/\S*[^\S\n]*$/, "");
+		redrawLastLine();
+	};
+	const pasted = (text: string) => {
+		// Terminals send line breaks in a paste as "\r"; other control characters must not reach the echo.
+		const clean = text
+			.replace(/\r\n?/g, "\n")
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: removing control characters is the point
+			.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+		if (!droppingPaste) insert(clean);
+	};
+
+	/** Handles one escape sequence at `data[i]`; returns where the next input starts, or -1 when it is incomplete. */
+	const skipEscape = (data: string, i: number): number => {
+		const kind = data[i + 1];
+		if (kind === undefined) return -1;
+		if (kind === "O") return i + 2 < data.length ? i + 3 : -1;
+		if (kind !== "[") return i + 2;
+		for (let j = i + 2; j < data.length; j++) {
+			const code = data.charCodeAt(j);
+			if (code < 0x40 || code > 0x7e) continue;
+			if (data.slice(i, j + 1) === PASTE_START) pasting = true;
+			return j + 1;
+		}
+		return -1;
+	};
+
+	const handle = (chunk: string) => {
+		const data = pending + chunk;
+		pending = "";
+		let i = 0;
+		while (i < data.length) {
+			if (pasting) {
+				const end = data.indexOf(PASTE_END, i);
+				if (end === -1) {
+					// Keep a tail that may be the start of the end marker for the next read.
+					let keep = Math.min(PASTE_END.length - 1, data.length - i);
+					while (keep > 0 && !PASTE_END.startsWith(data.slice(data.length - keep))) keep--;
+					pasted(data.slice(i, data.length - keep));
+					pending = data.slice(data.length - keep);
+					return;
+				}
+				pasted(data.slice(i, end));
+				pasting = false;
+				droppingPaste = false;
+				i = end + PASTE_END.length;
+				continue;
+			}
+			const char = data[i] ?? "";
+			if (char === "\x1b") {
+				const next = skipEscape(data, i);
+				if (next === -1) {
+					pending = data.slice(i);
+					return;
+				}
+				i = next;
+				continue;
+			}
+			i += 1;
+			if (char === "\r" || char === "\n") {
+				if (char === "\r" && data[i] === "\n") i += 1;
+				enter();
+			} else if (char === "\x7f" || char === "\b") backspace();
+			else if (char === CTRL_U) eraseLine();
+			else if (char === CTRL_W) eraseWord();
+			else if (char === CTRL_D) {
+				if (buffer === "") finish();
+			} else if (char === CTRL_C) {
+				buffer = "";
+				onInterrupt();
+			} else if (char === "\t" || char >= " ") {
+				// A surrogate pair arrives whole within a chunk read as UTF-8.
+				const code = data.codePointAt(i - 1) ?? 0;
+				const whole = String.fromCodePoint(code);
+				i += whole.length - 1;
+				insert(whole);
+			}
+		}
+	};
+	const onData = (chunk: string | Buffer) => handle(String(chunk));
+
+	return {
+		open() {
+			if (opened) return;
+			opened = true;
+			stdin.setEncoding("utf8");
+			stdin.on("data", onData);
+			stdin.on("end", finish);
+			stdin.resume();
+		},
+		next(promptColumn = 0) {
+			this.open();
+			column = promptColumn;
+			const early = typed.shift();
+			if (early !== undefined) {
+				write(early);
+				return Promise.resolve(early);
+			}
+			if (ended) return Promise.resolve(undefined);
+			handed = undefined;
+			return new Promise((resolve) => {
+				waiting = resolve;
+				echo(buffer);
+			});
+		},
+		abandon() {
+			// A line can arrive in the same tick as the cancel: it belongs to the next caller.
+			if (waiting === undefined && handed !== undefined) typed.unshift(handed);
+			waiting = undefined;
+			handed = undefined;
+		},
+		discardTyped() {
+			this.open();
+			const count = typed.splice(0).length + (buffer !== "" || pasting ? 1 : 0);
+			buffer = "";
+			if (pasting) droppingPaste = true;
+			return count;
+		},
+		close() {
+			stdin.off("data", onData);
+			stdin.off("end", finish);
+			stdin.pause();
+			finish();
+		},
+	};
+}
