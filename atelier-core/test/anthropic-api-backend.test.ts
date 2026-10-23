@@ -839,6 +839,61 @@ describe("AnthropicApiBackend compaction", () => {
 		expect(finished(events)[0]).toMatchObject({ context: { window: 500_000, compactAt: 200_000 } });
 	});
 
+	it("ends the turn at once when interrupted while it waits for the window, and stays usable", async () => {
+		let answer: () => void = () => {};
+		const modelsAnswer = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		const api = fakeApi([{ blocks: [{ type: "text", text: "after" }] }], { modelWindow: 500_000, modelsAnswer });
+		const backend = new AnthropicApiBackend({ apiKey: API_KEY, fetch: api.fetch, maxRetries: 0 });
+		const session = await backend.start({
+			cwd: "/work",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+		});
+		const turn = collect(session.send("first"));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await session.interrupt();
+		const ended = await Promise.race([
+			turn,
+			new Promise<"stuck">((resolve) => setTimeout(() => resolve("stuck"), 200)),
+		]);
+		expect(ended).not.toBe("stuck");
+		if (ended === "stuck") return;
+		expect(finished(ended)).toMatchObject([{ stopReason: "interrupted" }]);
+		expect(api.bodies).toEqual([]);
+		answer();
+		const next = await collect(session.send("second"));
+		expect(finished(next)).toMatchObject([{ stopReason: "end_turn", context: { window: 500_000 } }]);
+		// The interrupted prompt stays in the history, joined with the next one so roles keep alternating.
+		expect(messagesOf(api.bodies[0]).map((m) => m.role)).toEqual(["user"]);
+		expect(JSON.stringify(messagesOf(api.bodies[0]))).toContain("first");
+	});
+
+	it("ends a /compact at once when interrupted while it waits for the window", async () => {
+		const modelsAnswer = new Promise<void>(() => {});
+		const api = fakeApi([], { modelWindow: 500_000, modelsAnswer });
+		const backend = new AnthropicApiBackend({ apiKey: API_KEY, fetch: api.fetch, maxRetries: 0 });
+		const session = await backend.start({
+			cwd: "/work",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+		});
+		const turn = collect(compactOf(session));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await session.interrupt();
+		const ended = await Promise.race([
+			turn,
+			new Promise<"stuck">((resolve) => setTimeout(() => resolve("stuck"), 200)),
+		]);
+		expect(ended).not.toBe("stuck");
+		if (ended === "stuck") return;
+		expect(ended.map((e) => e.type)).toEqual(["turn_finished"]);
+		expect(finished(ended)).toMatchObject([{ stopReason: "interrupted" }]);
+	});
+
 	it("takes the window from the models API, and falls back when it does not answer", async () => {
 		for (const [modelWindow, window, compactAt] of [
 			[500_000, 500_000, 200_000],

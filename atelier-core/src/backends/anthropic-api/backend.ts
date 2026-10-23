@@ -226,7 +226,6 @@ class AnthropicApiSession implements BackendSession {
 			this.#announced = true;
 			yield { type: "session_started", backend: BACKEND_ID, model: this.#state.model, authSource: "api_key" };
 		}
-		this.#config ??= await this.#compactionReady;
 		const abort = new AbortController();
 		this.#abort = abort;
 		const meter = new UsageMeter(this.#state.model);
@@ -234,6 +233,12 @@ class AnthropicApiSession implements BackendSession {
 		this.#appendUser([{ type: "text", text: prompt }]);
 		this.#turnStart = this.#state.messages.length - 1;
 		this.#turnPrompt = undefined;
+		if (!(await this.#ready(abort.signal))) {
+			if (this.#abort === abort) this.#abort = undefined;
+			this.#turnStart = -1;
+			yield interruptedBeforeAnyRequest();
+			return;
+		}
 		// A compaction that fails is not tried again in the same turn; an overflow gets one compaction.
 		let thresholdFailed = false;
 		let overflowTried = false;
@@ -305,9 +310,13 @@ class AnthropicApiSession implements BackendSession {
 
 	async *compact(instructions?: string): AsyncIterable<AtelierEventBody> {
 		if (this.#closed) throw new Error("The anthropic-api session is closed.");
-		this.#config ??= await this.#compactionReady;
 		const abort = new AbortController();
 		this.#abort = abort;
+		if (!(await this.#ready(abort.signal))) {
+			if (this.#abort === abort) this.#abort = undefined;
+			yield interruptedBeforeAnyRequest();
+			return;
+		}
 		const meter = new UsageMeter(this.#state.model);
 		let ok = false;
 		try {
@@ -328,6 +337,18 @@ class AnthropicApiSession implements BackendSession {
 			requests: meter.requests,
 			context: this.#context(),
 		};
+	}
+
+	/**
+	 * Waits for the window lookup the first time; false when the turn was
+	 * interrupted first, so an interrupt never waits for the models API.
+	 */
+	async #ready(signal: AbortSignal): Promise<boolean> {
+		if (this.#config) return true;
+		const config = await untilAborted(this.#compactionReady, signal);
+		if (config === undefined) return false;
+		this.#config = config;
+		return true;
 	}
 
 	/** The compaction settings; only read after `send` or `compact` awaited them. */
@@ -494,4 +515,22 @@ function toUsage(usage: Anthropic.Usage): Usage {
 		cacheRead: usage.cache_read_input_tokens ?? 0,
 		cacheWrite: usage.cache_creation_input_tokens ?? 0,
 	};
+}
+
+/** A turn interrupted while it waited for the window: no request was made, and the window is not known yet. */
+function interruptedBeforeAnyRequest(): AtelierEventBody {
+	return { type: "turn_finished", stopReason: "interrupted", usage: { ...ZERO_USAGE }, requests: 0 };
+}
+
+/** Resolves with the promise's value, or with undefined as soon as `signal` aborts. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+	if (signal.aborted) return Promise.resolve(undefined);
+	return new Promise((resolve) => {
+		const stop = () => resolve(undefined);
+		signal.addEventListener("abort", stop, { once: true });
+		promise.then((value) => {
+			signal.removeEventListener("abort", stop);
+			resolve(value);
+		});
+	});
 }
