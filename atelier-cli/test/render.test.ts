@@ -337,4 +337,92 @@ describe("Renderer", () => {
 			expect(stdout).toBe("◇ review declined\n◇ review unavailable: lens_context_budget_exceeded\n");
 		});
 	});
+
+	describe("compaction", () => {
+		const started: AtelierEventBody = { type: "compaction_started", reason: "threshold", tokens: 180_000 };
+		const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+		it("shows the compaction, how much the context went down, what was kept and its cost", () => {
+			const { stdout, stderr } = render([
+				started,
+				{
+					type: "compaction_finished",
+					ok: true,
+					reason: "threshold",
+					tokensBefore: 180_000,
+					tokensAfter: 30_000,
+					kept: 3,
+					usage: zero,
+					costUsd: 0.012,
+				},
+			]);
+			expect(stdout).toBe(
+				"◇ compacting context (threshold, 180,000 tokens)\n◇ context compacted: 180,000 → 30,000 tokens · 3 messages kept · $0.0120\n",
+			);
+			expect(stderr).toBe("");
+		});
+
+		it("leaves out what Claude Code does not report", () => {
+			const { stdout } = render([
+				{ type: "compaction_finished", ok: true, reason: "manual", tokensBefore: 90_000, kept: 0, usage: zero },
+			]);
+			expect(stdout).toBe("◇ context compacted: 90,000 tokens before\n");
+		});
+
+		it("warns when a compaction fails", () => {
+			const { stdout, stderr } = render([
+				{
+					type: "compaction_finished",
+					ok: false,
+					reason: "manual",
+					tokensBefore: 900,
+					kept: 0,
+					usage: zero,
+					error: "There is not enough history to compact.",
+				},
+			]);
+			expect(stdout).toBe("");
+			expect(stderr).toBe("compaction failed: There is not enough history to compact.\n");
+		});
+
+		it("shows the first cache miss after a compaction as expected, and later ones as warnings", () => {
+			const miss: AtelierEventBody = { type: "cache_miss", reason: "messages_changed", missedTokens: 5000 };
+			const { stdout, stderr } = render([
+				{ type: "compaction_finished", ok: true, reason: "threshold", tokensBefore: 9000, kept: 1, usage: zero },
+				miss,
+				miss,
+			]);
+			expect(stdout).toContain("cache miss after compaction: messages_changed (expected)\n");
+			expect(stderr).toBe("cache miss: messages_changed (5,000 tokens not read from the cache)\n");
+		});
+
+		it("expects the miss only in the compaction's turn and the next one", () => {
+			const miss: AtelierEventBody = { type: "cache_miss", reason: "messages_changed", missedTokens: 5000 };
+			const turn: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage };
+			const compacted: AtelierEventBody = {
+				type: "compaction_finished",
+				ok: true,
+				reason: "manual",
+				tokensBefore: 9000,
+				kept: 1,
+				usage: zero,
+			};
+			expect(render([compacted, turn, miss]).stderr).toBe("");
+			expect(render([compacted, turn, turn, miss]).stderr).toBe(
+				"cache miss: messages_changed (5,000 tokens not read from the cache)\n",
+			);
+		});
+
+		it("adds how full the context is to the tokens line", () => {
+			const { stdout } = render([
+				{
+					type: "turn_finished",
+					stopReason: "end_turn",
+					usage,
+					context: { tokens: 45_000, window: 200_000, compactAt: 167_616 },
+				},
+			]);
+			expect(stdout).toContain(" · context 45,000 / 200,000 (23%)\n");
+		});
+	});
 });

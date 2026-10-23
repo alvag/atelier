@@ -153,6 +153,31 @@ function ReviewBlock({ item, onAnswer }: { item: Extract<TurnItem, { kind: "revi
 	);
 }
 
+/** A separator in the transcript: older history above it was summarized. */
+function CompactionRow({ item }: { item: Extract<TurnItem, { kind: "compaction" }> }) {
+	if (item.state === "running")
+		return (
+			<div className="compaction running">
+				Compacting context… ({item.reason}, {numbers.format(item.tokensBefore)} tokens)
+			</div>
+		);
+	if (item.state === "failed")
+		return (
+			<div className="compaction failed" role="alert">
+				Compaction failed: {item.error ?? "no reason given"}
+			</div>
+		);
+	const before = numbers.format(item.tokensBefore);
+	const parts = [
+		item.tokensAfter === undefined
+			? `${before} tokens before`
+			: `${before} → ${numbers.format(item.tokensAfter)} tokens`,
+	];
+	if (item.kept > 0) parts.push(`${item.kept} message${item.kept === 1 ? "" : "s"} kept`);
+	if (item.costUsd !== undefined) parts.push(`$${item.costUsd.toFixed(4)}`);
+	return <div className="compaction">Context compacted · {parts.join(" · ")}</div>;
+}
+
 function TokenLine({ finished }: { finished: NonNullable<Turn["finished"]> }) {
 	const { input, output, cacheRead, cacheWrite } = finished.usage;
 	const parts = [
@@ -201,11 +226,17 @@ function Items({ items, onAnswer, onConsent }: { items: TurnItem[]; onAnswer: On
 					</div>
 				);
 			case "cache_miss":
-				return (
+				return item.expected ? (
+					<div key={key} className="cache-miss expected">
+						cache miss after compaction: {item.reason} (expected)
+					</div>
+				) : (
 					<div key={key} className="cache-miss">
 						cache miss: {item.reason} · {numbers.format(item.missedTokens)} tokens not read from the cache
 					</div>
 				);
+			case "compaction":
+				return <CompactionRow key={key} item={item} />;
 		}
 		return null;
 	});

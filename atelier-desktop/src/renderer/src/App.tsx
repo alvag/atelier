@@ -12,6 +12,12 @@ const MODELS: Record<BackendName, readonly string[]> = {
 };
 const BACKENDS = Object.keys(MODELS) as BackendName[];
 
+const numbers = new Intl.NumberFormat("en-US");
+
+function contextLabel({ tokens, window }: { tokens: number; window: number }): string {
+	return `context ${numbers.format(tokens)} / ${numbers.format(window)} (${Math.round((tokens / window) * 100)}%)`;
+}
+
 function coreLabel(core: ReturnType<typeof useChat>["state"]["core"]): string {
 	if (core.status === "ready") return `core ${core.version}`;
 	if (core.status === "starting") return "starting the core…";
@@ -123,6 +129,11 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 				<span>{coreLabel(state.core)}</span>
 				{state.model ? <span>{state.model}</span> : null}
 				{state.phase ? <span className="phase">{state.phase}</span> : null}
+				{state.context ? (
+					<span title={`compacts at ${numbers.format(state.context.compactAt)} tokens`}>
+						{contextLabel(state.context)}
+					</span>
+				) : null}
 				{state.memory ? (
 					state.memory.available ? (
 						<span>memory: {state.memory.project}</span>

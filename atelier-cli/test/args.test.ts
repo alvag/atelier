@@ -49,6 +49,8 @@ describe("parseCliArgs", () => {
 		expect(USAGE).toContain("--no-review");
 		expect(USAGE).toContain("ATELIER_REVIEW=off");
 		expect(USAGE).toContain("/review");
+		expect(USAGE).toContain("/compact [instructions]");
+		expect(USAGE).toContain("ATELIER_COMPACT_AT=<n>");
 	});
 
 	it("reads --help and --version", () => {

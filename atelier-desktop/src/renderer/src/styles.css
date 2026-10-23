@@ -150,6 +150,31 @@ main {
 	color: var(--at-warning);
 }
 
+.cache-miss.expected {
+	color: var(--at-muted);
+}
+
+/* A compaction: the history above it was summarized. */
+.compaction {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 8px 0;
+	font-size: 12px;
+	color: var(--at-muted);
+}
+
+.compaction::before,
+.compaction::after {
+	content: "";
+	flex: 1;
+	border-top: 1px dashed var(--at-border);
+}
+
+.compaction.failed {
+	color: var(--at-warning);
+}
+
 .tokens {
 	margin-top: 6px;
 	font-size: 12px;

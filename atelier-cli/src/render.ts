@@ -28,6 +28,12 @@ function tokensLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): st
 	if (rate !== undefined) parts.push(`cache ${Math.round(rate * 100)}%`);
 	if (event.requests !== undefined) parts.push(`${event.requests} request${event.requests === 1 ? "" : "s"}`);
 	if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
+	if (event.context !== undefined) {
+		const { tokens, window } = event.context;
+		parts.push(
+			`context ${numbers.format(tokens)} / ${numbers.format(window)} (${Math.round((tokens / window) * 100)}%)`,
+		);
+	}
 	return `tokens: ${parts.join(" · ")}`;
 }
 
@@ -59,6 +65,11 @@ export class Renderer {
 	readonly #options: RendererOptions;
 	readonly #tools = new Map<string, string>();
 	#atLineStart = true;
+	/**
+	 * Turns, counting the current one, in which a cache miss is the expected
+	 * result of a compaction that rewrote the history on purpose.
+	 */
+	#expectedMissTurns = 0;
 	/** A non-recoverable error or an errored turn happened since the last reset. */
 	failed = false;
 
@@ -141,6 +152,23 @@ export class Renderer {
 		}
 	}
 
+	#renderCompaction(event: Extract<AtelierEvent, { type: "compaction_finished" }>): void {
+		if (!event.ok) {
+			this.#warn(`compaction failed: ${event.error ?? "no reason given"}`);
+			return;
+		}
+		this.#expectedMissTurns = 2;
+		const before = numbers.format(event.tokensBefore);
+		const parts = [
+			event.tokensAfter === undefined
+				? `${before} tokens before`
+				: `${before} → ${numbers.format(event.tokensAfter)} tokens`,
+		];
+		if (event.kept > 0) parts.push(`${plural(event.kept, "message")} kept`);
+		if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
+		this.#line(this.#style("dim", `◇ context compacted: ${parts.join(" · ")}`));
+	}
+
 	#warn(text: string): void {
 		this.endLine();
 		this.#options.stderr(`${this.#style("yellow", text)}\n`);
@@ -218,10 +246,24 @@ export class Renderer {
 				return;
 			}
 			case "turn_finished":
+				if (this.#expectedMissTurns > 0) this.#expectedMissTurns--;
 				if (event.stopReason === "error") this.failed = true;
 				this.#line(this.#style("dim", tokensLine(event)));
 				return;
+			case "compaction_started":
+				this.#line(
+					this.#style("dim", `◇ compacting context (${event.reason}, ${numbers.format(event.tokens)} tokens)`),
+				);
+				return;
+			case "compaction_finished":
+				this.#renderCompaction(event);
+				return;
 			case "cache_miss":
+				if (this.#expectedMissTurns > 0) {
+					this.#expectedMissTurns = 0;
+					this.#line(this.#style("dim", `cache miss after compaction: ${event.reason} (expected)`));
+					return;
+				}
 				this.#warn(
 					`cache miss: ${event.reason} (${numbers.format(event.missedTokens)} tokens not read from the cache)`,
 				);

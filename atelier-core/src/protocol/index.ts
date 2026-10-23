@@ -3,6 +3,8 @@ export type {
 	AtelierEventBody,
 	AtelierEventType,
 	AuthSource,
+	CompactionReason,
+	ContextUsage,
 	FeatureTask,
 	JsonValue,
 	Phase,

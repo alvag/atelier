@@ -410,4 +410,85 @@ describe("App", () => {
 			expect(fake.commands[0]).not.toHaveProperty("review");
 		});
 	});
+
+	describe("compaction", () => {
+		it("sends /compact with its instructions as a compaction, not as a prompt", async () => {
+			const fake = fakeBridge();
+			fake.answers["session.compact"] = { ok: true, result: { turnId: "t2" } };
+			await openFolderAndSend(fake, "first");
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+			});
+			await waitFor(() =>
+				expect(screen.getByRole("button", { name: "Interrupt" }).hasAttribute("disabled")).toBe(true),
+			);
+			const box = screen.getByLabelText("Prompt");
+			fireEvent.change(box, { target: { value: "/compact keep the API decisions" } });
+			fireEvent.keyDown(box, { key: "Enter" });
+			await waitFor(() =>
+				expect(fake.commands.at(-1)).toEqual({
+					command: "session.compact",
+					sessionId: "s1",
+					instructions: "keep the API decisions",
+				}),
+			);
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			});
+			await waitFor(() =>
+				expect(screen.getByRole("button", { name: "Interrupt" }).hasAttribute("disabled")).toBe(true),
+			);
+			fireEvent.change(box, { target: { value: "/compact" } });
+			fireEvent.keyDown(box, { key: "Enter" });
+			await waitFor(() => expect(fake.commands.at(-1)).toEqual({ command: "session.compact", sessionId: "s1" }));
+		});
+
+		it("shows a separator for the compaction and how full the context is in the status bar", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({ type: "compaction_started", reason: "threshold", tokens: 180_000 });
+			expect(await screen.findByText("Compacting context… (threshold, 180,000 tokens)")).toBeTruthy();
+			fake.emit({
+				type: "compaction_finished",
+				ok: true,
+				reason: "threshold",
+				tokensBefore: 180_000,
+				tokensAfter: 30_000,
+				kept: 3,
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				costUsd: 0.012,
+			});
+			fake.emit({ type: "cache_miss", reason: "messages_changed", missedTokens: 500 });
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+				context: { tokens: 45_000, window: 200_000, compactAt: 167_616 },
+			});
+			expect(
+				await screen.findByText("Context compacted · 180,000 → 30,000 tokens · 3 messages kept · $0.0120"),
+			).toBeTruthy();
+			expect(screen.getByText("cache miss after compaction: messages_changed (expected)")).toBeTruthy();
+			expect(within(screen.getByRole("status")).getByText("context 45,000 / 200,000 (23%)")).toBeTruthy();
+		});
+
+		it("says why a compaction failed", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({
+				type: "compaction_finished",
+				ok: false,
+				reason: "manual",
+				tokensBefore: 900,
+				kept: 0,
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				error: "There is not enough history to compact.",
+			});
+			expect(await screen.findByText("Compaction failed: There is not enough history to compact.")).toBeTruthy();
+		});
+	});
 });

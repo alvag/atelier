@@ -211,7 +211,7 @@ export async function run(
 			if (quitting) return EXIT_INTERRUPTED;
 			if (line === undefined || line.trim() === "/exit") break;
 			if (line.trim() === "") continue;
-			await runTurn(line.trim() === "/review" ? session.review() : session.send(line));
+			await runTurn(commandTurn(session, line) ?? session.send(line));
 			if (quitting) return EXIT_INTERRUPTED;
 		}
 		return EXIT_OK;
@@ -250,4 +250,13 @@ function createLineReader(stdin: Readable) {
 		},
 		close: () => close(),
 	};
+}
+
+/** The interactive commands that are turns of their own: /review and /compact [instructions]. */
+function commandTurn(session: Session, line: string): AsyncIterable<AtelierEvent> | undefined {
+	const text = line.trim();
+	if (text === "/review") return session.review();
+	const compact = /^\/compact(?:\s+([\s\S]*))?$/.exec(text);
+	if (compact) return session.compact(compact[1]?.trim() || undefined);
+	return undefined;
 }

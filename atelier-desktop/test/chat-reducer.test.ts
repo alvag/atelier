@@ -513,4 +513,108 @@ describe("reduceChat: review", () => {
 		expect(items(state)[0]).toMatchObject({ kind: "review", roles: [] });
 		expect(items(state)[1]).toMatchObject({ kind: "tool", subagent: { agent: "worker" } });
 	});
+
+	describe("compaction", () => {
+		const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+		const turn: ChatAction[] = [...ready, { type: "prompt_sent", text: "x" }, { type: "turn_accepted", turnId: "t1" }];
+
+		it("shows a compaction while it runs, then how it ended", () => {
+			const running = run([...turn, event({ type: "compaction_started", reason: "threshold", tokens: 180_000 })]);
+			expect(running.turns[0]?.items).toEqual([
+				{ kind: "compaction", reason: "threshold", tokensBefore: 180_000, kept: 0, state: "running" },
+			]);
+			const done = run(
+				[
+					event({
+						type: "compaction_finished",
+						ok: true,
+						reason: "threshold",
+						tokensBefore: 180_000,
+						tokensAfter: 30_000,
+						kept: 3,
+						usage: zero,
+						costUsd: 0.012,
+					}),
+				],
+				running,
+			);
+			expect(done.turns[0]?.items).toEqual([
+				{
+					kind: "compaction",
+					reason: "threshold",
+					tokensBefore: 180_000,
+					tokensAfter: 30_000,
+					kept: 3,
+					costUsd: 0.012,
+					state: "done",
+				},
+			]);
+		});
+
+		it("keeps why a compaction failed", () => {
+			const state = run([
+				...turn,
+				event({ type: "compaction_started", reason: "manual", tokens: 900 }),
+				event({
+					type: "compaction_finished",
+					ok: false,
+					reason: "manual",
+					tokensBefore: 900,
+					kept: 0,
+					usage: zero,
+					error: "There is not enough history to compact.",
+				}),
+			]);
+			expect(state.turns[0]?.items).toEqual([
+				{
+					kind: "compaction",
+					reason: "manual",
+					tokensBefore: 900,
+					kept: 0,
+					state: "failed",
+					error: "There is not enough history to compact.",
+				},
+			]);
+		});
+
+		it("marks the cache miss that follows a compaction as expected, and keeps the context in the status", () => {
+			const state = run([
+				...turn,
+				event({ type: "compaction_finished", ok: true, reason: "threshold", tokensBefore: 9000, kept: 1, usage: zero }),
+				event({ type: "cache_miss", reason: "messages_changed", missedTokens: 500 }),
+				event({ type: "cache_miss", reason: "system_changed", missedTokens: 700 }),
+				event({
+					type: "turn_finished",
+					stopReason: "end_turn",
+					usage,
+					context: { tokens: 45_000, window: 200_000, compactAt: 167_616 },
+				}),
+			]);
+			expect(state.turns[0]?.items.slice(1)).toEqual([
+				{ kind: "cache_miss", reason: "messages_changed", missedTokens: 500, expected: true },
+				{ kind: "cache_miss", reason: "system_changed", missedTokens: 700 },
+			]);
+			expect(state.context).toEqual({ tokens: 45_000, window: 200_000, compactAt: 167_616 });
+		});
+
+		it("expects the miss only in the compaction's turn and the next one", () => {
+			const finished = (turnId: string) => event({ type: "turn_finished", stopReason: "end_turn", usage }, turnId);
+			const miss = (turnId: string) =>
+				event({ type: "cache_miss", reason: "messages_changed", missedTokens: 1 }, turnId);
+			const next = (turnId: string): ChatAction[] => [
+				{ type: "prompt_sent", text: turnId },
+				{ type: "turn_accepted", turnId },
+			];
+			const state = run([
+				...turn,
+				event({ type: "compaction_finished", ok: true, reason: "manual", tokensBefore: 9000, kept: 1, usage: zero }),
+				finished("t1"),
+				...next("t2"),
+				finished("t2"),
+				...next("t3"),
+				miss("t3"),
+			]);
+			expect(state.turns[2]?.items).toEqual([{ kind: "cache_miss", reason: "messages_changed", missedTokens: 1 }]);
+		});
+	});
 });

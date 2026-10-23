@@ -472,4 +472,11 @@ describe("run: review", () => {
 		expect(h.err()).toContain("Review is off");
 		expect(h.backend.prompts).toEqual([]);
 	});
+
+	it("runs /compact in the interactive loop as its own turn, not as a prompt", async () => {
+		const h = harness([], { input: ["/compact keep the API decisions", "/compact"] });
+		expect(await run([], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toEqual([]);
+		expect(h.err().match(/This backend cannot compact its context\./g)).toHaveLength(2);
+	});
 });

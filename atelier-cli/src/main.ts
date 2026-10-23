@@ -5,19 +5,29 @@ import {
 	type BackendName,
 	connectMemory,
 	createBackend as createNamedBackend,
+	describeError,
 	MemoryUnavailableError,
+	parseCompactAt,
 } from "@atelier/core";
 import { run } from "./run.ts";
+
+let compactAt: number | undefined;
+try {
+	compactAt = parseCompactAt(process.env.ATELIER_COMPACT_AT);
+} catch (error) {
+	process.stderr.write(`atelier: ${describeError(error)}\n`);
+	process.exit(2);
+}
 
 // ATELIER_RECORD_SDK=<file.jsonl> appends every raw SDK message, to record test fixtures.
 const recordPath = process.env.ATELIER_RECORD_SDK;
 const createBackend = (name: BackendName) =>
-	createNamedBackend(
-		name,
-		recordPath
+	createNamedBackend(name, {
+		...(recordPath
 			? { claudeCode: { onSdkMessage: (message) => appendFileSync(recordPath, `${JSON.stringify(message)}\n`) } }
-			: {},
-	);
+			: {}),
+		...(compactAt === undefined ? {} : { anthropicApi: { compactAt } }),
+	});
 
 const exitCode = await run(
 	process.argv.slice(2),

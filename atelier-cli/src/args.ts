@@ -43,12 +43,18 @@ which project it uses, or why it has none.
 
 After a turn that leaves risky uncommitted changes in a git repository, Atelier asks
 whether to review them (the question needs a terminal; --yes does not answer it).
+In an interactive session, /compact [instructions] summarizes the older history now,
+keeping the latest messages and what the instructions ask for.
+
 In an interactive session, /review reviews the current changes at any risk. A review
 never commits anything.
 
 Environment:
   ATELIER_MEMORY=off     Run without long-term memory
   ATELIER_REVIEW=off     Run without reviewing changes, like --no-review
+  ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
+                         older history (default: the model's window minus a reserve,
+                         at most 200000)
 `;
 
 export function parseCliArgs(

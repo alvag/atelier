@@ -1,4 +1,13 @@
-import type { AtelierEvent, AuthSource, FeatureTask, JsonValue, Phase, Usage } from "@atelier/core/protocol";
+import type {
+	AtelierEvent,
+	AuthSource,
+	CompactionReason,
+	ContextUsage,
+	FeatureTask,
+	JsonValue,
+	Phase,
+	Usage,
+} from "@atelier/core/protocol";
 import type { HostMessage } from "../../../shared/bridge.ts";
 
 const DENIED_SUMMARY = "The user denied this command.";
@@ -38,7 +47,18 @@ export type TurnItem =
 			result?: ReviewResult;
 	  }
 	| { kind: "error"; code: string; message: string }
-	| { kind: "cache_miss"; reason: string; missedTokens: number };
+	/** `expected`: it follows a compaction, which rewrote the history on purpose. */
+	| { kind: "cache_miss"; reason: string; missedTokens: number; expected?: boolean }
+	| {
+			kind: "compaction";
+			reason: CompactionReason;
+			tokensBefore: number;
+			tokensAfter?: number;
+			kept: number;
+			costUsd?: number;
+			state: "running" | "done" | "failed";
+			error?: string;
+	  };
 
 type ReviewFinding = Extract<AtelierEvent, { type: "review_finished" }>["findings"][number];
 
@@ -95,6 +115,10 @@ export interface ChatState {
 	lastError?: { code: string; message: string };
 	/** Something worth seeing that is not an error, like a rate limit warning. */
 	notice?: string;
+	/** How full the context was at the end of the last turn, when the backend says. */
+	context?: ContextUsage;
+	/** Turns, counting the current one, in which a cache miss is the expected result of a compaction. */
+	expectedMissTurns?: number;
 }
 
 /** Host messages plus what the renderer itself knows (it sent a prompt, a command failed...). */
@@ -132,7 +156,15 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 		case "protocol_error":
 			return { ...state, lastError: { code: "protocol_error", message: action.message } };
 		case "session_opened": {
-			const { feature: _feature, phase: _phase, memory: _memory, review: _review, ...rest } = state;
+			const {
+				feature: _feature,
+				phase: _phase,
+				memory: _memory,
+				review: _review,
+				context: _context,
+				expectedMissTurns: _expected,
+				...rest
+			} = state;
 			return { ...rest, session: { id: action.sessionId, cwd: action.cwd }, turns: [], busy: false };
 		}
 		case "prompt_sent": {
@@ -179,15 +211,36 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 			if (event.status === "allowed") return state;
 			return { ...state, notice: `Rate limit: ${event.status}${event.window ? ` (${event.window})` : ""}` };
 		}
-		case "turn_finished":
-			return {
+		case "turn_finished": {
+			const finished: ChatState = {
 				...updateTurn(state, event.turnId, (turn) => ({
 					...turn,
 					items: closeConsents(turn.items),
 					finished: finishedOf(event),
 				})),
 				busy: false,
+				...(event.context === undefined ? {} : { context: event.context }),
 			};
+			const turnsLeft = (state.expectedMissTurns ?? 0) - 1;
+			const { expectedMissTurns: _expected, ...rest } = finished;
+			return turnsLeft > 0 ? { ...rest, expectedMissTurns: turnsLeft } : rest;
+		}
+		case "compaction_finished": {
+			const updated = updateTurn(state, event.turnId, (turn) => ({ ...turn, items: reduceItems(turn.items, event) }));
+			return event.ok ? { ...updated, expectedMissTurns: 2 } : updated;
+		}
+		case "cache_miss": {
+			if ((state.expectedMissTurns ?? 0) === 0)
+				return updateTurn(state, event.turnId, (turn) => ({ ...turn, items: reduceItems(turn.items, event) }));
+			const { expectedMissTurns: _expected, ...rest } = state;
+			const item: TurnItem = {
+				kind: "cache_miss",
+				reason: event.reason,
+				missedTokens: event.missedTokens,
+				expected: true,
+			};
+			return updateTurn(rest, event.turnId, (turn) => ({ ...turn, items: [...turn.items, item] }));
+		}
 		case "phase_changed":
 			return { ...state, phase: event.phase };
 		case "memory_status":
@@ -283,6 +336,25 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 			return [...items, { kind: "error", code: event.code, message: event.message }];
 		case "cache_miss":
 			return [...items, { kind: "cache_miss", reason: event.reason, missedTokens: event.missedTokens }];
+		case "compaction_started":
+			return [
+				...items,
+				{ kind: "compaction", reason: event.reason, tokensBefore: event.tokens, kept: 0, state: "running" },
+			];
+		case "compaction_finished": {
+			const done: TurnItem = {
+				kind: "compaction",
+				reason: event.reason,
+				tokensBefore: event.tokensBefore,
+				...(event.tokensAfter === undefined ? {} : { tokensAfter: event.tokensAfter }),
+				kept: event.kept,
+				...(event.costUsd === undefined ? {} : { costUsd: event.costUsd }),
+				state: event.ok ? "done" : "failed",
+				...(event.error === undefined ? {} : { error: event.error }),
+			};
+			const index = items.findLastIndex((item) => item.kind === "compaction" && item.state === "running");
+			return index === -1 ? [...items, done] : items.map((item, i) => (i === index ? done : item));
+		}
 		case "review_assessed":
 			return [
 				...items,

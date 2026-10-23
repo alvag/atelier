@@ -69,6 +69,19 @@ export function useChat(bridge: AtelierBridge): Chat {
 		send: async (prompt) => {
 			const session = stateRef.current.session;
 			if (!session) return;
+			const compact = /^\/compact(?:\s+([\s\S]*))?$/.exec(prompt.trim());
+			if (compact) {
+				const instructions = compact[1]?.trim();
+				dispatch({ type: "prompt_sent", text: prompt.trim() });
+				const result = await request({
+					command: "session.compact",
+					sessionId: session.id,
+					...(instructions ? { instructions } : {}),
+				});
+				if (result.ok && typeof result.result.turnId === "string")
+					dispatch({ type: "turn_accepted", turnId: result.result.turnId });
+				return;
+			}
 			dispatch({ type: "prompt_sent", text: prompt });
 			const result = await request({ command: "session.send", sessionId: session.id, prompt });
 			if (result.ok && typeof result.result.turnId === "string")
