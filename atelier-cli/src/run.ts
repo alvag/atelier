@@ -1,5 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
-import { createInterface } from "node:readline";
+import { createInterface, type Interface } from "node:readline";
 import type { Readable } from "node:stream";
 import {
 	type AgentBackend,
@@ -106,11 +106,16 @@ export async function run(
 		cwd: await realpath(args.cwd),
 	});
 	const lines = createLineReader(io.stdin);
+	// On a terminal, read from the start so lines typed before a question are known to be early.
+	if (io.isTTY) lines.open();
 	/** Cancels a pending yes/no question, answering no. */
 	let cancelApproval: (() => void) | undefined;
 	/** Asks a yes/no question on the terminal; only "y" or "yes" is a yes, and Ctrl+C is a no. */
 	const askYesNo = async (question: string): Promise<boolean> => {
 		renderer.endLine();
+		// Only an answer typed after the question counts: an early line, such as the rest of a pasted prompt, could say yes.
+		const early = lines.discardTyped();
+		if (early > 0) renderer.write(`ignored ${early} ${early === 1 ? "line" : "lines"} typed before this question\n`);
 		renderer.write(`${question}[y/N] `);
 		const cancelled = new Promise<undefined>((resolve) => {
 			cancelApproval = () => resolve(undefined);
@@ -119,7 +124,7 @@ export async function run(
 		const answer = await Promise.race([read.then((line) => ({ line })), cancelled]);
 		cancelApproval = undefined;
 		if (answer === undefined) {
-			lines.abandon(read);
+			lines.abandon();
 			renderer.write("\n");
 			return false;
 		}
@@ -226,31 +231,57 @@ export async function run(
 	}
 }
 
-/** Reads stdin line by line on demand; created lazily so a one-shot run without prompts never touches stdin. */
+/** Reads stdin line by line on demand; opened lazily so a one-shot run without prompts never touches stdin. */
 function createLineReader(stdin: Readable) {
-	let iterator: AsyncIterator<string> | undefined;
-	/** A read whose caller gave up (a cancelled approval); the next caller gets its line. */
-	let abandoned: Promise<string | undefined> | undefined;
-	let close = () => {};
+	/** Lines read before anyone asked for them: type-ahead for the next prompt. */
+	const typed: string[] = [];
+	let waiting: ((line: string | undefined) => void) | undefined;
+	/** The line handed to the last read, in case its caller gives it up. */
+	let handed: string | undefined;
+	let ended = false;
+	let rl: Interface | undefined;
+	const open = () => {
+		if (rl) return;
+		rl = createInterface({ input: stdin, terminal: false });
+		rl.on("line", (line) => {
+			const resolve = waiting;
+			waiting = undefined;
+			if (resolve) {
+				handed = line;
+				resolve(line);
+			} else typed.push(line);
+		});
+		rl.on("close", () => {
+			ended = true;
+			const resolve = waiting;
+			waiting = undefined;
+			resolve?.(undefined);
+		});
+	};
 	return {
+		open,
 		next(): Promise<string | undefined> {
-			if (abandoned) {
-				const read = abandoned;
-				abandoned = undefined;
-				return read;
-			}
-			if (!iterator) {
-				const rl = createInterface({ input: stdin, terminal: false });
-				iterator = rl[Symbol.asyncIterator]();
-				close = () => rl.close();
-			}
-			return iterator.next().then((result) => (result.done ? undefined : result.value));
+			open();
+			if (typed.length > 0) return Promise.resolve(typed.shift());
+			if (ended) return Promise.resolve(undefined);
+			handed = undefined;
+			return new Promise((resolve) => {
+				waiting = resolve;
+			});
 		},
-		/** Gives back a read from next() that will not be consumed. */
-		abandon(read: Promise<string | undefined>): void {
-			abandoned = read;
+		/** Stops waiting for a read that will not be consumed (a cancelled question); its line goes to the next caller. */
+		abandon(): void {
+			// A line can arrive in the same tick as the cancel: it belongs to the next caller.
+			if (waiting === undefined && handed !== undefined) typed.unshift(handed);
+			waiting = undefined;
+			handed = undefined;
 		},
-		close: () => close(),
+		/** Drops the lines typed so far and says how many. */
+		discardTyped(): number {
+			open();
+			return typed.splice(0).length;
+		},
+		close: () => rl?.close(),
 	};
 }
 

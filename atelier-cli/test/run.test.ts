@@ -28,7 +28,14 @@ afterEach(async () => {
 
 function harness(
 	turns: FakeStep[][],
-	options: { isTTY?: boolean; input?: string[]; keepStdinOpen?: boolean; env?: Record<string, string> } = {},
+	options: {
+		isTTY?: boolean;
+		input?: string[];
+		/** Typed one at a time, each once its yes/no question is on screen. */
+		answers?: string[];
+		keepStdinOpen?: boolean;
+		env?: Record<string, string>;
+	} = {},
 ) {
 	const backend = new FakeBackend(turns);
 	let interruptHandler: (() => void) | undefined;
@@ -36,11 +43,14 @@ function harness(
 	const stdin = new PassThrough();
 	let stdout = "";
 	let stderr = "";
+	const answers = [...(options.answers ?? [])];
 	const io = {
 		stdin,
 		isTTY: options.isTTY ?? false,
 		stdout: (s: string) => {
 			stdout += s;
+			const answer = s.endsWith("[y/N] ") ? answers.shift() : undefined;
+			if (answer !== undefined) setImmediate(() => stdin.write(`${answer}\n`));
 		},
 		stderr: (s: string) => {
 			stderr += s;
@@ -128,7 +138,7 @@ describe("run", () => {
 	it("asks on a terminal and runs the command only when the answer is yes", async () => {
 		const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo hi" } } };
 
-		const yes = harness([[step, { event: finished }]], { isTTY: true, input: ["y"] });
+		const yes = harness([[step, { event: finished }]], { isTTY: true, answers: ["y"] });
 		await run(["x"], yes.io, yes.createBackend);
 		expect(yes.out()).toContain("Run this command?\n  echo hi\n[y/N] ");
 		expect(yes.backend.toolResults[0]?.ok).toBe(true);
@@ -136,6 +146,49 @@ describe("run", () => {
 		const no = harness([[step, { event: finished }]], { isTTY: true, input: [""] });
 		await run(["x"], no.io, no.createBackend);
 		expect(no.backend.toolResults[0]?.ok).toBe(false);
+	});
+
+	it("ignores lines typed before the question: only an answer typed after it counts", async () => {
+		const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo hi" } } };
+		const h = harness([[step, { event: finished }]], {
+			isTTY: true,
+			input: ["y"],
+			answers: ["n"],
+			keepStdinOpen: true,
+		});
+		await run(["x"], h.io, h.createBackend);
+		expect(h.out()).toContain("ignored 1 line typed before this question\nRun this command?\n  echo hi\n[y/N] ");
+		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+	});
+
+	it("does not let the rest of a pasted prompt answer an approval", async () => {
+		const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo checked" } } };
+		const h = harness([[step, { event: finished }]], {
+			isTTY: true,
+			input: ["Run pnpm check and fix", " | what Biome reports"],
+			answers: ["y"],
+			keepStdinOpen: true,
+		});
+		const pending = run([], h.io, h.createBackend);
+		await vi.waitFor(() => expect(h.backend.toolResults).toHaveLength(1), { timeout: 5000 });
+		(h.io.stdin as PassThrough).end();
+		expect(await pending).toBe(0);
+		expect(h.backend.prompts).toEqual(["Run pnpm check and fix"]);
+		expect(h.out()).toContain("ignored 1 line typed before this question\n");
+		expect(h.backend.toolResults[0]?.ok).toBe(true);
+	});
+
+	it("still takes a prompt typed during a turn as the next prompt", async () => {
+		const h = harness(
+			[
+				[{ event: { type: "text_delta", text: "one" } }, { event: finished }],
+				[{ event: { type: "text_delta", text: "two" } }, { event: finished }],
+			],
+			{ isTTY: true, input: ["first", "second"] },
+		);
+		expect(await run([], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toEqual(["first", "second"]);
+		expect(h.out()).not.toContain("ignored");
 	});
 
 	it("shows hidden characters in the command it asks about", async () => {
@@ -374,13 +427,22 @@ describe("run: review", () => {
 
 	it("asks on a terminal, shows level, reasons and lenses, and reviews when the answer is yes", async () => {
 		await repoWithChange("src/auth.ts");
-		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: ["y"] });
+		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, answers: ["y"] });
 		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
 		expect(h.out()).toContain(
 			"Review this change?\n  risk: high\n  reasons: path: src/auth.ts (auth)\n  lenses: risk, resilience, readability, reliability\n[y/N] ",
 		);
 		expect(h.backend.prompts).toHaveLength(5);
 		expect(h.out()).toMatch(/✓ review approved · receipt \.git\/atelier\/reviews\/[0-9a-f]+\.json\n/);
+	});
+
+	it("ignores a yes typed before the review question", async () => {
+		await repoWithChange("src/auth.ts");
+		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: ["y"], answers: [""], keepStdinOpen: true });
+		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
+		expect(h.out()).toContain("ignored 1 line typed before this question\nReview this change?");
+		expect(h.backend.prompts).toHaveLength(1);
+		expect(reviewLines(h.out())).toContain("◇ review declined");
 	});
 
 	it("prints the risk line before the question", async () => {

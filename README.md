@@ -41,7 +41,7 @@ Output shows streamed text, one line per tool call (`▸ edit src/user.ts (1 edi
 
 Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
-Ctrl+C interrupts the running turn (and answers no to a pending approval); with no turn running, or pressed twice, it closes the session.
+A yes/no question (a `bash` approval or a review consent) only takes an answer typed after it appears: lines typed or pasted before it are dropped, and the CLI says how many. Ctrl+C interrupts the running turn (and answers no to a pending approval); with no turn running, or pressed twice, it closes the session.
 
 ## Desktop app
 
