@@ -41,12 +41,17 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 	const typed: { text: string; pasted: boolean }[] = [];
 	/** The line being typed. */
 	let buffer = "";
-	/** The line being typed has pasted text in it. */
+	/**
+	 * The line being typed has had pasted text, or the rest of a sequence cut by a question, in it. Erasing
+	 * does not clear it: only a new line starts clean, so editing cannot turn a paste into a typed answer.
+	 */
 	let bufferPasted = false;
 	/** The line handed out last had pasted text in it. */
 	let handedPasted = false;
 	/** The last pasted text ended in "\r", so a "\n" starting the next read is the other half of one line break. */
 	let afterCR = false;
+	/** The last key was an Enter sent as "\r", so a "\n" right after it, even in the next read, is the same Enter. */
+	let enteredCR = false;
 	/** Input not handled yet: an escape sequence cut by the end of a read. */
 	let pending = "";
 	let pasting = false;
@@ -90,9 +95,6 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 			resolve(line);
 		} else typed.push({ text: line, pasted: wasPasted });
 	};
-	const emptied = () => {
-		if (buffer === "") bufferPasted = false;
-	};
 	const insert = (text: string) => {
 		buffer += text;
 		echo(text);
@@ -102,25 +104,22 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 		const last = chars.pop();
 		if (last === undefined) return;
 		buffer = chars.join("");
-		emptied();
 		if (last !== "\n") return echo("\b \b");
 		const all = lines();
 		echo(`\x1b[A\x1b[${startOf(all.length - 1) + width(all.at(-1) ?? "") + 1}G`);
 	};
 	const eraseLine = () => {
 		buffer = buffer.slice(0, buffer.lastIndexOf("\n") + 1);
-		emptied();
 		redrawLastLine();
 	};
 	const eraseWord = () => {
 		buffer = buffer.replace(/\S*[^\S\n]*$/, "");
-		emptied();
 		redrawLastLine();
 	};
 	const pasted = (text: string) => {
 		// Terminals send line breaks in a paste as "\r"; other control characters must not reach the echo.
 		const joined = afterCR && text.startsWith("\n") ? text.slice(1) : text;
-		if (joined !== "") afterCR = joined.endsWith("\r");
+		if (text !== "") afterCR = joined.endsWith("\r");
 		const clean = joined
 			.replace(/\r\n?/g, "\n")
 			// biome-ignore lint/suspicious/noControlCharactersInRegex: removing control characters is the point
@@ -154,6 +153,7 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 		let i = 0;
 		while (i < data.length) {
 			if (pasting) {
+				enteredCR = false;
 				const end = data.indexOf(PASTE_END, i);
 				if (end === -1) {
 					// Keep a tail that may be the start of the end marker for the next read.
@@ -170,6 +170,8 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 				continue;
 			}
 			const char = data[i] ?? "";
+			const afterEnter = enteredCR;
+			enteredCR = false;
 			if (char === "\x1b") {
 				const next = skipEscape(data, i);
 				if (next === -1) {
@@ -180,8 +182,9 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 				continue;
 			}
 			i += 1;
+			if (char === "\n" && afterEnter) continue;
 			if (char === "\r" || char === "\n") {
-				if (char === "\r" && data[i] === "\n") i += 1;
+				enteredCR = char === "\r";
 				enter();
 			} else if (char === "\x7f" || char === "\b") backspace();
 			else if (char === CTRL_U) eraseLine();
@@ -238,8 +241,9 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 			this.open();
 			const count = typed.splice(0).length + (buffer !== "" || pasting ? 1 : 0);
 			buffer = "";
-			bufferPasted = false;
-			// Half an escape sequence could finish as a paste start after the question; in a paste, the tail is its end.
+			// Half an escape sequence could finish as a paste start after the question, and its rest would read as
+			// typed; in a paste, the tail is its end. Either way the answer line starts marked as not typed.
+			bufferPasted = pasting || pending !== "";
 			if (pasting) droppingPaste = true;
 			else pending = "";
 			return count;

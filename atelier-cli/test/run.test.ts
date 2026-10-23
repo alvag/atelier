@@ -398,6 +398,9 @@ describe("run", () => {
 			["a pasted yes", "", "\x1b[200~y\n\x1b[201~\r", false],
 			["a pasted yes with more text", "", "\x1b[200~y\nnot approval\x1b[201~\r", false],
 			["a pasted yes typed over", "", "\x1b[200~y\x1b[201~\r", false],
+			["a split paste marker erased with Ctrl+U", "\x1b[20", "0~\x15y\n\x1b[201~\r", false],
+			["a split paste marker erased with Backspace", "\x1b[200", "~\x7fy\n\x1b[201~\r", false],
+			["a paste erased with Ctrl+U before a typed yes", "", "\x1b[200~text\x1b[201~\x15y\r", false],
 			["a typed yes", "", "y\r", true],
 		])("answers a bash approval from %s", async (_name, before, after, approved) => {
 			const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo hi" } } };

@@ -43,7 +43,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 When stdin and stdout are both terminals, the CLI reads the terminal in raw mode and turns on bracketed paste (`\e[?2004h`), and turns both off when it exits, Ctrl+C, SIGTERM and SIGHUP included (`\e[?2004l`; the last two exit 143 and 129). It takes the terminal over before the session starts, so anything typed while it starts counts as typed before a question. A pasted block, line breaks included, becomes one prompt that Enter sends. Line editing is Backspace, Ctrl+U (erase the line), Ctrl+W (erase a word) and Ctrl+D on an empty line (end the session); other keys are ignored.
 
-A yes/no question (a `bash` approval or a review consent) only takes an answer typed after it appears: lines typed or pasted before it are dropped (a pasted block counts as one line), and the CLI says how many. An answer that contains pasted text, even a pasted `y`, is never a yes: the CLI prints `pasted text does not answer this question` and takes it as no. Ctrl+C interrupts the running turn (and answers no to a pending approval); with no turn running, or pressed twice, it closes the session.
+A yes/no question (a `bash` approval or a review consent) only takes an answer typed after it appears: lines typed or pasted before it are dropped (a pasted block counts as one line), and the CLI says how many. An answer line that had pasted text in it, even a pasted `y` or a paste erased before typing `y`, is never a yes: the CLI prints `pasted text does not answer this question` and takes it as no. Ctrl+C interrupts the running turn (and answers no to a pending approval); with no turn running, or pressed twice, it closes the session.
 
 ## Desktop app
 

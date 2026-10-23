@@ -53,6 +53,25 @@ describe("terminal reader", () => {
 		expect(await line).toBe("one\ntwo");
 	});
 
+	it("keeps a blank line after a line break split across reads", async () => {
+		const t = terminal();
+		const line = t.reader.next(2);
+		await t.type(`${PASTE_START}one\r`);
+		await t.type("\n");
+		await t.type(`\ntwo${PASTE_END}\r`);
+		expect(await line).toBe("one\n\ntwo");
+	});
+
+	it("takes a typed Enter sent as CR and LF in two reads as one line", async () => {
+		const t = terminal();
+		const line = t.reader.next(2);
+		await t.type("one\r");
+		await t.type("\n");
+		t.stdin.end();
+		expect(await line).toBe("one");
+		expect(await t.reader.next(2)).toBeUndefined();
+	});
+
 	it("keeps a paste whole when its markers are split across reads", async () => {
 		const t = terminal();
 		const line = t.reader.next(2);
