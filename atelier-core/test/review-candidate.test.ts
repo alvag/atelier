@@ -59,8 +59,10 @@ describe("freezeCandidate", () => {
 			["src/new.ts", "A", 1, 0],
 		]);
 		expect(candidate.changedLines).toBe(5);
-		expect(candidate.signalLines).toEqual([{ path: "src/a.ts", text: 'export const b = eval("3");' }]);
+		expect(candidate.signalLines).toEqual([{ path: "src/a.ts", text: 'export const b = eval("3");', line: 2 }]);
 		expect(candidate.fencedDocs).toEqual([]);
+		expect(candidate.activeDocs).toEqual([]);
+		expect(candidate.scanLimit).toBeUndefined();
 		expect(await readTreeFile(candidate.root, candidate.tree, "src/new.ts")).toBe("export const n = 1;\n");
 		expect(await readTreeFile(candidate.root, candidate.tree, "ignored.log")).toBeUndefined();
 		expect(await readTreeFile(candidate.root, candidate.base, "README.md")).toBe("# demo\n");
@@ -189,18 +191,93 @@ describe("independent verification regressions (U1)", () => {
 		await write(path, "eval(source);\r\n");
 		const result = await freezeCandidate(repo);
 		if (!result.ok) throw new Error(result.reason);
-		expect(result.candidate.signalLines).toContainEqual({ path, text: "eval(source);\r" });
+		expect(result.candidate.signalLines).toContainEqual({ path, text: "eval(source);\r", line: 1 });
 	});
 
-	it("S4: size alone never raises risk, and a signal past 8 MiB is still found", async () => {
-		await write("src/comment.ts", `// ${"x".repeat(8 * 1024 * 1024)}\n`);
+	it("S6: a large comment is not a signal, and a real one past it is found at its line", async () => {
+		await write("src/comment.ts", `// ${"x".repeat(4 * 1024 * 1024)}\n`);
+		await write("src/late.ts", "export const a = 1;\n\nspawn(source);\n");
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.candidate.scanLimit).toBeUndefined();
+		expect(assessRisk(result.candidate, { none: "x" }).reasons).toEqual(["shell_process: src/late.ts:3"]);
+	});
+
+	it("S6: added content past 8 MiB in scanned files fails closed to high with the scan limit", async () => {
+		await write("src/a.ts", `// ${"x".repeat(8 * 1024 * 1024)}\n`);
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.candidate.scanLimit).toBe("src/a.ts");
+		const assessment = assessRisk(result.candidate, { none: "x" });
+		expect(assessment.level).toBe("high");
+		expect(assessment.reasons).toContain("process_scan_limit: src/a.ts");
+	});
+
+	it("S6: a big change to files that are not scanned does not reach the scan limit", async () => {
+		await write("src/big.test.ts", `// ${"x".repeat(9 * 1024 * 1024)}\n`);
+		await write("docs/big.md", `${"y".repeat(9 * 1024 * 1024)}\n`);
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.candidate.scanLimit).toBeUndefined();
+	});
+
+	it("S6: comments in the file's language are not signals, code is", async () => {
+		await write("src/comments.ts", "// spawn(a)\n/* eval(b) */\n * exec(c)\n");
+		await write("tools/run.py", "# subprocess.run(a)\nsubprocess.run(b)\n");
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(assessRisk(result.candidate, { none: "x" }).reasons).toEqual(["shell_process: tools/run.py:2"]);
+	});
+
+	it("S6: setRawMode alone is not a process, an added spawn is", async () => {
+		await write("src/term.ts", "process.stdin.setRawMode(true);\n");
 		let result = await freezeCandidate(repo);
 		if (!result.ok) throw new Error(result.reason);
-		expect(assessRisk(result.candidate).level).toBe("medium");
-		await write("src/late.ts", "eval(source);\n");
+		expect(assessRisk(result.candidate, { none: "ui" }).level).toBe("medium");
+		await write("src/term.ts", "process.stdin.setRawMode(true);\nconst child = spawn('stty');\n");
 		result = await freezeCandidate(repo);
 		if (!result.ok) throw new Error(result.reason);
-		expect(assessRisk(result.candidate).reasons).toContain("content: src/late.ts adds eval");
+		expect(assessRisk(result.candidate, { none: "ui" }).reasons).toEqual(["shell_process: src/term.ts:2"]);
+	});
+
+	it("S6: test files are not scanned for content", async () => {
+		await write("test/run.test.ts", "execFileSync('git', ['init']);\n");
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(assessRisk(result.candidate, { none: "tests" }).level).toBe("medium");
+	});
+
+	it.each([
+		["notes.md", "#!/bin/sh\necho hi\n"],
+		["guide.md", "<script>alert(1)</script>\n"],
+		["docs/page.mdx", "import X from './x'\n\n# Page\n"],
+		["docs/page.mdx", "# Page\n\n{1 + 1}\n"],
+		["docs/page.mdx", "# Page\n\n<Widget />\n"],
+	])("S6: %s is documentation by extension only, so it is not passive: %j", async (path, text) => {
+		await write(path, text);
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.candidate.activeDocs).toEqual([path]);
+		expect(assessRisk(result.candidate, { none: "docs" }).level).toBe("medium");
+	});
+
+	it.each([
+		["bytes that are not UTF-8", Buffer.from([0x68, 0xff, 0xfe, 0x0a])],
+		["a NUL byte", Buffer.from("text\0more\n")],
+	])("S6: a documentation file with %s is not passive", async (_name, bytes) => {
+		await writeFile(join(repo, "guide.md"), bytes);
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(assessRisk(result.candidate, { none: "docs" }).level).toBe("medium");
+	});
+
+	it("S6: static MDX and plain Markdown are proven documentation", async () => {
+		await write("docs/page.mdx", "# Page\n\nUse `{x}` and `<Tag>` as examples.\n");
+		await write("README.md", "# demo\n\nMore words.\n");
+		const result = await freezeCandidate(repo);
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.candidate.activeDocs).toEqual([]);
+		expect(assessRisk(result.candidate).level).toBe("passive");
 	});
 
 	it("S4: specified signals also apply in tests", async () => {

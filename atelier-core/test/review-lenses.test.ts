@@ -120,6 +120,7 @@ const fakeCandidate = (): Candidate => ({
 	signalLines: [],
 	manifests: [],
 	fencedDocs: [],
+	activeDocs: [],
 });
 
 describe("buildLensPrompt", () => {

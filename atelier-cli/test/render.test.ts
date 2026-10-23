@@ -232,6 +232,28 @@ describe("Renderer", () => {
 			);
 		});
 
+		it("shows the content-derived reasons with their place", () => {
+			const { stdout } = render([
+				{
+					type: "review_assessed",
+					tree: "t",
+					level: "high",
+					reasons: [
+						"shell_process: src/run.ts:2",
+						"dangerous_sink: src/run.ts:5 (eval)",
+						"process_scan_limit: src/big.ts",
+					],
+					files: ["src/run.ts"],
+					changedLines: 9,
+					lenses: ["risk", "resilience", "readability", "reliability"],
+					reviewDue: true,
+				},
+			]);
+			expect(stdout).toBe(
+				"◇ review high · 4 lenses (shell_process: src/run.ts:2; dangerous_sink: src/run.ts:5 (eval); process_scan_limit: src/big.ts)\n",
+			);
+		});
+
 		it("shows a declared none on the risk line, and a missing declaration through its reason", () => {
 			const base = { type: "review_assessed" as const, tree: "t", files: ["a.ts"], changedLines: 1, reviewDue: false };
 			const { stdout } = render([

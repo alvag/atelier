@@ -70,9 +70,39 @@ const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall", "prepare"] as c
 /**
  * Derives the risk of a frozen candidate from its diff alone. The model, the
  * size of the change and the number of files are not inputs; the agent can
- * only raise the level, with a reason.
+ * only raise the level, with a reason. The level must be explained by its
+ * reasons, or it is high.
  */
 export function assessRisk(candidate: Candidate, options: RiskOptions = {}): Assessment {
+	const assessment = classify(candidate, options);
+	if (assessment.empty || tierIsExplained(assessment.level, assessment.reasons, candidate.files)) return assessment;
+	return {
+		...assessment,
+		level: "high",
+		reasons: [...assessment.reasons, `tier_not_explained: ${assessment.level} is not supported by its reasons`],
+		lenses: [...LENSES],
+		reviewDue: true,
+	};
+}
+
+/** The reasons that make a level high: the named signals, in the form `<name>: <where>`. */
+const HIGH_REASON =
+	/^(agent|path|lockfile|environment|dependencies|shell_process|dangerous_sink|process_scan_limit|tier_not_explained): /;
+
+/** Whether the reasons support the level, judged from the reasons and the files alone: high needs a high reason, passive needs documentation only, and medium has none. */
+export function tierIsExplained(level: RiskLevel, reasons: readonly string[], files: readonly ChangedFile[]): boolean {
+	const high = reasons.some((reason) => HIGH_REASON.test(reason));
+	if (level === "high") return high;
+	if (high) return false;
+	if (level === "medium") return true;
+	return (
+		reasons.length === 1 && reasons[0] === DOCUMENTATION_ONLY && files.every((file) => isDocumentationPath(file.path))
+	);
+}
+
+const DOCUMENTATION_ONLY = "documentation only";
+
+function classify(candidate: Candidate, options: RiskOptions): Assessment {
 	const files = candidate.files.map((file) => file.path).sort();
 	const base = { files, changedLines: candidate.changedLines };
 	if (candidate.files.length === 0)
@@ -81,6 +111,7 @@ export function assessRisk(candidate: Candidate, options: RiskOptions = {}): Ass
 	const signals = [
 		...fileSignals(candidate.files),
 		...contentSignals(candidate),
+		...scanLimitSignals(candidate),
 		...manifestSignals(candidate.manifests),
 	];
 	for (const escalation of options.escalations ?? []) {
@@ -107,7 +138,7 @@ export function assessRisk(candidate: Candidate, options: RiskOptions = {}): Ass
 		return {
 			...base,
 			level: "passive",
-			reasons: ["documentation only"],
+			reasons: [DOCUMENTATION_ONLY],
 			lenses: [],
 			reviewDue: false,
 			empty: false,
@@ -137,10 +168,11 @@ function declarationOf(options: RiskOptions, required: boolean): RiskDeclaration
 	return required ? { kind: "missing" } : undefined;
 }
 
-/** Documentation only: Markdown or text files (or documentation under docs/), plain mode, no code fences. */
+/** Documentation only, proven by content: Markdown or text files (or documentation under docs/) in plain mode, with no code fence and nothing active in their bytes. */
 function isPassive(candidate: Candidate): boolean {
 	return (
 		candidate.fencedDocs.length === 0 &&
+		candidate.activeDocs.length === 0 &&
 		candidate.files.every(
 			(file) => !file.binary && (file.status === "D" || file.mode === "100644") && isDocumentationPath(file.path),
 		)
@@ -162,11 +194,20 @@ function fileSignals(files: readonly ChangedFile[]): string[] {
 	return signals;
 }
 
+/** One reason per file and kind of signal, at the first added line that shows it. */
 function contentSignals(candidate: Candidate): string[] {
-	const found = new Set<string>();
-	for (const line of candidate.signalLines)
-		for (const label of signalsIn(line.text)) found.add(`content: ${line.path} adds ${label}`);
-	return [...found];
+	const found = new Map<string, string>();
+	for (const { path, text, line } of candidate.signalLines)
+		for (const { kind, name } of signalsIn(path, text)) {
+			const key = `${kind}\0${path}`;
+			if (!found.has(key)) found.set(key, `${kind}: ${path}:${line}${name === undefined ? "" : ` (${name})`}`);
+		}
+	return [...found.values()];
+}
+
+/** Content that is too large to be scanned is not trusted: it is high. */
+function scanLimitSignals(candidate: Candidate): string[] {
+	return candidate.scanLimit === undefined ? [] : [`process_scan_limit: ${candidate.scanLimit}`];
 }
 
 function manifestSignals(manifests: readonly Manifest[]): string[] {

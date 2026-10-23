@@ -343,6 +343,45 @@ describe("the risk declaration", () => {
 		});
 	});
 
+	it("S6: a change that only sets the terminal's raw mode stays medium with its declaration", async () => {
+		const turn = [
+			declareNone,
+			change("src/term.ts", "process.stdin.setRawMode(true);\n"),
+			text("done"),
+			{ event: finished },
+		];
+		const s = await start({ turns: [turn] });
+		const events = await s.send("raw mode");
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			level: "medium",
+			reviewDue: false,
+			reasons: ["code change without a high-risk signal"],
+			declaration: { kind: "none" },
+		});
+	});
+
+	it("S6: a real process spawn is high with its place, a spawn in a comment is not", async () => {
+		const real = [
+			declareNone,
+			change("src/run.ts", 'import { x } from "./x";\nconst child = spawn("stty");\n'),
+			text("done"),
+			{ event: finished },
+		];
+		const spawned = await start({ turns: [real], consent: "declined" });
+		expect(ofType(await spawned.send("run"), "review_assessed")[0]).toMatchObject({
+			level: "high",
+			reasons: ["shell_process: src/run.ts:2"],
+		});
+		const commented = [
+			declareNone,
+			change("src/run.ts", '// const cp = require("child_process");\n'),
+			text("done"),
+			{ event: finished },
+		];
+		const quiet = await start({ turns: [commented] });
+		expect(ofType(await quiet.send("run"), "review_assessed")[0]).toMatchObject({ level: "medium" });
+	});
+
 	it("shows declared items with their reason", async () => {
 		const s = await start({
 			turns: [[call("risk", { items: [2], reason: "handles sessions" }), ...MEDIUM_TURN]],

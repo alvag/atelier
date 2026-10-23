@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Candidate, ChangedFile } from "../src/review/candidate.ts";
-import { assessRisk, LENSES } from "../src/review/risk.ts";
+import { assessRisk, LENSES, tierIsExplained } from "../src/review/risk.ts";
 import { createRiskTool, RiskRequests } from "../src/review/tool.ts";
 
 const file = (path: string, over: Partial<ChangedFile> = {}): ChangedFile => ({
@@ -25,6 +25,7 @@ function candidate(files: ChangedFile[], over: Partial<Candidate> = {}): Candida
 		signalLines: [],
 		manifests: [],
 		fencedDocs: [],
+		activeDocs: [],
 		...over,
 	};
 }
@@ -49,9 +50,18 @@ describe("assessRisk", () => {
 		["an executable documentation file", candidate([file("docs/run.md", { mode: "100755" })])],
 		["a binary file in docs", candidate([file("docs/logo.png", { binary: true })])],
 		["a configuration file in docs", candidate([file("docs/config.json")])],
+		[
+			"a documentation file whose content is not proven inert",
+			candidate([file("README.md")], { activeDocs: ["README.md"] }),
+		],
 		["documentation next to code", candidate([file("README.md"), file("src/a.ts")])],
 	])("%s is not passive", (_name, input) => {
 		expect(assessRisk(input).level).not.toBe("passive");
+	});
+
+	it("a documentation file that is not proven by content is medium, never passive, and says nothing high", () => {
+		const result = assessRisk(candidate([file("README.md")], { activeDocs: ["README.md"] }), { none: "words" });
+		expect(result).toMatchObject({ level: "medium", reviewDue: false });
 	});
 
 	it("ordinary code is medium with one lens, reliability by default", () => {
@@ -90,28 +100,89 @@ describe("assessRisk", () => {
 		expect(result.reasons).toEqual(["path: test/auth.test.ts (auth)"]);
 	});
 
+	const at = (path: string, text: string, line = 7) => candidate([file(path)], { signalLines: [{ path, text, line }] });
+
 	it.each([
-		['import { spawn } from "node:child_process";', "child_process"],
-		["const out = execSync(command);", "exec"],
-		["exec(cmd, cb);", "exec"],
-		["return eval(source);", "eval"],
-		['run("rm -rf build")', "rm -rf"],
-		["await db.query('drop table users')", "DROP TABLE"],
-		["DELETE FROM sessions WHERE 1=1", "DELETE FROM"],
-	])("added content %s is high risk", (text, signal) => {
-		const result = assessRisk(candidate([file("src/run.ts")], { signalLines: [{ path: "src/run.ts", text }] }));
+		['import { spawn } from "node:child_process";', "shell_process: src/run.ts:7"],
+		["const out = execSync(command);", "shell_process: src/run.ts:7"],
+		["exec(cmd, cb);", "shell_process: src/run.ts:7"],
+		["const child = spawn(tool, args);", "shell_process: src/run.ts:7"],
+		["execFileSync('git', ['init']);", "shell_process: src/run.ts:7"],
+		["return eval(source);", "dangerous_sink: src/run.ts:7 (eval)"],
+		["const f = new Function('a', body);", "dangerous_sink: src/run.ts:7 (Function constructor)"],
+		['run("rm -rf build")', "dangerous_sink: src/run.ts:7 (rm -rf)"],
+		["await db.query('drop table users')", "dangerous_sink: src/run.ts:7 (DROP TABLE)"],
+		["DELETE FROM sessions WHERE 1=1", "dangerous_sink: src/run.ts:7 (DELETE FROM)"],
+		["agent.options = { rejectUnauthorized: false };", "dangerous_sink: src/run.ts:7 (TLS JS)"],
+	])("added content %s is high risk", (text, reason) => {
+		const result = assessRisk(at("src/run.ts", text));
 		expect(result.level).toBe("high");
-		expect(result.reasons).toContain(`content: src/run.ts adds ${signal}`);
+		expect(result.reasons).toContain(reason);
 	});
 
-	it("risky content counts in test files too", () => {
-		const result = assessRisk(
-			candidate([file("test/run.test.ts")], {
-				signalLines: [{ path: "test/run.test.ts", text: 'execFileSync("git", ["init"]);' }],
-			}),
-			{ none: "tests only" },
-		);
-		expect(result.reasons).toEqual(["content: test/run.test.ts adds exec"]);
+	it("a terminal mode change is not a process spawn, and neither is a member exec or a word that contains one", () => {
+		for (const text of [
+			"process.stdin.setRawMode(true);",
+			"const m = /a(b)/.exec(line);",
+			"await db.exec(sql);",
+			"const again = respawn(child);",
+			"const sink = evaluate(source);",
+		]) {
+			const result = assessRisk(at("src/term.ts", text), { none: "ui only" });
+			expect(result, text).toMatchObject({ level: "medium", reviewDue: false });
+			expect(result.reasons).toEqual(["code change without a high-risk signal"]);
+		}
+	});
+
+	it.each([
+		["src/run.ts", '// const cp = require("child_process");'],
+		["src/run.ts", "   * exec(command) runs the thing"],
+		["src/run.ts", "/* eval(source) */"],
+		["tools/run.py", "# subprocess.run(cmd)"],
+		["db/clean.sql", "-- DELETE FROM sessions"],
+		["scripts/run.sh", "# rm -rf build"],
+	])("%s: a comment that mentions a process or sink is ignored: %s", (path, text) => {
+		const result = assessRisk(at(path, text), { none: "comment" });
+		expect(result.level).toBe("medium");
+	});
+
+	it("only a comment in the file's own language is skipped, and code after a closed block comment counts", () => {
+		expect(assessRisk(at("src/run.ts", "/* ok */ eval(source);"), { none: "x" }).level).toBe("high");
+		expect(assessRisk(at("src/run.ts", "# eval(source)"), { none: "x" }).level).toBe("high");
+		expect(assessRisk(at("tools/run.py", "// eval(source)"), { none: "x" }).level).toBe("high");
+		expect(assessRisk(at("src/run.ts", "// note"), { none: "x" }).level).toBe("medium");
+	});
+
+	it("a sink counts only in the languages it applies to", () => {
+		expect(assessRisk(at("tools/run.go", "return eval(source)"), { none: "x" }).level).toBe("medium");
+		expect(assessRisk(at("tools/run.py", "return eval(source)"), { none: "x" }).level).toBe("high");
+	});
+
+	it("names one reason per file and kind, at the first line", () => {
+		const input = candidate([file("src/run.ts")], {
+			signalLines: [
+				{ path: "src/run.ts", text: "spawn(a);", line: 3 },
+				{ path: "src/run.ts", text: "eval(b);", line: 5 },
+				{ path: "src/run.ts", text: "spawn(c);", line: 9 },
+			],
+		});
+		expect(assessRisk(input, { none: "x" }).reasons).toEqual([
+			"shell_process: src/run.ts:3",
+			"dangerous_sink: src/run.ts:5 (eval)",
+		]);
+	});
+
+	it("content in test files and documentation folders is not scanned, whatever it adds", () => {
+		for (const path of ["test/run.test.ts", "src/__tests__/run.ts", "tools/test_run.py", "docs/example.ts"]) {
+			const result = assessRisk(at(path, 'execFileSync("git", ["init"]);'), { none: "tests only" });
+			expect(result.level, path).toBe("medium");
+		}
+	});
+
+	it("content past the scan limit is high risk, naming where it was reached", () => {
+		const result = assessRisk(candidate([file("src/big.ts")], { scanLimit: "src/big.ts" }), { none: "x" });
+		expect(result).toMatchObject({ level: "high", reviewDue: true, lenses: [...LENSES] });
+		expect(result.reasons).toContain("process_scan_limit: src/big.ts");
 	});
 
 	it("changed dependencies or install scripts in package.json are high risk; other fields are not", () => {
@@ -165,12 +236,33 @@ describe("assessRisk", () => {
 		expect(high.lenses).toEqual([...LENSES]);
 	});
 
+	it("size and file count never raise the level, and the scan cap is the only content limit", () => {
+		const many = Array.from({ length: 300 }, (_, i) => file(`src/m${i}.ts`, { added: 900, deleted: 100 }));
+		expect(assessRisk(candidate(many), { none: "x" }).level).toBe("medium");
+	});
+
 	it("is deterministic: same candidate, same result", () => {
 		const input = candidate([file("src/b.ts"), file("src/auth/a.ts")], {
-			signalLines: [{ path: "src/b.ts", text: "eval(x)" }],
+			signalLines: [{ path: "src/b.ts", text: "eval(x)", line: 1 }],
 		});
 		expect(assessRisk(input)).toEqual(assessRisk(input));
 		expect(assessRisk(input).files).toEqual(["src/auth/a.ts", "src/b.ts"]);
+	});
+});
+
+describe("tierIsExplained", () => {
+	const docs = [file("README.md")];
+	it.each([
+		["high with a named high reason", "high", ["shell_process: a.ts:1"], docs, true],
+		["high with only the missing declaration", "high", ["no risk declaration"], docs, false],
+		["high with no reasons", "high", [], docs, false],
+		["passive documentation", "passive", ["documentation only"], docs, true],
+		["passive with a code file", "passive", ["documentation only"], [file("src/a.ts")], false],
+		["passive next to a high reason", "passive", ["documentation only", "path: docs/auth.md (auth)"], docs, false],
+		["medium without a high reason", "medium", ["code change without a high-risk signal"], [file("src/a.ts")], true],
+		["medium with a high reason", "medium", ["dangerous_sink: a.ts:1 (eval)"], [file("src/a.ts")], false],
+	] as const)("%s", (_name, level, reasons, files, explained) => {
+		expect(tierIsExplained(level, [...reasons], files)).toBe(explained);
 	});
 });
 

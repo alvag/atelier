@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describeError } from "../events.ts";
 import { gitText, runGit, streamGitLines } from "./git.ts";
-import { contentSignals, FENCE, isDocumentationPath } from "./signals.ts";
+import {
+	contentSignals,
+	FENCE,
+	isDocumentationPath,
+	isPassiveDocumentContent,
+	isScannedPath,
+	SCAN_LIMIT_BYTES,
+} from "./signals.ts";
 
 /** package.json files larger than this are kept out of the dependency check, which then treats them as unreadable. */
 const MANIFEST_LIMIT_BYTES = 1024 * 1024;
@@ -25,6 +32,8 @@ export interface ChangedFile {
 export interface AddedLine {
 	path: string;
 	text: string;
+	/** The line's number in the candidate's file, from 1. */
+	line: number;
 }
 
 /** The old and new text of a changed package.json; absent on the side where the file does not exist. */
@@ -55,11 +64,15 @@ export interface Candidate {
 	tree: string;
 	files: ChangedFile[];
 	changedLines: number;
-	/** Added lines that carry a content signal; the whole patch is scanned, whatever its size. */
+	/** The first added line per file and kind of content signal (process or dangerous sink); the whole patch is scanned, whatever its size. */
 	signalLines: AddedLine[];
+	/** The file where the added bytes of scanned files passed the scan limit; the content cannot be trusted to have been read. */
+	scanLimit?: string;
 	manifests: Manifest[];
 	/** Changed documentation files whose new text has a code fence (or is too large to tell). */
 	fencedDocs: string[];
+	/** Changed documentation files that content does not prove inert: an interpreter line, a script tag, runtime MDX, bytes that are not text. */
+	activeDocs: string[];
 }
 
 export type FreezeResult = { ok: true; candidate: Candidate } | { ok: false; reason: string };
@@ -198,13 +211,15 @@ async function describeCandidate(
 			mode: entry.status === "D" ? entry.oldMode : entry.newMode,
 		};
 	});
-	const signalLines = await scanPatch(root, base, tree);
+	const { lines: signalLines, limitPath: scanLimit } = await scanPatch(root, base, tree);
 	const fencedDocs: string[] = [];
+	const activeDocs: string[] = [];
 	for (const entry of raw) {
 		const file = files.find((candidate) => candidate.path === entry.path);
 		if (entry.status === "D" || file?.binary || !isDocumentationPath(entry.path)) continue;
 		const text = await readBlob(root, entry.newSha, DOC_LIMIT_BYTES);
 		if (text === undefined || FENCE.test(text)) fencedDocs.push(entry.path);
+		if (text === undefined || !isPassiveDocumentContent(entry.path, text)) activeDocs.push(entry.path);
 	}
 	const manifests: Manifest[] = [];
 	for (const entry of raw) {
@@ -225,8 +240,10 @@ async function describeCandidate(
 		files,
 		changedLines: files.reduce((sum, file) => sum + file.added + file.deleted, 0),
 		signalLines,
+		...(scanLimit === undefined ? {} : { scanLimit }),
 		manifests,
 		fencedDocs,
+		activeDocs,
 	};
 }
 
@@ -280,34 +297,56 @@ function parseNumstat(text: string): Map<string, { added: number; deleted: numbe
 }
 
 /**
- * Streams the whole -U0 patch and keeps the added lines that carry a content
- * signal. File headers are recognised only before a file's first hunk, so an
- * added line that itself starts with `++` is never taken for a header.
+ * Streams the whole -U0 patch and keeps, per file, the first added line of each
+ * kind of content signal. It also counts the added bytes of scanned files and
+ * names the file where they pass the scan limit. File headers are recognised
+ * only before a file's first hunk, so an added line that itself starts with
+ * `++` is never taken for a header.
  */
-async function scanPatch(root: string, base: string, tree: string): Promise<AddedLine[]> {
+async function scanPatch(
+	root: string,
+	base: string,
+	tree: string,
+): Promise<{ lines: AddedLine[]; limitPath: string | undefined }> {
 	const found: AddedLine[] = [];
+	const seen = new Set<string>();
 	let path: string | undefined;
 	let inHunk = false;
+	let line = 0;
+	let scanned = 0;
+	let limitPath: string | undefined;
 	const result = await streamGitLines([...DIFF, "-p", "-U0", "--no-color", base, tree], { cwd: root }, (bytes) => {
 		const first = bytes[0];
 		if (first === 0x2b /* + */ && inHunk) {
+			line++;
+			if (path === undefined) return;
+			if (limitPath === undefined && isScannedPath(path)) {
+				scanned += bytes.length;
+				if (scanned > SCAN_LIMIT_BYTES) limitPath = path;
+			}
 			const text = bytes.subarray(1).toString("utf8");
-			if (path !== undefined && contentSignals(text).length > 0) found.push({ path, text });
+			for (const { kind } of contentSignals(path, text)) {
+				const key = `${kind}\0${path}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
+				found.push({ path, text, line });
+			}
 			return;
 		}
 		if (first !== 0x2b && first !== 0x2d && first !== 0x40 && first !== 0x64) return;
-		const line = bytes.toString("utf8");
-		if (line.startsWith("diff --git ")) {
+		const header = bytes.toString("utf8");
+		if (header.startsWith("diff --git ")) {
 			path = undefined;
 			inHunk = false;
-		} else if (!inHunk && line.startsWith("+++ ")) {
-			path = line === "+++ /dev/null" ? undefined : headerPath(line.slice(4));
-		} else if (line.startsWith("@@")) {
+		} else if (!inHunk && header.startsWith("+++ ")) {
+			path = header === "+++ /dev/null" ? undefined : headerPath(header.slice(4));
+		} else if (header.startsWith("@@")) {
 			inHunk = true;
+			line = Number(/^@@ -\S+ \+(\d+)/.exec(header)?.[1] ?? 1) - 1;
 		}
 	});
 	if (result.code !== 0) throw new Error(result.stderr.trim() || `git diff-tree exited with ${result.code}`);
-	return found;
+	return { lines: found, limitPath };
 }
 
 /**
