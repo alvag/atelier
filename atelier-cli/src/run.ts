@@ -39,6 +39,8 @@ export interface CliIO {
 	setRawMode?: (on: boolean) => void;
 	/** Registers a Ctrl+C handler; returns a function that removes it. */
 	onInterrupt?: (handler: () => void) => () => void;
+	/** Registers a handler for SIGTERM and SIGHUP, given the signal's number; returns a function that removes it. */
+	onTerminate?: (handler: (signal: number) => void) => () => void;
 	/** Last resort when Claude Code does not stop after the session is closed. */
 	exit?: (code: number) => void;
 	/** Delay before that forced exit; defaults to FORCE_EXIT_MS. */
@@ -55,6 +57,8 @@ export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
 export const EXIT_USAGE = 2;
 export const EXIT_INTERRUPTED = 130;
+/** A process ended by a signal exits with 128 plus its number. */
+const SIGNAL_EXIT = 128;
 const FORCE_EXIT_MS = 3000;
 const PROMPT = "> ";
 const ANSWER_PROMPT = "[y/N] ";
@@ -158,6 +162,11 @@ export async function run(
 			return false;
 		}
 		renderer.write("\n");
+		// A paste can say "y" without anyone having decided anything: only typed text answers.
+		if (lines.pasted()) {
+			renderer.write("pasted text does not answer this question\n");
+			return false;
+		}
 		return /^y(es)?$/i.test(answer.line?.trim() ?? "");
 	};
 	const consent = async ({ level, reasons, lenses }: ReviewConsentRequest): Promise<"granted" | "declined"> => {
@@ -175,6 +184,13 @@ export async function run(
 		);
 		return answer ? "granted" : "declined";
 	};
+	// On a raw terminal, take the terminal over before the session starts, so what is typed meanwhile is known to be early.
+	if (setRawMode) {
+		setRawMode(true);
+		rawMode = true;
+		io.stdout(BRACKETED_PASTE_ON);
+		lines.open();
+	}
 	const session = await Session.start({
 		backend,
 		...(memory ? { memory } : {}),
@@ -203,30 +219,30 @@ export async function run(
 				: "";
 			return askYesNo(`Run this command?\n  ${shown.text}\n${warning}`);
 		},
+	}).catch((error: unknown) => {
+		lines.close();
+		restoreTerminal();
+		throw error;
 	});
-	if (setRawMode) {
-		setRawMode(true);
-		rawMode = true;
-		io.stdout(BRACKETED_PASTE_ON);
-		lines.open();
-	}
 
 	// Ctrl+C: the first press interrupts the turn (and answers no to a pending
 	// approval); a press with no turn running, or a second one, closes the
 	// session so Claude Code exits; io.exit is only a fallback if that hangs.
 	let interrupted = false;
 	let quitting = false;
+	let quitCode = EXIT_INTERRUPTED;
 	let forceExit: NodeJS.Timeout | undefined;
-	const quit = () => {
-		if (quitting) return exit(EXIT_INTERRUPTED);
+	const quit = (code = EXIT_INTERRUPTED) => {
+		if (quitting) return exit(code);
 		quitting = true;
+		quitCode = code;
 		interrupted = true;
 		cancelApproval?.();
 		lines.close();
 		// Back in line mode, a further Ctrl+C is a signal again and reaches this handler.
 		restoreTerminal();
 		void session.close();
-		if (io.exit) forceExit = setTimeout(() => exit(EXIT_INTERRUPTED), io.forceExitMs ?? FORCE_EXIT_MS).unref();
+		if (io.exit) forceExit = setTimeout(() => exit(code), io.forceExitMs ?? FORCE_EXIT_MS).unref();
 	};
 	const interrupt = () => {
 		renderer.endLine();
@@ -238,6 +254,8 @@ export async function run(
 	};
 	onCtrlC = interrupt;
 	const removeInterrupt = io.onInterrupt?.(interrupt);
+	// SIGTERM and SIGHUP end the session as a second Ctrl+C would, but exit with the signal's code.
+	const removeTerminate = io.onTerminate?.((signal) => quit(SIGNAL_EXIT + signal));
 
 	const runTurn = async (events: AsyncIterable<AtelierEvent>) => {
 		renderer.resetTurn();
@@ -249,6 +267,7 @@ export async function run(
 	try {
 		if (args.prompt !== undefined) {
 			await runTurn(session.send(args.prompt));
+			if (quitting) return quitCode;
 			if (interrupted) return EXIT_INTERRUPTED;
 			return renderer.failed ? EXIT_FAILED : EXIT_OK;
 		}
@@ -257,11 +276,11 @@ export async function run(
 			const line = await lines.next(PROMPT.length);
 			// A raw terminal does not echo Enter: end the prompt line here.
 			if (rawMode) renderer.endLine();
-			if (quitting) return EXIT_INTERRUPTED;
+			if (quitting) return quitCode;
 			if (line === undefined || line.trim() === "/exit") break;
 			if (line.trim() === "") continue;
 			await runTurn(commandTurn(session, line) ?? session.send(line));
-			if (quitting) return EXIT_INTERRUPTED;
+			if (quitting) return quitCode;
 		}
 		return EXIT_OK;
 	} finally {
@@ -271,6 +290,7 @@ export async function run(
 		await session.close();
 		clearTimeout(forceExit);
 		removeInterrupt?.();
+		removeTerminate?.();
 	}
 }
 
@@ -319,6 +339,8 @@ function createLineReader(stdin: Readable): LineReader {
 			waiting = undefined;
 			handed = undefined;
 		},
+		/** Nothing read without a terminal is pasted. */
+		pasted: () => false,
 		/** Drops the lines typed so far and says how many. */
 		discardTyped(): number {
 			open();

@@ -8,6 +8,8 @@ export interface LineReader {
 	next(column?: number): Promise<string | undefined>;
 	/** Stops waiting for a read that will not be consumed (a cancelled question); its line goes to the next caller. */
 	abandon(): void;
+	/** Whether the line last returned had pasted text in it: a paste can fill in a form but never answer a question. */
+	pasted(): boolean;
 	/** Drops the lines typed so far, the one being typed included, and says how many. */
 	discardTyped(): number;
 	close(): void;
@@ -36,9 +38,15 @@ const CTRL_W = "\x17";
  */
 export function createTerminalReader({ stdin, write, onInterrupt }: TerminalReaderOptions): LineReader {
 	/** Lines entered before anyone asked for them: type-ahead for the next prompt. */
-	const typed: string[] = [];
+	const typed: { text: string; pasted: boolean }[] = [];
 	/** The line being typed. */
 	let buffer = "";
+	/** The line being typed has pasted text in it. */
+	let bufferPasted = false;
+	/** The line handed out last had pasted text in it. */
+	let handedPasted = false;
+	/** The last pasted text ended in "\r", so a "\n" starting the next read is the other half of one line break. */
+	let afterCR = false;
 	/** Input not handled yet: an escape sequence cut by the end of a read. */
 	let pending = "";
 	let pasting = false;
@@ -71,13 +79,19 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 	};
 	const enter = () => {
 		const line = buffer;
+		const wasPasted = bufferPasted;
 		buffer = "";
+		bufferPasted = false;
 		const resolve = waiting;
 		waiting = undefined;
 		if (resolve) {
 			handed = line;
+			handedPasted = wasPasted;
 			resolve(line);
-		} else typed.push(line);
+		} else typed.push({ text: line, pasted: wasPasted });
+	};
+	const emptied = () => {
+		if (buffer === "") bufferPasted = false;
 	};
 	const insert = (text: string) => {
 		buffer += text;
@@ -88,25 +102,32 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 		const last = chars.pop();
 		if (last === undefined) return;
 		buffer = chars.join("");
+		emptied();
 		if (last !== "\n") return echo("\b \b");
 		const all = lines();
 		echo(`\x1b[A\x1b[${startOf(all.length - 1) + width(all.at(-1) ?? "") + 1}G`);
 	};
 	const eraseLine = () => {
 		buffer = buffer.slice(0, buffer.lastIndexOf("\n") + 1);
+		emptied();
 		redrawLastLine();
 	};
 	const eraseWord = () => {
 		buffer = buffer.replace(/\S*[^\S\n]*$/, "");
+		emptied();
 		redrawLastLine();
 	};
 	const pasted = (text: string) => {
 		// Terminals send line breaks in a paste as "\r"; other control characters must not reach the echo.
-		const clean = text
+		const joined = afterCR && text.startsWith("\n") ? text.slice(1) : text;
+		if (joined !== "") afterCR = joined.endsWith("\r");
+		const clean = joined
 			.replace(/\r\n?/g, "\n")
 			// biome-ignore lint/suspicious/noControlCharactersInRegex: removing control characters is the point
 			.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
-		if (!droppingPaste) insert(clean);
+		if (droppingPaste || clean === "") return;
+		bufferPasted = true;
+		insert(clean);
 	};
 
 	/** Handles one escape sequence at `data[i]`; returns where the next input starts, or -1 when it is incomplete. */
@@ -118,7 +139,10 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 		for (let j = i + 2; j < data.length; j++) {
 			const code = data.charCodeAt(j);
 			if (code < 0x40 || code > 0x7e) continue;
-			if (data.slice(i, j + 1) === PASTE_START) pasting = true;
+			if (data.slice(i, j + 1) === PASTE_START) {
+				pasting = true;
+				afterCR = false;
+			}
 			return j + 1;
 		}
 		return -1;
@@ -192,8 +216,9 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 			column = promptColumn;
 			const early = typed.shift();
 			if (early !== undefined) {
-				write(early);
-				return Promise.resolve(early);
+				handedPasted = early.pasted;
+				write(early.text);
+				return Promise.resolve(early.text);
 			}
 			if (ended) return Promise.resolve(undefined);
 			handed = undefined;
@@ -204,15 +229,19 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 		},
 		abandon() {
 			// A line can arrive in the same tick as the cancel: it belongs to the next caller.
-			if (waiting === undefined && handed !== undefined) typed.unshift(handed);
+			if (waiting === undefined && handed !== undefined) typed.unshift({ text: handed, pasted: handedPasted });
 			waiting = undefined;
 			handed = undefined;
 		},
+		pasted: () => handedPasted,
 		discardTyped() {
 			this.open();
 			const count = typed.splice(0).length + (buffer !== "" || pasting ? 1 : 0);
 			buffer = "";
+			bufferPasted = false;
+			// Half an escape sequence could finish as a paste start after the question; in a paste, the tail is its end.
 			if (pasting) droppingPaste = true;
+			else pending = "";
 			return count;
 		},
 		close() {

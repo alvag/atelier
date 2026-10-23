@@ -45,6 +45,14 @@ describe("terminal reader", () => {
 		expect(t.echo()).toBe("first\nsecond\nthird");
 	});
 
+	it("reads a line break split across two reads as one", async () => {
+		const t = terminal();
+		const line = t.reader.next(2);
+		await t.type(`${PASTE_START}one\r`);
+		await t.type(`\ntwo${PASTE_END}\r`);
+		expect(await line).toBe("one\ntwo");
+	});
+
 	it("keeps a paste whole when its markers are split across reads", async () => {
 		const t = terminal();
 		const line = t.reader.next(2);

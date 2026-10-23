@@ -48,6 +48,16 @@ const exitCode = await run(
 			process.on("SIGINT", handler);
 			return () => process.off("SIGINT", handler);
 		},
+		onTerminate: (handler) => {
+			const onTerm = () => handler(15);
+			const onHup = () => handler(1);
+			process.on("SIGTERM", onTerm);
+			process.on("SIGHUP", onHup);
+			return () => {
+				process.off("SIGTERM", onTerm);
+				process.off("SIGHUP", onHup);
+			};
+		},
 		exit: (code) => process.exit(code),
 	},
 	createBackend,

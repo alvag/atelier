@@ -377,6 +377,44 @@ describe("run", () => {
 			expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
 		});
 
+		it("does not let a line typed before the session started answer the question", async () => {
+			const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo hi" } } };
+			const h = harness([[step, { event: finished }]], { raw: true, answers: ["n\r"], keepStdinOpen: true });
+			(h.io.stdin as PassThrough).write("y\r");
+			expect(await run(["--no-review", "x"], h.io, h.createBackend)).toBe(0);
+			expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+		});
+
+		it.each([
+			["a paste marker split across the question", "\x1b[20", "0~y\n\x1b[201~\r", false],
+			["a pasted yes", "", "\x1b[200~y\n\x1b[201~\r", false],
+			["a pasted yes with more text", "", "\x1b[200~y\nnot approval\x1b[201~\r", false],
+			["a pasted yes typed over", "", "\x1b[200~y\x1b[201~\r", false],
+			["a typed yes", "", "y\r", true],
+		])("answers a bash approval from %s", async (_name, before, after, approved) => {
+			const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo hi" } } };
+			const h = harness([[step, { event: finished }]], { raw: true, answers: [after], keepStdinOpen: true });
+			(h.io.stdin as PassThrough).write(before);
+			expect(await run(["--no-review", "x"], h.io, h.createBackend)).toBe(0);
+			expect(h.backend.toolResults[0]?.ok).toBe(approved);
+			if (!approved) {
+				expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+				if (before === "") expect(h.out()).toContain("pasted text does not answer this question\n");
+			}
+		});
+
+		it("does not take a pasted yes as consent to review", async () => {
+			await repoWithChange("src/auth.ts");
+			const h = harness([[{ event: { type: "text_delta", text: "done" } }, { event: finished }]], {
+				raw: true,
+				answers: ["\x1b[200~y\n\x1b[201~\r"],
+			});
+			expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
+			expect(h.backend.prompts).toEqual(["change it"]);
+			expect(h.out()).toContain("pasted text does not answer this question\n");
+			expect(h.out()).toContain("review declined");
+		});
+
 		it("takes Ctrl+C as a key and leaves the terminal as it was", async () => {
 			const h = harness([], { raw: true, input: [], keepStdinOpen: true });
 			const pending = run([], h.io, h.createBackend);
