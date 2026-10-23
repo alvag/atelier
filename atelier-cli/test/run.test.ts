@@ -42,6 +42,7 @@ function harness(
 ) {
 	const backend = new FakeBackend(turns);
 	let interruptHandler: (() => void) | undefined;
+	let terminateHandler: ((signal: number) => void) | undefined;
 	const exits: number[] = [];
 	const rawModes: boolean[] = [];
 	/** For each forced exit, whether the terminal was back out of raw mode by then. */
@@ -72,6 +73,12 @@ function harness(
 		...(options.home === undefined ? {} : { home: options.home }),
 		color: false,
 		env: options.env ?? {},
+		onTerminate: (handler: (signal: number) => void) => {
+			terminateHandler = handler;
+			return () => {
+				terminateHandler = undefined;
+			};
+		},
 		onInterrupt: (handler: () => void) => {
 			interruptHandler = handler;
 			return () => {
@@ -95,6 +102,7 @@ function harness(
 		err: () => stderr,
 		createBackend: () => backend,
 		ctrlC: () => interruptHandler?.(),
+		terminate: (signal: number) => terminateHandler?.(signal),
 		/** The CLI listens for Ctrl+C only once the session started; before that a press goes nowhere. */
 		listening: () => interruptHandler !== undefined,
 	};
@@ -421,6 +429,21 @@ describe("run", () => {
 			await until(() => h.out().includes("> "));
 			(h.io.stdin as PassThrough).write("\x03");
 			expect(await pending).toBe(130);
+			expect(h.rawModes).toEqual([true, false]);
+			expect(h.out().endsWith("\x1b[?2004l")).toBe(true);
+		});
+
+		it.each([
+			["Ctrl+C", (h: ReturnType<typeof harness>) => (h.io.stdin as PassThrough).write("\x03"), 130],
+			["SIGTERM", (h: ReturnType<typeof harness>) => h.terminate(15), 143],
+		])("leaves the terminal as it was on %s while the session is starting", async (_name, send, code) => {
+			const h = harness([], { raw: true, input: [], keepStdinOpen: true });
+			const starting = { id: "starting", start: () => new Promise<never>(() => {}) };
+			void run([], h.io, () => starting);
+			await until(() => h.out().includes("\x1b[?2004h"));
+			send(h);
+			await until(() => h.exits.length > 0);
+			expect(h.exits).toEqual([code]);
 			expect(h.rawModes).toEqual([true, false]);
 			expect(h.out().endsWith("\x1b[?2004l")).toBe(true);
 		});

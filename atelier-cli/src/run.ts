@@ -191,6 +191,13 @@ export async function run(
 		io.stdout(BRACKETED_PASTE_ON);
 		lines.open();
 	}
+	// Until the session is up there is nothing to interrupt: Ctrl+C and SIGTERM/SIGHUP give the terminal back and exit.
+	const leaveWhileStarting = (code: number) => {
+		lines.close();
+		exit(code);
+	};
+	onCtrlC = () => leaveWhileStarting(EXIT_INTERRUPTED);
+	const removeStartupTerminate = io.onTerminate?.((signal) => leaveWhileStarting(SIGNAL_EXIT + signal));
 	const session = await Session.start({
 		backend,
 		...(memory ? { memory } : {}),
@@ -219,11 +226,13 @@ export async function run(
 				: "";
 			return askYesNo(`Run this command?\n  ${shown.text}\n${warning}`);
 		},
-	}).catch((error: unknown) => {
-		lines.close();
-		restoreTerminal();
-		throw error;
-	});
+	})
+		.catch((error: unknown) => {
+			lines.close();
+			restoreTerminal();
+			throw error;
+		})
+		.finally(() => removeStartupTerminate?.());
 
 	// Ctrl+C: the first press interrupts the turn (and answers no to a pending
 	// approval); a press with no turn running, or a second one, closes the
