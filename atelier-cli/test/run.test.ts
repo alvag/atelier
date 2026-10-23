@@ -36,18 +36,30 @@ function harness(
 		keepStdinOpen?: boolean;
 		env?: Record<string, string>;
 		home?: string;
+		/** A terminal the CLI can put in raw mode, as when stdin and stdout are both terminals. */
+		raw?: boolean;
 	} = {},
 ) {
 	const backend = new FakeBackend(turns);
 	let interruptHandler: (() => void) | undefined;
 	const exits: number[] = [];
+	const rawModes: boolean[] = [];
+	/** For each forced exit, whether the terminal was back out of raw mode by then. */
+	const restoredAtExit: boolean[] = [];
 	const stdin = new PassThrough();
 	let stdout = "";
 	let stderr = "";
 	const answers = [...(options.answers ?? [])];
 	const io = {
 		stdin,
-		isTTY: options.isTTY ?? false,
+		isTTY: options.isTTY ?? options.raw ?? false,
+		...(options.raw
+			? {
+					setRawMode: (on: boolean) => {
+						rawModes.push(on);
+					},
+				}
+			: {}),
 		stdout: (s: string) => {
 			stdout += s;
 			const answer = s.endsWith("[y/N] ") ? answers.shift() : undefined;
@@ -68,6 +80,7 @@ function harness(
 		},
 		exit: (code: number) => {
 			exits.push(code);
+			restoredAtExit.push(rawModes.at(-1) === false);
 		},
 	};
 	for (const line of options.input ?? []) stdin.write(`${line}\n`);
@@ -76,6 +89,8 @@ function harness(
 		backend,
 		io,
 		exits,
+		rawModes,
+		restoredAtExit,
 		out: () => stdout,
 		err: () => stderr,
 		createBackend: () => backend,
@@ -322,6 +337,73 @@ describe("run", () => {
 			expect(await pending).toBe(130);
 			expect(h.backend.closed).toBe(true);
 			expect(h.exits).toEqual([]);
+		});
+	});
+
+	describe("on a raw terminal", () => {
+		const paste = (text: string) => `\x1b[200~${text}\x1b[201~`;
+		const until = async (condition: () => boolean) => {
+			for (let i = 0; i < 400 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+			expect(condition()).toBe(true);
+		};
+
+		it("turns bracketed paste on and off and sends a multi-line paste as one prompt", async () => {
+			const h = harness([[{ event: { type: "text_delta", text: "done" } }, { event: finished }]], {
+				raw: true,
+				input: [paste("first line\rsecond line")],
+			});
+			expect(await run([], h.io, h.createBackend)).toBe(0);
+			expect(h.backend.prompts).toEqual(["first line\nsecond line"]);
+			expect(h.rawModes).toEqual([true, false]);
+			expect(h.out()).toContain("\x1b[?2004h> first line\nsecond line\ndone");
+			expect(h.out().endsWith("\x1b[?2004l")).toBe(true);
+			expect(h.out()).not.toContain("\x1b[200~");
+		});
+
+		it("does not let a line typed before the question answer it", async () => {
+			const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo hi" } } };
+			const h = harness([[step, { event: finished }]], {
+				raw: true,
+				input: [paste("check\rthis"), "y"],
+				answers: ["n"],
+				keepStdinOpen: true,
+			});
+			const pending = run([], h.io, h.createBackend);
+			await vi.waitFor(() => expect(h.backend.toolResults).toHaveLength(1), { timeout: 5000 });
+			(h.io.stdin as PassThrough).end();
+			expect(await pending).toBe(0);
+			expect(h.backend.prompts).toEqual(["check\nthis"]);
+			expect(h.out()).toContain("ignored 1 line typed before this question\n");
+			expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+		});
+
+		it("takes Ctrl+C as a key and leaves the terminal as it was", async () => {
+			const h = harness([], { raw: true, input: [], keepStdinOpen: true });
+			const pending = run([], h.io, h.createBackend);
+			await until(() => h.out().includes("> "));
+			(h.io.stdin as PassThrough).write("\x03");
+			expect(await pending).toBe(130);
+			expect(h.rawModes).toEqual([true, false]);
+			expect(h.out().endsWith("\x1b[?2004l")).toBe(true);
+		});
+
+		it("restores the terminal before a forced exit", async () => {
+			const h = harness([], { raw: true, input: [], keepStdinOpen: true });
+			const stuck = {
+				id: "stuck",
+				start: async () => ({
+					async *send() {},
+					interrupt: async () => {},
+					close: () => new Promise<void>(() => {}),
+				}),
+			};
+			void run([], { ...h.io, forceExitMs: 20 }, () => stuck);
+			await until(() => h.out().includes("> "));
+			(h.io.stdin as PassThrough).write("\x03");
+			await until(() => h.exits.length > 0);
+			expect(h.exits).toEqual([130]);
+			expect(h.restoredAtExit).toEqual([true]);
+			expect(h.out()).toContain("\x1b[?2004l");
 		});
 	});
 

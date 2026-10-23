@@ -18,6 +18,7 @@ import {
 } from "@atelier/core";
 import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { Renderer } from "./render.ts";
+import { createTerminalReader, type LineReader } from "./terminal-input.ts";
 
 export interface CliIO {
 	stdin: Readable;
@@ -31,6 +32,11 @@ export interface CliIO {
 	/** Where the walk up from `cwd` for AGENTS.md / CLAUDE.md stops (excluded); none are read when absent. */
 	home?: string;
 	color: boolean;
+	/**
+	 * Puts the terminal in raw mode or back; given only when stdin and stdout are both terminals.
+	 * The CLI then edits lines itself and reads a bracketed paste as one prompt.
+	 */
+	setRawMode?: (on: boolean) => void;
 	/** Registers a Ctrl+C handler; returns a function that removes it. */
 	onInterrupt?: (handler: () => void) => () => void;
 	/** Last resort when Claude Code does not stop after the session is closed. */
@@ -50,6 +56,10 @@ export const EXIT_FAILED = 1;
 export const EXIT_USAGE = 2;
 export const EXIT_INTERRUPTED = 130;
 const FORCE_EXIT_MS = 3000;
+const PROMPT = "> ";
+const ANSWER_PROMPT = "[y/N] ";
+const BRACKETED_PASTE_ON = "\x1b[?2004h";
+const BRACKETED_PASTE_OFF = "\x1b[?2004l";
 
 export async function run(
 	argv: readonly string[],
@@ -107,9 +117,26 @@ export async function run(
 		color: io.color,
 		cwd: await realpath(args.cwd),
 	});
-	const lines = createLineReader(io.stdin);
+	const setRawMode = io.isTTY ? io.setRawMode : undefined;
+	/** Ctrl+C typed on a raw terminal, where it arrives as a key instead of a signal. */
+	let onCtrlC = () => {};
+	const lines: LineReader = setRawMode
+		? createTerminalReader({ stdin: io.stdin, write: io.stdout, onInterrupt: () => onCtrlC() })
+		: createLineReader(io.stdin);
 	// On a terminal, read from the start so lines typed before a question are known to be early.
-	if (io.isTTY) lines.open();
+	if (io.isTTY && !setRawMode) lines.open();
+	let rawMode = false;
+	/** Leaves the terminal as it was; safe to call more than once. */
+	const restoreTerminal = () => {
+		if (!rawMode) return;
+		rawMode = false;
+		setRawMode?.(false);
+		io.stdout(BRACKETED_PASTE_OFF);
+	};
+	const exit = (code: number) => {
+		restoreTerminal();
+		io.exit?.(code);
+	};
 	/** Cancels a pending yes/no question, answering no. */
 	let cancelApproval: (() => void) | undefined;
 	/** Asks a yes/no question on the terminal; only "y" or "yes" is a yes, and Ctrl+C is a no. */
@@ -118,11 +145,11 @@ export async function run(
 		// Only an answer typed after the question counts: an early line, such as the rest of a pasted prompt, could say yes.
 		const early = lines.discardTyped();
 		if (early > 0) renderer.write(`ignored ${early} ${early === 1 ? "line" : "lines"} typed before this question\n`);
-		renderer.write(`${question}[y/N] `);
+		renderer.write(`${question}${ANSWER_PROMPT}`);
 		const cancelled = new Promise<undefined>((resolve) => {
 			cancelApproval = () => resolve(undefined);
 		});
-		const read = lines.next();
+		const read = lines.next(ANSWER_PROMPT.length);
 		const answer = await Promise.race([read.then((line) => ({ line })), cancelled]);
 		cancelApproval = undefined;
 		if (answer === undefined) {
@@ -177,6 +204,12 @@ export async function run(
 			return askYesNo(`Run this command?\n  ${shown.text}\n${warning}`);
 		},
 	});
+	if (setRawMode) {
+		setRawMode(true);
+		rawMode = true;
+		io.stdout(BRACKETED_PASTE_ON);
+		lines.open();
+	}
 
 	// Ctrl+C: the first press interrupts the turn (and answers no to a pending
 	// approval); a press with no turn running, or a second one, closes the
@@ -185,22 +218,26 @@ export async function run(
 	let quitting = false;
 	let forceExit: NodeJS.Timeout | undefined;
 	const quit = () => {
-		if (quitting) return io.exit?.(EXIT_INTERRUPTED);
+		if (quitting) return exit(EXIT_INTERRUPTED);
 		quitting = true;
 		interrupted = true;
 		cancelApproval?.();
 		lines.close();
+		// Back in line mode, a further Ctrl+C is a signal again and reaches this handler.
+		restoreTerminal();
 		void session.close();
-		if (io.exit) forceExit = setTimeout(() => io.exit?.(EXIT_INTERRUPTED), io.forceExitMs ?? FORCE_EXIT_MS).unref();
+		if (io.exit) forceExit = setTimeout(() => exit(EXIT_INTERRUPTED), io.forceExitMs ?? FORCE_EXIT_MS).unref();
 	};
-	const removeInterrupt = io.onInterrupt?.(() => {
+	const interrupt = () => {
 		renderer.endLine();
 		if (!session.busy || interrupted) return quit();
 		interrupted = true;
 		io.stderr("interrupting... (Ctrl+C again to quit)\n");
 		cancelApproval?.();
 		void session.interrupt();
-	});
+	};
+	onCtrlC = interrupt;
+	const removeInterrupt = io.onInterrupt?.(interrupt);
 
 	const runTurn = async (events: AsyncIterable<AtelierEvent>) => {
 		renderer.resetTurn();
@@ -216,8 +253,10 @@ export async function run(
 			return renderer.failed ? EXIT_FAILED : EXIT_OK;
 		}
 		while (true) {
-			if (io.isTTY) renderer.write("> ");
-			const line = await lines.next();
+			if (io.isTTY) renderer.write(PROMPT);
+			const line = await lines.next(PROMPT.length);
+			// A raw terminal does not echo Enter: end the prompt line here.
+			if (rawMode) renderer.endLine();
 			if (quitting) return EXIT_INTERRUPTED;
 			if (line === undefined || line.trim() === "/exit") break;
 			if (line.trim() === "") continue;
@@ -227,6 +266,7 @@ export async function run(
 		return EXIT_OK;
 	} finally {
 		lines.close();
+		restoreTerminal();
 		// Keep the forced exit and the Ctrl+C handler until the session is really closed.
 		await session.close();
 		clearTimeout(forceExit);
@@ -235,7 +275,7 @@ export async function run(
 }
 
 /** Reads stdin line by line on demand; opened lazily so a one-shot run without prompts never touches stdin. */
-function createLineReader(stdin: Readable) {
+function createLineReader(stdin: Readable): LineReader {
 	/** Lines read before anyone asked for them: type-ahead for the next prompt. */
 	const typed: string[] = [];
 	let waiting: ((line: string | undefined) => void) | undefined;

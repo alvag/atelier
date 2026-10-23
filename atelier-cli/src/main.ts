@@ -41,6 +41,9 @@ const exitCode = await run(
 		env: process.env,
 		home: homedir(),
 		color: Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined,
+		...(process.stdin.isTTY && process.stdout.isTTY
+			? { setRawMode: (on: boolean) => void process.stdin.setRawMode(on) }
+			: {}),
 		onInterrupt: (handler) => {
 			process.on("SIGINT", handler);
 			return () => process.off("SIGINT", handler);
