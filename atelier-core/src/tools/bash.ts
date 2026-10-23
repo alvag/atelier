@@ -117,85 +117,96 @@ function firstLine(command: string): string {
 /** Credentials the model could read with `echo $VAR` and leak; nothing else is removed. */
 const HIDDEN_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 
-function commandEnv(): NodeJS.ProcessEnv {
+function commandEnv(extra: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
 	const env = { ...process.env };
 	for (const name of HIDDEN_ENV) delete env[name];
-	return env;
+	return { ...env, ...extra };
 }
 
-export const bashTool = defineTool({
-	name: "bash",
-	description: `Run a shell command with bash in the working directory. stdout and stderr are combined. Output is truncated to its tail; the full text is saved to a file. Default timeout: ${DEFAULT_TIMEOUT_SEC}s.`,
-	inputShape: {
-		command: z.string().min(1).describe("Command to run"),
-		timeoutSec: z.number().int().min(1).max(3600).optional().describe("Timeout in seconds"),
-	},
-	approvalCommand: ({ command }) => command,
-	async execute({ command, timeoutSec }, { cwd, signal, scratchDir }) {
-		const timeout = timeoutSec ?? DEFAULT_TIMEOUT_SEC;
-		if (signal?.aborted)
-			return { ok: false, output: "[command aborted]", summary: `${firstLine(command)} (aborted)`, truncated: false };
+export interface BashOptions {
+	/** Runs commands without asking the user: for a tool whose working directory is a throwaway copy. */
+	withoutApproval?: boolean;
+	/** Set on top of the filtered environment, e.g. to make package managers refuse the network. */
+	env?: Readonly<Record<string, string>>;
+}
 
-		const child = spawn("bash", ["-c", command], {
-			cwd,
-			env: commandEnv(),
-			detached: true,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		const sink = new OutputSink(scratchDir);
-		child.stdout.on("data", (chunk: Buffer) => sink.write(chunk));
-		child.stderr.on("data", (chunk: Buffer) => sink.write(chunk));
+export const bashTool = createBashTool();
 
-		let stopped: "timeout" | "aborted" | undefined;
-		const killGroup = (sig: NodeJS.Signals) => {
-			try {
-				if (child.pid !== undefined) process.kill(-child.pid, sig);
-			} catch {}
-		};
-		const stop = (reason: "timeout" | "aborted") => {
-			if (stopped) return;
-			stopped = reason;
-			killGroup("SIGTERM");
-			setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS).unref();
-		};
-		const timer = setTimeout(() => stop("timeout"), timeout * 1000);
-		const onAbort = () => stop("aborted");
-		signal?.addEventListener("abort", onAbort, { once: true });
+export function createBashTool({ withoutApproval = false, env = {} }: BashOptions = {}) {
+	return defineTool({
+		name: "bash",
+		description: `Run a shell command with bash in the working directory. stdout and stderr are combined. Output is truncated to its tail; the full text is saved to a file. Default timeout: ${DEFAULT_TIMEOUT_SEC}s.`,
+		inputShape: {
+			command: z.string().min(1).describe("Command to run"),
+			timeoutSec: z.number().int().min(1).max(3600).optional().describe("Timeout in seconds"),
+		},
+		approvalCommand: ({ command }) => (withoutApproval ? undefined : command),
+		async execute({ command, timeoutSec }, { cwd, signal, scratchDir }) {
+			const timeout = timeoutSec ?? DEFAULT_TIMEOUT_SEC;
+			if (signal?.aborted)
+				return { ok: false, output: "[command aborted]", summary: `${firstLine(command)} (aborted)`, truncated: false };
 
-		const code = await new Promise<number | null>((resolve) => {
-			child.on("error", (error) => {
-				sink.write(Buffer.from(String(error.message)));
-				resolve(null);
+			const child = spawn("bash", ["-c", command], {
+				cwd,
+				env: commandEnv(env),
+				detached: true,
+				stdio: ["ignore", "pipe", "pipe"],
 			});
-			child.on("close", (exitCode) => resolve(exitCode));
-		});
-		clearTimeout(timer);
-		signal?.removeEventListener("abort", onAbort);
-		if (stopped) killGroup("SIGKILL");
+			const sink = new OutputSink(scratchDir);
+			child.stdout.on("data", (chunk: Buffer) => sink.write(chunk));
+			child.stderr.on("data", (chunk: Buffer) => sink.write(chunk));
 
-		const finished = sink.finish();
-		const { text, truncated: tailTruncated } = takeTail(finished.tail.replace(/\n$/, ""));
-		const spilled = finished.all === undefined;
-		let fullOutputPath = finished.fullOutputPath;
-		if (tailTruncated && finished.all !== undefined) fullOutputPath = saveFullOutput(finished.all, scratchDir);
-		const truncated = tailTruncated || spilled;
-		const status =
-			stopped === "timeout"
-				? `[command timed out after ${timeout}s]`
-				: stopped === "aborted"
-					? "[command aborted]"
-					: `[exit code ${code ?? "unknown"}]`;
-		const header = truncated
-			? `[Output truncated; showing the end.${fullOutputPath ? ` Full output${sink.capped ? " (first 50 MB)" : ""}: ${fullOutputPath}` : ""}]\n`
-			: "";
-		const ok = !stopped && code === 0;
-		const label = stopped === "timeout" ? "timed out" : stopped === "aborted" ? "aborted" : `exit ${code ?? "?"}`;
-		return {
-			ok,
-			output: `${header}${text}${text ? "\n\n" : ""}${status}`,
-			summary: `${firstLine(command)} (${label})`,
-			truncated,
-			...(fullOutputPath === undefined ? {} : { fullOutputPath }),
-		};
-	},
-});
+			let stopped: "timeout" | "aborted" | undefined;
+			const killGroup = (sig: NodeJS.Signals) => {
+				try {
+					if (child.pid !== undefined) process.kill(-child.pid, sig);
+				} catch {}
+			};
+			const stop = (reason: "timeout" | "aborted") => {
+				if (stopped) return;
+				stopped = reason;
+				killGroup("SIGTERM");
+				setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS).unref();
+			};
+			const timer = setTimeout(() => stop("timeout"), timeout * 1000);
+			const onAbort = () => stop("aborted");
+			signal?.addEventListener("abort", onAbort, { once: true });
+
+			const code = await new Promise<number | null>((resolve) => {
+				child.on("error", (error) => {
+					sink.write(Buffer.from(String(error.message)));
+					resolve(null);
+				});
+				child.on("close", (exitCode) => resolve(exitCode));
+			});
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+			if (stopped) killGroup("SIGKILL");
+
+			const finished = sink.finish();
+			const { text, truncated: tailTruncated } = takeTail(finished.tail.replace(/\n$/, ""));
+			const spilled = finished.all === undefined;
+			let fullOutputPath = finished.fullOutputPath;
+			if (tailTruncated && finished.all !== undefined) fullOutputPath = saveFullOutput(finished.all, scratchDir);
+			const truncated = tailTruncated || spilled;
+			const status =
+				stopped === "timeout"
+					? `[command timed out after ${timeout}s]`
+					: stopped === "aborted"
+						? "[command aborted]"
+						: `[exit code ${code ?? "unknown"}]`;
+			const header = truncated
+				? `[Output truncated; showing the end.${fullOutputPath ? ` Full output${sink.capped ? " (first 50 MB)" : ""}: ${fullOutputPath}` : ""}]\n`
+				: "";
+			const ok = !stopped && code === 0;
+			const label = stopped === "timeout" ? "timed out" : stopped === "aborted" ? "aborted" : `exit ${code ?? "?"}`;
+			return {
+				ok,
+				output: `${header}${text}${text ? "\n\n" : ""}${status}`,
+				summary: `${firstLine(command)} (${label})`,
+				truncated,
+				...(fullOutputPath === undefined ? {} : { fullOutputPath }),
+			};
+		},
+	});
+}

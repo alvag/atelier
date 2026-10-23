@@ -63,7 +63,7 @@ function parseReply<T>(text: string, schema: z.ZodType<T>, key: string) {
 }
 
 /** Same extraction as parseFindings: the last ```json block, else the whole text, else first `{` to last `}`. */
-function extractJson(text: string): string | undefined {
+export function extractJson(text: string): string | undefined {
 	const fenced = [...text.matchAll(/```json[^\S\n]*\n([\s\S]*?)```/gi)].at(-1)?.[1];
 	if (fenced !== undefined) return fenced.trim();
 	const trimmed = text.trim();

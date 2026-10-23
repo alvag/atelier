@@ -25,7 +25,7 @@ const STDERR_LIMIT = 16 * 1024;
  * GIT_DIR or GIT_INDEX_FILE inherited from a hook or a shell can never point
  * Atelier at the user's index or another repository.
  */
-function gitEnv(extra: Readonly<Record<string, string>> | undefined): NodeJS.ProcessEnv {
+export function gitEnv(extra: Readonly<Record<string, string>> | undefined): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(process.env)) if (!key.startsWith("GIT_")) env[key] = value;
 	return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", ...extra };
