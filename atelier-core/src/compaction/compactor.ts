@@ -53,12 +53,13 @@ export function contextTokens(usage: Usage): number {
 	return usage.input + usage.cacheRead + usage.cacheWrite + usage.output;
 }
 
+/** `override` (ATELIER_COMPACT_AT) replaces the 200,000 cap, never the window: past it compaction would never start. */
 export function compactThreshold(options: {
 	window: number;
 	maxTokens: number;
 	override?: number | undefined;
 }): number {
-	return options.override ?? Math.min(options.window - (options.maxTokens + RESERVE_TOKENS), MAX_COMPACT_AT);
+	return Math.min(options.window - (options.maxTokens + RESERVE_TOKENS), options.override ?? MAX_COMPACT_AT);
 }
 
 /** Reads `ATELIER_COMPACT_AT`; a value that is set but invalid is an error, never a silent default. */

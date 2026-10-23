@@ -88,6 +88,9 @@ describe("context measurement and threshold", () => {
 		{ window: 1_000_000, maxTokens: 16_000, override: undefined, expected: 200_000 },
 		{ window: 216_384, maxTokens: 0, override: undefined, expected: 200_000 },
 		{ window: 1_000_000, maxTokens: 16_000, override: 50_000, expected: 50_000 },
+		// An override above what the window allows would turn compaction off: it is capped like the default.
+		{ window: 200_000, maxTokens: 16_000, override: 500_000, expected: 200_000 - 16_000 - 16_384 },
+		{ window: 1_000_000, maxTokens: 16_000, override: 400_000, expected: 400_000 },
 	])("window $window, maxTokens $maxTokens, override $override → $expected", ({ expected, ...input }) => {
 		expect(compactThreshold(input)).toBe(expected);
 	});

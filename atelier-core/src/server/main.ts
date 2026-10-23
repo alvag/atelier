@@ -26,7 +26,7 @@ Environment:
   ATELIER_REVIEW=off     Run sessions without the review of uncommitted changes (RDD)
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
                          older history (default: the model's window minus a reserve,
-                         at most 200000)
+                         at most 200000; never more than the window minus the reserve)
 `;
 
 if (process.argv.length !== 3 || process.argv[2] !== "serve") {

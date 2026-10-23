@@ -54,7 +54,7 @@ Environment:
   ATELIER_REVIEW=off     Run without reviewing changes, like --no-review
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
                          older history (default: the model's window minus a reserve,
-                         at most 200000)
+                         at most 200000; never more than the window minus the reserve)
 `;
 
 export function parseCliArgs(
