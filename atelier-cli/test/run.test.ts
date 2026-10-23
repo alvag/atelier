@@ -68,6 +68,8 @@ function harness(
 		err: () => stderr,
 		createBackend: () => backend,
 		ctrlC: () => interruptHandler?.(),
+		/** The CLI listens for Ctrl+C only once the session started; before that a press goes nowhere. */
+		listening: () => interruptHandler !== undefined,
 	};
 }
 
@@ -166,12 +168,16 @@ describe("run", () => {
 	});
 
 	describe("Ctrl+C", () => {
-		const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
+		/** Waits for what the test needs, never a fixed delay: a loaded machine starts the session slower. */
+		const until = async (condition: () => boolean) => {
+			for (let i = 0; i < 400 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+			expect(condition()).toBe(true);
+		};
 
 		it("interrupts the turn and exits 130", async () => {
 			const h = harness([[{ event: { type: "text_delta", text: "a" } }, { waitForInterrupt: true }]]);
 			const pending = run(["x"], h.io, h.createBackend);
-			await tick();
+			await until(() => h.listening() && h.out().includes("a"));
 			h.ctrlC();
 			expect(await pending).toBe(130);
 			expect(h.backend.interrupts).toBe(1);
@@ -186,8 +192,7 @@ describe("run", () => {
 				keepStdinOpen: true,
 			});
 			const pending = run(["x"], h.io, h.createBackend);
-			await tick();
-			expect(h.out()).toContain("[y/N] ");
+			await until(() => h.out().includes("[y/N] "));
 			h.ctrlC();
 			expect(await pending).toBe(130);
 			expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
@@ -204,10 +209,9 @@ describe("run", () => {
 			const stdin = h.io.stdin as PassThrough;
 			const pending = run([], h.io, h.createBackend);
 			stdin.write("first\n");
-			await tick();
-			expect(h.out()).toContain("[y/N] ");
+			await until(() => h.out().includes("[y/N] "));
 			h.ctrlC();
-			await tick();
+			await until(() => h.backend.interrupts === 1);
 			stdin.write("next prompt\n");
 			stdin.end();
 			expect(await pending).toBe(0);
@@ -218,9 +222,9 @@ describe("run", () => {
 		it("closes the session on a second Ctrl+C when the turn does not stop", async () => {
 			const h = harness([[{ hang: true }]]);
 			const pending = run(["x"], h.io, h.createBackend);
-			await tick();
+			await until(() => h.listening() && h.backend.prompts.length === 1);
 			h.ctrlC();
-			await tick();
+			await until(() => h.backend.interrupts === 1);
 			expect(h.backend.closed).toBe(false);
 			h.ctrlC();
 			expect(await pending).toBe(130);
@@ -239,16 +243,16 @@ describe("run", () => {
 				}),
 			};
 			void run([], { ...h.io, forceExitMs: 20 }, () => stuck);
-			await tick();
+			await until(h.listening);
 			h.ctrlC();
-			await new Promise((resolve) => setTimeout(resolve, 60));
+			await until(() => h.exits.length > 0);
 			expect(h.exits).toEqual([130]);
 		});
 
 		it("leaves an idle interactive session cleanly", async () => {
 			const h = harness([], { input: [], keepStdinOpen: true });
 			const pending = run([], h.io, h.createBackend);
-			await tick();
+			await until(h.listening);
 			h.ctrlC();
 			expect(await pending).toBe(130);
 			expect(h.backend.closed).toBe(true);
