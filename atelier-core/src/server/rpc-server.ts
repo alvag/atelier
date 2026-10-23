@@ -30,6 +30,8 @@ export interface RpcServerOptions {
 	connectMemory?: (cwd: string) => Promise<MemoryPort>;
 	tools: readonly ToolDefinition[];
 	systemPromptAppend: string;
+	/** Where the walk up from a session's folder for AGENTS.md / CLAUDE.md stops (excluded). Without it none are read. */
+	home?: string;
 	/** Sessions may review their changes (RDD). Off unless given; `serve` passes `reviewEnabled(process.env)`. */
 	review?: boolean;
 	onShutdown?: () => void;
@@ -277,6 +279,7 @@ export class RpcServer {
 				autoApprove,
 				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
 				odd: true,
+				...(this.#options.home === undefined ? {} : { projectInstructions: { home: this.#options.home } }),
 				...(review
 					? {
 							review: {

@@ -141,6 +141,15 @@ describe("Renderer", () => {
 		expect(off.stderr).toBe("no memory: Engram is not installed (no engram command).\n");
 	});
 
+	it("says which instruction files were loaded, and warns about those the cap left out", () => {
+		const on = render([{ type: "project_instructions", files: ["/w/AGENTS.md", "/w/p/CLAUDE.md"], dropped: [] }]);
+		expect(on.stdout).toBe("instructions: /w/AGENTS.md, /w/p/CLAUDE.md\n");
+		expect(on.stderr).toBe("");
+		const cut = render([{ type: "project_instructions", files: ["/w/p/AGENTS.md"], dropped: ["/w/AGENTS.md"] }]);
+		expect(cut.stdout).toBe("instructions: /w/p/AGENTS.md\n");
+		expect(cut.stderr).toBe("instructions over 32 KiB, left out: /w/AGENTS.md\n");
+	});
+
 	it("prints errors to stderr and remembers them", () => {
 		const { stdout, stderr, renderer } = render([
 			{ type: "text_delta", text: "partial" },

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { appendFileSync } from "node:fs";
+import { homedir } from "node:os";
 import process from "node:process";
 import {
 	type BackendName,
@@ -38,6 +39,7 @@ const exitCode = await run(
 		stderr: (text) => process.stderr.write(text),
 		cwd: process.cwd(),
 		env: process.env,
+		home: homedir(),
 		color: Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined,
 		onInterrupt: (handler) => {
 			process.on("SIGINT", handler);

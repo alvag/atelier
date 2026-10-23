@@ -228,6 +228,15 @@ describe("App", () => {
 		expect(screen.getByTitle("Engram is not installed")).toBeTruthy();
 	});
 
+	it("shows the instruction files in the status bar, and warns about those the cap left out", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "project_instructions", files: ["/w/AGENTS.md"], dropped: ["/AGENTS.md"] });
+		await waitFor(() => expect(screen.getByRole("status").textContent).toContain("instructions: 1"));
+		expect(screen.getByRole("status").textContent).toContain("instructions over 32 KiB: 1 left out");
+		expect(screen.getByTitle("/AGENTS.md")).toBeTruthy();
+	});
+
 	it("shows the phase in the status bar and the feature's tasks in a panel", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

@@ -143,6 +143,14 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 						</span>
 					)
 				) : null}
+				{state.instructions && state.instructions.files.length > 0 ? (
+					<span title={state.instructions.files.join("\n")}>instructions: {state.instructions.files.length}</span>
+				) : null}
+				{state.instructions && state.instructions.dropped.length > 0 ? (
+					<span className="warning" title={state.instructions.dropped.join("\n")}>
+						instructions over 32 KiB: {state.instructions.dropped.length} left out
+					</span>
+				) : null}
 				{state.review ? (
 					<span className="warning" title={state.review.reason}>
 						no review{state.review.reason ? `: ${state.review.reason}` : ""}

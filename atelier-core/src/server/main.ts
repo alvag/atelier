@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { homedir } from "node:os";
 import process from "node:process";
 import { createBackend as createNamedBackend } from "../backend-factory.ts";
 import { parseCompactAt } from "../compaction/compactor.ts";
@@ -63,6 +64,7 @@ const server = new RpcServer({
 	review: reviewEnabled(process.env),
 	tools: coreTools,
 	systemPromptAppend: SYSTEM_PROMPT_APPEND,
+	home: homedir(),
 	connectMemory: memoryOff
 		? async () => {
 				throw new MemoryUnavailableError(

@@ -15,6 +15,7 @@ import {
 import { CONTEXT_BYTES, createMemoryTool, findSecret, MEMORY_TOOL, type MemoryPort } from "./memory/index.ts";
 import type { CompletedFeature } from "./odd/tracker.ts";
 import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
+import { loadProjectInstructions, type ProjectInstructions } from "./project-instructions.ts";
 import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
@@ -54,6 +55,8 @@ export interface SessionOptions {
 	memoryUnavailable?: string;
 	/** Why there is no review in this session (it is off); said once, in the first turn. */
 	reviewUnavailable?: string;
+	/** Adds the AGENTS.md / CLAUDE.md files from `cwd` up to `home` (excluded) to the system prompt, read once at start. Never given to subagents. */
+	projectInstructions?: { home: string };
 	/** Turns on RDD: the risk tool, the assessment at the end of each turn and `Session.review`. Never given to subagents. */
 	review?: ReviewOptions;
 }
@@ -81,6 +84,8 @@ export class Session {
 	readonly #review: SessionReview | undefined;
 	/** Recent memory, fetched once at start and given with the first prompt only. */
 	#memoryContext = "";
+	/** The instruction files read at start; reported with the first turn. */
+	#instructions: ProjectInstructions | undefined;
 	#announced = false;
 	#abort: AbortController | undefined;
 	#closed = false;
@@ -134,6 +139,10 @@ export class Session {
 		}
 		const session = new Session(options);
 		session.#memoryContext = memoryContext;
+		if (options.projectInstructions) {
+			const instructions = await loadProjectInstructions(options.cwd, options.projectInstructions.home);
+			if (instructions.files.length > 0 || instructions.dropped.length > 0) session.#instructions = instructions;
+		}
 		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-session-"));
 		session.#scratchDir = scratchDir;
 		try {
@@ -145,6 +154,7 @@ export class Session {
 					options.odd ? ODD_RULES : "",
 					options.memory ? MEMORY_RULES : "",
 					options.review ? RISK_RULES : "",
+					session.#instructions?.text ?? "",
 				]
 					.filter((part) => part !== "")
 					.join("\n\n"),
@@ -189,6 +199,12 @@ export class Session {
 			if (!this.#announced) {
 				this.#announced = true;
 				const memory = this.#options.memory;
+				if (this.#instructions)
+					turn.push({
+						type: "project_instructions",
+						files: this.#instructions.files,
+						dropped: this.#instructions.dropped,
+					});
 				if (memory) turn.push({ type: "memory_status", available: true, project: memory.project });
 				else if (this.#options.memoryUnavailable !== undefined)
 					turn.push({ type: "memory_status", available: false, reason: this.#options.memoryUnavailable });

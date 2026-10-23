@@ -186,6 +186,15 @@ describe("reduceChat", () => {
 		expect(run([{ type: "session_opened", sessionId: "s2", cwd: "/w" }], state)).not.toHaveProperty("memory");
 	});
 
+	it("tracks the instruction files, and forgets them with a new session", () => {
+		const state = run([
+			...ready,
+			event({ type: "project_instructions", files: ["/w/AGENTS.md"], dropped: ["/AGENTS.md"] }),
+		]);
+		expect(state.instructions).toEqual({ files: ["/w/AGENTS.md"], dropped: ["/AGENTS.md"] });
+		expect(run([{ type: "session_opened", sessionId: "s2", cwd: "/w" }], state)).not.toHaveProperty("instructions");
+	});
+
 	it("tracks the phase and the active feature", () => {
 		const tasks = [
 			{ id: "T1", title: "A", specs: ["S1"], status: "done" },

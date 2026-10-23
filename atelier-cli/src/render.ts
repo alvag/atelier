@@ -272,6 +272,10 @@ export class Renderer {
 				if (event.available) this.#line(this.#style("dim", `memory: ${event.project ?? "on"}`));
 				else this.#warn(`no memory: ${event.reason ?? "unavailable"}`);
 				return;
+			case "project_instructions":
+				if (event.files.length > 0) this.#line(this.#style("dim", `instructions: ${event.files.join(", ")}`));
+				if (event.dropped.length > 0) this.#warn(`instructions over 32 KiB, left out: ${event.dropped.join(", ")}`);
+				return;
 			case "review_status":
 				if (!event.available) this.#warn(`no review: ${event.reason ?? "unavailable"}`);
 				return;

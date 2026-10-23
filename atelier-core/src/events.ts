@@ -115,6 +115,8 @@ export type AtelierEventBody =
 	| { type: "phase_changed"; phase: Phase; source: "inferred" | "declared" }
 	/** Sent first in a session's first turn: whether long-term memory works, for which project, or why not. */
 	| { type: "memory_status"; available: boolean; project?: string; reason?: string }
+	/** Sent first in a session's first turn when AGENTS.md / CLAUDE.md files were found: those added to the system prompt, and those left out by the size cap. */
+	| { type: "project_instructions"; files: string[]; dropped: string[] }
 	/** The active ODD feature document changed. */
 	| { type: "feature_changed"; name: string; path: string; title: string; tasks: FeatureTask[] }
 	/** Whether the review of uncommitted changes (RDD) works in this session; sent when it does not, once per reason. */

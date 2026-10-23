@@ -35,6 +35,7 @@ function harness(
 		answers?: string[];
 		keepStdinOpen?: boolean;
 		env?: Record<string, string>;
+		home?: string;
 	} = {},
 ) {
 	const backend = new FakeBackend(turns);
@@ -56,6 +57,7 @@ function harness(
 			stderr += s;
 		},
 		cwd,
+		...(options.home === undefined ? {} : { home: options.home }),
 		color: false,
 		env: options.env ?? {},
 		onInterrupt: (handler: () => void) => {
@@ -84,6 +86,16 @@ function harness(
 }
 
 describe("run", () => {
+	it("gives the model the project instructions and says which files it loaded", async () => {
+		await writeFile(join(cwd, "AGENTS.md"), "Prefer tabs.");
+		const h = harness([[{ event: started }, { event: finished }]], { home: dirname(cwd) });
+		expect(await run(["hi"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.startOptions?.systemPromptAppend).toContain(
+			`Project instructions from ${join(cwd, "AGENTS.md")}:\n\nPrefer tabs.`,
+		);
+		expect(h.out()).toContain(`instructions: ${join(cwd, "AGENTS.md")}\n`);
+	});
+
 	it("runs one prompt and exits 0", async () => {
 		const h = harness([[{ event: started }, { event: { type: "text_delta", text: "hello" } }, { event: finished }]]);
 		const code = await run(["say hi"], h.io, h.createBackend);

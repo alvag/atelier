@@ -28,6 +28,8 @@ export interface CliIO {
 	cwd: string;
 	/** The environment the switches (ATELIER_REVIEW) are read from; none set when absent. */
 	env?: Record<string, string | undefined>;
+	/** Where the walk up from `cwd` for AGENTS.md / CLAUDE.md stops (excluded); none are read when absent. */
+	home?: string;
 	color: boolean;
 	/** Registers a Ctrl+C handler; returns a function that removes it. */
 	onInterrupt?: (handler: () => void) => () => void;
@@ -155,6 +157,7 @@ export async function run(
 			? { review: { createBackend: () => createBackend(args.backend), consent } }
 			: { reviewUnavailable: "Review is off (--no-review or ATELIER_REVIEW=off)." }),
 		odd: true,
+		...(io.home === undefined ? {} : { projectInstructions: { home: io.home } }),
 		cwd: args.cwd,
 		...(args.model === undefined ? {} : { model: args.model }),
 		tools: coreTools,

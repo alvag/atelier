@@ -109,6 +109,8 @@ export interface ChatState {
 	phase?: Phase;
 	/** Whether the session has long-term memory, for which project, or why not. */
 	memory?: { available: boolean; project?: string; reason?: string };
+	/** The AGENTS.md / CLAUDE.md files in the system prompt, and those the size cap left out; absent when none. */
+	instructions?: { files: string[]; dropped: string[] };
 	/** Why changes cannot be reviewed in this session; absent when they can. */
 	review?: { available: false; reason?: string };
 	/** The active ODD feature document, as the core last reported it. */
@@ -165,6 +167,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 				feature: _feature,
 				phase: _phase,
 				memory: _memory,
+				instructions: _instructions,
 				review: _review,
 				context: _context,
 				expectedMissTurns: _expected,
@@ -257,6 +260,8 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 					...(event.reason === undefined ? {} : { reason: event.reason }),
 				},
 			};
+		case "project_instructions":
+			return { ...state, instructions: { files: event.files, dropped: event.dropped } };
 		case "review_status":
 			return event.available
 				? state
