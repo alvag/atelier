@@ -1,10 +1,13 @@
+import { isAbsolute, relative } from "node:path";
 import { styleText } from "node:util";
-import { type AtelierEvent, cacheHitRate } from "@atelier/core";
+import { type AtelierEvent, cacheHitRate, type ReviewStep } from "@atelier/core";
 
 export interface RendererOptions {
 	stdout: (text: string) => void;
 	stderr: (text: string) => void;
 	color: boolean;
+	/** Receipt paths under it are shown relative to it. */
+	cwd?: string;
 }
 
 type Style = Parameters<typeof styleText>[0];
@@ -26,6 +29,29 @@ function tokensLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): st
 	if (event.requests !== undefined) parts.push(`${event.requests} request${event.requests === 1 ? "" : "s"}`);
 	if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
 	return `tokens: ${parts.join(" · ")}`;
+}
+
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+function stepText(step: ReviewStep): string {
+	switch (step.type) {
+		case "lens_started":
+			return `lens ${step.lens}`;
+		case "lens_finished":
+			return step.ok ? `lens ${step.lens} done · ${plural(step.findings, "finding")}` : `lens ${step.lens} failed`;
+		case "refuter_started":
+			return `refuting ${plural(step.findings, "finding")}`;
+		case "refuter_finished":
+			return `${step.confirmed} confirmed · ${step.refuted} refuted`;
+		case "correction_started":
+			return `correcting (budget ${plural(step.budget, "line")})`;
+		case "correction_finished":
+			return step.ok ? `correction done · ${plural(step.used ?? 0, "line")}` : "correction failed";
+		case "validator_started":
+			return `validating ${plural(step.findings, "finding")}`;
+		case "validator_finished":
+			return `${step.resolved} resolved · ${step.unresolved} unresolved`;
+	}
 }
 
 /** Turns core events into terminal output. Keeps track of the line so tool and token lines start clean. */
@@ -120,6 +146,45 @@ export class Renderer {
 		this.#options.stderr(`${this.#style("yellow", text)}\n`);
 	}
 
+	#receiptPath(path: string): string {
+		const { cwd } = this.#options;
+		if (cwd === undefined || !isAbsolute(path)) return path;
+		const shown = relative(cwd, path);
+		return shown.startsWith("..") || isAbsolute(shown) ? path : shown;
+	}
+
+	#renderReviewFinished(event: Extract<AtelierEvent, { type: "review_finished" }>): void {
+		const receipt = event.receiptPath === undefined ? undefined : this.#receiptPath(event.receiptPath);
+		switch (event.verdict) {
+			case "approved": {
+				const parts = ["review approved"];
+				if (event.correction)
+					parts.push(`corrected ${event.correction.used}/${plural(event.correction.budget, "line")}`);
+				if (event.followUps.length > 0) parts.push(plural(event.followUps.length, "follow-up"));
+				if (receipt) parts.push(`receipt ${receipt}`);
+				this.#line(`${this.#style("green", "✓")} ${parts.join(" · ")}`);
+				return;
+			}
+			case "escalated": {
+				// The correction is only in the worktree when one was applied; it stays there even when it was too big.
+				const left = event.correction ? " — the correction is left in your worktree, review it before committing" : "";
+				this.#line(this.#style("red", `✗ review escalated: ${event.reason ?? "no reason given"}${left}`));
+				for (const found of event.findings) {
+					const place = found.line === undefined ? found.path : `${found.path}:${found.line}`;
+					this.#line(`  ${found.id} ${found.severity} ${place} — ${found.claim}`);
+				}
+				if (receipt) this.#line(`  receipt ${receipt}`);
+				return;
+			}
+			case "declined":
+				this.#line(this.#style("dim", "◇ review declined"));
+				return;
+			case "unavailable":
+				this.#line(this.#style("dim", `◇ review unavailable: ${event.reason ?? "no reason given"}`));
+				return;
+		}
+	}
+
 	render(event: AtelierEvent): void {
 		if (event.parentCallId !== undefined) {
 			this.#renderChild(event);
@@ -139,6 +204,7 @@ export class Renderer {
 				return;
 			case "thinking_delta":
 			case "approval_requested":
+			case "review_consent_requested":
 				return;
 			case "tool_call_started":
 				this.#tools.set(event.callId, event.tool);
@@ -163,6 +229,25 @@ export class Renderer {
 			case "memory_status":
 				if (event.available) this.#line(this.#style("dim", `memory: ${event.project ?? "on"}`));
 				else this.#warn(`no memory: ${event.reason ?? "unavailable"}`);
+				return;
+			case "review_status":
+				if (!event.available) this.#warn(`no review: ${event.reason ?? "unavailable"}`);
+				return;
+			case "review_assessed":
+				this.#line(
+					this.#style(
+						"dim",
+						`◇ review ${event.level} · ${event.lenses.length} ${event.lenses.length === 1 ? "lens" : "lenses"}${
+							event.reasons.length > 0 ? ` (${event.reasons.join("; ")})` : ""
+						}`,
+					),
+				);
+				return;
+			case "review_progress":
+				this.#line(this.#style("dim", `◇ review: ${stepText(event.step)}`));
+				return;
+			case "review_finished":
+				this.#renderReviewFinished(event);
 				return;
 			case "phase_changed":
 				this.#line(this.#style("dim", `· ${event.phase}`));

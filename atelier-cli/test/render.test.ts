@@ -2,10 +2,15 @@ import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
 import { describe, expect, it } from "vitest";
 import { Renderer } from "../src/render.ts";
 
-function render(bodies: AtelierEventBody[]) {
+function render(bodies: AtelierEventBody[], cwd?: string) {
 	let stdout = "";
 	let stderr = "";
-	const renderer = new Renderer({ stdout: (s) => (stdout += s), stderr: (s) => (stderr += s), color: false });
+	const renderer = new Renderer({
+		stdout: (s) => (stdout += s),
+		stderr: (s) => (stderr += s),
+		color: false,
+		...(cwd === undefined ? {} : { cwd }),
+	});
 	for (const [i, body] of bodies.entries()) renderer.render({ ...body, seq: i + 1, turnId: "t" } as AtelierEvent);
 	return { stdout, stderr, renderer };
 }
@@ -160,5 +165,176 @@ describe("Renderer", () => {
 		expect(quiet.stderr).toBe("");
 		const loud = render([{ type: "rate_limit", status: "allowed_warning", window: "five_hour", resetsAt: 1792000000 }]);
 		expect(loud.stderr).toMatch(/^rate limit: allowed_warning \(five_hour, resets .+\)\n$/);
+	});
+
+	describe("review", () => {
+		const finished: Extract<AtelierEventBody, { type: "review_finished" }> = {
+			type: "review_finished",
+			reviewId: "r1",
+			verdict: "approved",
+			findings: [],
+			refuted: [],
+			followUps: [],
+			correction: null,
+			usage,
+		};
+		const finding = {
+			id: "RL-001",
+			lens: "reliability",
+			severity: "critical",
+			cause: "candidate",
+			path: "src/auth.ts",
+			line: 12,
+			claim: "The token is dropped.",
+			evidence: "src/auth.ts:12",
+		};
+
+		it("warns when there is no review, like memory", () => {
+			const { stdout, stderr } = render([{ type: "review_status", available: false, reason: "not a git repository" }]);
+			expect(stdout).toBe("");
+			expect(stderr).toBe("no review: not a git repository\n");
+		});
+
+		it("shows the risk on one line with its lenses and reasons", () => {
+			const { stdout } = render([
+				{
+					type: "review_assessed",
+					tree: "t",
+					level: "high",
+					reasons: ["path: src/auth.ts (auth)", "dependencies: package.json"],
+					files: ["src/auth.ts"],
+					changedLines: 9,
+					lenses: ["risk", "resilience", "readability", "reliability"],
+					reviewDue: true,
+				},
+				{
+					type: "review_assessed",
+					tree: "t",
+					level: "medium",
+					reasons: [],
+					files: ["a.ts"],
+					changedLines: 1,
+					lenses: ["reliability"],
+					reviewDue: false,
+				},
+			]);
+			expect(stdout).toBe(
+				"◇ review high · 4 lenses (path: src/auth.ts (auth); dependencies: package.json)\n◇ review medium · 1 lens\n",
+			);
+		});
+
+		it("leaves the consent question to the prompt", () => {
+			const { stdout, stderr } = render([
+				{ type: "review_consent_requested", reviewId: "r1", level: "high", reasons: ["x"], lenses: ["risk"] },
+			]);
+			expect([stdout, stderr]).toEqual(["", ""]);
+		});
+
+		it("shows one line per step of the cycle", () => {
+			const { stdout } = render([
+				{ type: "review_progress", reviewId: "r1", step: { type: "lens_started", lens: "risk" } },
+				{
+					type: "review_progress",
+					reviewId: "r1",
+					step: { type: "lens_finished", lens: "risk", ok: true, findings: 2 },
+				},
+				{
+					type: "review_progress",
+					reviewId: "r1",
+					step: { type: "lens_finished", lens: "risk", ok: false, findings: 0 },
+				},
+				{ type: "review_progress", reviewId: "r1", step: { type: "refuter_started", findings: 1 } },
+				{ type: "review_progress", reviewId: "r1", step: { type: "refuter_finished", confirmed: 1, refuted: 0 } },
+				{ type: "review_progress", reviewId: "r1", step: { type: "correction_started", budget: 12, findings: 1 } },
+				{ type: "review_progress", reviewId: "r1", step: { type: "correction_finished", ok: true, used: 8 } },
+				{ type: "review_progress", reviewId: "r1", step: { type: "correction_finished", ok: false } },
+				{ type: "review_progress", reviewId: "r1", step: { type: "validator_started", findings: 1 } },
+				{ type: "review_progress", reviewId: "r1", step: { type: "validator_finished", resolved: 1, unresolved: 0 } },
+			]);
+			expect(stdout).toBe(
+				[
+					"◇ review: lens risk",
+					"◇ review: lens risk done · 2 findings",
+					"◇ review: lens risk failed",
+					"◇ review: refuting 1 finding",
+					"◇ review: 1 confirmed · 0 refuted",
+					"◇ review: correcting (budget 12 lines)",
+					"◇ review: correction done · 8 lines",
+					"◇ review: correction failed",
+					"◇ review: validating 1 finding",
+					"◇ review: 1 resolved · 0 unresolved",
+					"",
+				].join("\n"),
+			);
+		});
+
+		it("nests the lens's own work like a subagent", () => {
+			const { stdout } = render([
+				{
+					type: "session_started",
+					backend: "fake",
+					model: "m",
+					authSource: "subscription",
+					parentCallId: "r1",
+					agent: "review:risk",
+				},
+				{ type: "text_delta", text: "looking", parentCallId: "r1", agent: "review:risk" },
+			] as never);
+			expect(stdout).toBe("  ↳ review:risk · m\n  │ looking");
+		});
+
+		it("says approved with the receipt, relative to the working directory", () => {
+			const { stdout } = render([{ ...finished, receiptPath: "/repo/.git/atelier/reviews/abc.json" }], "/repo");
+			expect(stdout).toBe("✓ review approved · receipt .git/atelier/reviews/abc.json\n");
+		});
+
+		it("keeps an absolute receipt path that is outside the working directory", () => {
+			const { stdout } = render([{ ...finished, receiptPath: "/elsewhere/r.json" }], "/repo");
+			expect(stdout).toBe("✓ review approved · receipt /elsewhere/r.json\n");
+		});
+
+		it("counts the correction and the follow-ups of an approved review", () => {
+			const { stdout } = render([
+				{ ...finished, correction: { budget: 12, used: 8 }, followUps: [finding, finding], receiptPath: "r.json" },
+			]);
+			expect(stdout).toBe("✓ review approved · corrected 8/12 lines · 2 follow-ups · receipt r.json\n");
+		});
+
+		it("says plainly that an over-budget correction stays in the worktree", () => {
+			const { stdout } = render([
+				{
+					...finished,
+					verdict: "escalated",
+					reason: "The correction changed 30 lines, over the budget of 12.",
+					findings: [finding],
+					correction: { budget: 12, used: 30 },
+					receiptPath: "r.json",
+				},
+			]);
+			expect(stdout).toBe(
+				[
+					"✗ review escalated: The correction changed 30 lines, over the budget of 12. — the correction is left in your worktree, review it before committing",
+					"  RL-001 critical src/auth.ts:12 — The token is dropped.",
+					"  receipt r.json",
+					"",
+				].join("\n"),
+			);
+		});
+
+		it("does not claim a correction when none was applied", () => {
+			const { stdout } = render([
+				{ ...finished, verdict: "escalated", reason: "Unresolved.", findings: [finding], correction: null },
+			]);
+			expect(stdout).not.toContain("left in your worktree");
+			expect(stdout).toContain("✗ review escalated: Unresolved.\n");
+		});
+
+		it("says declined and unavailable", () => {
+			const { stdout } = render([
+				{ ...finished, verdict: "declined" },
+				{ ...finished, verdict: "unavailable", reason: "lens_context_budget_exceeded" },
+			]);
+			expect(stdout).toBe("◇ review declined\n◇ review unavailable: lens_context_budget_exceeded\n");
+		});
 	});
 });

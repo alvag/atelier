@@ -1,6 +1,7 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import {
 	type AtelierEventBody,
@@ -25,7 +26,10 @@ afterEach(async () => {
 	await rm(cwd, { recursive: true, force: true });
 });
 
-function harness(turns: FakeStep[][], options: { isTTY?: boolean; input?: string[]; keepStdinOpen?: boolean } = {}) {
+function harness(
+	turns: FakeStep[][],
+	options: { isTTY?: boolean; input?: string[]; keepStdinOpen?: boolean; env?: Record<string, string> } = {},
+) {
 	const backend = new FakeBackend(turns);
 	let interruptHandler: (() => void) | undefined;
 	const exits: number[] = [];
@@ -43,6 +47,7 @@ function harness(turns: FakeStep[][], options: { isTTY?: boolean; input?: string
 		},
 		cwd,
 		color: false,
+		env: options.env ?? {},
 		onInterrupt: (handler: () => void) => {
 			interruptHandler = handler;
 			return () => {
@@ -80,6 +85,7 @@ describe("run", () => {
 			"bash",
 			"grep",
 			"task",
+			"risk",
 			"feature",
 			"phase",
 		]);
@@ -341,5 +347,129 @@ describe("run", () => {
 		expect(await run(["--cwd", join(cwd, "nope"), "x"], missing.io, missing.createBackend)).toBe(2);
 		expect(missing.err()).toContain("Working directory does not exist");
 		expect(missing.backend.startOptions).toBeUndefined();
+	});
+});
+
+/** A git repo in `cwd` with one commit and an uncommitted change at `path`. */
+async function repoWithChange(path: string) {
+	const git = (...args: string[]) =>
+		execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, encoding: "utf8" });
+	git("init", "-q");
+	await writeFile(join(cwd, "base.txt"), "base\n");
+	git("add", "-A");
+	git("commit", "-qm", "init");
+	await mkdir(dirname(join(cwd, path)), { recursive: true });
+	await writeFile(join(cwd, path), "export const x = 1;\n");
+}
+
+describe("run: review", () => {
+	const mainTurn: FakeStep[] = [{ event: { type: "text_delta", text: "done" } }, { event: finished }];
+	const noFindings: FakeStep[] = [{ event: { type: "text_delta", text: '{"findings": []}' } }, { event: finished }];
+	const lenses = (n: number) => Array.from({ length: n }, () => noFindings);
+	const reviewLines = (out: string) => out.split("\n").filter((line) => line.includes("review"));
+
+	it("asks on a terminal, shows level, reasons and lenses, and reviews when the answer is yes", async () => {
+		await repoWithChange("src/auth.ts");
+		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: ["y"] });
+		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
+		expect(h.out()).toContain(
+			"Review this change?\n  risk: high\n  reasons: path: src/auth.ts (auth)\n  lenses: risk, resilience, readability, reliability\n[y/N] ",
+		);
+		expect(h.backend.prompts).toHaveLength(5);
+		expect(h.out()).toMatch(/✓ review approved · receipt \.git\/atelier\/reviews\/[0-9a-f]+\.json\n/);
+	});
+
+	it("prints the risk line before the question", async () => {
+		await repoWithChange("src/auth.ts");
+		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: ["n"] });
+		await run(["change it"], h.io, h.createBackend);
+		expect(h.out().indexOf("◇ review high · 4 lenses")).toBeGreaterThan(-1);
+		expect(h.out().indexOf("◇ review high · 4 lenses")).toBeLessThan(h.out().indexOf("Review this change?"));
+	});
+
+	it("does not review when the answer is no, and says declined", async () => {
+		await repoWithChange("src/auth.ts");
+		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: [""] });
+		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toHaveLength(1);
+		expect(reviewLines(h.out())).toContain("◇ review declined");
+	});
+
+	it("declines without a terminal and says how to review", async () => {
+		await repoWithChange("src/auth.ts");
+		const h = harness([mainTurn, ...lenses(4)]);
+		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toHaveLength(1);
+		expect(h.err()).toContain("review skipped: there is no terminal to ask; use /review in an interactive session");
+		expect(h.out()).toContain("◇ review declined");
+	});
+
+	it("does not take --yes as consent to review", async () => {
+		await repoWithChange("src/auth.ts");
+		const h = harness([mainTurn, ...lenses(4)]);
+		await run(["--yes", "change it"], h.io, h.createBackend);
+		expect(h.backend.prompts).toHaveLength(1);
+		expect(h.out()).toContain("◇ review declined");
+	});
+
+	it("answers no to the question on Ctrl+C", async () => {
+		await repoWithChange("src/auth.ts");
+		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: [], keepStdinOpen: true });
+		const pending = run(["change it"], h.io, h.createBackend);
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		expect(h.out()).toContain("Review this change?");
+		h.ctrlC();
+		expect(await pending).toBe(130);
+		expect(h.backend.prompts).toHaveLength(1);
+	});
+
+	it.each([
+		["--no-review", ["--no-review", "x"], {}],
+		["ATELIER_REVIEW=off", ["x"], { ATELIER_REVIEW: "off" }],
+	])("does not review with %s", async (_name, argv, env) => {
+		await repoWithChange("src/auth.ts");
+		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: ["y"], env });
+		expect(await run(argv, h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toHaveLength(1);
+		expect(h.backend.startOptions?.tools.map((t) => t.name)).not.toContain("risk");
+		expect(h.out()).not.toContain("review");
+		expect(h.err()).not.toContain("review");
+	});
+
+	it("gives the main agent the risk tool by default and says why there is no review outside git", async () => {
+		const h = harness([mainTurn]);
+		await run(["x"], h.io, h.createBackend);
+		expect(h.backend.startOptions?.tools.map((t) => t.name)).toContain("risk");
+		expect(h.err()).toMatch(/^no review: /);
+	});
+
+	it("runs /review in the interactive loop for any risk, and renders it like a turn", async () => {
+		await repoWithChange("notes.ts");
+		const h = harness([noFindings], { input: ["/review"] });
+		expect(await run([], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toHaveLength(1);
+		expect(h.out()).toContain("◇ review medium · 1 lens");
+		expect(h.out()).toContain("◇ review: lens reliability");
+		expect(h.out()).toMatch(/✓ review approved · receipt \.git\/atelier\/reviews\//);
+		expect(h.out()).toContain("tokens: ");
+	});
+
+	it("says so when /review finds nothing to review", async () => {
+		const git = (...args: string[]) =>
+			execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd });
+		git("init", "-q");
+		await writeFile(join(cwd, "a.txt"), "a\n");
+		git("add", "-A");
+		git("commit", "-qm", "init");
+		const h = harness([], { input: ["/review"] });
+		expect(await run([], h.io, h.createBackend)).toBe(0);
+		expect(h.err()).toContain("There are no changes to review.");
+	});
+
+	it("answers /review with an error, not a prompt, when the review is off", async () => {
+		const h = harness([mainTurn], { input: ["/review"], env: { ATELIER_REVIEW: "off" } });
+		await run([], h.io, h.createBackend);
+		expect(h.err()).toContain("Review is off");
+		expect(h.backend.prompts).toEqual([]);
 	});
 });

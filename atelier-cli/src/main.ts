@@ -27,6 +27,7 @@ const exitCode = await run(
 		stdout: (text) => process.stdout.write(text),
 		stderr: (text) => process.stderr.write(text),
 		cwd: process.cwd(),
+		env: process.env,
 		color: Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined,
 		onInterrupt: (handler) => {
 			process.on("SIGINT", handler);

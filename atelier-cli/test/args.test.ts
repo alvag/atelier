@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCliArgs, UsageError } from "../src/args.ts";
+import { parseCliArgs, USAGE, UsageError } from "../src/args.ts";
 
 describe("parseCliArgs", () => {
 	it("joins positional words into one prompt", () => {
@@ -10,6 +10,7 @@ describe("parseCliArgs", () => {
 			cwd: "/home",
 			help: false,
 			version: false,
+			review: true,
 		});
 	});
 
@@ -26,6 +27,7 @@ describe("parseCliArgs", () => {
 			cwd: "/home/other",
 			help: false,
 			version: false,
+			review: true,
 		});
 		expect(parseCliArgs(["-y", "x"], "/home").yes).toBe(true);
 	});
@@ -33,6 +35,20 @@ describe("parseCliArgs", () => {
 	it("reads --backend, claude-code by default", () => {
 		expect(parseCliArgs(["--backend", "anthropic-api", "x"], "/h").backend).toBe("anthropic-api");
 		expect(parseCliArgs(["x"], "/h").backend).toBe("claude-code");
+	});
+
+	it("reviews changes unless --no-review or ATELIER_REVIEW=off", () => {
+		expect(parseCliArgs(["x"], "/h").review).toBe(true);
+		expect(parseCliArgs(["--no-review", "x"], "/h").review).toBe(false);
+		expect(parseCliArgs(["x"], "/h", { ATELIER_REVIEW: "off" }).review).toBe(false);
+		expect(parseCliArgs(["x"], "/h", { ATELIER_REVIEW: "on" }).review).toBe(true);
+		expect(parseCliArgs(["--no-review", "x"], "/h", {}).review).toBe(false);
+	});
+
+	it("documents both ways to turn the review off in the help", () => {
+		expect(USAGE).toContain("--no-review");
+		expect(USAGE).toContain("ATELIER_REVIEW=off");
+		expect(USAGE).toContain("/review");
 	});
 
 	it("reads --help and --version", () => {

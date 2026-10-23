@@ -17,8 +17,40 @@ export type TurnItem =
 			subagent?: Subagent;
 	  }
 	| { kind: "approval"; callId: string; command: string; state: "pending" | "approved" | "denied" }
+	| {
+			kind: "review_consent";
+			reviewId: string;
+			level: string;
+			reasons: string[];
+			lenses: string[];
+			/** closed: the review ended, or the turn did, before it was answered. */
+			state: "pending" | "granted" | "declined" | "closed";
+	  }
+	| {
+			kind: "review";
+			/** Unknown until the review is offered or starts; the assessment that precedes it carries none. */
+			reviewId?: string;
+			level?: string;
+			reasons: string[];
+			lenses: string[];
+			/** Each lens, the refuter and the validator, in the order they first spoke. */
+			roles: Subagent[];
+			result?: ReviewResult;
+	  }
 	| { kind: "error"; code: string; message: string }
 	| { kind: "cache_miss"; reason: string; missedTokens: number };
+
+type ReviewFinding = Extract<AtelierEvent, { type: "review_finished" }>["findings"][number];
+
+export interface ReviewResult {
+	verdict: string;
+	reason?: string;
+	findings: ReviewFinding[];
+	refuted: number;
+	followUps: number;
+	correction: { budget: number; used: number } | null;
+	receiptPath?: string;
+}
 
 export interface Finished {
 	stopReason: string;
@@ -52,6 +84,8 @@ export interface ChatState {
 	phase?: Phase;
 	/** Whether the session has long-term memory, for which project, or why not. */
 	memory?: { available: boolean; project?: string; reason?: string };
+	/** Why changes cannot be reviewed in this session; absent when they can. */
+	review?: { available: false; reason?: string };
 	/** The active ODD feature document, as the core last reported it. */
 	feature?: { name: string; path: string; title: string; tasks: FeatureTask[] };
 	turns: Turn[];
@@ -70,6 +104,7 @@ export type ChatAction =
 	| { type: "prompt_sent"; text: string }
 	| { type: "turn_accepted"; turnId: string }
 	| { type: "approval_answered"; callId: string; approved: boolean }
+	| { type: "review_consent_answered"; reviewId: string; answer: "granted" | "declined" }
 	| { type: "command_failed"; code: string; message: string }
 	| { type: "batch"; actions: ChatAction[] };
 
@@ -97,7 +132,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 		case "protocol_error":
 			return { ...state, lastError: { code: "protocol_error", message: action.message } };
 		case "session_opened": {
-			const { feature: _feature, phase: _phase, memory: _memory, ...rest } = state;
+			const { feature: _feature, phase: _phase, memory: _memory, review: _review, ...rest } = state;
 			return { ...rest, session: { id: action.sessionId, cwd: action.cwd }, turns: [], busy: false };
 		}
 		case "prompt_sent": {
@@ -111,6 +146,12 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 			return mapItems(state, (item) =>
 				item.kind === "approval" && item.callId === action.callId
 					? { ...item, state: action.approved ? "approved" : "denied" }
+					: item,
+			);
+		case "review_consent_answered":
+			return mapItems(state, (item) =>
+				item.kind === "review_consent" && item.reviewId === action.reviewId && item.state === "pending"
+					? { ...item, state: action.answer }
 					: item,
 			);
 		case "command_failed": {
@@ -140,7 +181,11 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 		}
 		case "turn_finished":
 			return {
-				...updateTurn(state, event.turnId, (turn) => ({ ...turn, finished: finishedOf(event) })),
+				...updateTurn(state, event.turnId, (turn) => ({
+					...turn,
+					items: closeConsents(turn.items),
+					finished: finishedOf(event),
+				})),
 				busy: false,
 			};
 		case "phase_changed":
@@ -154,6 +199,10 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 					...(event.reason === undefined ? {} : { reason: event.reason }),
 				},
 			};
+		case "review_status":
+			return event.available
+				? state
+				: { ...state, review: { available: false, ...(event.reason === undefined ? {} : { reason: event.reason }) } };
 		case "feature_changed":
 			return { ...state, feature: { name: event.name, path: event.path, title: event.title, tasks: event.tasks } };
 		case "error": {
@@ -169,14 +218,33 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 function applySubagentEvent(state: ChatState, event: AtelierEvent, parentCallId: string): ChatState {
 	return updateTurn(state, event.turnId, (turn) => ({
 		...turn,
-		items: turn.items.map((item) => {
-			if (item.kind !== "tool" || item.callId !== parentCallId) return item;
-			const subagent = item.subagent ?? { agent: event.agent ?? item.tool, items: [] };
-			if (event.type === "session_started") return { ...item, subagent: { ...subagent, model: event.model } };
-			if (event.type === "turn_finished") return { ...item, subagent: { ...subagent, finished: finishedOf(event) } };
-			return { ...item, subagent: { ...subagent, items: reduceItems(subagent.items, event) } };
-		}),
+		items: reduceChildItems(turn.items, event, parentCallId),
 	}));
+}
+
+/** A review's roles share one parent id, so each gets its own block; any other child belongs to its task call. */
+function reduceChildItems(items: TurnItem[], event: AtelierEvent, parentCallId: string): TurnItem[] {
+	if (event.agent?.startsWith("review:")) {
+		const agent = event.agent;
+		return updateReview(items, parentCallId, (review) => {
+			const known = review.roles.find((role) => role.agent === agent);
+			const role: Subagent = known ?? { agent, items: [] };
+			const next =
+				event.type === "session_started"
+					? { ...role, model: event.model }
+					: event.type === "turn_finished"
+						? { ...role, finished: finishedOf(event) }
+						: { ...role, items: reduceItems(role.items, event) };
+			return { ...review, roles: known ? review.roles.map((r) => (r === known ? next : r)) : [...review.roles, next] };
+		});
+	}
+	return items.map((item) => {
+		if (item.kind !== "tool" || item.callId !== parentCallId) return item;
+		const subagent = item.subagent ?? { agent: event.agent ?? item.tool, items: [] };
+		if (event.type === "session_started") return { ...item, subagent: { ...subagent, model: event.model } };
+		if (event.type === "turn_finished") return { ...item, subagent: { ...subagent, finished: finishedOf(event) } };
+		return { ...item, subagent: { ...subagent, items: reduceItems(subagent.items, event) } };
+	});
 }
 
 function finishedOf(event: Extract<AtelierEvent, { type: "turn_finished" }>): Finished {
@@ -215,9 +283,66 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 			return [...items, { kind: "error", code: event.code, message: event.message }];
 		case "cache_miss":
 			return [...items, { kind: "cache_miss", reason: event.reason, missedTokens: event.missedTokens }];
+		case "review_assessed":
+			return [
+				...items,
+				{ kind: "review", level: event.level, reasons: event.reasons, lenses: event.lenses, roles: [] },
+			];
+		case "review_consent_requested":
+			return [
+				...updateReview(items, event.reviewId, (review) => review),
+				{
+					kind: "review_consent",
+					reviewId: event.reviewId,
+					level: event.level,
+					reasons: event.reasons,
+					lenses: event.lenses,
+					state: "pending",
+				},
+			];
+		case "review_progress":
+			return updateReview(items, event.reviewId, (review) => review);
+		case "review_finished":
+			return closeConsents(
+				updateReview(items, event.reviewId, (review) => ({
+					...review,
+					result: {
+						verdict: event.verdict,
+						...(event.reason === undefined ? {} : { reason: event.reason }),
+						findings: event.findings,
+						refuted: event.refuted.length,
+						followUps: event.followUps.length,
+						correction: event.correction,
+						...(event.receiptPath === undefined ? {} : { receiptPath: event.receiptPath }),
+					},
+				})),
+				event.reviewId,
+			);
 		default:
 			return items;
 	}
+}
+
+type ReviewItem = Extract<TurnItem, { kind: "review" }>;
+
+/**
+ * Applies `update` to the review block with this id. The assessment that opens a block carries no id, so the
+ * newest block without one is adopted; with none, a block is started.
+ */
+function updateReview(items: TurnItem[], reviewId: string, update: (review: ReviewItem) => ReviewItem): TurnItem[] {
+	let index = items.findIndex((item) => item.kind === "review" && item.reviewId === reviewId);
+	if (index === -1) index = items.findLastIndex((item) => item.kind === "review" && item.reviewId === undefined);
+	if (index === -1) return [...items, update({ kind: "review", reviewId, reasons: [], lenses: [], roles: [] })];
+	return items.map((item, i) => (i === index ? update({ ...(item as ReviewItem), reviewId }) : item));
+}
+
+/** Pending consent cards of this review (any, without an id) can no longer be answered. */
+function closeConsents(items: TurnItem[], reviewId?: string): TurnItem[] {
+	return items.map((item) =>
+		item.kind === "review_consent" && item.state === "pending" && (reviewId === undefined || item.reviewId === reviewId)
+			? { ...item, state: "closed" }
+			: item,
+	);
 }
 
 /** Updates the turn with this id; else adopts the turn still waiting for its id; else starts one. */

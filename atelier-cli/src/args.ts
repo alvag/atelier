@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { reviewEnabled } from "@atelier/core";
 import { BACKEND_NAMES, type BackendName, DEFAULT_BACKEND } from "@atelier/core/protocol";
 
 export class UsageError extends Error {
@@ -15,6 +16,8 @@ export interface CliArgs {
 	cwd: string;
 	help: boolean;
 	version: boolean;
+	/** Changes are reviewed (RDD): on unless --no-review or ATELIER_REVIEW=off. */
+	review: boolean;
 }
 
 export const USAGE = `Usage: atelier [options] [prompt]
@@ -31,17 +34,28 @@ Options:
       --model <name>     Model to use (default: opus on claude-code,
                          claude-sonnet-5-5 on anthropic-api)
       --cwd <dir>        Working directory (default: current directory)
+      --no-review        Do not review uncommitted changes (see below)
   -h, --help             Show this help
   -v, --version          Show the version
 
 Long-term memory is used when its memory service is installed; the session says
 which project it uses, or why it has none.
 
+After a turn that leaves risky uncommitted changes in a git repository, Atelier asks
+whether to review them (the question needs a terminal; --yes does not answer it).
+In an interactive session, /review reviews the current changes at any risk. A review
+never commits anything.
+
 Environment:
   ATELIER_MEMORY=off     Run without long-term memory
+  ATELIER_REVIEW=off     Run without reviewing changes, like --no-review
 `;
 
-export function parseCliArgs(argv: readonly string[], baseDir: string): CliArgs {
+export function parseCliArgs(
+	argv: readonly string[],
+	baseDir: string,
+	env: Record<string, string | undefined> = {},
+): CliArgs {
 	let parsed: ReturnType<typeof parse>;
 	try {
 		parsed = parse(argv);
@@ -62,6 +76,7 @@ export function parseCliArgs(argv: readonly string[], baseDir: string): CliArgs 
 		cwd: resolve(baseDir, values.cwd ?? "."),
 		help: values.help ?? false,
 		version: values.version ?? false,
+		review: !(values["no-review"] ?? false) && reviewEnabled(env),
 	};
 }
 
@@ -77,6 +92,7 @@ function parse(argv: readonly string[]) {
 			cwd: { type: "string" },
 			help: { type: "boolean", short: "h" },
 			version: { type: "boolean", short: "v" },
+			"no-review": { type: "boolean" },
 		},
 	});
 }

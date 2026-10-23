@@ -315,3 +315,202 @@ describe("reduceChat", () => {
 		expect(state.turns[0]?.items).toEqual([{ kind: "text", text: "ab" }]);
 	});
 });
+
+describe("reduceChat: review", () => {
+	const opened = [
+		...ready,
+		{ type: "prompt_sent", text: "x" } as ChatAction,
+		{ type: "turn_accepted", turnId: "t1" } as ChatAction,
+	];
+	const assessed: AtelierEventBody = {
+		type: "review_assessed",
+		tree: "t",
+		level: "high",
+		reasons: ["path: src/auth.ts (auth)"],
+		files: ["src/auth.ts"],
+		changedLines: 9,
+		lenses: ["risk", "resilience"],
+		reviewDue: true,
+	};
+	const consent: AtelierEventBody = {
+		type: "review_consent_requested",
+		reviewId: "r1",
+		level: "high",
+		reasons: ["path: src/auth.ts (auth)"],
+		lenses: ["risk", "resilience"],
+	};
+	const finishedReview: AtelierEventBody = {
+		type: "review_finished",
+		reviewId: "r1",
+		verdict: "approved",
+		findings: [],
+		refuted: [],
+		followUps: [],
+		correction: null,
+		receiptPath: "/repo/.git/atelier/reviews/abc.json",
+		usage,
+	};
+	const items = (state: ChatState) => state.turns.at(-1)?.items ?? [];
+	const child = (body: Record<string, unknown>, agent: string) =>
+		event({ ...body, parentCallId: "r1", agent } as unknown as AtelierEventBody);
+
+	it("keeps why there is no review in the status, and forgets it with the session", () => {
+		const state = run([...ready, event({ type: "review_status", available: false, reason: "not a git repository" })]);
+		expect(state.review).toEqual({ available: false, reason: "not a git repository" });
+		expect(run([{ type: "session_opened", sessionId: "s2", cwd: "/other" }], state).review).toBeUndefined();
+	});
+
+	it("adds a review block with the risk, and a consent card that adopts the review id", () => {
+		const state = run([...opened, event(assessed), event(consent)]);
+		expect(items(state)).toEqual([
+			{
+				kind: "review",
+				reviewId: "r1",
+				level: "high",
+				reasons: ["path: src/auth.ts (auth)"],
+				lenses: ["risk", "resilience"],
+				roles: [],
+			},
+			{
+				kind: "review_consent",
+				reviewId: "r1",
+				level: "high",
+				reasons: ["path: src/auth.ts (auth)"],
+				lenses: ["risk", "resilience"],
+				state: "pending",
+			},
+		]);
+	});
+
+	it("marks the card with the answer", () => {
+		const state = run([
+			...opened,
+			event(assessed),
+			event(consent),
+			{ type: "review_consent_answered", reviewId: "r1", answer: "granted" },
+		]);
+		expect(items(state)[1]).toMatchObject({ kind: "review_consent", state: "granted" });
+		const declined = run(
+			[{ type: "review_consent_answered", reviewId: "r1", answer: "declined" }],
+			run([...opened, event(consent)]),
+		);
+		expect(items(declined)[1]).toMatchObject({ kind: "review_consent", state: "declined" });
+	});
+
+	it("closes a pending card when the review finishes, and keeps an answered one", () => {
+		const pending = run([...opened, event(assessed), event(consent), event(finishedReview)]);
+		expect(items(pending)).toContainEqual(expect.objectContaining({ kind: "review_consent", state: "closed" }));
+		const answered = run([
+			...opened,
+			event(consent),
+			{ type: "review_consent_answered", reviewId: "r1", answer: "declined" },
+			event({ ...finishedReview, verdict: "declined" }),
+		]);
+		expect(items(answered)).toContainEqual(expect.objectContaining({ kind: "review_consent", state: "declined" }));
+	});
+
+	it("closes a pending card when the turn ends without an answer (interrupted)", () => {
+		const state = run([
+			...opened,
+			event(assessed),
+			event(consent),
+			event({ type: "turn_finished", stopReason: "interrupted", usage }),
+		]);
+		expect(items(state)).toContainEqual(expect.objectContaining({ kind: "review_consent", state: "closed" }));
+	});
+
+	it("nests each role's work in its own block under the review, not under a tool call", () => {
+		const state = run([
+			...opened,
+			event({ type: "text_delta", text: "done" }),
+			event(assessed),
+			event({ type: "review_progress", reviewId: "r1", step: { type: "lens_started", lens: "risk" } }),
+			child({ type: "session_started", backend: "fake", model: "opus", authSource: "subscription" }, "review:risk"),
+			child({ type: "text_delta", text: "looking" }, "review:risk"),
+			child({ type: "text_delta", text: "other" }, "review:resilience"),
+			child({ type: "turn_finished", stopReason: "end_turn", usage }, "review:risk"),
+		]);
+		const review = items(state).find((item) => item.kind === "review");
+		expect(review).toMatchObject({ kind: "review", reviewId: "r1" });
+		if (review?.kind !== "review") throw new Error("no review block");
+		expect(review.roles.map((role) => role.agent)).toEqual(["review:risk", "review:resilience"]);
+		expect(review.roles[0]).toMatchObject({
+			model: "opus",
+			items: [{ kind: "text", text: "looking" }],
+			finished: { stopReason: "end_turn" },
+		});
+		expect(review.roles[1]?.items).toEqual([{ kind: "text", text: "other" }]);
+		// A role's end never ends the parent's turn.
+		expect(state.busy).toBe(true);
+	});
+
+	it("adopts a role's events that arrive before the first progress event of an on-demand review", () => {
+		const state = run([...opened, event(assessed), child({ type: "text_delta", text: "hi" }, "review:risk")]);
+		expect(items(state)).toHaveLength(1);
+		expect(items(state)[0]).toMatchObject({ kind: "review", reviewId: "r1", roles: [{ agent: "review:risk" }] });
+	});
+
+	it("keeps the verdict, the findings, the correction and the receipt path", () => {
+		const finding = {
+			id: "RL-001",
+			lens: "reliability",
+			severity: "critical",
+			cause: "candidate",
+			path: "src/auth.ts",
+			line: 3,
+			claim: "The token is dropped.",
+			evidence: "src/auth.ts:3",
+		};
+		const state = run([
+			...opened,
+			event(assessed),
+			event({
+				...finishedReview,
+				verdict: "escalated",
+				reason: "The correction changed 30 lines, over the budget of 12.",
+				findings: [finding],
+				refuted: [{ id: "RS-001", reason: "not real" }],
+				followUps: [finding],
+				correction: { budget: 12, used: 30 },
+			} as AtelierEventBody),
+		]);
+		expect(items(state)).toHaveLength(1);
+		expect(items(state)[0]).toMatchObject({
+			kind: "review",
+			result: {
+				verdict: "escalated",
+				reason: "The correction changed 30 lines, over the budget of 12.",
+				findings: [finding],
+				refuted: 1,
+				followUps: 1,
+				correction: { budget: 12, used: 30 },
+				receiptPath: "/repo/.git/atelier/reviews/abc.json",
+			},
+		});
+	});
+
+	it("shows a review that finished with no earlier assessment", () => {
+		const state = run([
+			...opened,
+			event({ ...finishedReview, verdict: "unavailable", reason: "no HEAD" } as AtelierEventBody),
+		]);
+		expect(items(state)).toEqual([
+			expect.objectContaining({
+				kind: "review",
+				reviewId: "r1",
+				result: expect.objectContaining({ verdict: "unavailable" }),
+			}),
+		]);
+	});
+
+	it("leaves a task call's subagent alone", () => {
+		const state = run([
+			...opened,
+			event(assessed),
+			event({ type: "tool_call_started", callId: "c1", tool: "task", input: {} }),
+			event({ type: "text_delta", text: "sub", parentCallId: "c1", agent: "worker" } as unknown as AtelierEventBody),
+		]);
+		expect(items(state)[0]).toMatchObject({ kind: "review", roles: [] });
+		expect(items(state)[1]).toMatchObject({ kind: "tool", subagent: { agent: "worker" } });
+	});
+});

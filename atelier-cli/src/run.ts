@@ -1,14 +1,16 @@
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import type { Readable } from "node:stream";
 import {
 	type AgentBackend,
+	type AtelierEvent,
 	type BackendName,
 	BUILTIN_AGENTS,
 	coreTools,
 	createBackend as createNamedBackend,
 	describeError,
 	type MemoryPort,
+	type ReviewConsentRequest,
 	Session,
 	SYSTEM_PROMPT_APPEND,
 	VERSION,
@@ -24,6 +26,8 @@ export interface CliIO {
 	stdout: (text: string) => void;
 	stderr: (text: string) => void;
 	cwd: string;
+	/** The environment the switches (ATELIER_REVIEW) are read from; none set when absent. */
+	env?: Record<string, string | undefined>;
 	color: boolean;
 	/** Registers a Ctrl+C handler; returns a function that removes it. */
 	onInterrupt?: (handler: () => void) => () => void;
@@ -53,7 +57,7 @@ export async function run(
 ): Promise<number> {
 	let args: ReturnType<typeof parseCliArgs>;
 	try {
-		args = parseCliArgs(argv, io.cwd);
+		args = parseCliArgs(argv, io.cwd, io.env);
 	} catch (error) {
 		if (!(error instanceof UsageError)) throw error;
 		io.stderr(`error: ${error.message}\nRun atelier --help for usage.\n`);
@@ -95,15 +99,54 @@ export async function run(
 				return undefined;
 			});
 
-	const renderer = new Renderer({ stdout: io.stdout, stderr: io.stderr, color: io.color });
+	const renderer = new Renderer({
+		stdout: io.stdout,
+		stderr: io.stderr,
+		color: io.color,
+		cwd: await realpath(args.cwd),
+	});
 	const lines = createLineReader(io.stdin);
-	/** Cancels a pending approval question, answering no. */
+	/** Cancels a pending yes/no question, answering no. */
 	let cancelApproval: (() => void) | undefined;
+	/** Asks a yes/no question on the terminal; only "y" or "yes" is a yes, and Ctrl+C is a no. */
+	const askYesNo = async (question: string): Promise<boolean> => {
+		renderer.endLine();
+		renderer.write(`${question}[y/N] `);
+		const cancelled = new Promise<undefined>((resolve) => {
+			cancelApproval = () => resolve(undefined);
+		});
+		const read = lines.next();
+		const answer = await Promise.race([read.then((line) => ({ line })), cancelled]);
+		cancelApproval = undefined;
+		if (answer === undefined) {
+			lines.abandon(read);
+			renderer.write("\n");
+			return false;
+		}
+		renderer.write("\n");
+		return /^y(es)?$/i.test(answer.line?.trim() ?? "");
+	};
+	const consent = async ({ level, reasons, lenses }: ReviewConsentRequest): Promise<"granted" | "declined"> => {
+		if (!io.isTTY) {
+			renderer.endLine();
+			io.stderr("review skipped: there is no terminal to ask; use /review in an interactive session to review it\n");
+			return "declined";
+		}
+		// Let the risk line, which the same turn queued just before this question, print first.
+		await new Promise((resolve) => setImmediate(resolve));
+		// Reasons come from file paths and contents: show control characters instead of letting the terminal run them.
+		const shown = reasons.map((reason) => visibleText(reason).text).join("; ");
+		const answer = await askYesNo(
+			`Review this change?\n  risk: ${level}\n  reasons: ${shown}\n  lenses: ${lenses.join(", ")}\n`,
+		);
+		return answer ? "granted" : "declined";
+	};
 	const session = await Session.start({
 		backend,
 		...(memory ? { memory } : {}),
 		...(memoryUnavailable === undefined ? {} : { memoryUnavailable }),
 		subagents: { agents: BUILTIN_AGENTS, createBackend: () => createBackend(args.backend) },
+		...(args.review ? { review: { createBackend: () => createBackend(args.backend), consent } } : {}),
 		odd: true,
 		cwd: args.cwd,
 		...(args.model === undefined ? {} : { model: args.model }),
@@ -116,26 +159,12 @@ export async function run(
 				io.stderr(`bash command needs approval; run with --yes to allow commands: ${visibleText(command).text}\n`);
 				return false;
 			}
-			renderer.endLine();
 			// The command comes from the model: show escape sequences and bidi controls instead of letting the terminal run them.
 			const shown = visibleText(command);
 			const warning = shown.hadHidden
 				? "warning: the command contains invisible or control characters, shown as markers.\n"
 				: "";
-			renderer.write(`Run this command?\n  ${shown.text}\n${warning}[y/N] `);
-			const cancelled = new Promise<undefined>((resolve) => {
-				cancelApproval = () => resolve(undefined);
-			});
-			const read = lines.next();
-			const answer = await Promise.race([read.then((line) => ({ line })), cancelled]);
-			cancelApproval = undefined;
-			if (answer === undefined) {
-				lines.abandon(read);
-				renderer.write("\n");
-				return false;
-			}
-			renderer.write("\n");
-			return /^y(es)?$/i.test(answer.line?.trim() ?? "");
+			return askYesNo(`Run this command?\n  ${shown.text}\n${warning}`);
 		},
 	});
 
@@ -163,16 +192,16 @@ export async function run(
 		void session.interrupt();
 	});
 
-	const runTurn = async (prompt: string) => {
+	const runTurn = async (events: AsyncIterable<AtelierEvent>) => {
 		renderer.resetTurn();
 		interrupted = false;
-		for await (const event of session.send(prompt)) renderer.render(event);
+		for await (const event of events) renderer.render(event);
 		renderer.endLine();
 	};
 
 	try {
 		if (args.prompt !== undefined) {
-			await runTurn(args.prompt);
+			await runTurn(session.send(args.prompt));
 			if (interrupted) return EXIT_INTERRUPTED;
 			return renderer.failed ? EXIT_FAILED : EXIT_OK;
 		}
@@ -182,7 +211,7 @@ export async function run(
 			if (quitting) return EXIT_INTERRUPTED;
 			if (line === undefined || line.trim() === "/exit") break;
 			if (line.trim() === "") continue;
-			await runTurn(line);
+			await runTurn(line.trim() === "/review" ? session.review() : session.send(line));
 			if (quitting) return EXIT_INTERRUPTED;
 		}
 		return EXIT_OK;

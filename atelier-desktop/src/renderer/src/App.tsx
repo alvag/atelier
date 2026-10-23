@@ -29,6 +29,11 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 		[chat],
 	);
 
+	const onConsent = useCallback(
+		(reviewId: string, answer: "granted" | "declined") => void chat.answerReviewConsent(reviewId, answer),
+		[chat],
+	);
+
 	const openFolder = async () => {
 		const cwd = await chat.pickFolder();
 		if (cwd) await chat.openSession(cwd, model, backend);
@@ -73,6 +78,9 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 						))}
 					</select>
 				</label>
+				<button type="button" onClick={() => void chat.review()} disabled={!state.session || state.busy}>
+					Review
+				</button>
 				<button type="button" onClick={() => void chat.interrupt()} disabled={!state.busy}>
 					Interrupt
 				</button>
@@ -85,7 +93,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 
 			<div className="workspace">
 				<main>
-					<Transcript turns={state.turns} onAnswer={onAnswer} />
+					<Transcript turns={state.turns} onAnswer={onAnswer} onConsent={onConsent} />
 				</main>
 				{state.feature ? <FeaturePanel feature={state.feature} /> : null}
 			</div>
@@ -123,6 +131,11 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 							no memory
 						</span>
 					)
+				) : null}
+				{state.review ? (
+					<span className="warning" title={state.review.reason}>
+						no review{state.review.reason ? `: ${state.review.reason}` : ""}
+					</span>
 				) : null}
 				{state.backend === "anthropic-api" ? (
 					<span>billed to your Anthropic API key</span>

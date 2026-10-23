@@ -12,6 +12,9 @@ export interface Chat {
 	send(prompt: string): Promise<void>;
 	interrupt(): Promise<void>;
 	answerApproval(callId: string, approved: boolean): Promise<void>;
+	answerReviewConsent(reviewId: string, answer: "granted" | "declined"): Promise<void>;
+	/** Reviews the session's current uncommitted change, at any risk. */
+	review(): Promise<void>;
 	restartCore(): Promise<void>;
 	pickFolder(): Promise<string | undefined>;
 }
@@ -80,6 +83,20 @@ export function useChat(bridge: AtelierBridge): Chat {
 			if (!session) return;
 			dispatch({ type: "approval_answered", callId, approved });
 			await request({ command: "session.approve", sessionId: session.id, callId, approved });
+		},
+		answerReviewConsent: async (reviewId, answer) => {
+			const session = stateRef.current.session;
+			if (!session) return;
+			dispatch({ type: "review_consent_answered", reviewId, answer });
+			await request({ command: "session.review_consent", sessionId: session.id, reviewId, answer });
+		},
+		review: async () => {
+			const session = stateRef.current.session;
+			if (!session) return;
+			dispatch({ type: "prompt_sent", text: "/review" });
+			const result = await request({ command: "session.review", sessionId: session.id });
+			if (result.ok && typeof result.result.turnId === "string")
+				dispatch({ type: "turn_accepted", turnId: result.result.turnId });
 		},
 		restartCore: () => bridge.restartCore(),
 		pickFolder: () => bridge.pickFolder(),

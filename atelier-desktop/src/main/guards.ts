@@ -1,6 +1,9 @@
 import { type ClientCommand, decodeClientMessage } from "@atelier/core/protocol";
 import type { CommandResult } from "../shared/bridge.ts";
 
+/** What the core's review ids look like (UUIDs); anything else from the renderer is not an answer to a question we asked. */
+const REVIEW_ID = /^[\w-]{1,128}$/;
+
 /**
  * Validates a command arriving from the renderer with the protocol's own
  * schema, and drops any envelope fields (id, type) the renderer sent.
@@ -19,6 +22,8 @@ export function parseCommand(
 		const decoded = decodeClientMessage(line);
 		if (decoded.ok) {
 			const { id: _decodedId, type: _decodedType, ...valid } = decoded.message;
+			if (valid.command === "session.review_consent" && !REVIEW_ID.test(valid.reviewId))
+				return { ok: false, error: { code: "invalid_command", message: "Invalid review id." } };
 			return { ok: true, command: valid as ClientCommand };
 		}
 		return { ok: false, error: { code: "invalid_command", message: decoded.message } };

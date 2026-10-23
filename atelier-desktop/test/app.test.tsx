@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import type { AtelierEventBody, ClientCommand } from "@atelier/core/protocol";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { App } from "../src/renderer/src/App.tsx";
 import type { AtelierBridge, CommandResult, CoreStatus, HostMessage } from "../src/shared/bridge.ts";
@@ -244,5 +244,170 @@ describe("App", () => {
 		await openFolderAndSend(fake, "x");
 		fireEvent.click(screen.getByRole("button", { name: "Interrupt" }));
 		await waitFor(() => expect(fake.commands.at(-1)).toEqual({ command: "session.interrupt", sessionId: "s1" }));
+	});
+
+	describe("review", () => {
+		const consent: AtelierEventBody = {
+			type: "review_consent_requested",
+			reviewId: "r1",
+			level: "high",
+			reasons: ["path: src/auth.ts (auth)"],
+			lenses: ["risk", "resilience", "readability", "reliability"],
+		};
+		const finishedReview: AtelierEventBody = {
+			type: "review_finished",
+			reviewId: "r1",
+			verdict: "approved",
+			findings: [],
+			refuted: [],
+			followUps: [],
+			correction: null,
+			receiptPath: "/repo/.git/atelier/reviews/abc.json",
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+		};
+
+		it("asks for consent with exactly two buttons and sends the answer", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit(consent);
+			const card = await screen.findByRole("group", { name: "Review this change?" });
+			expect(card.textContent).toContain("high");
+			expect(card.textContent).toContain("path: src/auth.ts (auth)");
+			expect(card.textContent).toContain("risk, resilience, readability, reliability");
+			expect(
+				within(card)
+					.getAllByRole("button")
+					.map((button) => button.textContent),
+			).toEqual(["Review this change", "Not now"]);
+			fireEvent.click(within(card).getByRole("button", { name: "Review this change" }));
+			await waitFor(() =>
+				expect(fake.commands.at(-1)).toEqual({
+					command: "session.review_consent",
+					sessionId: "s1",
+					reviewId: "r1",
+					answer: "granted",
+				}),
+			);
+			expect(within(card).queryAllByRole("button")).toEqual([]);
+		});
+
+		it("sends declined for Not now", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit(consent);
+			fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+			await waitFor(() =>
+				expect(fake.commands.at(-1)).toEqual({
+					command: "session.review_consent",
+					sessionId: "s1",
+					reviewId: "r1",
+					answer: "declined",
+				}),
+			);
+		});
+
+		it("closes the card when the review finishes", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit(consent);
+			await screen.findByRole("button", { name: "Not now" });
+			fake.emit(finishedReview);
+			await waitFor(() => expect(screen.queryByRole("button", { name: "Not now" })).toBeNull());
+			expect(screen.queryByRole("button", { name: "Review this change" })).toBeNull();
+		});
+
+		it("shows the review: risk, lenses as folded blocks, verdict and receipt", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({
+				type: "review_assessed",
+				tree: "t",
+				level: "high",
+				reasons: ["path: src/auth.ts (auth)"],
+				files: ["src/auth.ts"],
+				changedLines: 9,
+				lenses: ["risk", "resilience"],
+				reviewDue: true,
+			});
+			fake.emit({ ...consent, lenses: ["risk", "resilience"] });
+			const role = (body: Record<string, unknown>, agent: string) =>
+				fake.emit({ ...body, parentCallId: "r1", agent } as unknown as AtelierEventBody);
+			role({ type: "session_started", backend: "fake", model: "opus", authSource: "subscription" }, "review:risk");
+			role({ type: "text_delta", text: "no findings" }, "review:risk");
+			role({ type: "text_delta", text: "fine" }, "review:resilience");
+			fake.emit(finishedReview);
+			const block = await screen.findByTestId("review");
+			expect(block.textContent).toContain("high risk");
+			expect(block.textContent).toContain("path: src/auth.ts (auth)");
+			const lenses = within(block).getAllByTestId("subagent");
+			expect(lenses.map((lens) => lens.textContent)).toEqual([
+				expect.stringContaining("review:risk · opus"),
+				expect.stringContaining("review:resilience"),
+			]);
+			expect(lenses[0]?.textContent).toContain("no findings");
+			expect(lenses.every((lens) => !(lens as HTMLDetailsElement).open)).toBe(true);
+			expect(block.textContent).toContain("Approved");
+			expect(block.textContent).toContain("/repo/.git/atelier/reviews/abc.json");
+			expect(block.textContent).not.toContain("left in your worktree");
+		});
+
+		it("warns plainly that an escalated review left its correction in the worktree", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({
+				...finishedReview,
+				verdict: "escalated",
+				reason: "The correction changed 30 lines, over the budget of 12.",
+				correction: { budget: 12, used: 30 },
+			} as AtelierEventBody);
+			const warning = await screen.findByRole("alert");
+			expect(warning.textContent).toContain("Escalated: The correction changed 30 lines, over the budget of 12.");
+			expect(warning.textContent).toContain("The correction is left in your worktree. Review it before committing.");
+		});
+
+		it("does not claim a correction when none was applied, and says declined or unavailable", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({ ...finishedReview, verdict: "escalated", reason: "The correction failed." } as AtelierEventBody);
+			expect((await screen.findByRole("alert")).textContent).not.toContain("left in your worktree");
+			fake.emit({ ...finishedReview, reviewId: "r2", verdict: "declined" } as AtelierEventBody);
+			fake.emit({ ...finishedReview, reviewId: "r3", verdict: "unavailable", reason: "no HEAD" } as AtelierEventBody);
+			expect(await screen.findByText("Review declined")).toBeTruthy();
+			expect(await screen.findByText("Review unavailable: no HEAD")).toBeTruthy();
+		});
+
+		it("has a Review button that sends session.review, disabled without a session and while a turn runs", async () => {
+			const fake = fakeBridge();
+			render(<App bridge={fake.bridge} />);
+			await screen.findByText("core 0.0.0");
+			expect((screen.getByRole("button", { name: "Review" }) as HTMLButtonElement).disabled).toBe(true);
+			fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
+			await screen.findByText("/work");
+			const button = screen.getByRole("button", { name: "Review" }) as HTMLButtonElement;
+			expect(button.disabled).toBe(false);
+			fake.answers["session.review"] = { ok: true, result: { turnId: "t1" } };
+			fireEvent.click(button);
+			await waitFor(() => expect(fake.commands.at(-1)).toEqual({ command: "session.review", sessionId: "s1" }));
+			await waitFor(() => expect(button.disabled).toBe(true));
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			});
+			await waitFor(() => expect(button.disabled).toBe(false));
+		});
+
+		it("says in the status bar why there is no review", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({ type: "review_status", available: false, reason: "not a git repository" });
+			await waitFor(() => expect(screen.getByRole("status").textContent).toContain("no review: not a git repository"));
+		});
+
+		it("keeps the review on by default when opening a session", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			expect(fake.commands[0]).not.toHaveProperty("review");
+		});
 	});
 });
