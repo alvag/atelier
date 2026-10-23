@@ -8,6 +8,7 @@ export type {
 	FeatureTask,
 	JsonValue,
 	Phase,
+	RiskDeclaration,
 	Usage,
 } from "../events.ts";
 export { cacheHitRate, PHASES } from "../events.ts";

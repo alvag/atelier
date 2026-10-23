@@ -1,3 +1,4 @@
+import type { RiskDeclaration } from "../events.ts";
 import type { Candidate, ChangedFile, Manifest } from "./candidate.ts";
 import { isDocumentationPath, contentSignals as signalsIn } from "./signals.ts";
 
@@ -13,6 +14,8 @@ export interface Escalation {
 
 export interface RiskOptions {
 	escalations?: readonly Escalation[];
+	/** The agent's reason for declaring the change not high-risk; it never lowers a level. */
+	none?: string;
 	/** The lens for a medium-risk review; ignored at other levels. */
 	lens?: Lens;
 }
@@ -27,6 +30,8 @@ export interface Assessment {
 	/** Only high risk is reviewed without being asked for. */
 	reviewDue: boolean;
 	empty: boolean;
+	/** What the agent declared; absent for documentation, which needs no declaration. */
+	declaration?: RiskDeclaration;
 }
 
 const PATH_WORDS = [
@@ -82,18 +87,54 @@ export function assessRisk(candidate: Candidate, options: RiskOptions = {}): Ass
 		const items = escalation.items.join(", ");
 		signals.push(`agent: ${escalation.items.length === 1 ? "item" : "items"} ${items} (${escalation.reason})`);
 	}
-	if (signals.length > 0)
-		return { ...base, level: "high", reasons: signals, lenses: [...LENSES], reviewDue: true, empty: false };
-	if (isPassive(candidate))
-		return { ...base, level: "passive", reasons: ["documentation only"], lenses: [], reviewDue: false, empty: false };
+	// Code is never assumed low-risk: without a declaration the level stays as assessed, at least medium.
+	const docs = isPassive(candidate);
+	const declaration = declarationOf(options, !docs);
+	const declared = declaration === undefined ? {} : { declaration };
+	if (signals.length > 0) {
+		if (declaration?.kind === "missing") signals.push(NO_DECLARATION);
+		return {
+			...base,
+			level: "high",
+			reasons: signals,
+			lenses: [...LENSES],
+			reviewDue: true,
+			empty: false,
+			...declared,
+		};
+	}
+	if (docs)
+		return {
+			...base,
+			level: "passive",
+			reasons: ["documentation only"],
+			lenses: [],
+			reviewDue: false,
+			empty: false,
+			...declared,
+		};
 	return {
 		...base,
 		level: "medium",
-		reasons: ["code change without a high-risk signal"],
+		reasons: [
+			declaration?.kind === "missing" ? `code change; ${NO_DECLARATION}` : "code change without a high-risk signal",
+		],
 		lenses: [options.lens ?? "reliability"],
 		reviewDue: false,
 		empty: false,
+		...declared,
 	};
+}
+
+const NO_DECLARATION = "no risk declaration";
+
+/** `required`: a code change must be declared; documentation is not asked for one. */
+function declarationOf(options: RiskOptions, required: boolean): RiskDeclaration | undefined {
+	const escalations = options.escalations ?? [];
+	if (escalations.length > 0)
+		return { kind: "items", items: escalations.map(({ items, reason }) => ({ items, reason })) };
+	if (options.none !== undefined) return { kind: "none", reason: options.none };
+	return required ? { kind: "missing" } : undefined;
 }
 
 /** Documentation only: Markdown or text files (or documentation under docs/), plain mode, no code fences. */

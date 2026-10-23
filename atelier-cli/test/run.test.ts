@@ -416,7 +416,10 @@ describe("run", () => {
 
 		it("does not take a pasted yes as consent to review", async () => {
 			await repoWithChange("src/auth.ts");
-			const h = harness([[{ event: { type: "text_delta", text: "done" } }, { event: finished }]], {
+			const declared: FakeStep = {
+				toolCall: { tool: "risk", input: { none: true, reason: "test" }, callId: "c-risk" },
+			};
+			const h = harness([[declared, { event: { type: "text_delta", text: "done" } }, { event: finished }]], {
 				raw: true,
 				answers: ["\x1b[200~y\n\x1b[201~\r"],
 			});
@@ -578,7 +581,8 @@ async function repoWithChange(path: string) {
 }
 
 describe("run: review", () => {
-	const mainTurn: FakeStep[] = [{ event: { type: "text_delta", text: "done" } }, { event: finished }];
+	const declared: FakeStep = { toolCall: { tool: "risk", input: { none: true, reason: "test" }, callId: "c-risk" } };
+	const mainTurn: FakeStep[] = [declared, { event: { type: "text_delta", text: "done" } }, { event: finished }];
 	const noFindings: FakeStep[] = [{ event: { type: "text_delta", text: '{"findings": []}' } }, { event: finished }];
 	const lenses = (n: number) => Array.from({ length: n }, () => noFindings);
 	const reviewLines = (out: string) => out.split("\n").filter((line) => line.includes("review"));

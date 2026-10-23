@@ -17,6 +17,16 @@ export const MEMORY_RULES = `You have long-term memory of this project (the memo
 - Save only what is worth knowing next time: a decision the user confirmed, a bug fixed with its cause, a non-obvious discovery, a user preference. Use **What** / **Why** / **Where** / **Learned**, and a topicKey for something that evolves.
 - Never save secrets. Finished feature documents are saved for you.`;
 
-/** Added when the session reviews its changes. Byte-stable and short: the code derives the risk. */
-export const RISK_RULES =
-	"Atelier reviews your uncommitted changes for risk automatically when you finish a turn. The risk tool can only raise it: call it when a change is risky in a way file paths and content do not show (data loss, security, contracts others use).";
+/** Added when the session reviews its changes. Byte-stable: the declaration is the gentle-shell rule, the items its fixed list. */
+export const RISK_RULES = `Atelier reviews your changes for risk when you finish a turn. Close every code change by declaring its risk with the risk tool: the high-risk items that apply, each with a reason, or none with a reason. The items:
+1. data that cannot be rebuilt or irreversible effects (migrations, rewriting or deleting existing records; not saving new records, caches or generated files)
+2. security (auth, permissions, credentials, secrets, guards, sandbox)
+3. changing or removing contracts others already consume (public API, CLI flags, config formats, exports; not adding a flag, command or optional field)
+4. concurrency
+5. delivery or environment (installers, release, CI, deploy, dependencies)
+6. no test would catch a regression in what changes
+Before declaring none, check whether the change touches code that existing behavior also uses (shared options, parsers, helpers). The declaration can raise the risk, never lower what Atelier finds.`;
+
+/** What the core says when a code change reaches the end of the turn without a declaration; asked once. */
+export const DECLARE_RISK_REQUEST =
+	"Declare the risk of this change now: call the risk tool with the high-risk items that apply and a reason, or with none and a reason.";

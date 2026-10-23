@@ -67,6 +67,12 @@ export interface ContextUsage {
 
 export type CompactionReason = "threshold" | "overflow" | "manual";
 
+/** What the agent declared about the risk of a code change: high-risk items, none, or nothing at all. */
+export type RiskDeclaration =
+	| { kind: "items"; items: { items: number[]; reason: string }[] }
+	| { kind: "none"; reason: string }
+	| { kind: "missing" };
+
 export type ReviewVerdict = "approved" | "escalated" | "declined" | "unavailable";
 
 export type AtelierEventBody =
@@ -121,7 +127,7 @@ export type AtelierEventBody =
 	| { type: "feature_changed"; name: string; path: string; title: string; tasks: FeatureTask[] }
 	/** Whether the review of uncommitted changes (RDD) works in this session; sent when it does not, once per reason. */
 	| { type: "review_status"; available: boolean; reason?: string }
-	/** The free, deterministic risk of the change a turn left. `reviewDue`: only high risk is offered a review. */
+	/** The free, deterministic risk of the change a turn left (`declaration`: what the agent said about it; absent for documentation). `reviewDue`: only high risk is offered a review. */
 	| {
 			type: "review_assessed";
 			tree: string;
@@ -131,6 +137,7 @@ export type AtelierEventBody =
 			changedLines: number;
 			lenses: string[];
 			reviewDue: boolean;
+			declaration?: RiskDeclaration;
 	  }
 	/** The core waits for session.review_consent; the turn stays open until it is answered. */
 	| { type: "review_consent_requested"; reviewId: string; level: string; reasons: string[]; lenses: string[] }

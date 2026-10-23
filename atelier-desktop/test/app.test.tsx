@@ -415,6 +415,24 @@ describe("App", () => {
 			expect(block.textContent).not.toContain("left in your worktree");
 		});
 
+		it("shows the agent's risk declaration in the review block", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({
+				type: "review_assessed",
+				tree: "t",
+				level: "medium",
+				reasons: ["code change without a high-risk signal"],
+				files: ["a.ts"],
+				changedLines: 1,
+				lenses: ["reliability"],
+				reviewDue: false,
+				declaration: { kind: "none", reason: "no shared code" },
+			});
+			const block = await screen.findByTestId("review");
+			expect(block.textContent).toContain("Declared none: no shared code");
+		});
+
 		it("stops showing Reviewing… when the turn ends without a result", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "/review");

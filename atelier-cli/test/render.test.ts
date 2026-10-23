@@ -232,6 +232,29 @@ describe("Renderer", () => {
 			);
 		});
 
+		it("shows a declared none on the risk line, and a missing declaration through its reason", () => {
+			const base = { type: "review_assessed" as const, tree: "t", files: ["a.ts"], changedLines: 1, reviewDue: false };
+			const { stdout } = render([
+				{
+					...base,
+					level: "medium",
+					reasons: ["code change without a high-risk signal"],
+					lenses: ["reliability"],
+					declaration: { kind: "none", reason: "no shared code" },
+				},
+				{
+					...base,
+					level: "medium",
+					reasons: ["code change; no risk declaration"],
+					lenses: ["reliability"],
+					declaration: { kind: "missing" },
+				},
+			]);
+			expect(stdout).toBe(
+				"◇ review medium · 1 lens (code change without a high-risk signal) · declared none: no shared code\n◇ review medium · 1 lens (code change; no risk declaration)\n",
+			);
+		});
+
 		it("leaves the consent question to the prompt", () => {
 			const { stdout, stderr } = render([
 				{ type: "review_consent_requested", reviewId: "r1", level: "high", reasons: ["x"], lenses: ["risk"] },

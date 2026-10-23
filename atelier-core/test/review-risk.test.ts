@@ -54,7 +54,7 @@ describe("assessRisk", () => {
 	});
 
 	it("ordinary code is medium with one lens, reliability by default", () => {
-		const result = assessRisk(candidate([file("src/format.ts")]));
+		const result = assessRisk(candidate([file("src/format.ts")]), { none: "nothing shares it" });
 		expect(result).toMatchObject({ level: "medium", lenses: ["reliability"], reviewDue: false });
 		expect(result.reasons).toEqual(["code change without a high-risk signal"]);
 	});
@@ -85,7 +85,7 @@ describe("assessRisk", () => {
 	});
 
 	it("risky path words count in test files too", () => {
-		const result = assessRisk(candidate([file("test/auth.test.ts")]));
+		const result = assessRisk(candidate([file("test/auth.test.ts")]), { none: "tests only" });
 		expect(result.reasons).toEqual(["path: test/auth.test.ts (auth)"]);
 	});
 
@@ -108,6 +108,7 @@ describe("assessRisk", () => {
 			candidate([file("test/run.test.ts")], {
 				signalLines: [{ path: "test/run.test.ts", text: 'execFileSync("git", ["init"]);' }],
 			}),
+			{ none: "tests only" },
 		);
 		expect(result.reasons).toEqual(["content: test/run.test.ts adds exec"]);
 	});
@@ -195,6 +196,20 @@ describe("risk tool", () => {
 		expect(description).not.toContain("1 data or irreversible effects");
 	});
 
+	it("records a declaration of none with its reason", async () => {
+		const { outcome, state } = await run({ none: true, reason: "no shared code" });
+		expect(outcome.ok).toBe(true);
+		expect(outcome.output).toBe(
+			"Risk declared none (no shared code). It never lowers a risk Atelier finds, and applies until this change is reviewed or declined.",
+		);
+		expect(state.escalations).toEqual([]);
+	});
+
+	it("describes none in the tool description", () => {
+		const { description } = createRiskTool(new RiskRequests());
+		expect(description).toContain("none with a reason");
+	});
+
 	it("records the lens for medium risk", async () => {
 		const { outcome, state } = await run({ lenses: ["resilience"] });
 		expect(outcome.output).toBe("Lens for a medium-risk review: resilience.");
@@ -202,9 +217,13 @@ describe("risk tool", () => {
 	});
 
 	it.each([
-		[{}, "Give items with a reason to raise the risk, or a lens for a medium-risk review."],
+		[{}, "Give items with a reason, none with a reason, or a lens for a medium-risk review."],
 		[{ items: [1] }, "A reason is required with items."],
-		[{ reason: "why" }, "Give items with a reason to raise the risk, or a lens for a medium-risk review."],
+		[{ none: true }, "A reason is required with none."],
+		[{ none: true, reason: "  " }, "A reason is required with none."],
+		[{ none: true, items: [1], reason: "x" }, "Give items or none, not both."],
+		[{ none: true, reason: "x".repeat(501) }, "The reason is 501 bytes; the limit is 500."],
+		[{ reason: "why" }, "Give items with a reason, none with a reason, or a lens for a medium-risk review."],
 		[{ items: [1], reason: "x".repeat(501) }, "The reason is 501 bytes; the limit is 500."],
 		[{ items: [1], reason: "ñ".repeat(251) }, "The reason is 502 bytes; the limit is 500."],
 	])("rejects %j and records nothing", async (input, message) => {

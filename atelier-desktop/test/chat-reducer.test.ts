@@ -413,6 +413,13 @@ describe("reduceChat: review", () => {
 		]);
 	});
 
+	it("keeps the agent's risk declaration on the review block", () => {
+		const declaration = { kind: "none", reason: "no shared code" } as const;
+		const state = run([...opened, event({ ...assessed, declaration })]);
+		expect(items(state)[0]).toMatchObject({ kind: "review", declaration });
+		expect(items(run([...opened, event(assessed)]))[0]).not.toHaveProperty("declaration");
+	});
+
 	it("marks the card with the answer", () => {
 		const state = run([
 			...opened,

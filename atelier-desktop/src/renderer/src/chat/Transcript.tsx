@@ -143,6 +143,7 @@ function ReviewBlock({ item, onAnswer }: { item: Extract<TurnItem, { kind: "revi
 					<li key={reason}>{reason}</li>
 				))}
 			</ul>
+			{item.declaration?.kind === "none" ? <div>Declared none: {item.declaration.reason}</div> : null}
 			{item.roles.map((role) => {
 				// A role's block reuses the subagent block; it stays folded unless the role asks for an answer.
 				const done = role.finished !== undefined || item.result !== undefined || item.ended === true;

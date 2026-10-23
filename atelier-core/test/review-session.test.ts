@@ -191,7 +191,13 @@ async function start(setup: Setup = {}) {
 	return { session, main, roles, cwd, asked, send: (prompt: string) => collect(session.send(prompt)) };
 }
 
-const HIGH_TURN: FakeStep[] = [change("src/auth.ts", "export const a = 1;\n"), text("done"), { event: finished }];
+const DECLARED_NONE = call("risk", { none: true, reason: "test" });
+const HIGH_TURN: FakeStep[] = [
+	DECLARED_NONE,
+	change("src/auth.ts", "export const a = 1;\n"),
+	text("done"),
+	{ event: finished },
+];
 const MEDIUM_TURN: FakeStep[] = [change("a.ts", "base\nmore\n"), text("done"), { event: finished }];
 
 describe("the risk tool", () => {
@@ -199,7 +205,7 @@ describe("the risk tool", () => {
 		const on = await start({ turns: [[{ event: finished }]] });
 		expect(on.main.startOptions?.tools.map((tool) => tool.name)).toContain("risk");
 		expect(on.main.startOptions?.systemPromptAppend).toContain(RISK_RULES);
-		expect(Buffer.byteLength(RISK_RULES)).toBeLessThanOrEqual(400);
+		expect(Buffer.byteLength(RISK_RULES)).toBeLessThanOrEqual(1800);
 		const off = await start({ review: false, turns: [[{ event: finished }]] });
 		expect(off.main.startOptions?.tools.map((tool) => tool.name)).not.toContain("risk");
 		expect(off.main.startOptions?.systemPromptAppend).not.toContain(RISK_RULES);
@@ -220,6 +226,116 @@ describe("the risk tool", () => {
 		await s.send("go");
 		expect(child.startOptions?.tools.map((tool) => tool.name)).toEqual(["change"]);
 		expect(child.startOptions?.systemPromptAppend).not.toContain(RISK_RULES);
+	});
+});
+
+describe("the risk declaration", () => {
+	const ASK =
+		"Declare the risk of this change now: call the risk tool with the high-risk items that apply and a reason, or with none and a reason.";
+	const declareNone = call("risk", { none: true, reason: "a one-line tweak, nothing shares it" });
+	const UNDECLARED_HIGH: FakeStep[] = [
+		change("src/auth.ts", "export const a = 1;\n"),
+		text("done"),
+		{ event: finished },
+	];
+
+	it("tells the agent to close every code change with its risk, with the six items", async () => {
+		const s = await start({ turns: [[{ event: finished }]] });
+		const prompt = s.main.startOptions?.systemPromptAppend ?? "";
+		expect(prompt).toContain("declaring its risk with the risk tool");
+		expect(prompt).toContain("or none with a reason");
+		for (const item of [
+			"1. data that cannot be rebuilt or irreversible effects (migrations, rewriting or deleting existing records; not saving new records, caches or generated files)",
+			"2. security (auth, permissions, credentials, secrets, guards, sandbox)",
+			"3. changing or removing contracts others already consume (public API, CLI flags, config formats, exports; not adding a flag, command or optional field)",
+			"4. concurrency",
+			"5. delivery or environment (installers, release, CI, deploy, dependencies)",
+			"6. no test would catch a regression in what changes",
+		])
+			expect(prompt).toContain(item);
+		expect(prompt).toContain(
+			"Before declaring none, check whether the change touches code that existing behavior also uses (shared options, parsers, helpers).",
+		);
+	});
+
+	it("shows a declared none with its reason and does not ask again", async () => {
+		const s = await start({ turns: [[declareNone, ...MEDIUM_TURN]] });
+		const events = await s.send("edit");
+		expect(s.main.prompts).toHaveLength(1);
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			level: "medium",
+			reasons: ["code change without a high-risk signal"],
+			declaration: { kind: "none", reason: "a one-line tweak, nothing shares it" },
+		});
+	});
+
+	it("never lowers what the automatic check finds: none on a high-risk change stays high", async () => {
+		const s = await start({ turns: [[declareNone, ...UNDECLARED_HIGH]], consent: "declined" });
+		const events = await s.send("add auth");
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			level: "high",
+			reviewDue: true,
+			declaration: { kind: "none" },
+		});
+	});
+
+	it("shows declared items with their reason", async () => {
+		const s = await start({
+			turns: [[call("risk", { items: [2], reason: "handles sessions" }), ...MEDIUM_TURN]],
+			consent: "declined",
+		});
+		const events = await s.send("edit");
+		expect(s.main.prompts).toHaveLength(1);
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			level: "high",
+			declaration: { kind: "items", items: [{ items: [2], reason: "handles sessions" }] },
+		});
+	});
+
+	it("asks once, inside the turn, when a code change has no declaration; the answer counts", async () => {
+		const turns = [MEDIUM_TURN, [declareNone, text("declared"), { event: finished }]];
+		const s = await start({ turns });
+		const events = await s.send("edit");
+		expect(s.main.prompts).toEqual(["edit", ASK]);
+		expect(ofType(events, "review_assessed")).toHaveLength(1);
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({ declaration: { kind: "none" } });
+		expect(events.filter((event) => event.type === "turn_finished")).toHaveLength(1);
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", usage: { input: 2, output: 2 } });
+	});
+
+	it("does not loop: a second silence ends in a medium risk marked without declaration", async () => {
+		const s = await start({ turns: [MEDIUM_TURN, [text("ok"), { event: finished }], [text("never")]] });
+		const events = await s.send("edit");
+		expect(s.main.prompts).toEqual(["edit", ASK]);
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			level: "medium",
+			reasons: ["code change; no risk declaration"],
+			lenses: ["reliability"],
+			reviewDue: false,
+			declaration: { kind: "missing" },
+		});
+	});
+
+	it("keeps a high risk high and says the declaration is missing", async () => {
+		const s = await start({ turns: [UNDECLARED_HIGH, [{ event: finished }]], consent: "declined" });
+		const events = await s.send("add auth");
+		const [assessed] = ofType(events, "review_assessed");
+		expect(assessed).toMatchObject({ level: "high", reviewDue: true, declaration: { kind: "missing" } });
+		expect(assessed?.reasons.at(-1)).toBe("no risk declaration");
+	});
+
+	it("does not ask about documentation-only changes, nor on demand", async () => {
+		const docs = await start({ turns: [[change("notes.md", "# notes\n"), text("done"), { event: finished }]] });
+		const events = await docs.send("write notes");
+		expect(docs.main.prompts).toEqual(["write notes"]);
+		const [assessed] = ofType(events, "review_assessed");
+		expect(assessed).toMatchObject({ level: "passive" });
+		expect(assessed?.declaration).toBeUndefined();
+
+		const manual = await start({ roles: new RoleBackend(clean) });
+		await writeFile(join(manual.cwd, "a.ts"), "base\nmore\n");
+		await collect(manual.session.review());
+		expect(manual.main.prompts).toEqual([]);
 	});
 });
 

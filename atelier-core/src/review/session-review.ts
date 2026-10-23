@@ -9,6 +9,7 @@ import {
 	type Usage,
 	ZERO_USAGE,
 } from "../events.ts";
+import { DECLARE_RISK_REQUEST } from "../prompt.ts";
 import type { Session, SessionOptions } from "../session.ts";
 import type { ToolDefinition } from "../tools/types.ts";
 import { type Candidate, freezeCandidate } from "./candidate.ts";
@@ -105,10 +106,25 @@ export class SessionReview {
 			return manual ? refuse("review_unavailable", describeError(error)) : none;
 		}
 
-		const assessment = assessRisk(candidate, {
-			escalations: this.#requests.escalations,
-			...(this.#requests.lens === undefined ? {} : { lens: this.#requests.lens }),
-		});
+		const assess = () =>
+			assessRisk(candidate, {
+				escalations: this.#requests.escalations,
+				...(this.#requests.none === undefined ? {} : { none: this.#requests.none }),
+				...(this.#requests.lens === undefined ? {} : { lens: this.#requests.lens }),
+			});
+		let assessment = assess();
+		// A code change nobody declared the risk of: ask the agent once, inside this turn, then take its word or lack of it.
+		let asked: Spent | undefined;
+		if (!manual && assessment.declaration?.kind === "missing" && !host.signal.aborted) {
+			const answer = await host.correct(DECLARE_RISK_REQUEST);
+			asked = {
+				usage: answer.usage,
+				...(answer.costUsd === undefined ? {} : { costUsd: answer.costUsd }),
+				...(answer.requests === undefined ? {} : { requests: answer.requests }),
+			};
+			assessment = assess();
+		}
+		const paid = (spent: Spent): Spent => (asked === undefined ? spent : addSpent(asked, spent));
 		host.push({
 			type: "review_assessed",
 			tree: candidate.tree,
@@ -118,11 +134,12 @@ export class SessionReview {
 			changedLines: assessment.changedLines,
 			lenses: assessment.lenses,
 			reviewDue: assessment.reviewDue,
+			...(assessment.declaration === undefined ? {} : { declaration: assessment.declaration }),
 		});
 		const reviewId = host.createId();
 		if (!manual) {
 			const consent = this.#options.consent;
-			if (!assessment.reviewDue || !consent) return none;
+			if (!assessment.reviewDue || !consent) return paid(none);
 			host.push({
 				type: "review_consent_requested",
 				reviewId,
@@ -138,10 +155,10 @@ export class SessionReview {
 				return "aborted" as const;
 			});
 			// An interrupted or failed question is not a refusal: the candidate is offered again.
-			if (answer === "aborted") return none;
-			if (answer === "declined") return this.#declined(host, reviewId, candidate, assessment);
+			if (answer === "aborted") return paid(none);
+			if (answer === "declined") return paid(await this.#declined(host, reviewId, candidate, assessment));
 		}
-		return this.#cycle(host, reviewId, candidate, assessment);
+		return paid(await this.#cycle(host, reviewId, candidate, assessment));
 	}
 
 	async #declined(host: ReviewHost, reviewId: string, candidate: Candidate, assessment: Assessment): Promise<Spent> {
@@ -282,6 +299,24 @@ export class SessionReview {
 			await child.close();
 		}
 	}
+}
+
+function addSpent(a: Spent, b: Spent): Spent {
+	const sum = (x: number | undefined, y: number | undefined) =>
+		x === undefined && y === undefined ? undefined : (x ?? 0) + (y ?? 0);
+	const costUsd = sum(a.costUsd, b.costUsd);
+	const requests = sum(a.requests, b.requests);
+	return {
+		usage: {
+			input: a.usage.input + b.usage.input,
+			output: a.usage.output + b.usage.output,
+			cacheRead: a.usage.cacheRead + b.usage.cacheRead,
+			cacheWrite: a.usage.cacheWrite + b.usage.cacheWrite,
+		},
+		...(costUsd === undefined ? {} : { costUsd }),
+		...(requests === undefined ? {} : { requests }),
+		...(b.refused ? { refused: true } : {}),
+	};
 }
 
 function receiptOf(host: ReviewHost, candidate: Candidate, assessment: Assessment, verdict: "declined"): Receipt {

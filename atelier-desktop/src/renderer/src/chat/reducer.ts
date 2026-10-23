@@ -6,6 +6,7 @@ import type {
 	FeatureTask,
 	JsonValue,
 	Phase,
+	RiskDeclaration,
 	Usage,
 } from "@atelier/core/protocol";
 import type { HostMessage } from "../../../shared/bridge.ts";
@@ -42,6 +43,8 @@ export type TurnItem =
 			level?: string;
 			reasons: string[];
 			lenses: string[];
+			/** What the agent declared about the risk; absent for documentation. */
+			declaration?: RiskDeclaration;
 			/** Each lens, the refuter and the validator, in the order they first spoke. */
 			roles: Subagent[];
 			result?: ReviewResult;
@@ -369,7 +372,14 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 		case "review_assessed":
 			return [
 				...items,
-				{ kind: "review", level: event.level, reasons: event.reasons, lenses: event.lenses, roles: [] },
+				{
+					kind: "review",
+					level: event.level,
+					reasons: event.reasons,
+					lenses: event.lenses,
+					...(event.declaration === undefined ? {} : { declaration: event.declaration }),
+					roles: [],
+				},
 			];
 		case "review_consent_requested":
 			return [
