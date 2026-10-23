@@ -148,6 +148,7 @@ export class Session {
 					.join("\n\n"),
 				tools: session.#options.tools,
 				executeTool: (call) => session.#executeTool(call),
+				compactionState: () => session.#compactionState(),
 				...(options.maxRequestsPerTurn === undefined ? {} : { maxRequestsPerTurn: options.maxRequestsPerTurn }),
 			});
 		} catch (error) {
@@ -155,6 +156,20 @@ export class Session {
 			throw error;
 		}
 		return session;
+	}
+
+	/** What a compaction must not lose: the active feature and its task, the phase, and the memory of the first turn. */
+	#compactionState(): string | undefined {
+		const lines: string[] = [];
+		const odd = this.#odd?.snapshot();
+		if (odd?.path !== undefined) {
+			const task = odd.task ? `, task ${odd.task.id} "${odd.task.title}" (${odd.task.status})` : "";
+			lines.push(`feature: ${odd.path}${task}`);
+		}
+		if (odd?.phase !== undefined) lines.push(`phase: ${odd.phase}`);
+		const memory = this.#memoryContext.trim();
+		if (memory !== "") lines.push(`memory:\n${memory}`);
+		return lines.length === 0 ? undefined : `<state>\n${lines.join("\n")}\n</state>`;
 	}
 
 	get busy(): boolean {

@@ -1,5 +1,5 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { AtelierEventBody, Usage } from "../../events.ts";
+import { type AtelierEventBody, type Usage, ZERO_USAGE } from "../../events.ts";
 
 export const BACKEND_ID = "claude-code";
 export const MCP_SERVER_NAME = "atelier";
@@ -45,6 +45,7 @@ function textOf(content: unknown): string {
 export function mapSdkMessage(message: SDKMessage, context: MapContext): AtelierEventBody[] {
 	switch (message.type) {
 		case "system": {
+			if (message.subtype === "compact_boundary") return compactionEvents(message.compact_metadata);
 			if (message.subtype !== "init") return [];
 			const events: AtelierEventBody[] = [
 				{
@@ -143,4 +144,25 @@ export function mapSdkMessage(message: SDKMessage, context: MapContext): Atelier
 		default:
 			return [];
 	}
+}
+
+/** Claude Code compacts on its own and reports it once it is done: one compaction, started and finished. */
+function compactionEvents(metadata: {
+	trigger: "manual" | "auto";
+	pre_tokens: number;
+	post_tokens?: number;
+}): AtelierEventBody[] {
+	const reason = metadata.trigger === "manual" ? "manual" : "threshold";
+	return [
+		{ type: "compaction_started", reason, tokens: metadata.pre_tokens },
+		{
+			type: "compaction_finished",
+			ok: true,
+			reason,
+			tokensBefore: metadata.pre_tokens,
+			...(metadata.post_tokens === undefined ? {} : { tokensAfter: metadata.post_tokens }),
+			kept: 0,
+			usage: { ...ZERO_USAGE },
+		},
+	];
 }

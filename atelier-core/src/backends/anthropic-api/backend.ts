@@ -147,7 +147,15 @@ export class AnthropicApiBackend implements AgentBackend {
 			compactAt: compactThreshold({ window, maxTokens: state.maxTokens, override: this.#options.compactAt }),
 			keepRecent: this.#options.keepRecentTokens ?? KEEP_RECENT_TOKENS,
 		};
-		return new AnthropicApiSession(client, state, start.executeTool, maxRequests, this.#options.apiKey, compaction);
+		return new AnthropicApiSession(
+			client,
+			state,
+			start.executeTool,
+			maxRequests,
+			this.#options.apiKey,
+			compaction,
+			start.compactionState,
+		);
 	}
 }
 
@@ -175,6 +183,7 @@ class AnthropicApiSession implements BackendSession {
 	readonly #maxRequests: number;
 	readonly #apiKey: string;
 	readonly #compaction: CompactionConfig;
+	readonly #compactionState: (() => string | undefined) | undefined;
 	#abort: AbortController | undefined;
 	#announced = false;
 	#closed = false;
@@ -195,6 +204,7 @@ class AnthropicApiSession implements BackendSession {
 		maxRequests: number,
 		apiKey: string,
 		compaction: CompactionConfig,
+		compactionState?: () => string | undefined,
 	) {
 		this.#client = client;
 		this.#state = state;
@@ -202,6 +212,7 @@ class AnthropicApiSession implements BackendSession {
 		this.#maxRequests = maxRequests;
 		this.#apiKey = apiKey;
 		this.#compaction = compaction;
+		this.#compactionState = compactionState;
 	}
 
 	async *send(prompt: string): AsyncIterable<AtelierEventBody> {
@@ -372,7 +383,12 @@ class AnthropicApiSession implements BackendSession {
 		}
 		const carried = this.#turnStart < 0 ? this.#turnPrompt : turnPromptBefore(messages, this.#turnStart, cut);
 		const files = fileActivity(messages.slice(0, cut), this.#files);
-		const next = replaceHistory(messages, cut, { summary: summary.text, files, turnPrompt: carried });
+		const next = replaceHistory(messages, cut, {
+			summary: summary.text,
+			files,
+			turnPrompt: carried,
+			state: this.#compactionState?.(),
+		});
 		const removed = messages.slice(0, cut).reduce((sum, message) => sum + estimateTokens(message), 0);
 		const tokensAfter = Math.max(0, tokensBefore - removed + estimateTokens(next[0] as Anthropic.MessageParam));
 		this.#state.messages = next;

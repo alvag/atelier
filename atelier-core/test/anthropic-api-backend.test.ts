@@ -777,6 +777,39 @@ describe("AnthropicApiBackend compaction", () => {
 		expect(finished(events)[0]).toMatchObject({ stopReason: "error" });
 	});
 
+	it("gives the core's state once, inside the summary message", async () => {
+		const api = fakeApi([
+			{ blocks: [{ type: "text", text: "first answer" }] },
+			{ blocks: [{ type: "text", text: "second answer" }] },
+			summaryReply(),
+			{ blocks: [{ type: "text", text: "third answer" }] },
+		]);
+		const backend = new AnthropicApiBackend({
+			apiKey: API_KEY,
+			fetch: api.fetch,
+			maxRetries: 0,
+			contextWindow: 200_000,
+			compactAt: 1_000_000,
+			keepRecentTokens: 1,
+		});
+		const state = "<state>\nphase: checking\n</state>";
+		const session = await backend.start({
+			cwd: "/work",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+			compactionState: () => state,
+		});
+		await collect(session.send("first"));
+		await collect(session.send("second"));
+		await collect(compactOf(session));
+		await collect(session.send("third"));
+		const messages = messagesOf(api.bodies[3]);
+		expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+		expect(JSON.stringify(messages[0]).split(JSON.stringify(state).slice(1, -1))).toHaveLength(2);
+		expect(JSON.stringify(messages[2])).not.toContain("<state>");
+	});
+
 	it("takes the window from the models API, and falls back when it does not answer", async () => {
 		for (const [modelWindow, window, compactAt] of [
 			[500_000, 500_000, 200_000],

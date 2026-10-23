@@ -322,6 +322,50 @@ describe("ClaudeCodeBackend turns", () => {
 	});
 });
 
+describe("ClaudeCodeBackend compaction", () => {
+	const boundary = msg({
+		type: "system",
+		subtype: "compact_boundary",
+		compact_metadata: { trigger: "manual", pre_tokens: 9000 },
+	});
+
+	it("forwards /compact with the instructions and gives the core's state once with the next prompt", async () => {
+		const { query, calls } = fakeQuery([init], [[boundary, result(0.01)], [result(0.02)], [result(0.03)]]);
+		const backend = new ClaudeCodeBackend({ query, env: {} });
+		const session = await backend.start({
+			cwd: "/w",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+			compactionState: () => "<state>\nphase: implementing\n</state>",
+		});
+		if (!session.compact) throw new Error("The claude-code session cannot compact.");
+		const events: string[] = [];
+		for await (const event of session.compact("Keep the decisions")) events.push(event.type);
+		for await (const _ of session.send("next")) void _;
+		for await (const _ of session.send("after")) void _;
+		expect(calls.prompts).toEqual([
+			"/compact Keep the decisions",
+			"<state>\nphase: implementing\n</state>\n\nnext",
+			"after",
+		]);
+		expect(events).toEqual(["session_started", "compaction_started", "compaction_finished", "turn_finished"]);
+	});
+
+	it("sends a bare /compact without instructions and no state when the core has none", async () => {
+		const { query, calls } = fakeQuery([init], [[boundary, result(0.01)], [result(0.02)]]);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start({
+			cwd: "/w",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+		});
+		for await (const _ of session.compact?.() ?? []) void _;
+		for await (const _ of session.send("next")) void _;
+		expect(calls.prompts).toEqual(["/compact", "next"]);
+	});
+});
+
 describe("createToolBridge", () => {
 	function bridgeWith(results: { ok: boolean; output: string }[]) {
 		const received: ToolCall[] = [];

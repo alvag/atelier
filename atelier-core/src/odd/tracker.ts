@@ -93,6 +93,17 @@ export class OddTracker {
 		this.#onComplete = onComplete;
 	}
 
+	/** The active feature, its current task (in progress, else the next pending) and the phase, for the core's state. */
+	snapshot(): { path?: string; task?: { id: string; title: string; status: string }; phase?: Phase } {
+		const tasks = this.#active ? listTasks(this.#active.doc) : [];
+		const task = tasks.find((t) => t.status === "in_progress") ?? tasks.find((t) => t.status === "pending");
+		return {
+			...(this.#active ? { path: this.#active.path } : {}),
+			...(task?.status === undefined ? {} : { task: { id: task.id, title: task.title, status: task.status } }),
+			...(this.#phase === undefined ? {} : { phase: this.#phase }),
+		};
+	}
+
 	/**
 	 * Records a user prompt as the turn starts. It returns at once, so the turn
 	 * is not delayed; the returned promise settles when the prompt is in the

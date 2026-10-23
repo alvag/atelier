@@ -139,7 +139,13 @@ export class ClaudeCodeBackend implements AgentBackend {
 			record?.(message);
 			bridge.observe(message);
 		};
-		return new ClaudeCodeSession(query, input, observe, this.#options.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS);
+		return new ClaudeCodeSession(
+			query,
+			input,
+			observe,
+			this.#options.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS,
+			start.compactionState,
+		);
 	}
 }
 
@@ -171,16 +177,21 @@ class ClaudeCodeSession implements BackendSession {
 	#interruptTimer: NodeJS.Timeout | undefined;
 	#closing = false;
 	#failure: string | undefined;
+	readonly #compactionState: (() => string | undefined) | undefined;
+	/** Claude Code compacted; the core's state goes with the next prompt. */
+	#stateDue = false;
 
 	constructor(
 		query: SdkQuery,
 		input: Channel<SDKUserMessage>,
 		observe: (message: SDKMessage) => void,
 		interruptGraceMs: number,
+		compactionState?: () => string | undefined,
 	) {
 		this.#query = query;
 		this.#input = input;
 		this.#interruptGraceMs = interruptGraceMs;
+		this.#compactionState = compactionState;
 		void this.#read(observe);
 	}
 
@@ -188,6 +199,7 @@ class ClaudeCodeSession implements BackendSession {
 		try {
 			for await (const message of this.#query) {
 				observe(message);
+				if (message.type === "system" && message.subtype === "compact_boundary") this.#stateDue = true;
 				const events = mapSdkMessage(message, this.#context);
 				for (const event of events) {
 					if (
@@ -231,6 +243,22 @@ class ClaudeCodeSession implements BackendSession {
 	}
 
 	async *send(prompt: string): AsyncIterable<AtelierEventBody> {
+		let sent = prompt;
+		if (this.#stateDue) {
+			this.#stateDue = false;
+			const state = this.#compactionState?.();
+			if (state !== undefined) sent = `${state}\n\n${prompt}`;
+		}
+		yield* this.#turnFor(sent);
+	}
+
+	/** Claude Code's own /compact; its compact_boundary reports the result. */
+	async *compact(instructions?: string): AsyncIterable<AtelierEventBody> {
+		const extra = instructions?.trim();
+		yield* this.#turnFor(extra ? `/compact ${extra}` : "/compact");
+	}
+
+	async *#turnFor(prompt: string): AsyncIterable<AtelierEventBody> {
 		if (this.#failure !== undefined) throw new Error(this.#failure);
 		const turn = new Channel<AtelierEventBody>();
 		for (const event of this.#early) turn.push(event);

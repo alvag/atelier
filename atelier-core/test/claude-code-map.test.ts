@@ -199,4 +199,27 @@ describe("mapSdkMessage", () => {
 		const events = (await fixture("text-and-tool-turn")).flatMap((m) => mapSdkMessage(m, context));
 		expect(JSON.parse(JSON.stringify(events))).toEqual(events);
 	});
+
+	it.each([
+		{ trigger: "auto", reason: "threshold", post: 30_000 },
+		{ trigger: "manual", reason: "manual", post: undefined },
+	])("turns a $trigger compact_boundary into a finished compaction", ({ trigger, reason, post }) => {
+		const message = msg({
+			type: "system",
+			subtype: "compact_boundary",
+			compact_metadata: { trigger, pre_tokens: 180_000, ...(post === undefined ? {} : { post_tokens: post }) },
+		});
+		expect(mapSdkMessage(message, { previousCostUsd: 0 })).toEqual([
+			{ type: "compaction_started", reason, tokens: 180_000 },
+			{
+				type: "compaction_finished",
+				ok: true,
+				reason,
+				tokensBefore: 180_000,
+				...(post === undefined ? {} : { tokensAfter: post }),
+				kept: 0,
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			},
+		]);
+	});
 });

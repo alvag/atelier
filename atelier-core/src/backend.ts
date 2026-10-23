@@ -24,6 +24,8 @@ export interface BackendStartOptions {
 	systemPromptAppend: string;
 	tools: readonly ToolDefinition[];
 	executeTool: ToolExecutor;
+	/** The core's state (ODD feature, phase, memory) to give once after a compaction; undefined when there is none. */
+	compactionState?: () => string | undefined;
 	/** Caps the model requests of one turn; backends without such a cap ignore it. */
 	maxRequestsPerTurn?: number;
 }
