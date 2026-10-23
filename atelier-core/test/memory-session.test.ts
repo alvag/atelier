@@ -387,9 +387,9 @@ describe("independent U2 regressions (S4, S1)", () => {
 	};
 	const done = { action: "update_task", id: "T1", status: "done" };
 	const keys = [
-		"sk-proj-" + "A1b2c3".repeat(20),
-		"github_pat_" + "A1b2c3".repeat(13) + "_abcdef",
-		"sk-ant-api03-\n" + "x".repeat(40),
+		`sk-proj-${"A1b2c3".repeat(20)}`,
+		`github_pat_${"A1b2c3".repeat(13)}_abcdef`,
+		`sk-ant-api03-\n${"x".repeat(40)}`,
 	];
 	it.each(keys)("rejects credentials through every save field and mirror: %s", async (key) => {
 		for (const field of ["title", "content", "topicKey"]) {
