@@ -69,6 +69,38 @@ The desktop starts the core with Electron's own Node (no system Node needed) and
 
 Design and decisions: `../docs/m1-diseno.md`, `../docs/m2-diseno.md`, `../docs/m3-diseno.md`, `../docs/m4-diseno.md`, `../docs/m5-diseno.md`, `../docs/m6-diseno.md`, `../docs/m7-diseno.md`, `../docs/m8-diseno.md`.
 
+## Working on Atelier with Atelier
+
+Changing Atelier with the Atelier you are changing breaks the tool in the middle of the work. Keep a stable copy as the tool and the repository as the workpiece:
+
+```
+atelier/          the workpiece: feat/* branches, where the agent edits
+atelier-stable/   the tool: a worktree pinned to a stable-* tag, never edited
+```
+
+```bash
+# once: pin the copy that works today
+git tag -a stable-m8 -m "Stable Atelier"
+git worktree add --detach ../atelier-stable stable-m8
+pnpm -C ../atelier-stable install
+
+# use it on the workpiece (or on any other project)
+alias atelier-stable='node /path/to/atelier-stable/atelier-cli/src/main.ts'
+atelier-stable --cwd /path/to/atelier
+pnpm -C ../atelier-stable desktop   # the desktop starts the stable copy's own core
+```
+
+- `read` and `edit` cannot leave `--cwd`, so they never touch the stable copy. `bash` is not isolated: keep approvals on (no `--yes`) when the workpiece is Atelier itself.
+- To try a change for real, run the workpiece's CLI (`pnpm atelier` inside `atelier/`) in another terminal; the stable copy stays in charge of the work.
+- Memory (Engram resolves the project from the working directory), review receipts (in the workpiece's `.git`) and the API key are shared on purpose.
+
+Promote only what is verified: once a branch is merged into `main` with `pnpm check`, the desktop smoke and a real run green, tag it and move the copy. To go back, check out the previous tag.
+
+```bash
+git tag -a stable-m9 -m "Stable Atelier"
+git -C ../atelier-stable checkout --detach stable-m9 && pnpm -C ../atelier-stable install
+```
+
 ## Development
 
 ```bash
