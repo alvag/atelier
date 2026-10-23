@@ -24,7 +24,7 @@ export function createRiskTool(state: RiskRequests): ToolDefinition {
 		name: RISK_TOOL,
 		description: [
 			"Raises the risk of your current, uncommitted change when the automatic check cannot see it, so it gets a full review before it is reported done. It can only raise the risk, never lower it.",
-			"Items: 1 data or irreversible effects, 2 security, 3 contracts others consume, 4 concurrency, 5 delivery or environment, 6 no test would catch a regression.",
+			"Items: 1 stored data that cannot be rebuilt or irreversible effects (migrations, rewriting or deleting existing records; not saving new records, caches or generated files), 2 security, 3 contracts others consume, 4 concurrency, 5 delivery or environment, 6 no test would catch a regression.",
 			"For a medium-risk change you can instead pick the one lens its review should use.",
 		].join("\n"),
 		inputShape: {

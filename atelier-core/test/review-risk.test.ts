@@ -187,6 +187,14 @@ describe("risk tool", () => {
 		expect(state.escalations).toEqual([{ items: [2, 4], reason: "touches the token check" }]);
 	});
 
+	it("limits item 1 to data that cannot be rebuilt, not new records or derived files", () => {
+		const { description } = createRiskTool(new RiskRequests());
+		expect(description).toContain(
+			"1 stored data that cannot be rebuilt or irreversible effects (migrations, rewriting or deleting existing records; not saving new records, caches or generated files)",
+		);
+		expect(description).not.toContain("1 data or irreversible effects");
+	});
+
 	it("records the lens for medium risk", async () => {
 		const { outcome, state } = await run({ lenses: ["resilience"] });
 		expect(outcome.output).toBe("Lens for a medium-risk review: resilience.");
