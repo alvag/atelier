@@ -59,10 +59,39 @@ function unquote(raw: string): string {
 	);
 }
 
-/** What `env -S` makes of its string: words split on blanks, quotes respected, no shell operators. */
+const SPLIT_SEPARATORS: Record<string, string> = { _: " ", t: "\t", n: "\n", v: "\v", f: "\f" };
+
+/**
+ * What `env -S` makes of its string: words split on blanks and on the escapes
+ * `\_ \t \n \v \f`, quotes respected, `\c` ends the string, no shell operators.
+ */
 function splitWords(text: string): Token[] {
-	const words = text.match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s'"\\])+/g) ?? [];
-	return words.map((raw, index) => ({ value: unquote(raw), raw, operator: false, index }));
+	const words: string[] = [];
+	let word: string | undefined;
+	let quote: "'" | '"' | undefined;
+	const end = () => {
+		if (word !== undefined) words.push(word);
+		word = undefined;
+	};
+	scan: for (let at = 0; at < text.length; at++) {
+		const char = text[at] as string;
+		if (char === "\\") {
+			const next = text[++at];
+			if (next === undefined) break;
+			if (next === "c") break scan;
+			if (next in SPLIT_SEPARATORS && quote === undefined) end();
+			else word = (word ?? "") + (quote === '"' || next in SPLIT_SEPARATORS ? (SPLIT_SEPARATORS[next] ?? next) : next);
+		} else if (quote !== undefined) {
+			if (char === quote) quote = undefined;
+			else word = (word ?? "") + char;
+		} else if (char === "'" || char === '"') {
+			quote = char;
+			word ??= "";
+		} else if (/\s/.test(char)) end();
+		else word = (word ?? "") + char;
+	}
+	end();
+	return words.map((value, index) => ({ value, raw: value, operator: false, index }));
 }
 
 const executable = (value: string) => value.split("/").at(-1) ?? value;
@@ -132,8 +161,9 @@ function head(segment: readonly Token[]): { segment: readonly Token[]; cursor: n
 				const split = envSplitString(flag, segment[cursor]?.value);
 				if (split) {
 					if (split.takesNext) cursor++;
-					// `env -S` splits the string into words; it is not a shell, so the words are one command.
-					const inner = head([...splitWords(split.text), ...segment.slice(cursor)]);
+					// `env -S` splits the string into words, which env then reads as its own arguments: options first, then one command.
+					const env: Token = { value: "env", raw: "env", operator: false, index: 0 };
+					const inner = head([env, ...splitWords(split.text), ...segment.slice(cursor)]);
 					return { ...inner, wrappers: [...wrappers, ...inner.wrappers] };
 				}
 				if (envValueFlag(flag)) cursor++;
@@ -259,6 +289,12 @@ const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 /** `find` tests that choose files by name; with a pattern that is not just `*` they narrow what is removed. */
 const FIND_NARROWING = new Set(["-name", "-iname", "-path", "-ipath", "-wholename", "-regex", "-iregex"]);
 
+/** A pattern that selects every file: only `*` and `?` for the glob tests, `.*`-style for the regex ones. */
+function matchesEverything(test: string, pattern: string): boolean {
+	if (test.endsWith("regex")) return /^\^?\.[*+]\$?$/.test(pattern);
+	return /^[*?]+$/.test(pattern);
+}
+
 /** The words of a `-exec` command up to its `;` or `+`, and the index of the terminator (or the end). */
 function execCommand(args: readonly string[], from: number): { words: string[]; end: number } {
 	const rest = args.slice(from);
@@ -277,8 +313,9 @@ function runsRm(words: readonly string[]): boolean {
  * A `find` that deletes from `/`, the home directory or the project: a starting
  * point of that kind and `-delete` or an `-exec`/`-execdir`/`-ok`/`-okdir` that
  * runs `rm`. It fails closed: only a `-name`, `-path` or `-regex` style test
- * with a pattern other than `*` narrows it (`find . -name '*.log' -delete` is
- * fine); `-print`, `-type`, `-mtime`, parentheses and the like do not.
+ * with a pattern that does not match everything narrows it (`find . -name '*.log' -delete` is
+ * fine) and only before the deleting action; `-print`, `-type`, `-mtime`,
+ * parentheses, `!`, `-not`, `-o` and the like do not.
  */
 function findRemovalKind(args: readonly string[], context: GuardContext): PathKind | undefined {
 	let at = 0;
@@ -289,26 +326,35 @@ function findRemovalKind(args: readonly string[], context: GuardContext): PathKi
 	let removes = false;
 	let narrowed = false;
 	let either = false;
+	let negated = false;
 	for (; at < args.length; at++) {
 		const arg = args[at] as string;
 		if (arg === "-o" || arg === "-or" || arg === ",") either = true;
+		else if (arg === "!" || arg === "-not") negated = true;
 		else if (arg === "-delete") removes = true;
 		else if (FIND_EXEC.has(arg)) {
 			const { words, end } = execCommand(args, at + 1);
 			if (runsRm(words)) removes = true;
 			at = end;
 		} else if (FIND_NARROWING.has(arg)) {
-			const negated = args[at - 1] === "!" || args[at - 1] === "-not";
-			if (!negated && !/^\*+$/.test(args[at + 1] ?? "*")) narrowed = true;
+			// Only a test before the deleting action selects what it deletes.
+			if (!removes && !matchesEverything(arg, args[at + 1] ?? "*")) narrowed = true;
 			at++;
 		}
 	}
-	if (!removes || (narrowed && !either)) return undefined;
+	if (!removes || (narrowed && !either && !negated)) return undefined;
 	for (const root of roots) {
 		const kind = pathKind(root, context);
 		if (kind) return kind;
 	}
 	return undefined;
+}
+
+/** The first rule, or the broadest removal when several removals apply (`/`, then home, then project). */
+function broadest(rules: readonly string[]): string {
+	const order = [REMOVAL_RULE.root, REMOVAL_RULE.home, REMOVAL_RULE.project];
+	const rank = (rule: string) => (order.includes(rule) ? order.indexOf(rule) : -1);
+	return rules.reduce((best, rule) => (rank(rule) > -1 && rank(best) > -1 && rank(rule) < rank(best) ? rule : best));
 }
 
 /** The rule a simple command breaks, given its name and arguments. */
@@ -366,12 +412,15 @@ export function findDestructiveCommand(command: string, context: GuardContext, d
 				at += stop + 1;
 			}
 		}
+		// The broadest removal wins between a command and the command lines it runs.
+		const found: string[] = [];
 		for (const payload of nested) {
-			const found = findDestructiveCommand(payload, context, depth + 1);
-			if (found) return found;
+			const rule = findDestructiveCommand(payload, context, depth + 1);
+			if (rule) found.push(rule);
 		}
-		const rule = commandRule(name, args, context);
-		if (rule) return rule;
+		const own = commandRule(name, args, context);
+		if (own) found.push(own);
+		if (found.length > 0) return broadest(found);
 	}
 	for (const body of substitutionBodies(text)) {
 		const found = findDestructiveCommand(body, context, depth + 1);
