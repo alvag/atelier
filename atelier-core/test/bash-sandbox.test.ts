@@ -420,6 +420,27 @@ describe.skipIf(!onMac)("the agent's bash in a linked git worktree", () => {
 		expect(linkedWorktreeGit(worktree)).toEqual(first);
 	});
 
+	it("protects a hooks directory configured relative to the checkout", async () => {
+		const hooks = join(worktree, "custom-hooks");
+		await mkdir(hooks);
+		const hook = join(hooks, "pre-commit");
+		await writeFile(hook, "#!/bin/sh\nexit 0\n");
+		git(main, "config", "core.hooksPath", "custom-hooks");
+		const result = await run(`echo changed >> "${hook}"`);
+		expect(result.ok).toBe(false);
+		expect(result.output).toContain("Operation not permitted");
+		expect(await readFile(hook, "utf8")).toBe("#!/bin/sh\nexit 0\n");
+	});
+
+	it("does not grant the shared info directory", async () => {
+		const attributes = join(main, ".git", "info", "attributes");
+		await mkdir(join(main, ".git", "info"), { recursive: true });
+		await writeFile(attributes, "a.txt custom=original\n");
+		const result = await run(`echo changed > "${attributes}"`);
+		expect(result.ok).toBe(false);
+		expect(await readFile(attributes, "utf8")).toBe("a.txt custom=original\n");
+	});
+
 	it("still cannot write the shared git hooks or configuration, nor the main checkout's files", async () => {
 		const common = join(main, ".git");
 		const result = await run(
