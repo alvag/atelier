@@ -76,6 +76,19 @@ describe.skipIf(!onMac)("the agent's bash in the sandbox", () => {
 		expect((await run("echo x > .envrc && echo x > sub/notes.txt")).ok).toBe(true);
 	});
 
+	it("cannot write what the library always protects, such as git hooks and shell start-up files, also when the process runs elsewhere", async () => {
+		await mkdir(join(cwd, ".git", "hooks"), { recursive: true });
+		await mkdir(join(cwd, ".vscode"));
+		const result = await run(
+			"for f in .git/hooks/pre-commit .git/config .bashrc .gitconfig .vscode/tasks.json; do echo x > $f; done",
+		);
+		expect(result.ok).toBe(false);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(5);
+		for (const file of [".git/hooks/pre-commit", ".git/config", ".bashrc", ".gitconfig", ".vscode/tasks.json"])
+			expect(await exists(join(cwd, file))).toBe(false);
+		expect((await run("echo x > .git/HEAD")).ok).toBe(true);
+	});
+
 	it("cannot read the user's secrets, but reads the rest of the home directory", async () => {
 		const secret = await run(`cat ${home}/.ssh/id_rsa`);
 		expect(secret.ok).toBe(false);
@@ -83,6 +96,43 @@ describe.skipIf(!onMac)("the agent's bash in the sandbox", () => {
 		expect(secret.output).toMatch(/Operation not permitted/);
 		const ordinary = await run(`cat ${home}/notes.txt`);
 		expect(ordinary.output).toContain("ordinary file");
+	});
+
+	it("writes the package managers' caches under the user's home, and still not the home itself", async () => {
+		const caches = [
+			".npm",
+			"Library/pnpm",
+			".local/share/pnpm",
+			".pnpm-store",
+			".yarn",
+			".cache/pnpm",
+			"Library/Caches/Yarn",
+		];
+		for (const cache of caches) await mkdir(join(home, cache), { recursive: true });
+		const result = await run(caches.map((cache) => `echo ok > ${home}/${cache}/entry`).join(" && "));
+		expect(result.ok).toBe(true);
+		for (const cache of caches) expect(await exists(join(home, cache, "entry"))).toBe(true);
+
+		const homeItself = await run(`echo x > ${home}/stray.txt; echo x > ${home}/.ssh/authorized_keys`);
+		expect(homeItself.ok).toBe(false);
+		expect(homeItself.output.match(/Operation not permitted/g)).toHaveLength(2);
+		expect(await exists(join(home, "stray.txt"))).toBe(false);
+		expect(await exists(join(home, ".ssh", "authorized_keys"))).toBe(false);
+	});
+
+	it("lets npm write the cache directory it reports", async () => {
+		await mkdir(join(home, ".npm"));
+		const npm = createBashTool({ sandbox, env: { HOME: home } });
+		const result = await npm.execute(
+			{
+				command:
+					'cache="$(npm config get cache)" && echo "cache=$cache" && mkdir -p "$cache/_cacache" && echo ok > "$cache/_cacache/entry"',
+			},
+			{ cwd },
+		);
+		expect(result.output).toContain(`cache=${home}/.npm`);
+		expect(result.ok).toBe(true);
+		expect(await exists(join(home, ".npm", "_cacache", "entry"))).toBe(true);
 	});
 
 	it("reaches a server on the local network: the network is not restricted", async () => {
@@ -126,6 +176,78 @@ describe.skipIf(!onMac)("the agent's bash in the sandbox", () => {
 	});
 });
 
+describe.skipIf(!onMac)("the sandbox configuration files", () => {
+	const agent = () => createBashTool({ sandbox });
+	const run = (command: string) => agent().execute({ command }, { cwd });
+	const configure = async (file: string, config: unknown) => {
+		await mkdir(join(file, ".."), { recursive: true });
+		await writeFile(file, typeof config === "string" ? config : JSON.stringify(config));
+	};
+
+	it("lets the user file add a place to write and a place not to read", async () => {
+		await mkdir(join(home, "extra"));
+		await configure(join(home, ".atelier", "sandbox.json"), { allowWrite: ["~/extra"], denyRead: ["notes.txt"] });
+		const result = await run(`echo ok > ${home}/extra/file.txt`);
+		expect(result.ok).toBe(true);
+		expect(await exists(join(home, "extra", "file.txt"))).toBe(true);
+		expect((await run(`echo no > ${outside}/file.txt`)).ok).toBe(false);
+		const denied = await run(`cat ${home}/notes.txt`);
+		expect(denied.output).not.toContain("ordinary file");
+		expect(denied.output).toMatch(/Operation not permitted/);
+	});
+
+	it("lets the project file add a place to write, relative to the working directory", async () => {
+		await configure(join(cwd, ".atelier", "sandbox.json"), { allowWrite: ["../outside"] });
+		expect((await run(`echo ok > ${outside}/file.txt`)).ok).toBe(true);
+		expect(await exists(join(outside, "file.txt"))).toBe(true);
+	});
+
+	it("keeps the secret file patterns inside an added directory", async () => {
+		await configure(join(cwd, ".atelier", "sandbox.json"), { allowWrite: ["../outside"] });
+		const result = await run(`cd ${outside} && echo x > .env; echo x > cert.pem; echo ok > plain.txt`);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(2);
+		expect(await exists(join(outside, ".env"))).toBe(false);
+		expect(await exists(join(outside, "cert.pem"))).toBe(false);
+		expect(await exists(join(outside, "plain.txt"))).toBe(true);
+	});
+
+	it("keeps the git hooks of an added directory protected", async () => {
+		await mkdir(join(outside, ".git", "hooks"), { recursive: true });
+		await configure(join(cwd, ".atelier", "sandbox.json"), { allowWrite: ["../outside"] });
+		const result = await run(`echo x > ${outside}/.git/hooks/pre-commit; echo x > ${outside}/.git/config`);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(2);
+		expect(await exists(join(outside, ".git", "hooks", "pre-commit"))).toBe(false);
+	});
+
+	it("does not let a command change the project's configuration", async () => {
+		await configure(join(cwd, ".atelier", "sandbox.json"), {});
+		const result = await run(
+			`echo '{"allowWrite":["${home}"]}' > .atelier/sandbox.json; rm .atelier/sandbox.json; mv .atelier .atelier-x; mkdir -p .atelier2 && echo ok`,
+		);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(3);
+		expect(await readFile(join(cwd, ".atelier", "sandbox.json"), "utf8")).toBe("{}");
+	});
+
+	it("does not let a command create the user's configuration or write the secrets through it", async () => {
+		await configure(join(home, ".atelier", "sandbox.json"), {});
+		const result = await run(`echo '{}' > ${home}/.atelier/sandbox.json`);
+		expect(result.ok).toBe(false);
+		expect(await readFile(join(home, ".atelier", "sandbox.json"), "utf8")).toBe("{}");
+	});
+
+	it("stops the command with the file and the problem when a file is invalid, instead of ignoring it", async () => {
+		await configure(join(cwd, ".atelier", "sandbox.json"), '{ "allowWrite": ["~"] }');
+		const result = await run(`echo ran > ${cwd}/ran.txt`);
+		expect(result.ok).toBe(false);
+		expect(result.output).toMatch(
+			new RegExp(
+				`^\\[sandbox error: Invalid sandbox configuration ${join(cwd, ".atelier", "sandbox.json")}: allowWrite entry "~" is refused: it would make ${home} writable, and that path stays protected\\]$`,
+			),
+		);
+		expect(await exists(join(cwd, "ran.txt"))).toBe(false);
+	});
+});
+
 describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 	let verifierDir: string;
 	const verifier = () => createBashTool({ withoutApproval: true, policy: "verifier", sandbox });
@@ -166,6 +288,33 @@ describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 		expect(result.output).not.toContain("FAKE-PRIVATE-KEY");
 		expect(result.output).not.toContain("ordinary file");
 		expect(result.output.match(/Operation not permitted/g)).toHaveLength(4);
+	});
+
+	it("cannot read the system keychains in /Library, but still runs node and a script of its own", async () => {
+		const keychains = await run(
+			"ls /Library/Keychains; cat /Library/Keychains/System.keychain | head -c 4; ls /Library/Keychains/System.keychain",
+		);
+		expect(keychains.ok).toBe(false);
+		expect(keychains.output).not.toContain("System.keychain\n");
+		expect(keychains.output.match(/Operation not permitted/g)).toHaveLength(3);
+
+		const node = await run("node --version && cd candidate && node -e 'console.log(require(\"./dep.js\") + 1)'");
+		expect(node.ok).toBe(true);
+		expect(node.output).toMatch(/^v\d+\.\d+\.\d+\n42\n/);
+	});
+
+	it("ignores the configuration files: they add nothing to what the verifier writes or reads", async () => {
+		await mkdir(join(home, "extra"));
+		await mkdir(join(home, ".atelier"));
+		await writeFile(
+			join(home, ".atelier", "sandbox.json"),
+			JSON.stringify({ allowWrite: ["~/extra", outside], denyRead: [verifierDir] }),
+		);
+		const result = await run(`echo x > ${home}/extra/file.txt; echo x > ${outside}/file.txt; cat candidate/dep.js`);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(2);
+		expect(result.output).toContain("module.exports = 41;");
+		expect(await exists(join(home, "extra", "file.txt"))).toBe(false);
+		expect(await exists(join(outside, "file.txt"))).toBe(false);
 	});
 
 	it("has no network: not a local server, not a name lookup", async () => {

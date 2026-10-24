@@ -10,8 +10,10 @@ import {
 	coreTools,
 	createBackend as createNamedBackend,
 	describeError,
+	loadSandboxAdditions,
 	type MemoryPort,
 	type ReviewConsentRequest,
+	SandboxConfigError,
 	Session,
 	SYSTEM_PROMPT_APPEND,
 	VERSION,
@@ -104,6 +106,17 @@ export async function run(
 	) {
 		io.stderr(`error: Working directory does not exist: ${args.cwd}\n`);
 		return EXIT_USAGE;
+	}
+
+	// A broken file stops the start: ignoring it would silently widen or narrow what commands may do.
+	if (!args.noSandbox && io.home !== undefined) {
+		try {
+			loadSandboxAdditions({ cwd: args.cwd, home: io.home });
+		} catch (error) {
+			if (!(error instanceof SandboxConfigError)) throw error;
+			io.stderr(`error: ${error.message}\n`);
+			return EXIT_FAILED;
+		}
 	}
 
 	let backend: AgentBackend;

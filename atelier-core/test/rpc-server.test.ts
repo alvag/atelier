@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -189,6 +189,42 @@ describe("RpcServer", () => {
 			ok: false,
 			error: { code: "session_start_failed", message: "claude not found" },
 		});
+	});
+
+	it("refuses to start a session when a sandbox configuration file is invalid, naming it", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-rpc-home-"));
+		try {
+			await mkdir(join(cwd, ".atelier"));
+			await writeFile(join(cwd, ".atelier", "sandbox.json"), '{ "denyRead": "x" }');
+			const input = new PassThrough();
+			const messages: ServerMessage[] = [];
+			const backends: FakeBackend[] = [];
+			const server = new RpcServer({
+				input,
+				write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
+				createBackend: () => {
+					const backend = new FakeBackend([]);
+					backends.push(backend);
+					return backend;
+				},
+				tools: [],
+				systemPromptAppend: "",
+				home,
+			});
+			void server.run();
+			input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd })}\n`);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			expect(messages.find((m) => m.type === "response")).toMatchObject({
+				ok: false,
+				error: {
+					code: "session_start_failed",
+					message: `Invalid sandbox configuration ${join(cwd, ".atelier", "sandbox.json")}: "denyRead" must be an array of non-empty strings`,
+				},
+			});
+			expect(backends).toEqual([]);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects a second turn while one is running", async () => {

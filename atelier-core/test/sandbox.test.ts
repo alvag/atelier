@@ -1,3 +1,7 @@
+import { realpathSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	agentPolicy,
@@ -40,14 +44,86 @@ function fakeManager(overrides: Partial<SandboxManagerLike> = {}): { manager: Sa
 }
 
 describe("agentPolicy", () => {
-	it("writes to the working directory, the system temporary directory and the session scratch directory", () => {
+	const CACHES = [
+		"/home/ana/.npm",
+		"/home/ana/Library/pnpm",
+		"/home/ana/.local/share/pnpm",
+		"/home/ana/.pnpm-store",
+		"/home/ana/.yarn",
+		"/home/ana/.node-gyp",
+		"/home/ana/.cache",
+		"/home/ana/Library/Caches",
+	];
+
+	/** What the library protects in the directory it is started in, not in the session's. */
+	const LIBRARY_PROTECTED = [
+		".git/hooks",
+		".git/config",
+		".gitconfig",
+		".gitmodules",
+		".bashrc",
+		".bash_profile",
+		".zshrc",
+		".zprofile",
+		".profile",
+		".ripgreprc",
+		".mcp.json",
+		".vscode",
+		".idea",
+		".claude/commands",
+		".claude/agents",
+	];
+
+	it("writes to the working directory, the system temporary directory, the session scratch directory and the package caches", () => {
 		const policy = agentPolicy(SESSION);
-		expect(policy.filesystem.allowWrite).toEqual(["/work/project", "/tmp/sys", "/tmp/atelier-session-1"]);
+		expect(policy.filesystem.allowWrite).toEqual(["/work/project", "/tmp/sys", "/tmp/atelier-session-1", ...CACHES]);
 	});
 
 	it("leaves the scratch directory out when the session has none", () => {
 		const { scratchDir: _, ...withoutScratch } = SESSION;
-		expect(agentPolicy(withoutScratch).filesystem.allowWrite).toEqual(["/work/project", "/tmp/sys"]);
+		expect(agentPolicy(withoutScratch).filesystem.allowWrite).toEqual(["/work/project", "/tmp/sys", ...CACHES]);
+	});
+
+	it("never makes the home directory writable, nor a secret path", () => {
+		const { allowWrite = [], denyRead = [] } = agentPolicy(SESSION).filesystem;
+		expect(allowWrite).not.toContain("/home/ana");
+		for (const secret of denyRead)
+			expect(allowWrite.filter((path) => secret === path || String(secret).startsWith(`${path}/`))).toEqual([]);
+	});
+
+	it("adds the configuration's write paths and read denials, keeping every fixed protection", () => {
+		const policy = agentPolicy({
+			...SESSION,
+			additions: { allowWrite: ["/data/shared"], denyRead: ["/home/ana/Documents"] },
+		});
+		expect(policy.filesystem.allowWrite).toEqual([
+			"/work/project",
+			"/tmp/sys",
+			"/tmp/atelier-session-1",
+			...CACHES,
+			"/data/shared",
+		]);
+		expect(policy.filesystem.denyRead).toEqual([
+			"/home/ana/.ssh",
+			"/home/ana/.aws",
+			"/home/ana/.gnupg",
+			"/home/ana/.config/gh",
+			"/home/ana/Library/Keychains",
+			"/home/ana/.claude",
+			"/home/ana/Documents",
+		]);
+		expect(policy.filesystem.denyWrite).toEqual(
+			expect.arrayContaining([
+				"/work/project/.env",
+				"/data/shared/.env",
+				"/data/shared/**/*.pem",
+				"/data/shared/**/*.key",
+			]),
+		);
+	});
+
+	it("does not let a command write the project's .atelier directory, where its configuration lives", () => {
+		expect(agentPolicy(SESSION).filesystem.denyWrite).toContain("/work/project/.atelier");
 	});
 
 	it("denies writing .env, .env.*, *.pem and *.key anywhere in the working directory", () => {
@@ -58,6 +134,8 @@ describe("agentPolicy", () => {
 			"/work/project/**/.env.*",
 			"/work/project/**/*.pem",
 			"/work/project/**/*.key",
+			...LIBRARY_PROTECTED.map((path) => `/work/project/${path}`),
+			"/work/project/.atelier",
 		]);
 	});
 
@@ -100,12 +178,21 @@ describe("verifierPolicy", () => {
 			"/bin",
 			"/sbin",
 			"/System",
-			"/Library",
+			"/Library/Apple/usr",
+			"/Library/Frameworks",
 			"/etc",
 			"/private/etc",
 			"/dev",
 			"/opt/homebrew",
 		]);
+	});
+
+	it("does not read /Library as a whole: its Keychains and the rest stay out", () => {
+		const reads = (verifierPolicy(verifier).filesystem.allowRead ?? []).map((entry) =>
+			typeof entry === "string" ? entry : entry.path,
+		);
+		expect(reads).not.toContain("/Library");
+		expect(reads.filter((path) => path.startsWith("/Library"))).toEqual(["/Library/Apple/usr", "/Library/Frameworks"]);
 	});
 
 	it("never lists the home directory or anything of the user's under it, apart from the Node installation", () => {
@@ -189,6 +276,45 @@ describe("Sandbox wrap", () => {
 		const sandbox = new Sandbox({ platform: "darwin", manager, home: "/home/ana", nodePrefix: "/node" });
 		await sandbox.wrap("ls", { policy: "verifier", cwd: "/tmp/atelier-verify-9" });
 		expect(calls.wrap[0]?.custom).toEqual(verifierPolicy({ dir: "/tmp/atelier-verify-9", nodePrefix: "/node" }));
+	});
+
+	it("adds what the configuration files say to the agent's policy only", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-wrap-"));
+		try {
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "sandbox.json"),
+				JSON.stringify({ allowWrite: ["~/extra"], denyRead: ["~/private"] }),
+			);
+			const { manager, calls } = fakeManager();
+			const sandbox = new Sandbox({ platform: "darwin", manager, home, tempDir: "/tmp/sys", nodePrefix: "/node" });
+			await sandbox.wrap("ls", { policy: "agent", cwd: "/work/project" });
+			await sandbox.wrap("ls", { policy: "verifier", cwd: "/tmp/atelier-verify-9" });
+			const agent = calls.wrap[0]?.custom as ReturnType<typeof agentPolicy>;
+			expect(agent.filesystem.allowWrite).toContain(join(realpathSync(home), "extra"));
+			expect(agent.filesystem.denyRead).toContain(join(realpathSync(home), "private"));
+			expect(calls.wrap[1]?.custom).toEqual(verifierPolicy({ dir: "/tmp/atelier-verify-9", nodePrefix: "/node" }));
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses to wrap a command when a configuration file is invalid", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-wrap-"));
+		try {
+			await mkdir(join(home, ".atelier"));
+			await writeFile(join(home, ".atelier", "sandbox.json"), "{ nope");
+			const { manager, calls } = fakeManager();
+			const sandbox = new Sandbox({ platform: "darwin", manager, home });
+			await expect(sandbox.wrap("ls", { policy: "agent", cwd: "/work/project" })).rejects.toThrow(
+				/^Invalid sandbox configuration .*sandbox\.json: not valid JSON/,
+			);
+			expect(calls.wrap).toEqual([]);
+			// The verifier does not read the file at all.
+			await expect(sandbox.wrap("ls", { policy: "verifier", cwd: "/tmp/v" })).resolves.toBe("wrapped(ls)");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
 	});
 
 	it("cleans up after a command and resets the library on close", async () => {

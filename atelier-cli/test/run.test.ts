@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -840,6 +840,64 @@ describe("bash outside the sandbox", () => {
 		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "Refused: sudo — sudo -n true" });
 		expect(h.out()).not.toContain("Run this command");
 		expect(h.out()).toContain("▸ bash Refused: sudo — sudo -n true ✗\n");
+	});
+});
+
+describe("sandbox configuration", () => {
+	const reply: FakeStep[] = [{ event: started }, { event: { type: "text_delta", text: "hello" } }, { event: finished }];
+	let home: string;
+	beforeEach(async () => {
+		home = await mkdtemp(join(tmpdir(), "atelier-cli-home-"));
+	});
+	afterEach(async () => {
+		await rm(home, { recursive: true, force: true });
+	});
+	const configure = async (dir: string, config: string) => {
+		await mkdir(join(dir, ".atelier"), { recursive: true });
+		await writeFile(join(dir, ".atelier", "sandbox.json"), config);
+	};
+
+	it("stops before anything runs, with the file and the problem, when the project file is invalid", async () => {
+		await configure(cwd, '{ "allowWrite": ["~/.ssh"] }');
+		const h = harness([reply], { home });
+		expect(await run(["say hi"], h.io, h.createBackend)).toBe(1);
+		expect(h.err()).toBe(
+			`error: Invalid sandbox configuration ${join(cwd, ".atelier", "sandbox.json")}: allowWrite entry "~/.ssh" is refused: it would make ${join(await realpath(home), ".ssh")} writable, and that path stays protected\n`,
+		);
+		expect(h.out()).toBe("");
+		expect(h.backend.prompts).toEqual([]);
+	});
+
+	it("stops, naming the user file, when that one has an unknown key", async () => {
+		await configure(home, '{ "allowRead": [] }');
+		const h = harness([reply], { home });
+		expect(await run(["say hi"], h.io, h.createBackend)).toBe(1);
+		expect(h.err()).toBe(
+			`error: Invalid sandbox configuration ${join(home, ".atelier", "sandbox.json")}: unknown key "allowRead" (the keys are "allowWrite" and "denyRead")\n`,
+		);
+		expect(h.backend.prompts).toEqual([]);
+	});
+
+	it("starts with valid files", async () => {
+		await configure(home, '{ "allowWrite": ["~/work"] }');
+		await configure(cwd, '{ "denyRead": ["private"] }');
+		const h = harness([reply], { home });
+		expect(await run(["say hi"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toEqual(["say hi"]);
+	});
+
+	it("does not read the files with --no-sandbox, where they would not apply", async () => {
+		await configure(cwd, "{ nope");
+		const h = harness([reply], { home });
+		expect(await run(["--no-sandbox", "say hi"], h.io, h.createBackend)).toBe(0);
+		expect(h.err()).not.toContain("Invalid sandbox configuration");
+	});
+
+	it("still prints help and version with an invalid file", async () => {
+		await configure(cwd, "{ nope");
+		const h = harness([], { home });
+		expect(await run(["--version"], h.io, h.createBackend)).toBe(0);
+		expect(h.err()).toBe("");
 	});
 });
 

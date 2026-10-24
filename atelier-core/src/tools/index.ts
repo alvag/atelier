@@ -17,6 +17,13 @@ export {
 	sandbox,
 	sandboxEnabled,
 } from "./sandbox.ts";
+export {
+	loadSandboxAdditions,
+	projectConfigFile,
+	type SandboxAdditions,
+	SandboxConfigError,
+	userConfigFile,
+} from "./sandbox-config.ts";
 export * from "./types.ts";
 
 /** The tools every M1 session gets. */

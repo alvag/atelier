@@ -2,6 +2,13 @@ import { realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
+import { loadSandboxAdditions, type SandboxAdditions } from "./sandbox-config.ts";
+import {
+	libraryProtectedPaths,
+	packageCacheDirectories,
+	secretDirectories,
+	secretFilePatterns,
+} from "./sandbox-paths.ts";
 
 /**
  * The operating-system sandbox for `bash` commands (macOS Seatbelt, through
@@ -48,31 +55,41 @@ export interface AgentPolicyInput {
 	/** The system temporary directory. */
 	tempDir: string;
 	home: string;
-}
-
-/** Files that hold secrets in a project: no command may write them, wherever they sit under the working directory. */
-function secretFilePatterns(cwd: string): string[] {
-	return [".env", ".env.*", "**/.env", "**/.env.*", "**/*.pem", "**/*.key"].map((pattern) => join(cwd, pattern));
-}
-
-/** What the user keeps private: no command of the main agent may read it. */
-function secretDirectories(home: string): string[] {
-	return [".ssh", ".aws", ".gnupg", ".config/gh", "Library/Keychains", ".claude"].map((path) => join(home, path));
+	/** What the user's and the project's configuration files add; none when absent. */
+	additions?: SandboxAdditions;
 }
 
 /**
  * The main agent and its workers: they write the working directory, the
- * temporary directories and nothing else (the library adds its own fixed
- * protections, such as git hooks and shell start-up files), read everything
- * but the user's secrets, and have the network. The network is left out of the
- * policy on purpose: the library filters it only when `allowedDomains` is set.
+ * temporary directories, the package managers' caches and what the
+ * configuration files add, and nothing else (the library adds its own fixed
+ * protections, such as git hooks and shell start-up files). They read everything
+ * but the user's secrets and what the configuration denies, and have the
+ * network. The network is left out of the policy on purpose: the library
+ * filters it only when `allowedDomains` is set.
+ *
+ * The configuration only adds. The secret file patterns also hold under every
+ * added directory, and `.atelier` of the working directory (the project's
+ * configuration) cannot be written by a command.
  */
-export function agentPolicy({ cwd, scratchDir, tempDir, home }: AgentPolicyInput): SandboxPolicy {
+export function agentPolicy({ cwd, scratchDir, tempDir, home, additions }: AgentPolicyInput): SandboxPolicy {
+	const writable = additions?.allowWrite ?? [];
 	return {
 		filesystem: {
-			denyRead: secretDirectories(home),
-			allowWrite: [cwd, tempDir, ...(scratchDir === undefined ? [] : [scratchDir])],
-			denyWrite: secretFilePatterns(cwd),
+			denyRead: [...secretDirectories(home), ...(additions?.denyRead ?? [])],
+			allowWrite: [
+				cwd,
+				tempDir,
+				...(scratchDir === undefined ? [] : [scratchDir]),
+				...packageCacheDirectories(home),
+				...writable,
+			],
+			denyWrite: [
+				...secretFilePatterns(cwd),
+				...writable.flatMap(secretFilePatterns),
+				...[cwd, ...writable].flatMap(libraryProtectedPaths),
+				join(cwd, ".atelier"),
+			],
 		},
 	};
 }
@@ -92,9 +109,17 @@ export interface VerifierPolicyInput {
  * - its directory, where the copies and their dependencies live;
  * - the Node installation that runs the project's tools;
  * - the system toolchain and configuration: /usr, /bin, /sbin, /System,
- *   /Library, /etc, /private/etc, /dev and Homebrew's /opt/homebrew, which is
- *   where `bash` itself lives on Apple Silicon.
+ *   /etc, /private/etc, /dev and Homebrew's /opt/homebrew, which is where
+ *   `bash` itself lives on Apple Silicon; and, of /Library, only
+ *   /Library/Apple/usr (Rosetta, which x86_64 tools need) and
+ *   /Library/Frameworks (third-party frameworks such as Python.framework).
+ * The library lets an allowed read win over a denied one, so /Library as a whole
+ * cannot be allowed and then narrowed: its Keychains and the rest are left out.
  * The user's home directory is not readable, nor is /Users, /tmp or /private/var.
+ * The configuration files add nothing here.
+ * `git` does not work here: its Xcode shim reads /var/select (which can be
+ * allowed) and then writes a cache in the per-user /var/folders directory, which
+ * the verifier must not write; nothing narrow enough opens that.
  */
 export function verifierPolicy({ dir, nodePrefix }: VerifierPolicyInput): SandboxPolicy {
 	return {
@@ -113,7 +138,8 @@ const SYSTEM_READ_PATHS = [
 	"/bin",
 	"/sbin",
 	"/System",
-	"/Library",
+	"/Library/Apple/usr",
+	"/Library/Frameworks",
 	"/etc",
 	"/private/etc",
 	"/dev",
@@ -196,13 +222,16 @@ export class Sandbox {
 	async wrap(command: string, { policy, cwd, scratchDir, signal }: WrapOptions): Promise<string> {
 		const status = await this.status();
 		if (!status.available || !this.#manager) throw new Error(status.available ? "sandbox not started" : status.reason);
+		const home = this.#options.home ?? homedir();
 		const config =
 			policy === "agent"
 				? agentPolicy({
 						cwd,
 						...(scratchDir === undefined ? {} : { scratchDir }),
 						tempDir: this.#options.tempDir ?? tmpdir(),
-						home: this.#options.home ?? homedir(),
+						home,
+						// Read at each command, so a file that became invalid stops the command instead of being ignored.
+						additions: loadSandboxAdditions({ cwd, home }),
 					})
 				: verifierPolicy({ dir: cwd, nodePrefix: this.#options.nodePrefix ?? nodeInstallation() });
 		return this.#manager.wrapWithSandbox(command, "bash", config, signal);

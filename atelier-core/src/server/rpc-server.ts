@@ -15,6 +15,7 @@ import {
 } from "../protocol/types.ts";
 import { Session } from "../session.ts";
 import { BUILTIN_AGENTS, type SubagentDefinition } from "../subagents/definitions.ts";
+import { loadSandboxAdditions, SandboxConfigError } from "../tools/sandbox-config.ts";
 import type { ToolDefinition } from "../tools/types.ts";
 import { VERSION } from "../version.ts";
 
@@ -254,6 +255,15 @@ export class RpcServer {
 			))
 		)
 			throw new CommandError("invalid_cwd", `Working directory does not exist: ${cwd}`);
+		// A broken sandbox file stops the session: ignoring it would silently widen or narrow what commands may do.
+		if (this.#options.home !== undefined) {
+			try {
+				loadSandboxAdditions({ cwd, home: this.#options.home });
+			} catch (error) {
+				if (error instanceof SandboxConfigError) throw new CommandError("session_start_failed", error.message);
+				throw error;
+			}
+		}
 		const approvals = new Map<string, (approved: boolean) => void>();
 		const consents = new Map<string, (answer: "granted" | "declined") => void>();
 		// Memory is optional: a session that cannot connect it starts anyway and says why.
