@@ -177,6 +177,46 @@ const RECURSIVE_CH = /^(?:-[a-zA-Z]*R[a-zA-Z]*|--recursive)$/;
 /** Devices `dd` may write: they are not storage. */
 const HARMLESS_DEVICES = /^\/dev\/(?:null|stdout|stderr|stdin|tty|fd\/\d+)$/;
 
+/** `find` primaries that select nothing out: depth and traversal options. Any other test narrows what is removed. */
+const FIND_NEUTRAL = new Set(["-depth", "-d", "-xdev", "-x", "-mount", "-follow"]);
+const FIND_NEUTRAL_WITH_VALUE = new Set(["-maxdepth", "-mindepth"]);
+
+/**
+ * A `find` that removes everything under `/`, the home directory or the project:
+ * a starting point of that kind, `-delete` or `-exec`/`-execdir rm ... {}`, and
+ * no test that narrows the selection (`find . -name '*.log' -delete` is fine).
+ */
+function findRemovalKind(args: readonly string[], context: GuardContext): PathKind | undefined {
+	let at = 0;
+	while (at < args.length && /^-[HLPEXsx]+$/.test(args[at] ?? "")) at++;
+	const roots: string[] = [];
+	while (at < args.length && !/^[-(!]/.test(args[at] ?? "")) roots.push(args[at++] as string);
+	if (roots.length === 0) roots.push(".");
+	let removes = false;
+	while (at < args.length) {
+		const arg = args[at] as string;
+		if (arg === "-delete") {
+			removes = true;
+			at++;
+		} else if (arg === "-exec" || arg === "-execdir") {
+			const rest = args.slice(at + 1);
+			const stop = rest.findIndex((item) => item === ";" || item === "+");
+			const command = stop < 0 ? rest : rest.slice(0, stop);
+			if (executable(command[0] ?? "") !== "rm" || !command.includes("{}")) return undefined;
+			removes = true;
+			at += command.length + 2;
+		} else if (FIND_NEUTRAL.has(arg)) at++;
+		else if (FIND_NEUTRAL_WITH_VALUE.has(arg)) at += 2;
+		else return undefined;
+	}
+	if (!removes) return undefined;
+	for (const root of roots) {
+		const kind = pathKind(root, context);
+		if (kind) return kind;
+	}
+	return undefined;
+}
+
 /** The rule a simple command breaks, given its name and arguments. */
 function commandRule(name: string, args: readonly string[], context: GuardContext): string | undefined {
 	if (name === "su") return "su";
@@ -188,6 +228,10 @@ function commandRule(name: string, args: readonly string[], context: GuardContex
 			const kind = pathKind(operand, context);
 			if (kind) return REMOVAL_RULE[kind];
 		}
+	}
+	if (name === "find") {
+		const kind = findRemovalKind(args, context);
+		if (kind) return REMOVAL_RULE[kind];
 	}
 	if ((name === "chmod" || name === "chown") && args.some((arg) => RECURSIVE_CH.test(arg)))
 		if (operands(args).some((operand) => pathKind(operand, context) === "root")) return "recursive chmod/chown on /";
