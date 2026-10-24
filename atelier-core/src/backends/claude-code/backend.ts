@@ -228,9 +228,10 @@ class ClaudeCodeSession implements BackendSession {
 		}
 	}
 
+	/** A delivered turn is immutable: anything that arrives after it closed (a crash, an error) goes to the next turn. */
 	#deliver(events: AtelierEventBody[]): void {
 		for (const event of events) {
-			if (this.#turn) this.#turn.push(event);
+			if (this.#turn && !this.#turn.closed) this.#turn.push(event);
 			else this.#early.push(event);
 		}
 	}
@@ -259,10 +260,16 @@ class ClaudeCodeSession implements BackendSession {
 	}
 
 	async *#turnFor(prompt: string): AsyncIterable<AtelierEventBody> {
-		if (this.#failure !== undefined) throw new Error(this.#failure);
-		const turn = new Channel<AtelierEventBody>();
-		for (const event of this.#early) turn.push(event);
+		const early = this.#early;
 		this.#early = [];
+		if (this.#failure !== undefined) {
+			// The session failed between turns: this turn reports why, the ones after it refuse.
+			if (early.length === 0) throw new Error(this.#failure);
+			yield* early;
+			return;
+		}
+		const turn = new Channel<AtelierEventBody>();
+		for (const event of early) turn.push(event);
 		this.#turn = turn;
 		this.#input.push({
 			type: "user",

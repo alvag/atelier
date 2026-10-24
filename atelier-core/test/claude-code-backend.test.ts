@@ -225,6 +225,85 @@ describe("ClaudeCodeBackend turns", () => {
 		expect(second[0]).toMatchObject({ type: "error", code: "backend_error", message: "claude exited with code 1" });
 	});
 
+	it("leaves a finished turn untouched when Claude Code crashes after it, and reports the crash in the next turn", async () => {
+		const { query } = fakeQuery([init], [[text("done"), result(0.03), new Error("claude exited with code 1")]]);
+		const session = await Session.start({ backend: new ClaudeCodeBackend({ query, env: {} }), cwd: "/w", tools: [] });
+		const first = await collect(session.send("x"));
+
+		expect(first.map((e) => e.type)).toEqual(["session_started", "text_delta", "turn_finished"]);
+		expect(first.at(-1)).toMatchObject({ stopReason: "end_turn", costUsd: 0.03 });
+
+		const second = await collect(session.send("y"));
+		expect(second).toContainEqual({
+			type: "error",
+			code: "backend_crashed",
+			message: "claude exited with code 1",
+			recoverable: false,
+		});
+		expect(second.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
+
+		const third = await collect(session.send("z"));
+		expect(third[0]).toMatchObject({ type: "error", code: "backend_error", message: "claude exited with code 1" });
+	});
+
+	it("reports Claude Code ending after a finished turn in the next turn, not in the finished one", async () => {
+		const h = controlledQuery();
+		const session = await Session.start({
+			backend: new ClaudeCodeBackend({ query: h.query, env: {} }),
+			cwd: "/w",
+			tools: [],
+		});
+		const pending = collect(session.send("x"));
+		h.output.push(result(0));
+		h.output.close();
+		const first = await pending;
+		expect(first.map((e) => e.type)).toEqual(["turn_finished"]);
+		expect(first[0]).toMatchObject({ stopReason: "end_turn" });
+
+		const second = await collect(session.send("y"));
+		expect(second).toContainEqual({
+			type: "error",
+			code: "backend_ended",
+			message: "Claude Code ended the session.",
+			recoverable: false,
+		});
+		expect(second.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
+	});
+
+	it("ignores an interrupt that arrives after the turn finished", async () => {
+		vi.useFakeTimers();
+		try {
+			const h = controlledQuery();
+			const backend = new ClaudeCodeBackend({ query: h.query, env: {}, interruptGraceMs: 5000 });
+			const session = await backend.start({
+				cwd: "/w",
+				systemPromptAppend: "",
+				tools: [],
+				executeTool: async () => ({ ok: true, output: "" }),
+			});
+			const first: string[] = [];
+			const pending = (async () => {
+				for await (const event of session.send("x")) first.push(event.type);
+			})();
+			h.output.push(result(0));
+			await pending;
+			await session.interrupt();
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(h.close).not.toHaveBeenCalled();
+			expect(first).toEqual(["turn_finished"]);
+
+			const second: string[] = [];
+			const next = (async () => {
+				for await (const event of session.send("y")) second.push(event.type);
+			})();
+			h.output.push(result(0));
+			await next;
+			expect(second).toEqual(["turn_finished"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it.each([
 		["a Max subscription", SUBSCRIPTION, "none", "subscription"],
 		["a third-party provider", { apiProvider: "bedrock" }, "none", "other"],
