@@ -34,28 +34,41 @@ function blankHeredocs(command: string): string {
 	});
 }
 
+/** A redirection operator with its optional descriptor (`2>`, `{fd}>`, `>|`, `2>&1`, `&>`); the file is the next word. */
+const REDIRECTION_OPERATOR = /(?:\d+|\{[A-Za-z_]\w*\})?(?:&>>?|[<>]&\d*-?|>>?\|?|<<?|<>)/;
+const WORD_OR_OPERATOR = /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/;
+
 /** Words and operators; quoted text stays inside its word, so prose is never taken for a command. */
 function tokenize(command: string): Token[] {
-	const pattern = /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
+	const pattern = new RegExp(`${REDIRECTION_OPERATOR.source}|${WORD_OR_OPERATOR.source}`, "g");
 	return [...command.matchAll(pattern)].map((match) => {
 		const raw = match[0];
-		const value = raw.replace(
-			/"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
-			(_raw, double: string | undefined, single: string | undefined, escaped: string | undefined) => {
-				if (double !== undefined)
-					return double.replace(/\\(["\\$`\n])/g, (_escape, char: string) => (char === "\n" ? "" : char));
-				return single ?? escaped ?? "";
-			},
-		);
-		return { value, raw, operator: SEPARATORS.has(raw), index: match.index };
+		return { value: unquote(raw), raw, operator: SEPARATORS.has(raw), index: match.index };
 	});
+}
+
+/** The text a shell word stands for, without its quotes and escapes. */
+function unquote(raw: string): string {
+	return raw.replace(
+		/"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
+		(_raw, double: string | undefined, single: string | undefined, escaped: string | undefined) => {
+			if (double !== undefined)
+				return double.replace(/\\(["\\$`\n])/g, (_escape, char: string) => (char === "\n" ? "" : char));
+			return single ?? escaped ?? "";
+		},
+	);
+}
+
+/** What `env -S` makes of its string: words split on blanks, quotes respected, no shell operators. */
+function splitWords(text: string): Token[] {
+	const words = text.match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s'"\\])+/g) ?? [];
+	return words.map((raw, index) => ({ value: unquote(raw), raw, operator: false, index }));
 }
 
 const executable = (value: string) => value.split("/").at(-1) ?? value;
 
-const WRAPPERS = ["env", "sudo", "command", "exec", "nohup", "timeout", "xargs", "nice", "time", "setsid"];
+const WRAPPERS = ["env", "sudo", "command", "exec", "nohup", "timeout", "xargs", "nice", "time", "setsid", "builtin"];
 const WRAPPER_VALUE_OPTIONS: Record<string, readonly string[]> = {
-	env: ["-u", "--unset", "-C", "--chdir"],
 	sudo: ["-u", "-g", "-h", "-p", "-C", "--user", "--group", "--host", "--prompt", "--chdir"],
 	timeout: ["-s", "--signal", "-k", "--kill-after"],
 	xargs: ["-n", "-I", "-P", "--max-args", "--replace", "--max-procs"],
@@ -65,18 +78,21 @@ const WRAPPER_VALUE_OPTIONS: Record<string, readonly string[]> = {
 const RESERVED_WORDS = new Set(["then", "else", "elif", "do", "{", "!", "if", "while", "until"]);
 
 /** A redirection word (`2>file`, `>file`, `<in`, `>>log`, `>|f`); `withTarget` when the file is the next word (`2> file`). */
-const REDIRECTION = /^\d*(?:>>?|<<?|>\|)/;
-const BARE_REDIRECTION = /^\d*(?:>>?|<<?|>\|)$/;
+const REDIRECTION = new RegExp(`^${REDIRECTION_OPERATOR.source}`);
+const BARE_REDIRECTION = /^(?:\d+|\{[A-Za-z_]\w*\})?(?:&>>?|>>?\|?|<<?|<>|[<>]&)$/;
+
+/** `env` options that take a value; in a combined cluster (`-iu VAR`) the first one ends the cluster. */
+const ENV_VALUE_FLAGS = "uCP";
 
 /**
  * Where the real command starts in a segment, the wrappers (`env`, `sudo`, ...)
- * passed on the way, and command lines a wrapper runs from a string (`env -S`).
- * Redirections before the command or between wrappers are skipped: they never
- * name the command.
+ * passed on the way, and the segment itself: `env -S "cmd args" more` runs the
+ * words of the string followed by the rest, so the segment returned replaces
+ * the string with its words. Redirections before the command or between
+ * wrappers are skipped: they never name the command.
  */
-function head(segment: readonly Token[]): { cursor: number; wrappers: string[]; payloads: string[] } {
+function head(segment: readonly Token[]): { segment: readonly Token[]; cursor: number; wrappers: string[] } {
 	const wrappers: string[] = [];
-	const payloads: string[] = [];
 	let cursor = 0;
 	while (
 		cursor < segment.length &&
@@ -105,23 +121,54 @@ function head(segment: readonly Token[]): { cursor: number; wrappers: string[]; 
 				cursor += BARE_REDIRECTION.test(word) ? 2 : 1;
 				continue;
 			}
+			if (name === "env" && /^[A-Za-z_][A-Za-z_0-9]*=/.test(segment[cursor]?.value ?? "")) {
+				cursor++;
+				continue;
+			}
 			if (!segment[cursor]?.value.startsWith("-")) break;
 			const flag = segment[cursor++]?.value ?? "";
 			if (flag === "--") break;
-			// `env -S "cmd args"` runs the string as a command line: it is checked like `sh -c`.
-			if (name === "env" && (flag === "-S" || flag === "--split-string")) {
-				payloads.push(segment[cursor++]?.value ?? "");
-				return { cursor: segment.length, wrappers, payloads };
-			}
-			if (name === "env" && (flag.startsWith("--split-string=") || /^-S./.test(flag))) {
-				payloads.push(flag.startsWith("-S") ? flag.slice(2) : flag.slice("--split-string=".length));
-				return { cursor: segment.length, wrappers, payloads };
+			if (name === "env") {
+				const split = envSplitString(flag, segment[cursor]?.value);
+				if (split) {
+					if (split.takesNext) cursor++;
+					// `env -S` splits the string into words; it is not a shell, so the words are one command.
+					const inner = head([...splitWords(split.text), ...segment.slice(cursor)]);
+					return { ...inner, wrappers: [...wrappers, ...inner.wrappers] };
+				}
+				if (envValueFlag(flag)) cursor++;
+				continue;
 			}
 			if (WRAPPER_VALUE_OPTIONS[name]?.includes(flag)) cursor++;
 		}
 		if (name === "timeout") cursor++;
 	}
-	return { cursor, wrappers, payloads };
+	return { segment, cursor, wrappers };
+}
+
+/** The string of `env -S`, `--split-string`, `--split-string=...` or a cluster such as `-iS`/`-vSstring`, and whether it is the next word. */
+function envSplitString(flag: string, next: string | undefined): { text: string; takesNext: boolean } | undefined {
+	if (flag === "--split-string") return { text: next ?? "", takesNext: true };
+	if (flag.startsWith("--split-string=")) return { text: flag.slice("--split-string=".length), takesNext: false };
+	if (flag.startsWith("--") || !flag.startsWith("-")) return undefined;
+	for (let at = 1; at < flag.length; at++) {
+		const char = flag[at] as string;
+		if (char === "S") {
+			const rest = flag.slice(at + 1);
+			return rest === "" ? { text: next ?? "", takesNext: true } : { text: rest, takesNext: false };
+		}
+		if (ENV_VALUE_FLAGS.includes(char)) return undefined;
+	}
+	return undefined;
+}
+
+/** Whether an `env` option takes the next word as its value: `-u VAR`, `-C dir`, `--unset VAR`, a cluster ending in one. */
+function envValueFlag(flag: string): boolean {
+	if (flag === "--unset" || flag === "--chdir") return true;
+	if (flag.startsWith("--") || !flag.startsWith("-")) return false;
+	for (let at = 1; at < flag.length; at++)
+		if (ENV_VALUE_FLAGS.includes(flag[at] as string)) return at === flag.length - 1;
+	return false;
 }
 
 /**
@@ -207,14 +254,31 @@ const RECURSIVE_CH = /^(?:-[a-zA-Z]*R[a-zA-Z]*|--recursive)$/;
 /** Devices `dd` may write: they are not storage. */
 const HARMLESS_DEVICES = /^\/dev\/(?:null|stdout|stderr|stdin|tty|fd\/\d+)$/;
 
-/** `find` primaries that select nothing out: depth and traversal options. Any other test narrows what is removed. */
-const FIND_NEUTRAL = new Set(["-depth", "-d", "-xdev", "-x", "-mount", "-follow"]);
-const FIND_NEUTRAL_WITH_VALUE = new Set(["-maxdepth", "-mindepth"]);
+const FIND_NAMES = ["find", "gfind"];
+const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+/** `find` tests that choose files by name; with a pattern that is not just `*` they narrow what is removed. */
+const FIND_NARROWING = new Set(["-name", "-iname", "-path", "-ipath", "-wholename", "-regex", "-iregex"]);
+
+/** The words of a `-exec` command up to its `;` or `+`, and the index of the terminator (or the end). */
+function execCommand(args: readonly string[], from: number): { words: string[]; end: number } {
+	const rest = args.slice(from);
+	const stop = rest.findIndex((item) => item === ";" || item === "+");
+	return stop < 0 ? { words: rest, end: args.length } : { words: rest.slice(0, stop), end: from + stop };
+}
+
+/** Whether a `-exec` command runs `rm` once wrappers such as `env` and `command` are stripped. */
+function runsRm(words: readonly string[]): boolean {
+	const tokens = words.map((value, index) => ({ value, raw: value, operator: false, index }));
+	const { segment, cursor } = head(tokens);
+	return executable(segment[cursor]?.value ?? "") === "rm";
+}
 
 /**
- * A `find` that removes everything under `/`, the home directory or the project:
- * a starting point of that kind, `-delete` or `-exec`/`-execdir rm ... {}`, and
- * no test that narrows the selection (`find . -name '*.log' -delete` is fine).
+ * A `find` that deletes from `/`, the home directory or the project: a starting
+ * point of that kind and `-delete` or an `-exec`/`-execdir`/`-ok`/`-okdir` that
+ * runs `rm`. It fails closed: only a `-name`, `-path` or `-regex` style test
+ * with a pattern other than `*` narrows it (`find . -name '*.log' -delete` is
+ * fine); `-print`, `-type`, `-mtime`, parentheses and the like do not.
  */
 function findRemovalKind(args: readonly string[], context: GuardContext): PathKind | undefined {
 	let at = 0;
@@ -223,23 +287,21 @@ function findRemovalKind(args: readonly string[], context: GuardContext): PathKi
 	while (at < args.length && !/^[-(!]/.test(args[at] ?? "")) roots.push(args[at++] as string);
 	if (roots.length === 0) roots.push(".");
 	let removes = false;
-	while (at < args.length) {
+	let narrowed = false;
+	for (; at < args.length; at++) {
 		const arg = args[at] as string;
-		if (arg === "-delete") {
-			removes = true;
+		if (arg === "-delete") removes = true;
+		else if (FIND_EXEC.has(arg)) {
+			const { words, end } = execCommand(args, at + 1);
+			if (runsRm(words)) removes = true;
+			at = end;
+		} else if (FIND_NARROWING.has(arg)) {
+			const negated = args[at - 1] === "!" || args[at - 1] === "-not";
+			if (!negated && !/^\*+$/.test(args[at + 1] ?? "*")) narrowed = true;
 			at++;
-		} else if (arg === "-exec" || arg === "-execdir") {
-			const rest = args.slice(at + 1);
-			const stop = rest.findIndex((item) => item === ";" || item === "+");
-			const command = stop < 0 ? rest : rest.slice(0, stop);
-			if (executable(command[0] ?? "") !== "rm" || !command.includes("{}")) return undefined;
-			removes = true;
-			at += command.length + 2;
-		} else if (FIND_NEUTRAL.has(arg)) at++;
-		else if (FIND_NEUTRAL_WITH_VALUE.has(arg)) at += 2;
-		else return undefined;
+		}
 	}
-	if (!removes) return undefined;
+	if (!removes || narrowed) return undefined;
 	for (const root of roots) {
 		const kind = pathKind(root, context);
 		if (kind) return kind;
@@ -259,7 +321,7 @@ function commandRule(name: string, args: readonly string[], context: GuardContex
 			if (kind) return REMOVAL_RULE[kind];
 		}
 	}
-	if (name === "find") {
+	if (FIND_NAMES.includes(name)) {
 		const kind = findRemovalKind(args, context);
 		if (kind) return REMOVAL_RULE[kind];
 	}
@@ -277,21 +339,13 @@ export function findDestructiveCommand(command: string, context: GuardContext, d
 	let start = 0;
 	for (let end = 0; end <= tokens.length; end++) {
 		if (end < tokens.length && !tokens[end]?.operator) continue;
-		const segment = tokens.slice(start, end);
+		const { segment, cursor, wrappers } = head(tokens.slice(start, end));
 		start = end + 1;
-		const { cursor, wrappers, payloads } = head(segment);
 		if (wrappers.includes("sudo")) return "sudo";
-		for (const payload of payloads) {
-			const found = findDestructiveCommand(payload, context, depth + 1);
-			if (found) return found;
-		}
 		const first = segment[cursor];
 		if (first === undefined) continue;
 		const name = executable(first.value);
 		const args = segment.slice(cursor + 1).map((token) => token.value);
-		const rule = commandRule(name, args, context);
-		if (rule) return rule;
-
 		// Commands that run another command line: `sh -c`, `eval`, `find -exec`.
 		const nested: string[] = [];
 		if (["sh", "bash", "zsh", "dash"].includes(name)) {
@@ -300,9 +354,9 @@ export function findDestructiveCommand(command: string, context: GuardContext, d
 			if (payload) nested.push(payload);
 		}
 		if (name === "eval") nested.push((args[0] === "--" ? args.slice(1) : args).join(" "));
-		if (name === "find") {
+		if (FIND_NAMES.includes(name)) {
 			for (let at = 0; at < args.length; at++) {
-				if (args[at] !== "-exec" && args[at] !== "-execdir") continue;
+				if (!FIND_EXEC.has(args[at] ?? "")) continue;
 				const rest = args.slice(at + 1);
 				const stop = rest.findIndex((arg) => arg === ";" || arg === "+");
 				nested.push((stop < 0 ? rest : rest.slice(0, stop)).join(" "));
@@ -314,6 +368,8 @@ export function findDestructiveCommand(command: string, context: GuardContext, d
 			const found = findDestructiveCommand(payload, context, depth + 1);
 			if (found) return found;
 		}
+		const rule = commandRule(name, args, context);
+		if (rule) return rule;
 	}
 	for (const body of substitutionBodies(text)) {
 		const found = findDestructiveCommand(body, context, depth + 1);
