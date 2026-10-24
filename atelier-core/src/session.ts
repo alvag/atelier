@@ -19,6 +19,7 @@ import { loadProjectInstructions, type ProjectInstructions } from "./project-ins
 import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
+import { addPhaseSpent, addPhases, onePhase } from "./spent.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
 import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
 import {
@@ -267,11 +268,13 @@ export class Session {
 				turn.push(errorEvent("backend_error", describeError(error)));
 			}
 			await logged;
-			const ended = finish ?? {
-				type: "turn_finished",
-				stopReason: failed ? "error" : "incomplete",
-				usage: { ...ZERO_USAGE },
-			};
+			const ended = withMainPhase(
+				finish ?? {
+					type: "turn_finished",
+					stopReason: failed ? "error" : "incomplete",
+					usage: { ...ZERO_USAGE },
+				},
+			);
 			// A change left by a turn that finished well is assessed before the turn ends; its cost joins the turn's.
 			const clean = !failed && finish !== undefined && !signal.aborted && !NOT_REVIEWED.has(finish.stopReason);
 			if (!clean || !this.#review) return ended;
@@ -625,29 +628,25 @@ export class Session {
 /** Stop reasons after which a turn is neither assessed nor trusted as a correction. */
 const NOT_REVIEWED = new Set(["error", "interrupted", "incomplete"]);
 
-/** The turn's closing event with the review's usage and cost added. */
+/** The main agent's own closing event, with what it cost as the turn's `main` part. */
+function withMainPhase(
+	ended: Extract<AtelierEventBody, { type: "turn_finished" }>,
+): Extract<AtelierEventBody, { type: "turn_finished" }> {
+	return { ...ended, phases: onePhase("main", ended) };
+}
+
+/** The turn's closing event with the review's usage, cost and parts added. */
 function addSpent(
 	ended: Extract<AtelierEventBody, { type: "turn_finished" }>,
 	spent: Spent,
 ): Extract<AtelierEventBody, { type: "turn_finished" }> {
-	const { usage } = ended;
-	const cost =
-		ended.costUsd === undefined && spent.costUsd === undefined
-			? undefined
-			: (ended.costUsd ?? 0) + (spent.costUsd ?? 0);
-	const requests =
-		ended.requests === undefined && spent.requests === undefined
-			? undefined
-			: (ended.requests ?? 0) + (spent.requests ?? 0);
+	const { usage, requests, costUsd } = addPhaseSpent(ended, spent);
+	const phases = addPhases(ended.phases, spent.phases);
 	return {
 		...ended,
 		...(requests === undefined ? {} : { requests }),
-		usage: {
-			input: usage.input + spent.usage.input,
-			output: usage.output + spent.usage.output,
-			cacheRead: usage.cacheRead + spent.usage.cacheRead,
-			cacheWrite: usage.cacheWrite + spent.usage.cacheWrite,
-		},
-		...(cost === undefined ? {} : { costUsd: cost }),
+		usage,
+		...(costUsd === undefined ? {} : { costUsd }),
+		...(phases === undefined ? {} : { phases }),
 	};
 }

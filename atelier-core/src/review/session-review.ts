@@ -3,14 +3,18 @@ import {
 	type AtelierEventBody,
 	describeError,
 	errorEvent,
+	type PhaseSpent,
 	type ReviewFinding,
 	type ReviewVerdict,
 	type SubagentTag,
+	type TurnPhase,
+	type TurnPhases,
 	type Usage,
 	ZERO_USAGE,
 } from "../events.ts";
 import { DECLARE_RISK_REQUEST } from "../prompt.ts";
 import type { Session, SessionOptions } from "../session.ts";
+import { addPhaseSpent, addPhases, onePhase } from "../spent.ts";
 import { createBashTool, grepTool, readTool, sandbox } from "../tools/index.ts";
 import type { Sandbox } from "../tools/sandbox.ts";
 import type { ToolDefinition } from "../tools/types.ts";
@@ -18,7 +22,7 @@ import { type Candidate, type FreezeOptions, freezeCandidate } from "./candidate
 import type { Finding } from "./findings.ts";
 import { runGit } from "./git.ts";
 import { findReceipt, type Receipt, writeReceipt } from "./receipts.ts";
-import { type ReviewDeps, type RoleResult, runReview } from "./reviewer.ts";
+import { type ReviewDeps, type RoleName, type RoleResult, runReview } from "./reviewer.ts";
 import { type Assessment, assessRisk, type Escalation } from "./risk.ts";
 import { createRiskTool, RiskRequests } from "./tool.ts";
 import { createTreeTools } from "./tree-tools.ts";
@@ -49,12 +53,12 @@ export interface ReviewOptions {
 	sandbox?: Sandbox;
 }
 
-/** What a review cost, to be added to the turn that ran it; `refused` when it did not start. */
-export interface Spent {
-	usage: Usage;
-	costUsd?: number;
-	/** Model requests of the roles and the correction, when their backends report them. */
-	requests?: number;
+/**
+ * What a review cost, to be added to the turn that ran it; `requests`: model requests of the roles and the
+ * corrections, when their backends report them; `phases`: the same by part. `refused` when it did not start.
+ */
+export interface Spent extends PhaseSpent {
+	phases?: TurnPhases;
 	refused?: boolean;
 }
 
@@ -160,11 +164,7 @@ export class SessionReview {
 		let extra: Spent | undefined;
 		if (!manual && assessment.declaration?.kind === "missing" && !host.signal.aborted) {
 			const answer = await host.correct(DECLARE_RISK_REQUEST);
-			extra = {
-				usage: answer.usage,
-				...(answer.costUsd === undefined ? {} : { costUsd: answer.costUsd }),
-				...(answer.requests === undefined ? {} : { requests: answer.requests }),
-			};
+			extra = asPhase("declare", answer);
 			// The agent may have edited while answering: those edits are part of what gets assessed.
 			const again = await freezeCandidate(host.cwd, freezing);
 			// The base can move too (a reset or a commit while answering), so it counts as much as the tree.
@@ -241,11 +241,21 @@ export class SessionReview {
 		const count = (more: number | undefined) => {
 			if (more !== undefined) requests = (requests ?? 0) + more;
 		};
+		// Each role call and the correction, by part; together they are what the receipt's usage and cost add up.
+		let phases: TurnPhases | undefined;
+		const charge = (phase: TurnPhase, spent: PhaseSpent) => {
+			phases = addPhases(phases, onePhase(phase, spent));
+		};
 		const deps: ReviewDeps = {
-			runRole: (call) => this.#runRole(host, reviewId, candidate, call, count),
+			runRole: async (call) => {
+				const result = await this.#runRole(host, reviewId, candidate, call, count);
+				charge(phaseOfRole(call.role), result);
+				return result;
+			},
 			correct: async (message) => {
 				const result = await host.correct(message);
 				count(result.requests);
+				charge("correction", result);
 				return result;
 			},
 			freeze: () => freezeCandidate(host.cwd, { ref: candidate.baseCommit }),
@@ -272,6 +282,7 @@ export class SessionReview {
 			usage: receipt.usage,
 			...(receipt.costUsd === undefined ? {} : { costUsd: receipt.costUsd }),
 			...(requests === undefined ? {} : { requests }),
+			...(phases === undefined ? {} : { phases }),
 		};
 	}
 
@@ -329,7 +340,7 @@ export class SessionReview {
 		);
 		return {
 			candidate: result.candidate,
-			spent: { ...result.cost, ...(requests === undefined ? {} : { requests }) },
+			spent: asPhase("verify", { ...result.cost, ...(requests === undefined ? {} : { requests }) }),
 		};
 	}
 
@@ -458,6 +469,7 @@ export class SessionReview {
 			let stopReason = "incomplete";
 			let usage: Usage = ZERO_USAGE;
 			let costUsd: number | undefined;
+			let requests: number | undefined;
 			for await (const event of child.send(prompt)) {
 				const { seq: _seq, turnId: _turnId, ...body } = event;
 				host.push({ ...body, ...tag });
@@ -468,13 +480,20 @@ export class SessionReview {
 					stopReason = event.stopReason;
 					usage = event.usage;
 					costUsd = event.costUsd;
+					requests = event.requests;
 					count(event.requests);
 				}
 			}
 			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined)
-				return failedRole(`${stopReason}: ${failure ?? "no details"}`, usage, costUsd);
-			if (report.trim() === "") return failedRole("The role returned no reply.", usage, costUsd);
-			return { ok: true, text: report, usage, ...(costUsd === undefined ? {} : { costUsd }) };
+				return failedRole(`${stopReason}: ${failure ?? "no details"}`, usage, costUsd, requests);
+			if (report.trim() === "") return failedRole("The role returned no reply.", usage, costUsd, requests);
+			return {
+				ok: true,
+				text: report,
+				usage,
+				...(costUsd === undefined ? {} : { costUsd }),
+				...(requests === undefined ? {} : { requests }),
+			};
 		} finally {
 			signal?.removeEventListener("abort", stop);
 			this.#children.delete(child);
@@ -483,24 +502,31 @@ export class SessionReview {
 	}
 }
 
-function failedRole(error: string, usage: Usage = ZERO_USAGE, costUsd?: number): RoleResult {
-	return { ok: false, error, usage, ...(costUsd === undefined ? {} : { costUsd }) };
+function failedRole(error: string, usage: Usage = ZERO_USAGE, costUsd?: number, requests?: number): RoleResult {
+	return {
+		ok: false,
+		error,
+		usage,
+		...(costUsd === undefined ? {} : { costUsd }),
+		...(requests === undefined ? {} : { requests }),
+	};
+}
+
+/** The four lenses are one part of the turn; the refuter and the validator are one each. */
+function phaseOfRole(role: RoleName): TurnPhase {
+	return role === "refuter" || role === "validator" ? role : "lenses";
+}
+
+/** A cost that is all one part of the turn. */
+function asPhase(phase: TurnPhase, spent: PhaseSpent): Spent {
+	return { ...addPhaseSpent(spent, { usage: ZERO_USAGE }), phases: onePhase(phase, spent) };
 }
 
 function addSpent(a: Spent, b: Spent): Spent {
-	const sum = (x: number | undefined, y: number | undefined) =>
-		x === undefined && y === undefined ? undefined : (x ?? 0) + (y ?? 0);
-	const costUsd = sum(a.costUsd, b.costUsd);
-	const requests = sum(a.requests, b.requests);
+	const phases = addPhases(a.phases, b.phases);
 	return {
-		usage: {
-			input: a.usage.input + b.usage.input,
-			output: a.usage.output + b.usage.output,
-			cacheRead: a.usage.cacheRead + b.usage.cacheRead,
-			cacheWrite: a.usage.cacheWrite + b.usage.cacheWrite,
-		},
-		...(costUsd === undefined ? {} : { costUsd }),
-		...(requests === undefined ? {} : { requests }),
+		...addPhaseSpent(a, b),
+		...(phases === undefined ? {} : { phases }),
 		...(b.refused ? { refused: true } : {}),
 	};
 }

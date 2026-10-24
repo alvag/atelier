@@ -58,6 +58,23 @@ export type ReviewStep =
 	| { type: "validator_started"; findings: number }
 	| { type: "validator_finished"; resolved: number; unresolved: number };
 
+/**
+ * The parts of a turn, in the order they run: the main agent, the request to declare the risk, the verifier and
+ * its correction, and the review's lenses, refuter, correction and validator.
+ */
+export const TURN_PHASES = ["main", "declare", "verify", "lenses", "refuter", "correction", "validator"] as const;
+export type TurnPhase = (typeof TURN_PHASES)[number];
+
+/** What one part of a turn cost; `requests` and `costUsd` are absent when its backends do not report them. */
+export interface PhaseSpent {
+	usage: Usage;
+	requests?: number;
+	costUsd?: number;
+}
+
+/** A turn's cost by part; a part that did not run is absent. */
+export type TurnPhases = Partial<Record<TurnPhase, PhaseSpent>>;
+
 /** Context tokens the next request carries, the model's window, and where compaction starts. */
 export interface ContextUsage {
 	tokens: number;
@@ -120,6 +137,7 @@ export type AtelierEventBody =
 	/**
 	 * `requests`: model requests the turn made, when the backend knows it; `context`: how full the context is, when known.
 	 * `durationMs`: wall time of the whole turn, tools and end-of-turn review included; set by the session.
+	 * `phases`: the same usage, requests and cost by part of the turn, summing to the totals; set by the session.
 	 */
 	| {
 			type: "turn_finished";
@@ -129,6 +147,7 @@ export type AtelierEventBody =
 			requests?: number;
 			durationMs?: number;
 			context?: ContextUsage;
+			phases?: TurnPhases;
 	  }
 	/** The core started summarizing the older history; `tokens` is the context size that led to it. */
 	| { type: "compaction_started"; reason: CompactionReason; tokens: number }

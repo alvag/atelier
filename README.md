@@ -60,6 +60,7 @@ The desktop starts the core with Electron's own Node (no system Node needed) and
 ## How it works
 
 - The core emits plain-JSON `AtelierEvent`s; clients only render them. Every turn ends with exactly one `turn_finished`.
+- `turn_finished` carries `phases`, the turn's cost by part: `main` (the main agent), `declare` (the request to declare the risk), `verify` (the verifier and its correction), `lenses`, `refuter`, `correction` and `validator`, each with `usage` and, when its backends report them, `requests` and `costUsd`. A part that did not run is absent (an on-demand `/review` has no `main`), and the parts add up to the turn's `usage`, `requests` and `costUsd`.
 - The agent only has Atelier's tools: `read`, `edit`, `bash`, `grep`. The core executes them and owns approval. File tools are confined to the working directory; `bash` is not confined and is gated by approval instead.
 - `ClaudeCodeBackend` drives Claude Code through the Claude Agent SDK, isolated from your `~/.claude` setup (no settings, hooks, plugins, skills, CLAUDE.md or other MCP servers) and without `ANTHROPIC_API_KEY`, so it uses your subscription.
 - `AnthropicApiBackend` runs Atelier's own loop on the Messages API. It owns the prompt: tools and system prompt are fixed for the session, and three cache breakpoints (last tool, system, last message) keep the prefix cached. Each request asks the API to compare its prefix with the previous response, which is how cache misses are reported. See `../docs/m3-diseno.md`; a measured session is in `../docs/m3-medicion.md`.

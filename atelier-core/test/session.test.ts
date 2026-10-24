@@ -75,9 +75,11 @@ describe("Session", () => {
 		expect(first).toEqual([
 			{ type: "text_delta", text: "a", seq: 1, turnId: "id-1" },
 			{ type: "text_delta", text: "b", seq: 2, turnId: "id-1" },
-			{ ...finished, durationMs: expect.any(Number), seq: 3, turnId: "id-1" },
+			{ ...finished, phases: { main: { usage } }, durationMs: expect.any(Number), seq: 3, turnId: "id-1" },
 		]);
-		expect(second).toEqual([{ ...finished, durationMs: expect.any(Number), seq: 1, turnId: "id-2" }]);
+		expect(second).toEqual([
+			{ ...finished, phases: { main: { usage } }, durationMs: expect.any(Number), seq: 1, turnId: "id-2" },
+		]);
 	});
 
 	it("produces only JSON-serializable events", async () => {
@@ -99,7 +101,7 @@ describe("Session", () => {
 		expect(events.map(({ seq: _seq, turnId: _turnId, ...body }) => body)).toEqual([
 			{ type: "tool_call_started", callId: "c1", tool: "echo", input: { text: "hi" } },
 			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "echoed hi", truncated: false },
-			{ ...finished, durationMs: expect.any(Number) },
+			{ ...finished, phases: { main: { usage } }, durationMs: expect.any(Number) },
 		]);
 	});
 
@@ -211,6 +213,7 @@ describe("Session", () => {
 					type: "turn_finished",
 					stopReason: "error",
 					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					phases: { main: { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } },
 					durationMs: expect.any(Number),
 				},
 			]);

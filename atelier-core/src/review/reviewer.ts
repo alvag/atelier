@@ -10,8 +10,8 @@ import { parseResults, parseVerdicts, REFUTER_INSTRUCTION, VALIDATOR_INSTRUCTION
 export type RoleName = Lens | "refuter" | "validator";
 
 export type RoleResult =
-	| { ok: true; text: string; usage: Usage; costUsd?: number }
-	| { ok: false; error: string; usage: Usage; costUsd?: number };
+	| { ok: true; text: string; usage: Usage; costUsd?: number; requests?: number }
+	| { ok: false; error: string; usage: Usage; costUsd?: number; requests?: number };
 
 export interface ReviewDeps {
 	/** Runs one read-only subagent over `tree` and returns its final message. */

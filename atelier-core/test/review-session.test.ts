@@ -1636,3 +1636,74 @@ describe("independent M9 approval regression", () => {
 		}
 	});
 });
+
+describe("the turn's cost by phase", () => {
+	type Finished = Extract<AtelierEvent, { type: "turn_finished" }>;
+	const closing = (events: AtelierEvent[]) =>
+		events.filter((event): event is Finished => event.type === "turn_finished" && event.agent === undefined)[0];
+	const spent = (input: number, requests: number, costUsd: number): FakeStep => ({
+		event: { type: "turn_finished", stopReason: "end_turn", usage: { ...usage, input, output: 1 }, requests, costUsd },
+	});
+	/** The phases added up, as the totals of `turn_finished` should be. */
+	const sum = (phases: NonNullable<Finished["phases"]>) => {
+		const total = { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, requests: 0, costUsd: 0 };
+		for (const phase of Object.values(phases)) {
+			total.usage.input += phase.usage.input;
+			total.usage.output += phase.usage.output;
+			total.usage.cacheRead += phase.usage.cacheRead;
+			total.usage.cacheWrite += phase.usage.cacheWrite;
+			total.requests += phase.requests ?? 0;
+			total.costUsd += phase.costUsd ?? 0;
+		}
+		return total;
+	};
+
+	it("splits a turn with the declaration ask, two verifier rounds and a full review into parts that sum to its total", async () => {
+		const turns = [
+			// The main agent changes auth code without declaring its risk...
+			[change("src/auth.ts", "export const a = 1;\n"), text("done"), spent(100, 3, 0.03)],
+			// ...declares item 2 when asked...
+			[call("risk", { items: [2], reason: "guards the approval" }), spent(10, 1, 0.01)],
+			// ...fixes the verifier's blocker...
+			[change("a.ts", "base\nfixed\n"), spent(20, 2, 0.02)],
+			// ...and corrects the review's confirmed finding.
+			[change("src/auth.ts", "export const a = 2;\n"), spent(30, 1, 0.005)],
+		];
+		const roles = new RoleBackend(verifying(vreport([vdefect()]), vreport()));
+		const s = await start({ turns, roles });
+		const last = closing(await s.send("make the approval need a keypress"));
+
+		expect(s.main.prompts).toHaveLength(4);
+		const phases = last?.phases ?? {};
+		expect(Object.keys(phases)).toEqual(["main", "declare", "verify", "lenses", "refuter", "correction", "validator"]);
+		// Each role run costs input 2, output 2 and one request, without a price.
+		expect(phases).toEqual({
+			main: { usage: { ...usage, input: 100 }, requests: 3, costUsd: 0.03 },
+			declare: { usage: { ...usage, input: 10 }, requests: 1, costUsd: 0.01 },
+			verify: { usage: { ...usage, input: 2 * 2 + 20, output: 2 * 2 + 1 }, requests: 2 + 2, costUsd: 0.02 },
+			lenses: { usage: { ...usage, input: 4 * 2, output: 4 * 2 }, requests: 4 },
+			refuter: { usage: { ...usage, input: 2, output: 2 }, requests: 1 },
+			correction: { usage: { ...usage, input: 30 }, requests: 1, costUsd: 0.005 },
+			validator: { usage: { ...usage, input: 2, output: 2 }, requests: 1 },
+		});
+		const total = sum(phases);
+		expect(last?.usage).toEqual(total.usage);
+		expect(last?.requests).toBe(total.requests);
+		expect(last?.costUsd).toBeCloseTo(total.costUsd, 10);
+	});
+
+	it("has only the main part when nothing follows the agent's turn", async () => {
+		const s = await start({ turns: [[text("hi"), spent(7, 1, 0.001)]] });
+		const last = closing(await s.send("hello"));
+		expect(last?.phases).toEqual({ main: { usage: { ...usage, input: 7 }, requests: 1, costUsd: 0.001 } });
+	});
+
+	it("leaves out the parts that did not run: a clean on-demand review has no main agent, refuter or correction", async () => {
+		const s = await start({ roles: new RoleBackend(clean) });
+		await writeFile(join(s.cwd, "src.ts"), "export const b = 1;\n");
+		const last = closing(await collect(s.session.review()));
+		expect(last?.phases).toEqual({ lenses: { usage: { ...usage, input: 2, output: 2 }, requests: 1 } });
+		expect(last?.usage).toEqual(last?.phases?.lenses?.usage);
+		expect(last?.requests).toBe(1);
+	});
+});
