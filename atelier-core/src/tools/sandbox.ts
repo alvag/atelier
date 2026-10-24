@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
@@ -151,24 +151,43 @@ function worktreeGitPaths(worktreeGit: WorktreeGit | undefined): { allowWrite: s
 
 const worktreeGitCache = new Map<string, WorktreeGit | null>();
 
-/** The git directories of `cwd` when it is a linked worktree whose shared `.git` is outside it; asked once per folder. */
+/**
+ * The git directories of `cwd` when it is a linked worktree whose shared
+ * `.git` is outside it; asked once per folder. What git answers is checked
+ * against the files git keeps for a worktree, so a tampered `commondir` cannot
+ * point the grant at another repository: the worktree's directory must be
+ * `<common>/worktrees/<name>`, and its `gitdir` file must point back at this
+ * worktree's `.git` file.
+ */
 export function linkedWorktreeGit(cwd: string): WorktreeGit | undefined {
 	if (!worktreeGitCache.has(cwd)) {
-		const found = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], {
-			cwd,
-			encoding: "utf8",
-			timeout: 5000,
-		});
-		const [gitDir, commonDir] = found.status === 0 ? found.stdout.trim().split("\n") : [];
+		const found = spawnSync(
+			"git",
+			["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "--show-toplevel"],
+			{ cwd, encoding: "utf8", timeout: 5000 },
+		);
+		const [gitDir, commonDir, top] = found.status === 0 ? found.stdout.trim().split("\n") : [];
 		const linked =
 			gitDir !== undefined &&
 			commonDir !== undefined &&
+			top !== undefined &&
 			gitDir !== commonDir &&
-			commonDir !== join(cwd, ".git") &&
-			!commonDir.startsWith(`${cwd}/`);
+			dirname(gitDir) === join(commonDir, "worktrees") &&
+			!commonDir.startsWith(`${top}/`) &&
+			pointsBack(gitDir, top);
 		worktreeGitCache.set(cwd, linked ? { gitDir, commonDir } : null);
 	}
 	return worktreeGitCache.get(cwd) ?? undefined;
+}
+
+/** Whether the worktree's `gitdir` file names `<top>/.git`, as `git worktree add` writes it. */
+function pointsBack(gitDir: string, top: string): boolean {
+	try {
+		const named = readFileSync(join(gitDir, "gitdir"), "utf8").trim();
+		return realpathSync(named) === realpathSync(join(top, ".git"));
+	} catch {
+		return false;
+	}
 }
 
 /**

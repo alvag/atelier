@@ -354,6 +354,17 @@ describe.skipIf(!onMac)("the agent's bash in a linked git worktree", () => {
 		expect(result.output.match(/Operation not permitted/g)).toHaveLength(2);
 	});
 
+	it("grants nothing when the worktree's commondir points at another repository", async () => {
+		const other = join(outside, "other");
+		await mkdir(other, { recursive: true });
+		git(other, "init", "-q");
+		// Tampered before Atelier runs, by something outside the sandbox.
+		await writeFile(join(main, ".git", "worktrees", "wt", "commondir"), `${join(other, ".git")}\n`);
+		const result = await run(`echo x > ${join(other, ".git", "refs", "heads", "planted")}`);
+		expect(result.output).toContain("Operation not permitted");
+		expect(await exists(join(other, ".git", "refs", "heads", "planted"))).toBe(false);
+	});
+
 	it("packs and deletes refs", async () => {
 		const result = await run("git branch tmp && git pack-refs --all && git branch -D tmp");
 		expect(result.output).not.toContain("Operation not permitted");
