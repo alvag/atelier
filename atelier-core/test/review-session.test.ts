@@ -20,9 +20,10 @@ import {
 import { RISK_RULES } from "../src/prompt.ts";
 import { LENS_INSTRUCTIONS } from "../src/review/lenses.ts";
 import { REFUTER_INSTRUCTION, VALIDATOR_INSTRUCTION } from "../src/review/roles.ts";
-import { VERIFIER_INSTRUCTION } from "../src/review/verifier.ts";
+import { VERIFIER_INSTRUCTION, VERIFIER_INSTRUCTION_WITHOUT_BASH } from "../src/review/verifier.ts";
 import { reviewEnabled } from "../src/server/rpc-server.ts";
 import type { SubagentDefinition } from "../src/subagents/definitions.ts";
+import { Sandbox } from "../src/tools/sandbox.ts";
 import { defineTool } from "../src/tools/types.ts";
 
 const dirs: string[] = [];
@@ -97,7 +98,7 @@ type Reply = string | typeof HOLD;
 /** The review roles' backend: answers by role, recording what each one saw. */
 class RoleBackend implements AgentBackend {
 	readonly id = "fake";
-	readonly roles: { role: string; tools: string[]; model?: string; prompt: string; cwd: string }[] = [];
+	readonly roles: { role: string; tools: string[]; model?: string; prompt: string; cwd: string; system: string }[] = [];
 	/** What the tool calls a role made through `probes` answered, in order. */
 	readonly probed: { ok: boolean; output: string }[] = [];
 	interrupts = 0;
@@ -128,6 +129,7 @@ class RoleBackend implements AgentBackend {
 					tools,
 					prompt,
 					cwd: options.cwd,
+					system: options.systemPromptAppend,
 					...(options.model === undefined ? {} : { model: options.model }),
 				});
 				for (const probe of probes(role, prompt)) {
@@ -162,7 +164,7 @@ class RoleBackend implements AgentBackend {
 function roleOf(instruction: string): string {
 	if (instruction === REFUTER_INSTRUCTION) return "refuter";
 	if (instruction === VALIDATOR_INSTRUCTION) return "validator";
-	if (instruction === VERIFIER_INSTRUCTION) return "verifier";
+	if (instruction === VERIFIER_INSTRUCTION || instruction === VERIFIER_INSTRUCTION_WITHOUT_BASH) return "verifier";
 	return Object.entries(LENS_INSTRUCTIONS).find(([, value]) => value === instruction)?.[0] ?? "unknown";
 }
 
@@ -228,6 +230,7 @@ interface Setup {
 	consent?: "granted" | "declined" | "none" | ((request: unknown) => Promise<"granted" | "declined">);
 	cwd?: string;
 	extra?: Partial<SessionOptions>;
+	sandbox?: Sandbox;
 }
 
 async function start(setup: Setup = {}) {
@@ -249,7 +252,13 @@ async function start(setup: Setup = {}) {
 		tools: [changeTool, gitTool],
 		...(setup.review === false
 			? {}
-			: { review: { createBackend: () => roles, ...(consent ? { consent: consent as never } : {}) } }),
+			: {
+					review: {
+						createBackend: () => roles,
+						...(consent ? { consent: consent as never } : {}),
+						...(setup.sandbox ? { sandbox: setup.sandbox } : {}),
+					},
+				}),
 		...setup.extra,
 	});
 	return { session, main, roles, cwd, asked, send: (prompt: string) => collect(session.send(prompt)) };
@@ -1139,6 +1148,25 @@ describe("independent verification", () => {
 			expect(roles.probed[0]?.output).toContain("base\ncandidate\n---\nbase\n");
 			expect(roles.probed[0]?.output).not.toContain(".git");
 			await expect(stat(run?.cwd ?? "")).rejects.toThrow();
+		});
+
+		it("gets no bash without a sandbox, and is told its requirements stay unverified", async () => {
+			const roles = new RoleBackend(verifying(vreport()), probing("echo should-not-run"));
+			const s = await start({
+				turns: [VERIFY_TURN],
+				roles,
+				consent: "declined",
+				sandbox: new Sandbox({ platform: "linux" }),
+			});
+			await s.send("edit");
+			const [run] = verifierRuns(roles);
+			expect(run?.tools).toEqual(["read", "grep"]);
+			expect(run?.system).not.toContain("and bash");
+			expect(run?.system).toBe(VERIFIER_INSTRUCTION_WITHOUT_BASH);
+			expect(run?.system).toContain("bash is not available");
+			expect(run?.system).toContain("unverified");
+			expect(run?.prompt).toContain("bash is not available: sandbox not available on this platform");
+			expect(roles.probed[0]?.ok).toBe(false);
 		});
 
 		it("never touches the user's worktree, index or refs", async () => {

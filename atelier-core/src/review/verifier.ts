@@ -31,18 +31,43 @@ export const VERIFIER_ROUNDS = 2;
 /** Files listed in the change summary; the rest are counted. */
 const SUMMARY_FILES = 200;
 
-export const VERIFIER_INSTRUCTION = [
+const SEVERITY =
+	"Severity: blocker = a requirement is not met or a guard can be bypassed; major = wrong behavior a user will hit; minor = rough edge with a workaround.";
+const VERDICTS =
+	"Requirement verdicts: met (a probe shows it), unmet (a probe shows it is not), unverified (you could not check it; say why). Evidence names the command or input and what you observed.";
+const REPORT_FORMAT =
+	'Your final message is only this JSON object, no other text: {"requirements":[{"id":"R1","requirement":"what the user asked","verdict":"met|unmet|unverified","evidence":"command or input, and what you observed"}],"defects":[{"id":"D1","severity":"blocker|major|minor","summary":"what is wrong","reproduction":"the exact command or steps","candidate":"what candidate/ did","base":"what base/ did","onBase":false}]}. Use an empty defects list when you found none.';
+const DERIVE =
+	"Derive the requirements from the user's request (and the feature document, when one is given). Keep the user's own words where you can.";
+
+const INSTRUCTION_LINES = [
 	"You are an independent verifier. Another agent changed a high-risk part of this project and declared its risk. You check that the work does what the user asked and that it holds up against hostile input. You did not write it and you owe it nothing.",
 	"Your working directory holds two copies of the project: candidate/ (the agent's work at the end of the turn) and base/ (the project before the turn). You have read, grep and bash. bash runs without asking, only inside this directory, and you may write scratch files only here. You cannot edit the user's repository and must not try.",
 	"Never install packages and never use the network: no install, add, update or download with pnpm, npm, yarn, pip or any other tool, no curl or wget. The project's installed dependencies are copied into both copies, so what you change there stays there; use them. If something you need is missing, mark the requirement unverified and say what is missing.",
 	"Do this, in order:",
-	"1. Derive the requirements from the user's request (and the feature document, when one is given). Keep the user's own words where you can.",
+	`1. ${DERIVE}`,
 	"2. Run probes against candidate/ for each requirement; reading code is not a probe. Include hostile and adversarial inputs aimed at what the declared risk item protects: for a guard or an approval, inputs that try to bypass it; for parsing, malformed, pasted, empty and boundary input; for data, repeated or interrupted operations.",
 	"3. Run the project's existing focused tests for the code the change touches when that is cheap. Do not run a slow full suite.",
 	"4. Reproduce every defect on candidate/, then run the same steps on base/. A defect that also happens on base/ is pre-existing: report it with onBase true; it is advisory and never blocks. Report only defects you reproduced, never suspicions or style comments.",
-	"Severity: blocker = a requirement is not met or a guard can be bypassed; major = wrong behavior a user will hit; minor = rough edge with a workaround.",
-	"Requirement verdicts: met (a probe shows it), unmet (a probe shows it is not), unverified (you could not check it; say why). Evidence names the command or input and what you observed.",
-	'Your final message is only this JSON object, no other text: {"requirements":[{"id":"R1","requirement":"what the user asked","verdict":"met|unmet|unverified","evidence":"command or input, and what you observed"}],"defects":[{"id":"D1","severity":"blocker|major|minor","summary":"what is wrong","reproduction":"the exact command or steps","candidate":"what candidate/ did","base":"what base/ did","onBase":false}]}. Use an empty defects list when you found none.',
+	SEVERITY,
+	VERDICTS,
+	REPORT_FORMAT,
+];
+
+export const VERIFIER_INSTRUCTION = INSTRUCTION_LINES.join("\n");
+
+/**
+ * For a verifier that gets no bash because the operating-system sandbox is
+ * missing: it can read, so it cannot probe, and what it cannot settle by
+ * reading stays unverified.
+ */
+export const VERIFIER_INSTRUCTION_WITHOUT_BASH = [
+	INSTRUCTION_LINES[0],
+	"Your working directory holds two copies of the project: candidate/ (the agent's work at the end of the turn) and base/ (the project before the turn). You have read and grep only: bash is not available in this run, because it would run without the operating-system sandbox that keeps the verifier inside this directory and off the network. You cannot edit the user's repository and must not try.",
+	`Without bash you cannot run probes or tests. ${DERIVE} Check by reading what the code shows, and mark every requirement you cannot settle by reading as unverified, saying that bash was not available. Report a defect only when you can show it from the code and say how you know.`,
+	SEVERITY,
+	VERDICTS,
+	REPORT_FORMAT,
 ].join("\n");
 
 const requirementSchema = z.object({
@@ -142,6 +167,8 @@ export interface VerifierPromptInput {
 	handedBack?: readonly VerifierDefect[];
 	/** What the copy lacks, or how its dependencies were made available. */
 	dependencies: string;
+	/** Why the verifier has no bash, when it has none. */
+	bashUnavailable?: string;
 }
 
 export function buildVerifierPrompt(input: VerifierPromptInput): string {
@@ -162,6 +189,11 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
 		...(candidate.baseNote === undefined ? [] : [candidate.baseNote]),
 		"",
 		`Dependencies: ${input.dependencies}`,
+		...(input.bashUnavailable === undefined
+			? []
+			: [
+					`bash is not available: ${input.bashUnavailable}. Mark every requirement you cannot settle by reading as unverified.`,
+				]),
 		"",
 		`Round ${input.round} of ${VERIFIER_ROUNDS}.`,
 	);

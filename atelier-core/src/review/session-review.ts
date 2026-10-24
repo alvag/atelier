@@ -11,7 +11,8 @@ import {
 } from "../events.ts";
 import { DECLARE_RISK_REQUEST } from "../prompt.ts";
 import type { Session, SessionOptions } from "../session.ts";
-import { createBashTool, grepTool, readTool } from "../tools/index.ts";
+import { createBashTool, grepTool, readTool, sandbox } from "../tools/index.ts";
+import type { Sandbox } from "../tools/sandbox.ts";
 import type { ToolDefinition } from "../tools/types.ts";
 import { type Candidate, type FreezeOptions, freezeCandidate } from "./candidate.ts";
 import type { Finding } from "./findings.ts";
@@ -26,6 +27,7 @@ import {
 	buildVerifierPrompt,
 	VERIFIER_ENV,
 	VERIFIER_INSTRUCTION,
+	VERIFIER_INSTRUCTION_WITHOUT_BASH,
 	VERIFIER_MAX_REQUESTS,
 	type VerifierDefect,
 } from "./verifier.ts";
@@ -43,6 +45,8 @@ export interface ReviewOptions {
 	createBackend: () => AgentBackend | Promise<AgentBackend>;
 	/** Asks the user about a high-risk candidate; without it a high-risk change is assessed but never offered. */
 	consent?: (request: ReviewConsentRequest) => Promise<"granted" | "declined">;
+	/** The sandbox the verifier's bash runs in; tests pass their own. */
+	sandbox?: Sandbox;
 }
 
 /** What a review cost, to be added to the turn that ran it; `refused` when it did not start. */
@@ -349,6 +353,7 @@ export class SessionReview {
 			return { ok: false, error: `The verifier's copy could not be made: ${describeError(error)}`, usage: ZERO_USAGE };
 		}
 		try {
+			const sandboxStatus = await (this.#options.sandbox ?? sandbox).status();
 			const prompt = buildVerifierPrompt({
 				request: this.#turnPrompt,
 				...(workspace.feature === undefined ? {} : { feature: workspace.feature }),
@@ -357,6 +362,7 @@ export class SessionReview {
 				round: call.round,
 				...(call.handedBack === undefined ? {} : { handedBack: call.handedBack }),
 				dependencies: workspace.dependencies,
+				...(sandboxStatus.available ? {} : { bashUnavailable: sandboxStatus.reason }),
 			});
 			return await this.#runChild(
 				host,
@@ -365,8 +371,20 @@ export class SessionReview {
 					backend: await this.#options.createBackend(),
 					cwd: workspace.dir,
 					...(host.model === undefined ? {} : { model: host.model }),
-					tools: [readTool, grepTool, createBashTool({ withoutApproval: true, env: VERIFIER_ENV })],
-					systemPromptAppend: VERIFIER_INSTRUCTION,
+					// Without the sandbox the verifier has no way to stay in its copy or off the network: it gets no bash.
+					tools: sandboxStatus.available
+						? [
+								readTool,
+								grepTool,
+								createBashTool({
+									withoutApproval: true,
+									env: VERIFIER_ENV,
+									policy: "verifier",
+									...(this.#options.sandbox ? { sandbox: this.#options.sandbox } : {}),
+								}),
+							]
+						: [readTool, grepTool],
+					systemPromptAppend: sandboxStatus.available ? VERIFIER_INSTRUCTION : VERIFIER_INSTRUCTION_WITHOUT_BASH,
 					maxRequestsPerTurn: VERIFIER_MAX_REQUESTS,
 					createId: host.createId,
 				},

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { MAX_BYTES, takeTail } from "./limits.ts";
+import { type Sandbox, type SandboxPolicyName, sandbox as sharedSandbox } from "./sandbox.ts";
 import { defineTool } from "./types.ts";
 
 export const DEFAULT_TIMEOUT_SEC = 120;
@@ -128,11 +129,24 @@ export interface BashOptions {
 	withoutApproval?: boolean;
 	/** Set on top of the filtered environment, e.g. to make package managers refuse the network. */
 	env?: Readonly<Record<string, string>>;
+	/**
+	 * Which sandbox policy the commands run under: "agent" for the main agent and
+	 * its workers, "verifier" for the independent verifier. A command of the
+	 * agent runs unsandboxed when there is no sandbox; the verifier's never does.
+	 */
+	policy?: SandboxPolicyName;
+	/** Tests pass their own; the default is the one the process shares. */
+	sandbox?: Sandbox;
 }
 
 export const bashTool = createBashTool();
 
-export function createBashTool({ withoutApproval = false, env = {} }: BashOptions = {}) {
+export function createBashTool({
+	withoutApproval = false,
+	env = {},
+	policy = "agent",
+	sandbox = sharedSandbox,
+}: BashOptions = {}) {
 	return defineTool({
 		name: "bash",
 		description: `Run a shell command with bash in the working directory. stdout and stderr are combined. Output is truncated to its tail; the full text is saved to a file. Default timeout: ${DEFAULT_TIMEOUT_SEC}s.`,
@@ -146,7 +160,35 @@ export function createBashTool({ withoutApproval = false, env = {} }: BashOption
 			if (signal?.aborted)
 				return { ok: false, output: "[command aborted]", summary: `${firstLine(command)} (aborted)`, truncated: false };
 
-			const child = spawn("bash", ["-c", command], {
+			const sandboxStatus = await sandbox.status();
+			if (!sandboxStatus.available && policy === "verifier")
+				return {
+					ok: false,
+					output: `[bash is not available: ${sandboxStatus.reason}]`,
+					summary: `${firstLine(command)} (not run)`,
+					truncated: false,
+				};
+			let script = command;
+			if (sandboxStatus.available) {
+				try {
+					script = await sandbox.wrap(command, {
+						policy,
+						cwd,
+						...(scratchDir === undefined ? {} : { scratchDir }),
+						...(signal === undefined ? {} : { signal }),
+					});
+				} catch (error) {
+					const reason = error instanceof Error ? error.message : String(error);
+					return {
+						ok: false,
+						output: `[sandbox error: ${reason}]`,
+						summary: `${firstLine(command)} (not run)`,
+						truncated: false,
+					};
+				}
+			}
+
+			const child = spawn("bash", ["-c", script], {
 				cwd,
 				env: commandEnv(env),
 				detached: true,
@@ -181,6 +223,7 @@ export function createBashTool({ withoutApproval = false, env = {} }: BashOption
 			});
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", onAbort);
+			if (sandboxStatus.available) sandbox.cleanup();
 			if (stopped) killGroup("SIGKILL");
 
 			const finished = sink.finish();
