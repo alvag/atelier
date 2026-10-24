@@ -294,6 +294,45 @@ describe("App", () => {
 		await waitFor(() => expect(fake.commands.at(-1)).toMatchObject({ command: "session.approve", approved: true }));
 	});
 
+	it("says in the status bar whether bash is sandboxed, with the warning style when it is not", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "sandbox_status", sandboxed: true, mechanism: "macOS seatbelt" });
+		const sandboxed = await screen.findByText("bash: sandboxed (macOS seatbelt)");
+		expect(sandboxed.className).not.toContain("warning");
+
+		fake.emit({ type: "sandbox_status", sandboxed: false, reason: "sandbox not available on this platform" });
+		const unsandboxed = await screen.findByText("bash: not sandboxed");
+		expect(unsandboxed.className).toContain("warning");
+		expect(unsandboxed.getAttribute("title")).toBe(
+			"sandbox not available on this platform: every command asks for approval and --yes does not apply",
+		);
+	});
+
+	it("shows the sandbox warning in the turn and why a command was blocked in its tool row", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "sandbox_warning", reason: "sandbox turned off for this session" });
+		expect(
+			await screen.findByText(
+				"bash runs without a sandbox (sandbox turned off for this session): every command asks for approval and --yes does not apply",
+			),
+		).toBeTruthy();
+
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "touch /x" } });
+		fake.emit({
+			type: "tool_call_finished",
+			callId: "c1",
+			ok: false,
+			summary: "touch /x (exit 1)",
+			truncated: false,
+			blocked: ["write to /x (not an allowed write path)", "and 2 more"],
+		});
+		const row = await screen.findByTestId("tool-row");
+		expect(row.textContent).toContain("sandbox blocked: write to /x (not an allowed write path)");
+		expect(row.textContent).toContain("sandbox blocked: and 2 more");
+	});
+
 	it("keeps the plain approval card when there is no reason", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

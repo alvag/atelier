@@ -391,6 +391,45 @@ describe("reduceChat: review", () => {
 		expect(run([{ type: "session_opened", sessionId: "s2", cwd: "/other" }], state).review).toBeUndefined();
 	});
 
+	it("keeps whether bash is sandboxed in the status, and forgets it with the session", () => {
+		const state = run([...ready, event({ type: "sandbox_status", sandboxed: true, mechanism: "macOS seatbelt" })]);
+		expect(state.sandbox).toEqual({ sandboxed: true, mechanism: "macOS seatbelt" });
+		const off = run([...ready, event({ type: "sandbox_status", sandboxed: false, reason: "sandbox turned off" })]);
+		expect(off.sandbox).toEqual({ sandboxed: false, reason: "sandbox turned off" });
+		expect(run([{ type: "session_opened", sessionId: "s2", cwd: "/other" }], state).sandbox).toBeUndefined();
+	});
+
+	it("puts the sandbox warning in the turn, and the causes of a block on the tool row", () => {
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "x" },
+			{ type: "turn_accepted", turnId: "t1" },
+			event({ type: "sandbox_warning", reason: "sandbox turned off" }),
+			event({ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "touch /x" } }),
+			event({
+				type: "tool_call_finished",
+				callId: "c1",
+				ok: false,
+				summary: "touch /x (exit 1)",
+				truncated: false,
+				blocked: ["write to /x (not an allowed write path)"],
+			}),
+		]);
+		expect(state.turns[0]?.items).toEqual([
+			{ kind: "sandbox_warning", reason: "sandbox turned off" },
+			{
+				kind: "tool",
+				callId: "c1",
+				tool: "bash",
+				input: { command: "touch /x" },
+				status: "error",
+				summary: "touch /x (exit 1)",
+				truncated: false,
+				blocked: ["write to /x (not an allowed write path)"],
+			},
+		]);
+	});
+
 	it("adds a review block with the risk, and a consent card that adopts the review id", () => {
 		const state = run([...opened, event(assessed), event(consent)]);
 		expect(items(state)).toEqual([

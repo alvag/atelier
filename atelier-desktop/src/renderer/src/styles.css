@@ -86,6 +86,7 @@ main {
 
 .tool {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 8px;
 	font-family: var(--at-mono);
 	font-size: 12px;
@@ -106,6 +107,12 @@ main {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.tool-blocked {
+	flex-basis: 100%;
+	padding-left: 20px;
+	color: var(--at-warning);
 }
 
 .tool-note {

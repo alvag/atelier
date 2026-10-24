@@ -4,6 +4,8 @@ import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
 import type { Subagent, Turn, TurnItem } from "./reducer.ts";
 
+export const UNSANDBOXED_EFFECT = "every command asks for approval and --yes does not apply";
+
 const numbers = new Intl.NumberFormat("en-US");
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 
@@ -23,6 +25,11 @@ function ToolRow({ item }: { item: Extract<TurnItem, { kind: "tool" }> }) {
 			<span className="tool-name">{item.tool}</span>
 			<span className="tool-summary">{item.summary ?? JSON.stringify(item.input)}</span>
 			{item.truncated ? <span className="tool-note">truncated</span> : null}
+			{item.blocked?.map((cause) => (
+				<div key={cause} className="tool-blocked">
+					sandbox blocked: {cause}
+				</div>
+			))}
 		</div>
 	);
 }
@@ -339,6 +346,12 @@ function Items({ items, onAnswer, onConsent }: { items: TurnItem[]; onAnswer: On
 				return <ReviewBlock key={key} item={item} onAnswer={onAnswer} />;
 			case "verification":
 				return <VerificationBlock key={`${item.kind}-${item.verifyId}`} item={item} onAnswer={onAnswer} />;
+			case "sandbox_warning":
+				return (
+					<div key={key} className="warning sandbox-warning">
+						bash runs without a sandbox ({item.reason}): {UNSANDBOXED_EFFECT}
+					</div>
+				);
 			case "error":
 				return (
 					<div key={key} className="turn-error" role="alert">

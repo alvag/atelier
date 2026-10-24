@@ -2,7 +2,7 @@ import { type BackendName, DEFAULT_BACKEND } from "@atelier/core/protocol";
 import { type FormEvent, useCallback, useState } from "react";
 import type { AtelierBridge } from "../../shared/bridge.ts";
 import { FeaturePanel } from "./chat/FeaturePanel.tsx";
-import { Transcript } from "./chat/Transcript.tsx";
+import { Transcript, UNSANDBOXED_EFFECT } from "./chat/Transcript.tsx";
 import { useChat } from "./chat/use-chat.ts";
 
 /** The first model of each backend is its default. */
@@ -133,6 +133,15 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 					<span title={`compacts at ${numbers.format(state.context.compactAt)} tokens`}>
 						{contextLabel(state.context)}
 					</span>
+				) : null}
+				{state.sandbox ? (
+					state.sandbox.sandboxed ? (
+						<span>bash: sandboxed ({state.sandbox.mechanism ?? "sandbox"})</span>
+					) : (
+						<span className="warning" title={`${state.sandbox.reason ?? "unavailable"}: ${UNSANDBOXED_EFFECT}`}>
+							bash: not sandboxed
+						</span>
+					)
 				) : null}
 				{state.memory ? (
 					state.memory.available ? (

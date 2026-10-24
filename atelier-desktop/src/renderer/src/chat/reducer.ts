@@ -23,6 +23,8 @@ export type TurnItem =
 			status: "running" | "ok" | "error" | "denied";
 			summary?: string;
 			truncated?: boolean;
+			/** What the sandbox blocked in the call, as short causes. */
+			blocked?: string[];
 			/** A task call's subagent: its work, shown under the call. */
 			subagent?: Subagent;
 	  }
@@ -76,6 +78,8 @@ export type TurnItem =
 			ended?: boolean;
 	  }
 	| { kind: "error"; code: string; message: string }
+	/** `bash` runs without a sandbox in this turn: every command asks. */
+	| { kind: "sandbox_warning"; reason: string }
 	/** `expected`: it follows a compaction, which rewrote the history on purpose. */
 	| { kind: "cache_miss"; reason: string; missedTokens: number; expected?: boolean }
 	| {
@@ -144,6 +148,8 @@ export interface ChatState {
 	authSource?: AuthSource;
 	/** The ODD phase the agent is in. */
 	phase?: Phase;
+	/** Whether `bash` runs in the sandbox, with what, or why not; absent until the first turn says. */
+	sandbox?: { sandboxed: boolean; mechanism?: string; reason?: string };
 	/** Whether the session has long-term memory, for which project, or why not. */
 	memory?: { available: boolean; project?: string; reason?: string };
 	/** The AGENTS.md / CLAUDE.md files in the system prompt, and those the size cap left out; absent when none. */
@@ -204,6 +210,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 				feature: _feature,
 				phase: _phase,
 				memory: _memory,
+				sandbox: _sandbox,
 				instructions: _instructions,
 				review: _review,
 				context: _context,
@@ -294,6 +301,15 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 				memory: {
 					available: event.available,
 					...(event.project === undefined ? {} : { project: event.project }),
+					...(event.reason === undefined ? {} : { reason: event.reason }),
+				},
+			};
+		case "sandbox_status":
+			return {
+				...state,
+				sandbox: {
+					sandboxed: event.sandboxed,
+					...(event.mechanism === undefined ? {} : { mechanism: event.mechanism }),
 					...(event.reason === undefined ? {} : { reason: event.reason }),
 				},
 			};
@@ -391,7 +407,13 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 			const status = event.ok ? "ok" : event.summary === DENIED_SUMMARY ? "denied" : "error";
 			return items.map((item) =>
 				item.kind === "tool" && item.callId === event.callId
-					? { ...item, status, summary: event.summary, truncated: event.truncated }
+					? {
+							...item,
+							status,
+							summary: event.summary,
+							truncated: event.truncated,
+							...(event.blocked === undefined ? {} : { blocked: event.blocked }),
+						}
 					: item,
 			);
 		}
@@ -406,6 +428,8 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					state: "pending",
 				},
 			];
+		case "sandbox_warning":
+			return [...items, { kind: "sandbox_warning", reason: event.reason }];
 		case "error":
 			return [...items, { kind: "error", code: event.code, message: event.message }];
 		case "cache_miss":
