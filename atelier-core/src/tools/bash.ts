@@ -12,6 +12,7 @@ import {
 	type SandboxPolicyName,
 	type SandboxStatus,
 	sandbox as sharedSandbox,
+	verifierEnvironment,
 } from "./sandbox.ts";
 import { defineTool, ToolInputError } from "./types.ts";
 
@@ -261,7 +262,10 @@ export function createBashTool({
 
 			const child = spawn("bash", ["-c", script], {
 				cwd,
-				env: commandEnv(env),
+				// The verifier's own git and temporary directory; its caller's variables win.
+				env: commandEnv(
+					policy === "verifier" && sandboxStatus.available ? { ...verifierEnvironment(cwd), ...env } : env,
+				),
 				detached: true,
 				stdio: ["ignore", "pipe", "pipe"],
 			});

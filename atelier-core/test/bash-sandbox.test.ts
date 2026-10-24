@@ -322,6 +322,17 @@ describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 		expect(result.output).toContain("42\ndep.js");
 	});
 
+	it("uses git, with the user's git configuration left out, and a temporary directory inside its own", async () => {
+		const result = await run(
+			'git --version && git init -q repo && cd repo && echo a > a && git add a && git -c user.name=t -c user.email=t@t commit -qm x && git log --oneline | wc -l && git config --global --list; node -e \'console.log(require("os").tmpdir())\' && mkdir -p "$TMPDIR/x" && echo tmp-ok',
+		);
+		expect(result.output).toMatch(/git version/);
+		expect(result.output).toMatch(/^\s*1$/m);
+		expect(result.output).toContain(`${verifierDir}/`);
+		expect(result.output).toContain("tmp-ok");
+		expect(result.output).not.toMatch(/user\.(name|email)=/);
+	});
+
 	it("writes only inside its own directory", async () => {
 		expect((await run("echo ok > candidate/out.txt && echo ok > scratch.txt")).ok).toBe(true);
 		expect(await exists(join(verifierDir, "scratch.txt"))).toBe(true);

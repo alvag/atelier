@@ -335,7 +335,10 @@ describe("Sandbox wrap", () => {
 			);
 			expect(calls.wrap).toEqual([]);
 			// The verifier does not read the file at all.
-			await expect(sandbox.wrap("ls", { policy: "verifier", cwd: "/tmp/v" })).resolves.toBe("wrapped(ls)");
+			// The verifier's command gets its own temporary directory first; the configuration files never apply to it.
+			await expect(sandbox.wrap("ls", { policy: "verifier", cwd: "/tmp/v" })).resolves.toBe(
+				"wrapped(export TMPDIR='/tmp/v/.tmp'\nls)",
+			);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}

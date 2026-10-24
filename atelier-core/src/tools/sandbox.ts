@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
@@ -143,6 +143,47 @@ export interface VerifierPolicyInput {
 	dir: string;
 	/** The Node installation that runs the project's tools: the directory above `bin/`. */
 	nodePrefix: string;
+	/** The developer directory's `usr/`, where the real `git` lives; absent when there is none. */
+	toolchain?: string;
+}
+
+function shellQuote(text: string): string {
+	return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+/** The readable toolchain directory for a `git` at `<dev>/usr/bin/git`. */
+function toolchainOf(git: string | undefined): { toolchain?: string } {
+	return git === undefined ? {} : { toolchain: dirname(dirname(git)) };
+}
+
+/** Where the real `git` of the active developer directory is, found once outside any sandbox; undefined without one. */
+let developerGitCache: string | null | undefined;
+export function developerGit(): string | undefined {
+	if (developerGitCache === undefined) {
+		developerGitCache = null;
+		if (process.platform === "darwin") {
+			const found = spawnSync("/usr/bin/xcrun", ["--find", "git"], { encoding: "utf8", timeout: 5000 });
+			const path = found.status === 0 ? found.stdout.trim() : "";
+			if (path.startsWith("/") && path !== "/usr/bin/git" && existsSync(path)) developerGitCache = path;
+		}
+	}
+	return developerGitCache ?? undefined;
+}
+
+/**
+ * What the verifier's commands run with: the real `git` first on the PATH,
+ * no system or global git configuration (the user's is not readable anyway),
+ * and a temporary directory inside its own, where tests create theirs.
+ */
+export function verifierEnvironment(dir: string, git: string | undefined = developerGit()): Record<string, string> {
+	const tmp = join(dir, ".tmp");
+	mkdirSync(tmp, { recursive: true });
+	return {
+		...(git === undefined ? {} : { PATH: `${dirname(git)}:${process.env.PATH ?? ""}` }),
+		GIT_CONFIG_NOSYSTEM: "1",
+		GIT_CONFIG_GLOBAL: "/dev/null",
+		TMPDIR: tmp,
+	};
 }
 
 /**
@@ -161,16 +202,18 @@ export interface VerifierPolicyInput {
  * cannot be allowed and then narrowed: its Keychains and the rest are left out.
  * The user's home directory is not readable, nor is /Users, /tmp or /private/var.
  * The configuration files add nothing here.
- * `git` does not work here: its Xcode shim reads /var/select (which can be
- * allowed) and then writes a cache in the per-user /var/folders directory, which
- * the verifier must not write; nothing narrow enough opens that.
+ * The `/usr/bin/git` shim does not work here (it reads /var/select and writes a
+ * cache in the per-user /var/folders directory), so the verifier runs the real
+ * `git` of the active developer directory instead: `toolchain` is that
+ * directory's `usr/`, readable, and `verifierEnvironment` puts its `bin/` first
+ * on the PATH.
  */
-export function verifierPolicy({ dir, nodePrefix }: VerifierPolicyInput): SandboxPolicy {
+export function verifierPolicy({ dir, nodePrefix, toolchain }: VerifierPolicyInput): SandboxPolicy {
 	return {
 		network: { allowedDomains: [], deniedDomains: ["*"] },
 		filesystem: {
 			denyRead: ["/"],
-			allowRead: [dir, nodePrefix, ...SYSTEM_READ_PATHS],
+			allowRead: [dir, nodePrefix, ...(toolchain === undefined ? [] : [toolchain]), ...SYSTEM_READ_PATHS],
 			allowWrite: [dir],
 			denyWrite: [],
 		},
@@ -284,9 +327,16 @@ export class Sandbox {
 						// Read at each command, so a file that became invalid stops the command instead of being ignored.
 						additions: loadSandboxAdditions({ cwd, home }),
 					})
-				: verifierPolicy({ dir: cwd, nodePrefix: this.#options.nodePrefix ?? nodeInstallation() });
+				: verifierPolicy({
+						dir: cwd,
+						nodePrefix: this.#options.nodePrefix ?? nodeInstallation(),
+						...toolchainOf(this.#options.manager ? undefined : developerGit()),
+					});
+		// The library hands every command TMPDIR=/tmp/claude, which the verifier cannot even look up (it does not read
+		// /tmp): its commands get a temporary directory inside its own, set in the command so it wins.
+		const script = policy === "verifier" ? `export TMPDIR=${shellQuote(join(cwd, ".tmp"))}\n${command}` : command;
 		return this.#manager.wrapWithSandbox(
-			command,
+			script,
 			"bash",
 			config,
 			signal,
