@@ -4,7 +4,7 @@ export const SYSTEM_PROMPT_APPEND =
 
 /** Added when ODD tracking is on. Byte-stable, and kept short: the code enforces the rules that matter. */
 export const ODD_RULES = `Work in ODD (Organic Driven Development):
-- A small task (understood, low risk, finishable from the diff alone): just do it.
+- A small task (understood, low risk, finishable from the diff alone): just do it. Read only what you change and its helpers, in one batch, and run the focused test and the suite in one command.
 - A large task (several steps or sessions, or work the user wants tracked): before the first change, create its feature document with the feature tool. Specs copy the user's exact words; one task per deliverable. You never write the user's words into the log: Atelier logs them verbatim.
 - Then go task by task: update_task to in_progress before starting one, to done (with its commit, if any) once its checks pass, to blocked with a note when it waits on something.
 - To resume earlier work, open its feature by name.

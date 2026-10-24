@@ -440,6 +440,12 @@ describe("ODD rules in the prompt", () => {
 		for (const word of ["feature", "open", "in_progress", "done", "phase"]) expect(ODD_RULES).toContain(word);
 	});
 
+	it("give a small task the small path: one batch of reads and one command for its checks", () => {
+		expect(ODD_RULES).toContain(
+			"A small task (understood, low risk, finishable from the diff alone): just do it. Read only what you change and its helpers, in one batch, and run the focused test and the suite in one command.",
+		);
+	});
+
 	it("no longer lists a fixed set of tools in the shared prompt", () => {
 		expect(SYSTEM_PROMPT_APPEND).not.toContain("(read, edit, bash, grep)");
 	});
