@@ -35,6 +35,8 @@ export interface RpcServerOptions {
 	home?: string;
 	/** Sessions may review their changes (RDD). Off unless given; `serve` passes `reviewEnabled(process.env)`. */
 	review?: boolean;
+	/** Every session runs `bash` without the sandbox (`serve` passes `!sandboxEnabled(process.env)`). */
+	noSandbox?: boolean;
 	onShutdown?: () => void;
 	createId?: () => string;
 }
@@ -165,6 +167,7 @@ export class RpcServer {
 						message.autoApprove ?? false,
 						message.backend ?? DEFAULT_BACKEND,
 						message.review,
+						message.noSandbox === true || this.#options.noSandbox === true,
 					),
 				};
 			case "session.send": {
@@ -243,6 +246,7 @@ export class RpcServer {
 		backend: BackendName,
 		/** Absent means the server's default; an explicit true the server cannot honor is refused, never dropped. */
 		requested: boolean | undefined,
+		noSandbox: boolean,
 	): Promise<string> {
 		if (this.#stopping) throw new CommandError("shutting_down", "The server is shutting down.");
 		if (requested === true && !this.#options.review)
@@ -256,7 +260,8 @@ export class RpcServer {
 		)
 			throw new CommandError("invalid_cwd", `Working directory does not exist: ${cwd}`);
 		// A broken sandbox file stops the session: ignoring it would silently widen or narrow what commands may do.
-		if (this.#options.home !== undefined) {
+		// With the sandbox off the files are not used, so they are not validated either (same as the CLI).
+		if (!noSandbox && this.#options.home !== undefined) {
 			try {
 				loadSandboxAdditions({ cwd, home: this.#options.home });
 			} catch (error) {
@@ -287,6 +292,7 @@ export class RpcServer {
 				tools: this.#options.tools,
 				systemPromptAppend: this.#options.systemPromptAppend,
 				autoApprove,
+				...(noSandbox ? { noSandbox: true } : {}),
 				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
 				odd: true,
 				...(this.#options.home === undefined ? {} : { projectInstructions: { home: this.#options.home } }),

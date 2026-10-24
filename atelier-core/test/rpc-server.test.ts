@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
 	type AtelierEventBody,
+	createBashTool,
 	decodeServerMessage,
 	defineTool,
 	FakeBackend,
@@ -13,6 +14,17 @@ import {
 	RpcServer,
 	type ServerMessage,
 } from "../src/index.ts";
+import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
+
+/** A sandbox library that is there and wraps nothing. */
+const fakeManager: SandboxManagerLike = {
+	isSupportedPlatform: () => true,
+	checkDependencies: () => ({ errors: [], warnings: [] }),
+	initialize: async () => {},
+	wrapWithSandbox: async (command) => command,
+	cleanupAfterCommand: () => {},
+	reset: async () => {},
+};
 
 const finished: AtelierEventBody = {
 	type: "turn_finished",
@@ -225,6 +237,80 @@ describe("RpcServer", () => {
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
+	});
+
+	describe("without the sandbox", () => {
+		const offerBash = (options: { noSandbox?: boolean } = {}) => {
+			const input = new PassThrough();
+			const messages: ServerMessage[] = [];
+			const server = new RpcServer({
+				input,
+				write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
+				createBackend: () => new FakeBackend([[{ event: finished }]]),
+				tools: [createBashTool({ sandbox: new Sandbox({ platform: "darwin", manager: fakeManager }) })],
+				systemPromptAppend: "",
+				home: cwd,
+				...options,
+			});
+			void server.run();
+			const ask = async (command: Record<string, unknown>) => {
+				const id = `i${messages.length}`;
+				input.write(`${JSON.stringify({ type: "command", id, ...command })}\n`);
+				for (let i = 0; i < 200; i++) {
+					const found = messages.find((m) => m.type === "response" && m.id === id);
+					if (found) return found;
+					await new Promise((resolve) => setTimeout(resolve, 5));
+				}
+				throw new Error("no response");
+			};
+			return { messages, ask };
+		};
+		const turnEvents = async (h: ReturnType<typeof offerBash>, noSandbox?: boolean) => {
+			const started = (await h.ask({
+				command: "session.start",
+				cwd,
+				...(noSandbox ? { noSandbox } : {}),
+			})) as unknown as {
+				ok: boolean;
+				result: { sessionId: string };
+			};
+			await h.ask({ command: "session.send", sessionId: started.result.sessionId, prompt: "hi" });
+			for (let i = 0; i < 200 && !h.messages.some((m) => m.type === "event" && m.event.type === "turn_finished"); i++)
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			return h.messages.flatMap((m) => (m.type === "event" ? [m.event] : []));
+		};
+
+		it("starts with the sandbox when the client does not ask otherwise, and says so", async () => {
+			const events = await turnEvents(offerBash());
+			expect(events.find((e) => e.type === "sandbox_status")).toMatchObject({ sandboxed: true });
+		});
+
+		it("lets session.start turn the sandbox off, and does not read the configuration files then", async () => {
+			await mkdir(join(cwd, ".atelier"));
+			await writeFile(join(cwd, ".atelier", "sandbox.json"), "{ nope");
+			const refused = offerBash();
+			expect(await refused.ask({ command: "session.start", cwd })).toMatchObject({
+				ok: false,
+				error: { code: "session_start_failed" },
+			});
+
+			const h = offerBash();
+			const events = await turnEvents(h, true);
+			expect(events.find((e) => e.type === "sandbox_status")).toMatchObject({
+				sandboxed: false,
+				reason: "sandbox turned off for this session",
+			});
+		});
+
+		it("honors the server's own setting (ATELIER_SANDBOX=off) for every session", async () => {
+			await mkdir(join(cwd, ".atelier"));
+			await writeFile(join(cwd, ".atelier", "sandbox.json"), "{ nope");
+			const events = await turnEvents(offerBash({ noSandbox: true }));
+			expect(events.find((e) => e.type === "sandbox_status")).toMatchObject({
+				sandboxed: false,
+				reason: "sandbox turned off for this session",
+			});
+		});
 	});
 
 	it("rejects a second turn while one is running", async () => {

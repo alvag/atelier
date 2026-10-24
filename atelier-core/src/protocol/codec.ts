@@ -43,6 +43,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		autoApprove: z.boolean().optional(),
 		backend: z.enum(BACKEND_NAMES).optional(),
 		review: z.boolean().optional(),
+		noSandbox: z.boolean().optional(),
 	}),
 	z.object({ command: z.literal("session.send"), sessionId, prompt: z.string().min(1) }),
 	z.object({ command: z.literal("session.interrupt"), sessionId }),

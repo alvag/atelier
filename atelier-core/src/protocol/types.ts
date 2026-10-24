@@ -19,6 +19,8 @@ export type ClientCommand =
 			autoApprove?: boolean;
 			backend?: BackendName;
 			review?: boolean;
+			/** Runs `bash` without the sandbox (every command asks); the server's own ATELIER_SANDBOX=off applies to all sessions. */
+			noSandbox?: boolean;
 	  }
 	| { command: "session.send"; sessionId: string; prompt: string }
 	| { command: "session.interrupt"; sessionId: string }

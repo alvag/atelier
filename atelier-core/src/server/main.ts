@@ -8,7 +8,7 @@ import { connectMemory, MemoryUnavailableError } from "../memory/index.ts";
 import { SYSTEM_PROMPT_APPEND } from "../prompt.ts";
 import type { BackendName } from "../protocol/types.ts";
 import { checkRoot } from "../root.ts";
-import { coreTools } from "../tools/index.ts";
+import { coreTools, sandboxEnabled } from "../tools/index.ts";
 import { EchoBackend } from "./echo-backend.ts";
 import { RpcServer, reviewEnabled } from "./rpc-server.ts";
 
@@ -26,6 +26,8 @@ Environment:
   ANTHROPIC_API_KEY      API key for anthropic-api sessions, instead of the Keychain
   ATELIER_MEMORY=off     Run sessions without long-term memory
   ATELIER_REVIEW=off     Run sessions without the review of uncommitted changes (RDD)
+  ATELIER_SANDBOX=off    Run every session's bash without the macOS sandbox: each command asks,
+                         and the verifier gets no bash (session.start can also ask for it)
   ATELIER_ALLOW_ROOT     As root (uid 0) the server refuses to start unless this is exactly
                          "I accept the risk"; it then warns on every start
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
@@ -72,6 +74,7 @@ const server = new RpcServer({
 	write: (line) => process.stdout.write(line),
 	createBackend,
 	review: reviewEnabled(process.env),
+	noSandbox: !sandboxEnabled(process.env),
 	tools: coreTools,
 	systemPromptAppend: SYSTEM_PROMPT_APPEND,
 	home: homedir(),
