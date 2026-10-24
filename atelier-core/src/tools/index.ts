@@ -9,6 +9,7 @@ export { editTool } from "./edit.ts";
 export { createGrepTool, grepTool } from "./grep.ts";
 export { PathOutsideError, resolveInside } from "./paths.ts";
 export { readTool } from "./read.ts";
+export { Sandbox, type SandboxPolicyName, type SandboxStatus, sandbox } from "./sandbox.ts";
 export * from "./types.ts";
 
 /** The tools every M1 session gets. */
