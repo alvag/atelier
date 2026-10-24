@@ -16,7 +16,13 @@ const SESSION = { cwd: "/work/project", scratchDir: "/tmp/atelier-session-1", te
 
 interface Calls {
 	initialize: unknown[];
-	wrap: { command: string; binShell: string | undefined; custom: unknown; signal: AbortSignal | undefined }[];
+	wrap: {
+		command: string;
+		binShell: string | undefined;
+		custom: unknown;
+		signal: AbortSignal | undefined;
+		options?: unknown;
+	}[];
 	cleanup: number;
 	reset: number;
 }
@@ -29,8 +35,8 @@ function fakeManager(overrides: Partial<SandboxManagerLike> = {}): { manager: Sa
 		async initialize(config) {
 			calls.initialize.push(config);
 		},
-		async wrapWithSandbox(command, binShell, custom, signal) {
-			calls.wrap.push({ command, binShell, custom, signal });
+		async wrapWithSandbox(command, binShell, custom, signal, options) {
+			calls.wrap.push({ command, binShell, custom, signal, ...(options === undefined ? {} : { options }) });
 			return `wrapped(${command})`;
 		},
 		cleanupAfterCommand() {
@@ -280,6 +286,13 @@ describe("Sandbox wrap", () => {
 		});
 		expect(wrapped).toBe("wrapped(npm test)");
 		expect(calls.wrap).toEqual([{ command: "npm test", binShell: "bash", custom: agentPolicy(SESSION), signal }]);
+	});
+
+	it("gives the library the run's id to record its denials under, with the command as their text", async () => {
+		const { manager, calls } = fakeManager();
+		const sandbox = new Sandbox({ platform: "darwin", manager, home: SESSION.home, tempDir: SESSION.tempDir });
+		await sandbox.wrap("npm test", { policy: "agent", cwd: SESSION.cwd, runId: "run-1" });
+		expect(calls.wrap[0]?.options).toEqual({ commandId: "run-1", commandText: "npm test" });
 	});
 
 	it("wraps with the verifier policy built from the working directory", async () => {

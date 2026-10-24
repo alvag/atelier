@@ -17,21 +17,33 @@ import {
 
 const cwd = "/tmp";
 
+/** How the library keys a violation: the first 100 characters of the run's id (or of the command), in base64. */
+const keyOf = (idOrCommand: string) => Buffer.from(idOrCommand.slice(0, 100)).toString("base64");
+
 /**
- * A sandbox that wraps nothing; while a command is wrapped it records the
- * violations `report` returns, the way the library's log monitor would.
+ * A sandbox that wraps nothing; when a command is wrapped it records the
+ * violations `report` returns under the run's key, the way the library's log
+ * monitor would, `delayMs` later (the log lags while the command runs).
  */
 function sandboxWith(
-	report: (command: string) => Pick<SandboxViolation, "line" | "command">[] = () => [],
+	report: (command: string, run: number) => Pick<SandboxViolation, "line" | "command" | "encodedCommand">[] = () => [],
 	seed: SandboxViolation[] = [],
+	delayMs = 0,
 ) {
 	const store: SandboxViolation[] = [...seed];
+	let runs = 0;
 	const manager: SandboxManagerLike = {
 		isSupportedPlatform: () => true,
 		checkDependencies: () => ({ errors: [], warnings: [] }),
 		initialize: async () => {},
-		wrapWithSandbox: async (command) => {
-			for (const violation of report(command)) store.push({ timestamp: new Date(), ...violation });
+		wrapWithSandbox: async (command, _binShell, _custom, _signal, options) => {
+			const encodedCommand = keyOf(options?.commandId || command);
+			const record = (violations: Pick<SandboxViolation, "line" | "command" | "encodedCommand">[]) => {
+				for (const violation of violations) store.push({ timestamp: new Date(), encodedCommand, ...violation });
+			};
+			const violations = report(command, runs++);
+			if (delayMs === 0) record(violations);
+			else setTimeout(() => record(violations), delayMs);
 			return command;
 		},
 		getSandboxViolationStore: () => ({ getViolations: () => [...store] }),
@@ -140,21 +152,68 @@ describe("the cause of a sandbox block", () => {
 		expect(result.blocked).toBeUndefined();
 	});
 
-	it("takes only the violations of this command, seen while it ran", async () => {
+	it("takes only the violations of this run, not those of an earlier run of the same text", async () => {
 		const earlier: SandboxViolation = {
 			command: failing,
+			encodedCommand: keyOf(failing),
 			line: "bash(7) deny(1) file-write-create /from/an/earlier/run",
-			timestamp: new Date(Date.now() - 60_000),
+			timestamp: new Date(Date.now() + 60_000),
 		};
 		const sandbox = sandboxWith(
 			(command) => [
-				{ command: "some other command", line: "x(1) deny(1) file-write-create /not/mine" },
+				{
+					command: "some other command",
+					encodedCommand: keyOf("another run"),
+					line: "x(1) deny(1) file-write-create /not/mine",
+				},
 				{ command, line: "bash(7) deny(1) file-write-create /mine" },
 			],
 			[earlier],
 		);
 		const result = await createBashTool({ sandbox }).execute({ command: failing }, { cwd });
 		expect(result.blocked).toEqual(["write to /mine (not an allowed write path)"]);
+	});
+
+	it("gives each of two overlapping runs of the same command only its own causes", async () => {
+		const sandbox = sandboxWith(
+			(command, run) => [{ command, line: `bash(7) deny(1) file-write-create /run/${run}` }],
+			[],
+			50,
+		);
+		const bash = createBashTool({ sandbox });
+		const command = "sleep 0.3; exit 1";
+		const [first, second] = await Promise.all([bash.execute({ command }, { cwd }), bash.execute({ command }, { cwd })]);
+		const causes = [first?.blocked, second?.blocked];
+		expect(causes).toContainEqual(["write to /run/0 (not an allowed write path)"]);
+		expect(causes).toContainEqual(["write to /run/1 (not an allowed write path)"]);
+	});
+
+	it("gives a run that was not blocked none of the causes of an overlapping run of the same command", async () => {
+		const sandbox = sandboxWith(
+			(command, run) => (run === 0 ? [{ command, line: "bash(7) deny(1) file-write-create /run/0" }] : []),
+			[],
+			50,
+		);
+		const bash = createBashTool({ sandbox });
+		const command = "sleep 0.3; exit 1";
+		const results = await Promise.all([bash.execute({ command }, { cwd }), bash.execute({ command }, { cwd })]);
+		expect(results.map((result) => result.blocked)).toEqual([
+			["write to /run/0 (not an allowed write path)"],
+			undefined,
+		]);
+	});
+
+	it("does not take a violation the library could not attribute to a run, even with the same text", async () => {
+		const unattributed: SandboxViolation = {
+			command: failing,
+			line: "bash(7) deny(1) file-write-create /whose",
+			timestamp: new Date(Date.now() + 60_000),
+		};
+		const result = await createBashTool({ sandbox: sandboxWith(() => [], [unattributed]) }).execute(
+			{ command: failing },
+			{ cwd },
+		);
+		expect(result.blocked).toBeUndefined();
 	});
 
 	it("keeps the truncation note and the result of a long output, with the causes after the status", async () => {

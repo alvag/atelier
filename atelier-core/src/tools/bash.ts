@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -151,15 +151,14 @@ const MAX_CAUSES = 5;
 const LOOKS_BLOCKED = /not permitted|permission denied|denied|refused|forbidden|resolve host|unreachable/i;
 const GRACE_MS = 400;
 
-/** What the sandbox blocked in a failed command, at most MAX_CAUSES of them. */
+/** What the sandbox blocked in a failed run, at most MAX_CAUSES of them. */
 async function blockedCauses(
 	sandbox: Sandbox,
-	command: string,
-	since: Date,
+	runId: string,
 	policy: SandboxPolicyName,
 	output: string,
 ): Promise<string[]> {
-	const causes = await sandbox.blocks(command, { since, policy, graceMs: LOOKS_BLOCKED.test(output) ? GRACE_MS : 0 });
+	const causes = await sandbox.blocks(runId, { policy, graceMs: LOOKS_BLOCKED.test(output) ? GRACE_MS : 0 });
 	if (causes.length <= MAX_CAUSES) return causes;
 	return [...causes.slice(0, MAX_CAUSES), `and ${causes.length - MAX_CAUSES} more`];
 }
@@ -238,12 +237,14 @@ export function createBashTool({
 					truncated: false,
 				};
 			let script = command;
-			const startedAt = new Date();
+			// Each run gets its own id, so its denials are not mixed with those of another run of the same text.
+			const runId = randomUUID();
 			if (sandboxStatus.available) {
 				try {
 					script = await sandbox.wrap(command, {
 						policy,
 						cwd,
+						runId,
 						...(scratchDir === undefined ? {} : { scratchDir }),
 						...(signal === undefined ? {} : { signal }),
 					});
@@ -313,8 +314,7 @@ export function createBashTool({
 				: "";
 			const ok = !stopped && code === 0;
 			// Only a failed command is asked: the library also logs the denied probes of commands that worked.
-			const blocked =
-				sandboxStatus.available && !ok ? await blockedCauses(sandbox, command, startedAt, policy, finished.tail) : [];
+			const blocked = sandboxStatus.available && !ok ? await blockedCauses(sandbox, runId, policy, finished.tail) : [];
 			const label = stopped === "timeout" ? "timed out" : stopped === "aborted" ? "aborted" : `exit ${code ?? "?"}`;
 			return {
 				ok,

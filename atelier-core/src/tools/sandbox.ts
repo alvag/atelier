@@ -57,11 +57,21 @@ export type SandboxPolicyName = "agent" | "verifier";
 /** What the library takes per command: the parts of its configuration that differ from the session-wide one. */
 export type SandboxPolicy = Pick<SandboxRuntimeConfig, "filesystem"> & Partial<Pick<SandboxRuntimeConfig, "network">>;
 
-/** A denial the library recorded: `command` is the text of the command that was wrapped. */
+/**
+ * A denial the library recorded: `command` is the text of the command that was
+ * wrapped, `encodedCommand` the key of the run it came from (absent when the
+ * library could not tell).
+ */
 export interface SandboxViolation {
 	line: string;
 	command?: string;
+	encodedCommand?: string;
 	timestamp: Date;
+}
+
+/** The key the library records a run's denials under: the first 100 characters of its id, in base64. */
+function runKey(runId: string): string {
+	return Buffer.from(runId.slice(0, 100)).toString("base64");
 }
 
 /** The part of the library's `SandboxManager` this module uses; tests pass a fake. */
@@ -74,6 +84,7 @@ export interface SandboxManagerLike {
 		binShell?: string,
 		customConfig?: Partial<SandboxRuntimeConfig>,
 		abortSignal?: AbortSignal,
+		options?: { commandId?: string; commandText?: string },
 	): Promise<string>;
 	/** Where the library keeps the denials it saw; a fake without it reports none. */
 	getSandboxViolationStore?(): { getViolations(): SandboxViolation[] };
@@ -200,6 +211,8 @@ export interface WrapOptions {
 	cwd: string;
 	scratchDir?: string;
 	signal?: AbortSignal;
+	/** A unique id for this run: the library records its denials under it, so `blocks` can tell them from another run's. */
+	runId?: string;
 }
 
 async function defaultManager(): Promise<SandboxManagerLike> {
@@ -257,7 +270,7 @@ export class Sandbox {
 	}
 
 	/** The command line that runs `command` under the policy; throws when the sandbox is unavailable. */
-	async wrap(command: string, { policy, cwd, scratchDir, signal }: WrapOptions): Promise<string> {
+	async wrap(command: string, { policy, cwd, scratchDir, signal, runId }: WrapOptions): Promise<string> {
 		const status = await this.status();
 		if (!status.available || !this.#manager) throw new Error(status.available ? "sandbox not started" : status.reason);
 		const home = this.#options.home ?? homedir();
@@ -272,27 +285,34 @@ export class Sandbox {
 						additions: loadSandboxAdditions({ cwd, home }),
 					})
 				: verifierPolicy({ dir: cwd, nodePrefix: this.#options.nodePrefix ?? nodeInstallation() });
-		return this.#manager.wrapWithSandbox(command, "bash", config, signal);
+		return this.#manager.wrapWithSandbox(
+			command,
+			"bash",
+			config,
+			signal,
+			runId === undefined ? undefined : { commandId: runId, commandText: command },
+		);
 	}
 
 	/**
-	 * What the sandbox blocked in `command` since `since`: the library's
-	 * denials with that command text, recorded at or after `since`, described
-	 * as causes. The library cannot say which of two concurrent runs of the
-	 * same text a denial belongs to, and the log it reads the file denials
-	 * from can lag (or miss the first seconds after the start), so this is
-	 * best effort: it never reports a cause the library did not see.
-	 * Waits up to `graceMs` for the first one to arrive.
+	 * What the sandbox blocked in the run wrapped with `runId`: the library's
+	 * denials recorded under that run's key, described as causes. A denial the
+	 * library could not attribute to a run, or attributed to another one (an
+	 * overlapping run of the same text included), is not taken. The log the
+	 * file denials come from can lag (or miss the first seconds after the
+	 * start), so this is best effort: it never reports a cause the library did
+	 * not see for this run. Waits up to `graceMs` for the first one to arrive.
 	 */
 	async blocks(
-		command: string,
-		{ since, policy, graceMs = 0 }: { since: Date; policy: SandboxPolicyName; graceMs?: number },
+		runId: string,
+		{ policy, graceMs = 0 }: { policy: SandboxPolicyName; graceMs?: number },
 	): Promise<string[]> {
 		const store = this.#manager?.getSandboxViolationStore?.();
 		if (!store) return [];
+		const key = runKey(runId);
 		const deadline = Date.now() + graceMs;
 		for (;;) {
-			const mine = store.getViolations().filter((v) => v.command === command && v.timestamp >= since);
+			const mine = store.getViolations().filter((v) => v.encodedCommand === key);
 			const causes = describeViolations(
 				mine.map((v) => v.line),
 				policy,
