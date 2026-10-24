@@ -26,4 +26,19 @@ describe("renderMarkdown", () => {
 	it("keeps ordinary https links", () => {
 		expect(renderMarkdown("[docs](https://example.com)")).toContain('<a href="https://example.com">docs</a>');
 	});
+
+	it("still renders ordinary nesting", () => {
+		expect(renderMarkdown("> > quoted\n\n- a\n  - b")).toContain("<blockquote>\n<blockquote>");
+	});
+
+	it.each([
+		["deeply nested quotes", `${"> ".repeat(60)}<b>deep</b>`],
+		["deeply nested lists", `${"- ".repeat(60)}<b>deep</b>`],
+		["an enormous text", `**${"x".repeat(300_000)}** <b>huge</b>`],
+	])("shows %s as escaped plain text", (_name, input) => {
+		const html = renderMarkdown(input);
+		expect(html).toMatch(/^<pre class="plain">/);
+		expect(html).not.toMatch(/<blockquote|<ul|<strong|<b>/);
+		expect(html).toContain("&lt;b&gt;");
+	});
 });

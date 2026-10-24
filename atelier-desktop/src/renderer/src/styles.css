@@ -131,6 +131,12 @@ main {
 	overflow-x: auto;
 }
 
+/* Markdown too deep or too long to parse, shown as is. */
+.text pre.plain {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
 /* The whole command must be readable before Allow: wrap it, never scroll it sideways. */
 .approval pre {
 	font-family: var(--at-mono);
