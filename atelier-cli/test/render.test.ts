@@ -140,6 +140,39 @@ describe("Renderer", () => {
 		expect(stderr).toBe("cache miss: system_changed (4,200 tokens not read from the cache)\n");
 	});
 
+	it("shows the turn's cost by phase on a line under the total, only when the turn had more than one", () => {
+		const part = (input: number) => ({ input, output: 1, cacheRead: 0, cacheWrite: 0 });
+		const { stdout } = render([
+			{
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				costUsd: 0.0421,
+				requests: 3,
+				phases: {
+					main: { usage: part(1000), requests: 1, costUsd: 0.04 },
+					verify: { usage: part(150), costUsd: 0.0021 },
+					lenses: { usage: part(40), requests: 2 },
+					validator: { usage: part(9) },
+				},
+			},
+			{
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				phases: { main: { usage } },
+			},
+		]);
+		expect(stdout).toBe(
+			[
+				"tokens: input 1,200 · output 85 · cache read 9,000 · cache write 3,100 · cache 68% · 3 requests · $0.0421",
+				"phases: main $0.0400 (1 req) · verify $0.0021 · lenses 2 req · validator 10 tokens",
+				"tokens: input 1,200 · output 85 · cache read 9,000 · cache write 3,100 · cache 68%",
+				"",
+			].join("\n"),
+		);
+	});
+
 	it("indents a subagent's work under a header, without failing the parent's turn", () => {
 		const child = (body: Record<string, unknown>) =>
 			({ ...body, parentCallId: "c1", agent: "explorer" }) as unknown as AtelierEventBody;

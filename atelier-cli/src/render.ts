@@ -1,6 +1,6 @@
 import { isAbsolute, relative } from "node:path";
 import { styleText } from "node:util";
-import { type AtelierEvent, cacheHitRate, type ReviewStep } from "@atelier/core";
+import { type AtelierEvent, cacheHitRate, type PhaseSpent, type ReviewStep, type TurnPhase } from "@atelier/core";
 
 export interface RendererOptions {
 	stdout: (text: string) => void;
@@ -35,6 +35,21 @@ function tokensLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): st
 		);
 	}
 	return `tokens: ${parts.join(" · ")}`;
+}
+
+/** The turn's cost by part, under its tokens line; undefined when the turn had a single part, which the total already says. */
+function phasesLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): string | undefined {
+	const phases = Object.entries(event.phases ?? {}) as [TurnPhase, PhaseSpent][];
+	if (phases.length < 2) return undefined;
+	return `phases: ${phases.map(([phase, spent]) => `${phase} ${phaseSpent(spent)}`).join(" · ")}`;
+}
+
+/** `$0.0300 (3 req)`; the tokens only when neither the cost nor the requests are known. */
+function phaseSpent({ usage, requests, costUsd }: PhaseSpent): string {
+	const count = requests === undefined ? undefined : `${requests} req`;
+	if (costUsd !== undefined)
+		return count === undefined ? `$${costUsd.toFixed(4)}` : `$${costUsd.toFixed(4)} (${count})`;
+	return count ?? `${numbers.format(usage.input + usage.output)} tokens`;
 }
 
 const UNSANDBOXED_EFFECT = "every command asks for approval and --yes does not apply";
@@ -328,11 +343,14 @@ export class Renderer {
 				this.#blocked(event.blocked, "  ");
 				return;
 			}
-			case "turn_finished":
+			case "turn_finished": {
 				if (this.#expectedMissTurns > 0) this.#expectedMissTurns--;
 				if (event.stopReason === "error") this.failed = true;
 				this.#line(this.#style("dim", tokensLine(event)));
+				const phases = phasesLine(event);
+				if (phases !== undefined) this.#line(this.#style("dim", phases));
 				return;
+			}
 			case "compaction_started":
 				this.#line(
 					this.#style("dim", `◇ compacting context (${event.reason}, ${numbers.format(event.tokens)} tokens)`),
