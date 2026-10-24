@@ -157,7 +157,7 @@ export async function verify(
 
 		let fixed: Awaited<ReturnType<VerificationDeps["correct"]>>;
 		try {
-			fixed = await deps.correct(verifierCorrectionMessage(blocking));
+			fixed = await deps.correct(verifierCorrectionMessage(blocking, current.since !== undefined));
 		} catch {
 			fixed = { ok: false, usage: ZERO_USAGE };
 		}

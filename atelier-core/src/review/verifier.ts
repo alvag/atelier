@@ -2,7 +2,7 @@ import { z } from "zod";
 import { describeError, type VerifyDefect, type VerifyRequirement } from "../events.ts";
 import type { Candidate } from "./candidate.ts";
 import type { Escalation } from "./risk.ts";
-import { extractJson } from "./roles.ts";
+import { commitInstruction, extractJson } from "./roles.ts";
 
 /** Makes package managers and the other common tools refuse to install or fetch: set on the verifier's bash. */
 export const VERIFIER_ENV: Readonly<Record<string, string>> = {
@@ -206,8 +206,11 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
 	return lines.join("\n");
 }
 
-/** The message that asks the main agent to fix what the verifier reproduced. */
-export function verifierCorrectionMessage(defects: readonly VerifierDefect[]): string {
+/**
+ * The message that asks the main agent to fix what the verifier reproduced.
+ * `committed`: the agent already committed during the turn, so the correction is committed too.
+ */
+export function verifierCorrectionMessage(defects: readonly VerifierDefect[], committed: boolean): string {
 	return [
 		"An independent verifier reproduced these defects in your change, and they do not happen on the version before your change:",
 		...defects.map(
@@ -215,6 +218,6 @@ export function verifierCorrectionMessage(defects: readonly VerifierDefect[]): s
 				`- ${d.id} [${d.severity}] ${d.summary}\n  reproduce: ${d.reproduction}\n  on your change: ${d.candidate}\n  before your change: ${d.base}`,
 		),
 		"",
-		"Fix them in this turn and declare the risk again if it changed. Do not commit. The verifier will run once more.",
+		`Fix them in this turn and declare the risk again if it changed. ${commitInstruction(committed)} The verifier will run once more.`,
 	].join("\n");
 }

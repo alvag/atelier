@@ -262,6 +262,21 @@ describe("runReview", () => {
 		expect(receipt.findings.map((f) => f.id)).toEqual(["RL-001"]);
 	});
 
+	it("asks to commit the correction when the turn already committed", async () => {
+		const env = await setup(20);
+		const committed = { ...env, candidate: { ...env.candidate, since: "1a2b3c4" } };
+		const { deps, corrections } = harness(committed, {
+			...severeLens(),
+			refuter: () => ok(verdicts({ id: "RL-001", verdict: "confirmed" })),
+			correct: tweak(3),
+			validator: () => ok(results({ id: "RL-001", resolved: true })),
+		});
+		await drive(committed, deps);
+		expect(corrections).toHaveLength(1);
+		expect(corrections[0]).toContain("commit the correction on the same branch once your checks pass");
+		expect(corrections[0]).not.toContain("Do not commit");
+	});
+
 	it("corrects once within the budget, validates the corrected tree and approves", async () => {
 		const env = await setup(20);
 		const { deps, calls, corrections } = harness(env, {
@@ -276,6 +291,7 @@ describe("runReview", () => {
 		expect(corrections[0]).toContain("a.ts:2");
 		expect(corrections[0]).toContain("Drops the token.");
 		expect(corrections[0]).toContain("10 lines");
+		expect(corrections[0]).toContain("Do not commit.");
 		expect(receipt.verdict).toBe("approved");
 		expect(receipt.correction).toEqual({ budget: 10, used: 6 });
 		expect(receipt.corrected).not.toBeNull();

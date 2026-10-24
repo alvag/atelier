@@ -150,11 +150,19 @@ describe("verifierCorrectionMessage", () => {
 	it("hands the defects to the agent with their reproduction and both behaviors", () => {
 		const parsed = parseVerifierReport(report());
 		if (!parsed.ok) throw new Error(parsed.error);
-		const message = verifierCorrectionMessage(parsed.report.defects);
+		const message = verifierCorrectionMessage(parsed.report.defects, false);
 		expect(message).toContain("- D1 [blocker] A pasted y approves the command");
 		expect(message).toContain("reproduce: printf 'ls\\ny' | node cli.ts");
 		expect(message).toContain("on your change: ran ls");
 		expect(message).toContain("before your change: asked again");
 		expect(message).toContain("Do not commit");
+	});
+
+	it("asks to commit the correction when the turn already committed", () => {
+		const parsed = parseVerifierReport(report());
+		if (!parsed.ok) throw new Error(parsed.error);
+		const message = verifierCorrectionMessage(parsed.report.defects, true);
+		expect(message).toContain("commit the correction on the same branch once your checks pass");
+		expect(message).not.toContain("Do not commit");
 	});
 });

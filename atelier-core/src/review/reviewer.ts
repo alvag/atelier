@@ -5,7 +5,7 @@ import { runGit } from "./git.ts";
 import { buildLensPrompt, LENS_INSTRUCTIONS, readPatch } from "./lenses.ts";
 import type { Receipt } from "./receipts.ts";
 import type { Assessment, Lens } from "./risk.ts";
-import { parseResults, parseVerdicts, REFUTER_INSTRUCTION, VALIDATOR_INSTRUCTION } from "./roles.ts";
+import { commitInstruction, parseResults, parseVerdicts, REFUTER_INSTRUCTION, VALIDATOR_INSTRUCTION } from "./roles.ts";
 
 export type RoleName = Lens | "refuter" | "validator";
 
@@ -194,7 +194,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	if (interrupted()) return stopped();
 	let fixed: Awaited<ReturnType<ReviewDeps["correct"]>>;
 	try {
-		fixed = await deps.correct(correctionMessage(confirmed, budget), signal);
+		fixed = await deps.correct(correctionMessage(confirmed, budget, candidate.since !== undefined), signal);
 	} catch {
 		fixed = { ok: false, usage: ZERO_USAGE };
 	}
@@ -242,8 +242,8 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		: finish("escalated", `Unresolved after the correction: ${open.map((f) => f.id).join(", ")}.`);
 }
 
-/** The message that asks the main agent for the single correction. */
-function correctionMessage(findings: readonly Finding[], budget: number): string {
+/** The message that asks the main agent for the single correction; `committed`: the turn already committed. */
+function correctionMessage(findings: readonly Finding[], budget: number, committed: boolean): string {
 	const list = findings.map(
 		(f) => `- ${f.id} [${f.severity}] ${f.path}${f.line ? `:${f.line}` : ""}: ${f.claim} (evidence: ${f.evidence})`,
 	);
@@ -251,7 +251,7 @@ function correctionMessage(findings: readonly Finding[], budget: number): string
 		"A review of your changes confirmed these defects that the change introduced:",
 		...list,
 		"",
-		`Fix them in this one turn. The correction may change at most ${budget} lines (added plus deleted) compared with the reviewed change; a larger one is not accepted and the review is handed back to the user. Do not commit.`,
+		`Fix them in this one turn. The correction may change at most ${budget} lines (added plus deleted) compared with the reviewed change; a larger one is not accepted and the review is handed back to the user. ${commitInstruction(committed)}`,
 	].join("\n");
 }
 
