@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBashTool } from "../src/tools/bash.ts";
-import { Sandbox } from "../src/tools/sandbox.ts";
+import { isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
 
-const onMac = process.platform === "darwin";
+const onMac = process.platform === "darwin" && !isInsideSandbox();
 
 let base: string;
 let cwd: string;
@@ -126,7 +126,8 @@ describe.skipIf(!onMac)("the agent's bash in the sandbox", () => {
 		const result = await npm.execute(
 			{
 				command:
-					'cache="$(npm config get cache)" && echo "cache=$cache" && mkdir -p "$cache/_cacache" && echo ok > "$cache/_cacache/entry"',
+					// Run from npx or pnpm, the test inherits npm_config_cache, which would point npm at the real cache.
+					'unset npm_config_cache NPM_CONFIG_CACHE; cache="$(npm config get cache)" && echo "cache=$cache" && mkdir -p "$cache/_cacache" && echo ok > "$cache/_cacache/entry"',
 			},
 			{ cwd },
 		);

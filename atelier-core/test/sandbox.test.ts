@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	agentPolicy,
+	INSIDE_SANDBOX,
 	NOT_AVAILABLE_ON_PLATFORM,
 	Sandbox,
 	type SandboxManagerLike,
@@ -212,6 +213,16 @@ describe("Sandbox status", () => {
 		expect(calls.initialize).toEqual([]);
 		await expect(sandbox.wrap("ls", { policy: "agent", ...SESSION })).rejects.toThrow(/sandbox not available/);
 		expect(calls.wrap).toEqual([]);
+	});
+
+	it("is unavailable inside another sandbox, which macOS cannot nest, without touching the library", async () => {
+		const { manager, calls } = fakeManager();
+		const sandbox = new Sandbox({ platform: "darwin", manager, insideSandbox: () => true });
+		expect(await sandbox.status()).toEqual({ available: false, reason: INSIDE_SANDBOX });
+		expect(INSIDE_SANDBOX).toBe(
+			"already inside a sandbox, and macOS cannot nest them: commands stay confined by the outer one",
+		);
+		expect(calls.initialize).toEqual([]);
 	});
 
 	it("is unavailable when the library does not support the platform", async () => {

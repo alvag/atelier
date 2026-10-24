@@ -23,8 +23,11 @@ import { REFUTER_INSTRUCTION, VALIDATOR_INSTRUCTION } from "../src/review/roles.
 import { VERIFIER_INSTRUCTION, VERIFIER_INSTRUCTION_WITHOUT_BASH } from "../src/review/verifier.ts";
 import { reviewEnabled } from "../src/server/rpc-server.ts";
 import type { SubagentDefinition } from "../src/subagents/definitions.ts";
-import { Sandbox } from "../src/tools/sandbox.ts";
+import { isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
 import { defineTool } from "../src/tools/types.ts";
+
+/** Inside a sandbox (Atelier running its own tests), the verifier's real sandbox cannot start: those tests need one. */
+const NESTED = isInsideSandbox();
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -1134,21 +1137,24 @@ describe("independent verification", () => {
 	});
 
 	describe("where it works", () => {
-		it("gets read, grep and bash, in a temporary directory that holds the candidate and the base, removed afterwards", async () => {
-			const roles = new RoleBackend(
-				verifying(vreport()),
-				probing("cat candidate/a.ts; echo ---; cat base/a.ts; ls -A candidate | tr '\\n' ' '"),
-			);
-			const s = await start({ turns: [VERIFY_TURN], roles, consent: "declined" });
-			await s.send("edit");
-			const [run] = verifierRuns(roles);
-			expect(run?.tools).toEqual(["read", "grep", "bash"]);
-			expect(basename(run?.cwd ?? "")).toMatch(/^atelier-verify-/);
-			expect(run?.cwd).not.toBe(s.cwd);
-			expect(roles.probed[0]?.output).toContain("base\ncandidate\n---\nbase\n");
-			expect(roles.probed[0]?.output).not.toContain(".git");
-			await expect(stat(run?.cwd ?? "")).rejects.toThrow();
-		});
+		it.skipIf(NESTED)(
+			"gets read, grep and bash, in a temporary directory that holds the candidate and the base, removed afterwards",
+			async () => {
+				const roles = new RoleBackend(
+					verifying(vreport()),
+					probing("cat candidate/a.ts; echo ---; cat base/a.ts; ls -A candidate | tr '\\n' ' '"),
+				);
+				const s = await start({ turns: [VERIFY_TURN], roles, consent: "declined" });
+				await s.send("edit");
+				const [run] = verifierRuns(roles);
+				expect(run?.tools).toEqual(["read", "grep", "bash"]);
+				expect(basename(run?.cwd ?? "")).toMatch(/^atelier-verify-/);
+				expect(run?.cwd).not.toBe(s.cwd);
+				expect(roles.probed[0]?.output).toContain("base\ncandidate\n---\nbase\n");
+				expect(roles.probed[0]?.output).not.toContain(".git");
+				await expect(stat(run?.cwd ?? "")).rejects.toThrow();
+			},
+		);
 
 		it("gets no bash without a sandbox, and is told its requirements stay unverified", async () => {
 			const roles = new RoleBackend(verifying(vreport()), probing("echo should-not-run"));
@@ -1196,7 +1202,7 @@ describe("independent verification", () => {
 			expect(await stat(join(s.cwd, "scratch.txt")).catch(() => undefined)).toBeUndefined();
 		});
 
-		it("links the project's installed dependencies into the copy and tells the verifier", async () => {
+		it.skipIf(NESTED)("links the project's installed dependencies into the copy and tells the verifier", async () => {
 			const cwd = await repo();
 			await writeFile(join(cwd, ".gitignore"), "node_modules\n");
 			await mkdir(join(cwd, "node_modules/dep"), { recursive: true });
@@ -1232,93 +1238,102 @@ describe("independent verification", () => {
 	});
 
 	describe("what it may do", () => {
-		it("runs bash without asking, with the filtered environment and package managers kept offline", async () => {
-			const previous = process.env.ANTHROPIC_API_KEY;
-			process.env.ANTHROPIC_API_KEY = "sk-secret";
-			try {
-				const roles = new RoleBackend(
-					verifying(vreport()),
-					probing(
-						'echo "[$npm_config_offline][$NO_UPDATE_NOTIFIER][$ANTHROPIC_API_KEY]"; echo "[$npm_config_registry]"',
-					),
-				);
-				const approvals: unknown[] = [];
+		it.skipIf(NESTED)(
+			"runs bash without asking, with the filtered environment and package managers kept offline",
+			async () => {
+				const previous = process.env.ANTHROPIC_API_KEY;
+				process.env.ANTHROPIC_API_KEY = "sk-secret";
+				try {
+					const roles = new RoleBackend(
+						verifying(vreport()),
+						probing(
+							'echo "[$npm_config_offline][$NO_UPDATE_NOTIFIER][$ANTHROPIC_API_KEY]"; echo "[$npm_config_registry]"',
+						),
+					);
+					const approvals: unknown[] = [];
+					const s = await start({
+						turns: [VERIFY_TURN],
+						roles,
+						consent: "declined",
+						extra: {
+							approve: async (request) => {
+								approvals.push(request);
+								return false;
+							},
+						},
+					});
+					const events = await s.send("edit");
+					expect(roles.probed[0]).toMatchObject({ ok: true });
+					expect(roles.probed[0]?.output).toContain("[true][1][]");
+					expect(roles.probed[0]?.output).toMatch(/\[http:\/\/127\.0\.0\.1:\d+\/?\]/);
+					expect(approvals).toEqual([]);
+					expect(ofType(events, "approval_requested")).toEqual([]);
+				} finally {
+					if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+					else process.env.ANTHROPIC_API_KEY = previous;
+				}
+			},
+		);
+
+		it.skipIf(NESTED)(
+			"gets its mandate as instructions and the request, the declaration and the feature document as its prompt",
+			async () => {
+				const START = {
+					action: "start",
+					name: "approvals",
+					title: "Approvals",
+					header: "Make approvals need a keypress.",
+					specs: ['User, verbatim: "que la aprobación pida una tecla"'],
+					tasks: [{ title: "Read the key", specs: ["S1"], route: "inline" }],
+				};
+				const roles = new RoleBackend(verifying(vreport()), probing("cat feature/approvals.md"));
 				const s = await start({
-					turns: [VERIFY_TURN],
+					turns: [[call("feature", START), ...VERIFY_TURN]],
 					roles,
 					consent: "declined",
-					extra: {
-						approve: async (request) => {
-							approvals.push(request);
-							return false;
-						},
-					},
+					extra: { odd: true },
 				});
-				const events = await s.send("edit");
-				expect(roles.probed[0]).toMatchObject({ ok: true });
-				expect(roles.probed[0]?.output).toContain("[true][1][]");
-				expect(roles.probed[0]?.output).toMatch(/\[http:\/\/127\.0\.0\.1:\d+\/?\]/);
-				expect(approvals).toEqual([]);
-				expect(ofType(events, "approval_requested")).toEqual([]);
-			} finally {
-				if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
-				else process.env.ANTHROPIC_API_KEY = previous;
-			}
-		});
-
-		it("gets its mandate as instructions and the request, the declaration and the feature document as its prompt", async () => {
-			const START = {
-				action: "start",
-				name: "approvals",
-				title: "Approvals",
-				header: "Make approvals need a keypress.",
-				specs: ['User, verbatim: "que la aprobación pida una tecla"'],
-				tasks: [{ title: "Read the key", specs: ["S1"], route: "inline" }],
-			};
-			const roles = new RoleBackend(verifying(vreport()), probing("cat feature/approvals.md"));
-			const s = await start({
-				turns: [[call("feature", START), ...VERIFY_TURN]],
-				roles,
-				consent: "declined",
-				extra: { odd: true },
-			});
-			await s.send("que la aprobación pida una tecla");
-			const [run] = verifierRuns(roles);
-			expect(run?.prompt).toContain("<request>\nque la aprobación pida una tecla\n</request>");
-			expect(run?.prompt).toContain("- item 2: guards the bash approval");
-			expect(run?.prompt).toContain("feature/approvals.md");
-			expect(roles.probed[0]?.output).toContain("Approvals");
-		});
+				await s.send("que la aprobación pida una tecla");
+				const [run] = verifierRuns(roles);
+				expect(run?.prompt).toContain("<request>\nque la aprobación pida una tecla\n</request>");
+				expect(run?.prompt).toContain("- item 2: guards the bash approval");
+				expect(run?.prompt).toContain("feature/approvals.md");
+				expect(roles.probed[0]?.output).toContain("Approvals");
+			},
+		);
 	});
 
 	describe("rounds", () => {
-		it("hands blocking defects to the agent once, freezes the corrected work, and verifies again", async () => {
-			const roles = new RoleBackend(verifying(vreport([vdefect()]), vreport()), probing("cat candidate/a.ts"));
-			const s = await start({ turns: [VERIFY_TURN, FIX_TURN], roles, consent: "declined" });
-			const events = await s.send("edit");
-			expect(s.main.prompts).toHaveLength(2);
-			expect(s.main.prompts[1]).toContain("- D1 [blocker] A pasted y approves the command");
-			expect(s.main.prompts[1]).toContain("reproduce: printf");
-			expect(verifierRuns(roles)).toHaveLength(2);
-			expect(verifierRuns(roles)[1]?.prompt).toContain("Round 2 of 2.");
-			expect(verifierRuns(roles)[1]?.prompt).toContain("- D1 [blocker] A pasted y approves the command");
-			expect(roles.probed.map((p) => p.output)).toEqual(
-				["base\ncandidate\n", "base\nfixed\n"].map((t) => expect.stringContaining(t)),
-			);
-			const rounds = ofType(events, "verification_round");
-			expect(rounds.map((r) => [r.round, r.ok, r.blocking, r.correcting])).toEqual([
-				[1, true, ["D1"], true],
-				[2, true, [], false],
-			]);
-			expect(rounds[0]?.defects[0]).toMatchObject({ id: "D1", severity: "blocker", onBase: false });
-			expect(rounds[0]?.requirements[0]).toMatchObject({ id: "R1", verdict: "met" });
-			expect(ofType(events, "verification_finished")[0]).toMatchObject({
-				outcome: "corrected",
-				rounds: 2,
-				openDefects: [],
-			});
-			expect(events.filter((event) => event.type === "turn_finished" && event.agent === undefined)).toHaveLength(1);
-		});
+		it.skipIf(NESTED)(
+			"hands blocking defects to the agent once, freezes the corrected work, and verifies again",
+			async () => {
+				const roles = new RoleBackend(verifying(vreport([vdefect()]), vreport()), probing("cat candidate/a.ts"));
+				const s = await start({ turns: [VERIFY_TURN, FIX_TURN], roles, consent: "declined" });
+				const events = await s.send("edit");
+				expect(s.main.prompts).toHaveLength(2);
+				expect(s.main.prompts[1]).toContain("- D1 [blocker] A pasted y approves the command");
+				expect(s.main.prompts[1]).toContain("reproduce: printf");
+				expect(verifierRuns(roles)).toHaveLength(2);
+				expect(verifierRuns(roles)[1]?.prompt).toContain("Round 2 of 2.");
+				expect(verifierRuns(roles)[1]?.prompt).toContain("- D1 [blocker] A pasted y approves the command");
+				expect(roles.probed.map((p) => p.output)).toEqual(
+					["base\ncandidate\n", "base\nfixed\n"].map((t) => expect.stringContaining(t)),
+				);
+				const rounds = ofType(events, "verification_round");
+				expect(rounds.map((r) => [r.round, r.ok, r.blocking, r.correcting])).toEqual([
+					[1, true, ["D1"], true],
+					[2, true, [], false],
+				]);
+				expect(rounds[0]?.defects[0]).toMatchObject({ id: "D1", severity: "blocker", onBase: false });
+				expect(rounds[0]?.requirements[0]).toMatchObject({ id: "R1", verdict: "met" });
+				expect(ofType(events, "verification_finished")[0]).toMatchObject({
+					outcome: "corrected",
+					rounds: 2,
+					openDefects: [],
+				});
+				expect(events.filter((event) => event.type === "turn_finished" && event.agent === undefined)).toHaveLength(1);
+			},
+		);
 
 		it("hands an unmet requirement to the agent like a blocking defect, with its evidence", async () => {
 			const unmet = { ...vrequirement, verdict: "unmet", evidence: "a pasted y still approved it" };
@@ -1528,7 +1543,7 @@ describe("independent M9 specification probes", () => {
 });
 
 describe("independent M9 dependency-write isolation", () => {
-	it.each(["success", "failure", "interrupt"])("S5 preserves dependencies after %s", async (mode) => {
+	it.skipIf(NESTED).each(["success", "failure", "interrupt"])("S5 preserves dependencies after %s", async (mode) => {
 		const cwd = await repo();
 		await writeFile(join(cwd, ".gitignore"), "node_modules\n");
 		await mkdir(join(cwd, "node_modules/dep"), { recursive: true });

@@ -144,6 +144,7 @@ As root (uid 0), the CLI and `atelier-core serve` refuse to start (exit 1) unles
 - `git config` and `git branch -u` fail inside `bash` (the library protects `.git/config`).
 - The verifier has no `git` (its Xcode shim needs a cache in your per-user temporary folder, which the verifier cannot write); it works on the copies of the files.
 - Each command costs about 16 ms more (about 63 ms the first one).
+- macOS cannot nest sandboxes. An Atelier that already runs inside one (Atelier running its own tests from a sandboxed command) finds out by trying the smallest sandbox there is and reads macOS's refusal; it then reports `already inside a sandbox, and macOS cannot nest them: commands stay confined by the outer one` and takes the unavailable path (every command asks, the verifier gets no `bash`). Nothing in the environment can claim this. The tests that need a real sandbox are skipped there and run in a normal `pnpm check`.
 - The library is "Beta Research Preview" and global to the process; the sandbox is not reset until the process exits.
 
 ## Working on Atelier with Atelier

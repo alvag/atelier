@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,6 +21,26 @@ import {
 /** What isolates the commands, as clients show it. */
 export const SANDBOX_MECHANISM = "macOS seatbelt";
 export const NOT_AVAILABLE_ON_PLATFORM = "sandbox not available on this platform";
+export const INSIDE_SANDBOX =
+	"already inside a sandbox, and macOS cannot nest them: commands stay confined by the outer one";
+
+/**
+ * Whether this process already runs inside a macOS sandbox, as when Atelier
+ * runs its own tests from a sandboxed command: macOS refuses to apply a second
+ * profile. Probed with the smallest profile there is, never trusted from the
+ * environment, so nothing outside a sandbox can claim to be inside one. Only
+ * macOS's own refusal (`sandbox_apply: Operation not permitted`) counts: any
+ * other failure leaves the question to the library's dependency check.
+ */
+export function isInsideSandbox(): boolean {
+	if (process.platform !== "darwin") return false;
+	const probe = spawnSync("/usr/bin/sandbox-exec", ["-p", "(version 1)(allow default)", "/usr/bin/true"], {
+		encoding: "utf8",
+		stdio: ["ignore", "ignore", "pipe"],
+		timeout: 5000,
+	});
+	return probe.status !== 0 && /sandbox_apply: Operation not permitted/.test(probe.stderr ?? "");
+}
 /** Why there is no sandbox when the user turned it off. */
 export const SANDBOX_OFF = "sandbox turned off for this session";
 
@@ -163,6 +184,8 @@ export interface SandboxOptions {
 	disabled?: string;
 	/** Defaults to the current platform; tests set it to exercise the unavailable path. */
 	platform?: NodeJS.Platform;
+	/** Defaults to probing macOS, unless a manager is given (tests); tests set it to exercise the nested path. */
+	insideSandbox?: () => boolean;
 	manager?: SandboxManagerLike;
 	/** Defaults to the user's home directory; tests point it at a fake one. */
 	home?: string;
@@ -217,6 +240,8 @@ export class Sandbox {
 		if (this.#options.disabled !== undefined) return { available: false, reason: this.#options.disabled };
 		const platform = this.#options.platform ?? process.platform;
 		if (platform !== "darwin") return { available: false, reason: NOT_AVAILABLE_ON_PLATFORM };
+		const inside = this.#options.insideSandbox ?? (this.#options.manager ? () => false : isInsideSandbox);
+		if (inside()) return { available: false, reason: INSIDE_SANDBOX };
 		try {
 			const manager = this.#options.manager ?? (await defaultManager());
 			if (!manager.isSupportedPlatform()) return { available: false, reason: NOT_AVAILABLE_ON_PLATFORM };
