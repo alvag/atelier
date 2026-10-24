@@ -16,6 +16,7 @@ import {
 	SandboxConfigError,
 	Session,
 	SYSTEM_PROMPT_APPEND,
+	type ToolDefinition,
 	VERSION,
 	visibleText,
 } from "@atelier/core";
@@ -50,6 +51,8 @@ export interface CliIO {
 	exit?: (code: number) => void;
 	/** Delay before that forced exit; defaults to FORCE_EXIT_MS. */
 	forceExitMs?: number;
+	/** The tools sessions get; tests pass their own. Defaults to the core's. */
+	tools?: readonly ToolDefinition[];
 }
 
 /** Connects long-term memory for the working directory; may fail, and then the session runs without it. */
@@ -232,7 +235,7 @@ export async function run(
 		...(io.home === undefined ? {} : { projectInstructions: { home: io.home } }),
 		cwd: args.cwd,
 		...(args.model === undefined ? {} : { model: args.model }),
-		tools: coreTools,
+		tools: io.tools ?? coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
 		autoApprove: args.yes,
 		...(args.noSandbox ? { noSandbox: true } : {}),

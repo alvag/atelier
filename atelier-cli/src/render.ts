@@ -37,6 +37,8 @@ function tokensLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): st
 	return `tokens: ${parts.join(" · ")}`;
 }
 
+const UNSANDBOXED_EFFECT = "every command asks for approval and --yes does not apply";
+
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 function stepText(step: ReviewStep): string {
@@ -65,6 +67,8 @@ export class Renderer {
 	readonly #options: RendererOptions;
 	readonly #tools = new Map<string, string>();
 	#atLineStart = true;
+	/** The turn in which the "not sandboxed" line was printed: its sandbox warning would say the same. */
+	#unsandboxedTurn: string | undefined;
 	/**
 	 * Turns, counting the current one, in which a cache miss is the expected
 	 * result of a compaction that rewrote the history on purpose.
@@ -118,6 +122,7 @@ export class Renderer {
 				this.#tools.delete(event.callId);
 				const mark = event.ok ? this.#style("green", "✓") : this.#style("red", "✗");
 				this.#line(`${CHILD}${this.#style("cyan", "▸")} ${tool} ${event.summary} ${mark}`);
+				this.#blocked(event.blocked, `${CHILD}  `);
 				return;
 			}
 			case "turn_finished":
@@ -167,6 +172,11 @@ export class Renderer {
 		if (event.kept > 0) parts.push(`${plural(event.kept, "message")} kept`);
 		if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
 		this.#line(this.#style("dim", `◇ context compacted: ${parts.join(" · ")}`));
+	}
+
+	/** What the sandbox blocked in a call, one line per cause under the tool line. */
+	#blocked(causes: readonly string[] | undefined, indent: string): void {
+		for (const cause of causes ?? []) this.#line(this.#style("yellow", `${indent}sandbox blocked: ${cause}`));
 	}
 
 	#warn(text: string): void {
@@ -290,10 +300,17 @@ export class Renderer {
 			case "text_delta":
 				this.write(event.text);
 				return;
+			case "sandbox_status":
+				if (event.sandboxed) {
+					this.#line(this.#style("dim", `bash: sandboxed (${event.mechanism ?? "sandbox"})`));
+					return;
+				}
+				this.#unsandboxedTurn = event.turnId;
+				this.#warn(`bash: not sandboxed (${event.reason ?? "unavailable"}): ${UNSANDBOXED_EFFECT}`);
+				return;
 			case "sandbox_warning":
-				this.#warn(
-					`warning: bash runs without a sandbox (${event.reason}): every command asks for approval and --yes does not apply`,
-				);
+				if (this.#unsandboxedTurn === event.turnId) return;
+				this.#warn(`warning: bash runs without a sandbox (${event.reason}): ${UNSANDBOXED_EFFECT}`);
 				return;
 			case "thinking_delta":
 			case "approval_requested":
@@ -308,6 +325,7 @@ export class Renderer {
 				const mark = event.ok ? this.#style("green", "✓") : this.#style("red", "✗");
 				const note = event.truncated ? this.#style("dim", " (truncated)") : "";
 				this.#line(`${this.#style("cyan", "▸")} ${tool} ${event.summary} ${mark}${note}`);
+				this.#blocked(event.blocked, "  ");
 				return;
 			}
 			case "turn_finished":

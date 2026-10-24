@@ -2,7 +2,7 @@ import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
 import { describe, expect, it } from "vitest";
 import { Renderer } from "../src/render.ts";
 
-function render(bodies: AtelierEventBody[], cwd?: string) {
+function render(bodies: (AtelierEventBody & { parentCallId?: string; agent?: string })[], cwd?: string) {
 	let stdout = "";
 	let stderr = "";
 	const renderer = new Renderer({
@@ -43,6 +43,78 @@ describe("Renderer", () => {
 			].join("\n"),
 		);
 		expect(stderr).toBe("");
+	});
+
+	describe("the sandbox", () => {
+		it("says on stdout that bash is sandboxed", () => {
+			const { stdout, stderr } = render([{ type: "sandbox_status", sandboxed: true, mechanism: "macOS seatbelt" }]);
+			expect(stdout).toBe("bash: sandboxed (macOS seatbelt)\n");
+			expect(stderr).toBe("");
+		});
+
+		it("warns on stderr, with the reason, that bash is not sandboxed", () => {
+			const { stdout, stderr } = render([
+				{ type: "sandbox_status", sandboxed: false, reason: "sandbox not available on this platform" },
+			]);
+			expect(stdout).toBe("");
+			expect(stderr).toBe(
+				"bash: not sandboxed (sandbox not available on this platform): every command asks for approval and --yes does not apply\n",
+			);
+		});
+
+		it("does not repeat the warning in the turn that already said it, but says it in the next turns", () => {
+			let stderr = "";
+			const renderer = new Renderer({ stdout: () => {}, stderr: (s) => (stderr += s), color: false });
+			const events: [string, AtelierEventBody][] = [
+				["t1", { type: "sandbox_status", sandboxed: false, reason: "r" }],
+				["t1", { type: "sandbox_warning", reason: "r" }],
+				["t2", { type: "sandbox_warning", reason: "r" }],
+			];
+			for (const [i, [turnId, body]] of events.entries())
+				renderer.render({ ...body, seq: i + 1, turnId } as AtelierEvent);
+			expect(stderr).toBe(
+				[
+					"bash: not sandboxed (r): every command asks for approval and --yes does not apply",
+					"warning: bash runs without a sandbox (r): every command asks for approval and --yes does not apply",
+					"",
+				].join("\n"),
+			);
+		});
+
+		it("lists what the sandbox blocked under the tool line, also for a subagent", () => {
+			const { stdout } = render([
+				{ type: "tool_call_started", callId: "c1", tool: "bash", input: {} },
+				{
+					type: "tool_call_finished",
+					callId: "c1",
+					ok: false,
+					summary: "touch /x (exit 1)",
+					truncated: false,
+					blocked: ["write to /x (not an allowed write path)", "and 2 more"],
+				},
+				{ type: "tool_call_started", callId: "c2", tool: "bash", input: {}, parentCallId: "p", agent: "worker" },
+				{
+					type: "tool_call_finished",
+					callId: "c2",
+					ok: false,
+					summary: "cat /k (exit 1)",
+					truncated: false,
+					blocked: ["read of /k (denied by the sandbox policy)"],
+					parentCallId: "p",
+					agent: "worker",
+				},
+			]);
+			expect(stdout).toBe(
+				[
+					"▸ bash touch /x (exit 1) ✗",
+					"  sandbox blocked: write to /x (not an allowed write path)",
+					"  sandbox blocked: and 2 more",
+					"  │ ▸ bash cat /k (exit 1) ✗",
+					"  │   sandbox blocked: read of /k (denied by the sandbox policy)",
+					"",
+				].join("\n"),
+			);
+		});
 	});
 
 	it("warns when the session is not using a subscription", () => {

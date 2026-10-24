@@ -5,11 +5,15 @@ import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import {
 	type AtelierEventBody,
+	coreTools,
+	createBashTool,
 	FakeBackend,
 	FakeMemory,
 	type FakeStep,
 	MemoryUnavailableError,
 	MissingApiKeyError,
+	Sandbox,
+	type SandboxManagerLike,
 } from "@atelier/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../src/run.ts";
@@ -25,6 +29,20 @@ beforeEach(async () => {
 afterEach(async () => {
 	await rm(cwd, { recursive: true, force: true });
 });
+
+/** The core's tools with a `bash` whose sandbox is there and wraps nothing, so the output does not depend on the platform. */
+const tools = (() => {
+	const manager: SandboxManagerLike = {
+		isSupportedPlatform: () => true,
+		checkDependencies: () => ({ errors: [], warnings: [] }),
+		initialize: async () => {},
+		wrapWithSandbox: async (command) => command,
+		cleanupAfterCommand: () => {},
+		reset: async () => {},
+	};
+	const bash = createBashTool({ sandbox: new Sandbox({ platform: "darwin", manager }) });
+	return coreTools.map((tool) => (tool.name === "bash" ? bash : tool));
+})();
 
 function harness(
 	turns: FakeStep[][],
@@ -72,6 +90,7 @@ function harness(
 			stderr += s;
 		},
 		cwd,
+		tools,
 		...(options.uid === undefined ? {} : { uid: options.uid }),
 		...(options.home === undefined ? {} : { home: options.home }),
 		color: false,
@@ -366,7 +385,7 @@ describe("run", () => {
 			expect(await run([], h.io, h.createBackend)).toBe(0);
 			expect(h.backend.prompts).toEqual(["first line\nsecond line"]);
 			expect(h.rawModes).toEqual([true, false]);
-			expect(h.out()).toContain("\x1b[?2004h> first line\nsecond line\ndone");
+			expect(h.out()).toContain("\x1b[?2004h> first line\nsecond line\nbash: sandboxed (macOS seatbelt)\ndone");
 			expect(h.out().endsWith("\x1b[?2004l")).toBe(true);
 			expect(h.out()).not.toContain("\x1b[200~");
 		});
@@ -751,9 +770,11 @@ describe("M9 baseline non-TTY output", () => {
 		);
 		const code = await run(interactive ? ["--no-review"] : ["--no-review", "say hi"], h.io, h.createBackend);
 		const tokens = "tokens: input 1 · output 1 · cache read 0 · cache write 0 · cache 0%\n";
+		// Since M10 the first turn also says whether bash is sandboxed, once.
+		const sandbox = "bash: sandboxed (macOS seatbelt)\n";
 		expect({ code, stdout: h.out(), stderr: h.err() }).toEqual({
 			code: 0,
-			stdout: interactive ? `first answer\n${tokens}second answer\n${tokens}` : `hello\n${tokens}`,
+			stdout: interactive ? `${sandbox}first answer\n${tokens}second answer\n${tokens}` : `${sandbox}hello\n${tokens}`,
 			stderr: "no review: Review is off (--no-review or ATELIER_REVIEW=off).\n",
 		});
 	});
@@ -769,9 +790,10 @@ describe("bash outside the sandbox", () => {
 		await run(["--no-sandbox", "--yes", "x"], h.io, h.createBackend);
 		expect(h.out().match(/Run this command\?/g)).toHaveLength(2);
 		expect(h.backend.toolResults.map((result) => result.ok)).toEqual([true, false]);
-		const warning = `warning: bash runs without a sandbox (${SANDBOX_OFF}): every command asks for approval and --yes does not apply\n`;
-		expect(h.err()).toContain(warning);
-		expect(h.err().match(/warning: bash runs without a sandbox/g)).toHaveLength(1);
+		// The first turn says it once, in the status line; the warning that follows would repeat it.
+		const status = `bash: not sandboxed (${SANDBOX_OFF}): every command asks for approval and --yes does not apply\n`;
+		expect(h.err()).toContain(status);
+		expect(h.err().match(/not sandboxed|without a sandbox/g)).toHaveLength(1);
 	});
 
 	it("reads ATELIER_SANDBOX=off like --no-sandbox", async () => {
@@ -782,7 +804,7 @@ describe("bash outside the sandbox", () => {
 		});
 		await run(["--yes", "x"], h.io, h.createBackend);
 		expect(h.out()).toContain("Run this command?\n  echo one\n[y/N] ");
-		expect(h.err()).toContain(`warning: bash runs without a sandbox (${SANDBOX_OFF})`);
+		expect(h.err()).toContain(`bash: not sandboxed (${SANDBOX_OFF})`);
 	});
 
 	it("denies a command that must be asked when there is no terminal, --yes or not, and says why", async () => {
@@ -794,6 +816,17 @@ describe("bash outside the sandbox", () => {
 			"bash command needs approval and there is no terminal to ask; --yes does not apply because the sandbox is off or unavailable: rm marker\n",
 		);
 		expect(await readFile(join(cwd, "marker"), "utf8")).toBe("");
+	});
+
+	it("warns again in the next turns, which the status line did not cover", async () => {
+		const turn = [bash({ command: "echo one" }), { event: finished }];
+		const h = harness([turn, turn], { input: ["first", "second"] });
+		await run(["--no-sandbox", "--no-review"], h.io, h.createBackend);
+		const effect = "every command asks for approval and --yes does not apply";
+		expect(h.err().match(new RegExp(`^bash: not sandboxed \\(${SANDBOX_OFF}\\): ${effect}$`, "gm"))).toHaveLength(1);
+		expect(
+			h.err().match(new RegExp(`^warning: bash runs without a sandbox \\(${SANDBOX_OFF}\\): ${effect}$`, "gm")),
+		).toHaveLength(1);
 	});
 
 	const leave = { command: "echo outside", unsandboxed: true, reason: "pnpm install needs the network" };
