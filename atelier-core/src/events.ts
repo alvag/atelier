@@ -108,7 +108,11 @@ export type AtelierEventBody =
 			summary: string;
 			truncated: boolean;
 			fullOutputPath?: string;
+			/** What the sandbox blocked in the call, as short causes (`write to /x (...)`); absent when it reported nothing. */
+			blocked?: string[];
 	  }
+	/** Sent first in a session's first turn when `bash` exists: whether its commands run in the sandbox, with what, or why not. */
+	| { type: "sandbox_status"; sandboxed: boolean; mechanism?: string; reason?: string }
 	/** `bash` runs without the sandbox, so every command asks: said once per turn, before the first question. */
 	| { type: "sandbox_warning"; reason: string }
 	/** `reason`: the agent asked to run the command outside the sandbox, and says why. */

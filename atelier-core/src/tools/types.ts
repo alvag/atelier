@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { SandboxStatus } from "./sandbox.ts";
 
 export interface ToolContext {
 	/** Absolute working directory; every path a tool touches must stay inside it. */
@@ -30,6 +31,8 @@ export interface ToolOutcome {
 	summary: string;
 	truncated: boolean;
 	fullOutputPath?: string;
+	/** What the sandbox blocked in the call, as short causes; absent when it reported nothing. */
+	blocked?: string[];
 }
 
 /** A tool as the core and every backend see it: input is validated before it reaches `execute`. */
@@ -42,6 +45,8 @@ export interface ToolDefinition {
 	/** Decides before the call runs; a tool without it only has `approvalCommand`. */
 	gate?(input: unknown, context: ToolContext): Promise<ToolGate>;
 	execute(input: unknown, context: ToolContext): Promise<ToolOutcome>;
+	/** Whether the tool's commands run in the sandbox; only the main agent's `bash` has it. Does not run a command. */
+	sandboxStatus?(context: ToolContext): Promise<SandboxStatus>;
 }
 
 export interface ToolSpec<Shape extends z.ZodRawShape> {
@@ -51,6 +56,7 @@ export interface ToolSpec<Shape extends z.ZodRawShape> {
 	approvalCommand?: (input: z.output<z.ZodObject<Shape>>) => string | undefined;
 	gate?: (input: z.output<z.ZodObject<Shape>>, context: ToolContext) => Promise<ToolGate>;
 	execute: (input: z.output<z.ZodObject<Shape>>, context: ToolContext) => Promise<ToolOutcome>;
+	sandboxStatus?: (context: ToolContext) => Promise<SandboxStatus>;
 }
 
 export class ToolInputError extends Error {
@@ -65,6 +71,7 @@ export function defineTool<Shape extends z.ZodRawShape>(spec: ToolSpec<Shape>): 
 		return result.data;
 	};
 	const gate = spec.gate;
+	const sandboxStatus = spec.sandboxStatus;
 	return {
 		name: spec.name,
 		description: spec.description,
@@ -72,5 +79,6 @@ export function defineTool<Shape extends z.ZodRawShape>(spec: ToolSpec<Shape>): 
 		approvalCommand: (input) => spec.approvalCommand?.(parse(input)),
 		...(gate ? { gate: async (input: unknown, context: ToolContext) => gate(parse(input), context) } : {}),
 		execute: async (input, context) => spec.execute(parse(input), context),
+		...(sandboxStatus ? { sandboxStatus } : {}),
 	};
 }

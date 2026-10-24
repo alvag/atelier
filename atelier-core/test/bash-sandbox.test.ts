@@ -176,6 +176,60 @@ describe.skipIf(!onMac)("the agent's bash in the sandbox", () => {
 	});
 });
 
+/**
+ * Runs `command` until its result names a cause. The library reads the file
+ * denials from the system log, which can lag in the first seconds after it
+ * starts, so the same denied command is repeated for a while; the cause itself
+ * is what is under test, not how fast the log answers.
+ */
+async function untilBlocked(tool: ReturnType<typeof createBashTool>, command: string, workDir: string) {
+	let result = await tool.execute({ command }, { cwd: workDir });
+	for (let attempt = 0; attempt < 30 && !result.output.includes("[sandbox blocked:"); attempt++) {
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		result = await tool.execute({ command }, { cwd: workDir });
+	}
+	return result;
+}
+
+describe.skipIf(!onMac)("what the sandbox says it blocked", () => {
+	it("names the file a command tried to write", async () => {
+		const result = await untilBlocked(createBashTool({ sandbox }), `echo x > ${outside}/file.txt`, cwd);
+		expect(result.ok).toBe(false);
+		expect(result.output).toContain(`[sandbox blocked: write to ${outside}/file.txt (not an allowed write path)]`);
+		expect(result.blocked).toContain(`write to ${outside}/file.txt (not an allowed write path)`);
+	}, 30_000);
+
+	it("names the secret a command tried to read", async () => {
+		const result = await untilBlocked(createBashTool({ sandbox }), `cat ${home}/.ssh/id_rsa`, cwd);
+		expect(result.output).toContain(`[sandbox blocked: read of ${home}/.ssh/id_rsa (denied by the sandbox policy)]`);
+		expect(result.output).not.toContain("FAKE-PRIVATE-KEY");
+	}, 30_000);
+
+	it("names the connection the verifier tried to make", async () => {
+		const server = await serve();
+		try {
+			const verifier = createBashTool({ withoutApproval: true, policy: "verifier", sandbox });
+			const dir = join(base, "verify");
+			await mkdir(dir, { recursive: true });
+			const result = await untilBlocked(
+				verifier,
+				`curl -sS --max-time 3 http://127.0.0.1:${port(server.server)}/`,
+				dir,
+			);
+			expect(result.output).toMatch(/\[sandbox blocked: network connect to [^ ]+ \(no network for the verifier\)\]/);
+			expect(server.hits()).toBe(0);
+		} finally {
+			server.server.close();
+		}
+	}, 30_000);
+
+	it("adds nothing to a command that was not blocked", async () => {
+		const result = await createBashTool({ sandbox }).execute({ command: "echo fine; exit 2" }, { cwd });
+		expect(result.output).toBe("fine\n\n[exit code 2]");
+		expect(result.blocked).toBeUndefined();
+	});
+});
+
 describe.skipIf(!onMac)("the sandbox configuration files", () => {
 	const agent = () => createBashTool({ sandbox });
 	const run = (command: string) => agent().execute({ command }, { cwd });

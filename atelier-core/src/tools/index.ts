@@ -10,10 +10,13 @@ export { createGrepTool, grepTool } from "./grep.ts";
 export { PathOutsideError, resolveInside } from "./paths.ts";
 export { readTool } from "./read.ts";
 export {
+	SANDBOX_MECHANISM,
 	SANDBOX_OFF,
 	Sandbox,
+	type SandboxManagerLike,
 	type SandboxPolicyName,
 	type SandboxStatus,
+	type SandboxViolation,
 	sandbox,
 	sandboxEnabled,
 } from "./sandbox.ts";

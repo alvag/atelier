@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
+import { describeViolations } from "./sandbox-blocks.ts";
 import { loadSandboxAdditions, type SandboxAdditions } from "./sandbox-config.ts";
 import {
 	libraryProtectedPaths,
@@ -16,6 +17,8 @@ import {
  * reports itself unavailable and the caller decides what that means.
  */
 
+/** What isolates the commands, as clients show it. */
+export const SANDBOX_MECHANISM = "macOS seatbelt";
 export const NOT_AVAILABLE_ON_PLATFORM = "sandbox not available on this platform";
 /** Why there is no sandbox when the user turned it off. */
 export const SANDBOX_OFF = "sandbox turned off for this session";
@@ -33,17 +36,26 @@ export type SandboxPolicyName = "agent" | "verifier";
 /** What the library takes per command: the parts of its configuration that differ from the session-wide one. */
 export type SandboxPolicy = Pick<SandboxRuntimeConfig, "filesystem"> & Partial<Pick<SandboxRuntimeConfig, "network">>;
 
+/** A denial the library recorded: `command` is the text of the command that was wrapped. */
+export interface SandboxViolation {
+	line: string;
+	command?: string;
+	timestamp: Date;
+}
+
 /** The part of the library's `SandboxManager` this module uses; tests pass a fake. */
 export interface SandboxManagerLike {
 	isSupportedPlatform(): boolean;
 	checkDependencies(): { errors: string[]; warnings: string[] };
-	initialize(config: SandboxRuntimeConfig): Promise<void>;
+	initialize(config: SandboxRuntimeConfig, askCallback?: undefined, enableLogMonitor?: boolean): Promise<void>;
 	wrapWithSandbox(
 		command: string,
 		binShell?: string,
 		customConfig?: Partial<SandboxRuntimeConfig>,
 		abortSignal?: AbortSignal,
 	): Promise<string>;
+	/** Where the library keeps the denials it saw; a fake without it reports none. */
+	getSandboxViolationStore?(): { getViolations(): SandboxViolation[] };
 	cleanupAfterCommand(): void;
 	reset(): Promise<void>;
 }
@@ -210,7 +222,8 @@ export class Sandbox {
 			if (!manager.isSupportedPlatform()) return { available: false, reason: NOT_AVAILABLE_ON_PLATFORM };
 			const { errors } = manager.checkDependencies();
 			if (errors.length > 0) return { available: false, reason: errors.join(", ") };
-			await manager.initialize(SESSION_CONFIG);
+			// The log monitor is what reports the file denials; the proxy reports the network ones on its own.
+			await manager.initialize(SESSION_CONFIG, undefined, true);
 			this.#manager = manager;
 			return { available: true };
 		} catch (error) {
@@ -235,6 +248,33 @@ export class Sandbox {
 					})
 				: verifierPolicy({ dir: cwd, nodePrefix: this.#options.nodePrefix ?? nodeInstallation() });
 		return this.#manager.wrapWithSandbox(command, "bash", config, signal);
+	}
+
+	/**
+	 * What the sandbox blocked in `command` since `since`: the library's
+	 * denials with that command text, recorded at or after `since`, described
+	 * as causes. The library cannot say which of two concurrent runs of the
+	 * same text a denial belongs to, and the log it reads the file denials
+	 * from can lag (or miss the first seconds after the start), so this is
+	 * best effort: it never reports a cause the library did not see.
+	 * Waits up to `graceMs` for the first one to arrive.
+	 */
+	async blocks(
+		command: string,
+		{ since, policy, graceMs = 0 }: { since: Date; policy: SandboxPolicyName; graceMs?: number },
+	): Promise<string[]> {
+		const store = this.#manager?.getSandboxViolationStore?.();
+		if (!store) return [];
+		const deadline = Date.now() + graceMs;
+		for (;;) {
+			const mine = store.getViolations().filter((v) => v.command === command && v.timestamp >= since);
+			const causes = describeViolations(
+				mine.map((v) => v.line),
+				policy,
+			);
+			if (causes.length > 0 || Date.now() >= deadline) return causes;
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
 	}
 
 	/** Call after each wrapped command has finished. */

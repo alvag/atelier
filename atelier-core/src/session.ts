@@ -20,7 +20,7 @@ import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
-import { SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
+import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
 import {
 	type ToolContext,
 	type ToolDefinition,
@@ -192,6 +192,19 @@ export class Session {
 		return session;
 	}
 
+	/** Whether `bash` runs in the sandbox, asked without running a command; undefined when the session has no such `bash`. */
+	#sandboxStatus(): Promise<AtelierEventBody> | undefined {
+		const tool = this.#options.tools.find((candidate) => candidate.sandboxStatus !== undefined);
+		if (!tool?.sandboxStatus) return undefined;
+		return tool
+			.sandboxStatus({ cwd: this.#options.cwd, ...(this.#options.noSandbox ? { sandboxOff: true } : {}) })
+			.then((status) =>
+				status.available
+					? { type: "sandbox_status", sandboxed: true, mechanism: SANDBOX_MECHANISM }
+					: { type: "sandbox_status", sandboxed: false, reason: status.reason },
+			);
+	}
+
 	/** What a compaction must not lose: the active feature and its task, the phase, and the memory of the first turn. */
 	#compactionState(): string | undefined {
 		const lines: string[] = [];
@@ -223,6 +236,9 @@ export class Session {
 			if (!this.#announced) {
 				this.#announced = true;
 				const memory = this.#options.memory;
+				// Not awaited when there is nothing to ask: a turn without `bash` starts its backend at once.
+				const sandboxStatus = this.#sandboxStatus();
+				if (sandboxStatus) turn.push(await sandboxStatus);
 				if (this.#instructions)
 					turn.push({
 						type: "project_instructions",
@@ -480,6 +496,7 @@ export class Session {
 				summary: outcome.summary,
 				truncated: outcome.truncated,
 				...(outcome.fullOutputPath === undefined ? {} : { fullOutputPath: outcome.fullOutputPath }),
+				...(outcome.blocked === undefined ? {} : { blocked: outcome.blocked }),
 			});
 			return { ok: outcome.ok, output: outcome.output };
 		} catch (error) {
@@ -537,6 +554,8 @@ export class Session {
 			let stopReason = "incomplete";
 			for await (const event of child.send(prompt)) {
 				// Clients see the child's work in the parent's turn; the parent model never does.
+				// The child's `bash` is the parent's: the status was already said.
+				if (event.type === "sandbox_status") continue;
 				const { seq: _seq, turnId: _turnId, ...body } = event;
 				this.#turn?.push({ ...body, ...tag });
 				if (event.type === "text_delta") report += event.text;
