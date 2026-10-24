@@ -19,14 +19,31 @@ export interface ContentSignal {
 const PROCESS_SPAWN = new RegExp(
 	[
 		/(^|[^A-Za-z0-9_.])(subprocess|child_process|execute_process|exec)([^A-Za-z0-9_]|$)/,
-		/execSync\(|getRuntime\(\)\.exec\(|ProcessBuilder|os\.system\(|os\.exec[lv]p?e?\(/,
-		/posix_spawn|proc_open\(|shell_exec\(|passthru\(|popen\(|Process\.Start\(/,
+		/execSync\s*\(|getRuntime\(\)\.exec\s*\(|ProcessBuilder|os\.system\s*\(|os\.exec[lv]p?e?\s*\(/,
+		/posix_spawn|proc_open\s*\(|shell_exec\s*\(|passthru\s*\(|popen\s*\(|Process\.Start\s*\(/,
 		/\b(spawn|spawnSync|execFile|execFileSync)\s*\(/,
 	]
 		.map((pattern) => pattern.source)
 		.join("|"),
 	"i",
 );
+
+/**
+ * A member call that spawns a process when its receiver is the process module
+ * (`cp.exec(`, `childProcess.spawn(`). The same call is ordinary elsewhere
+ * (`/re/.exec(`), so it counts only in a file that imports `child_process`.
+ */
+const MEMBER_PROCESS_CALL = /\.(exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\(/;
+
+/** Whether a member process call on an added line may count: the caller checks the whole file for the import. */
+export function isMemberProcessCall(path: string, text: string): boolean {
+	return isScannedPath(path) && !isCommentOnlyLine(path, text) && MEMBER_PROCESS_CALL.test(text);
+}
+
+/** Whether a file's text imports the process module, making its member process calls real spawns. */
+export function importsProcessModule(text: string): boolean {
+	return /child_process/.test(text);
+}
 
 const JS = ".js .jsx .ts .tsx .mjs .cjs .mts .cts";
 const COMPILED = ".go .java .kt .kts .js .jsx .ts .tsx .mjs .cjs .mts .cts .py .rb .rs .cs";
@@ -156,10 +173,15 @@ function hasUnsafeYamlLoad(line: string): boolean {
 }
 
 /** The signals of one added line; none for a test file, a file whose bytes are not scanned, or a line that is only a comment in its language. */
-export function contentSignals(path: string, text: string): ContentSignal[] {
+export function contentSignals(
+	path: string,
+	text: string,
+	{ processModule = false }: { processModule?: boolean } = {},
+): ContentSignal[] {
 	if (!isScannedPath(path) || isCommentOnlyLine(path, text)) return [];
 	const found: ContentSignal[] = [];
-	if (PROCESS_SPAWN.test(text)) found.push({ kind: "shell_process" });
+	if (PROCESS_SPAWN.test(text) || (processModule && MEMBER_PROCESS_CALL.test(text)))
+		found.push({ kind: "shell_process" });
 	const extension = extensionOf(path);
 	for (const entry of SINKS) {
 		if (entry.extensions !== "" && !` ${entry.extensions} `.includes(` ${extension} `)) continue;
@@ -262,6 +284,17 @@ export function isCommentOnlyLine(path: string, line: string): boolean {
 		default:
 			return false;
 	}
+}
+
+/**
+ * An added line that opens a block comment it does not close, in a language
+ * with `/* */ ` comments. Only a line that starts with the opener counts: a
+ * `; /*` inside a string must not hide the lines after it.
+ */
+export function opensBlockComment(path: string, line: string): boolean {
+	if (commentSyntaxOf(path) !== "slash") return false;
+	const trimmed = line.trim();
+	return trimmed.startsWith("/*") && !trimmed.includes("*/", 2);
 }
 
 /** Files that can be passive: Markdown and text anywhere, and documentation formats or extensionless files under docs/. */

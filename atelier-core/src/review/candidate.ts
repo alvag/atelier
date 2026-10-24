@@ -6,9 +6,12 @@ import { gitText, runGit, streamGitLines } from "./git.ts";
 import {
 	contentSignals,
 	FENCE,
+	importsProcessModule,
 	isDocumentationPath,
+	isMemberProcessCall,
 	isPassiveDocumentContent,
 	isScannedPath,
+	opensBlockComment,
 	SCAN_LIMIT_BYTES,
 } from "./signals.ts";
 
@@ -34,6 +37,8 @@ export interface AddedLine {
 	text: string;
 	/** The line's number in the candidate's file, from 1. */
 	line: number;
+	/** The file imports the process module, so a member process call on the line spawns one. */
+	processModule?: boolean;
 }
 
 /** The old and new text of a changed package.json; absent on the side where the file does not exist. */
@@ -315,6 +320,10 @@ async function scanPatch(
 	let line = 0;
 	let scanned = 0;
 	let limitPath: string | undefined;
+	/** Inside a block comment opened by an earlier added line of the same hunk. */
+	let inBlock = false;
+	/** Per file, the first added line with a member process call, checked against the file's imports afterwards. */
+	const memberCalls = new Map<string, AddedLine>();
 	const result = await streamGitLines([...DIFF, "-p", "-U0", "--no-color", base, tree], { cwd: root }, (bytes) => {
 		const first = bytes[0];
 		if (first === 0x2b /* + */ && inHunk) {
@@ -324,8 +333,24 @@ async function scanPatch(
 				scanned += bytes.length;
 				if (scanned > SCAN_LIMIT_BYTES) limitPath = path;
 			}
-			const text = bytes.subarray(1).toString("utf8");
-			for (const { kind } of contentSignals(path, text)) {
+			let text = bytes.subarray(1).toString("utf8");
+			if (inBlock) {
+				const close = text.indexOf("*/");
+				if (close < 0) return;
+				inBlock = false;
+				text = text.slice(close + 2);
+			} else if (opensBlockComment(path, text)) {
+				inBlock = true;
+				return;
+			}
+			const signals = contentSignals(path, text);
+			if (
+				!signals.some(({ kind }) => kind === "shell_process") &&
+				!memberCalls.has(path) &&
+				isMemberProcessCall(path, text)
+			)
+				memberCalls.set(path, { path, text, line });
+			for (const { kind } of signals) {
 				const key = `${kind}\0${path}`;
 				if (seen.has(key)) continue;
 				seen.add(key);
@@ -338,14 +363,21 @@ async function scanPatch(
 		if (header.startsWith("diff --git ")) {
 			path = undefined;
 			inHunk = false;
+			inBlock = false;
 		} else if (!inHunk && header.startsWith("+++ ")) {
 			path = header === "+++ /dev/null" ? undefined : headerPath(header.slice(4));
 		} else if (header.startsWith("@@")) {
 			inHunk = true;
+			inBlock = false;
 			line = Number(/^@@ -\S+ \+(\d+)/.exec(header)?.[1] ?? 1) - 1;
 		}
 	});
 	if (result.code !== 0) throw new Error(result.stderr.trim() || `git diff-tree exited with ${result.code}`);
+	for (const call of memberCalls.values()) {
+		if (seen.has(`shell_process\0${call.path}`)) continue;
+		const file = await readTreeFile(root, tree, call.path);
+		if (file !== undefined && importsProcessModule(file)) found.push({ ...call, processModule: true });
+	}
 	return { lines: found, limitPath };
 }
 

@@ -331,4 +331,49 @@ describe("independent verification regressions (U1)", () => {
 		expect(result.output).toBe("Lens for a medium-risk review: readability (explain lens).");
 		expect(state.lensReason).toBe("explain lens");
 	});
+
+	describe("round-2 verification findings (F1, F2)", () => {
+		it.each([
+			[
+				"spaced execSync",
+				'import { execSync } from "node:child_process";\n',
+				'console.log(execSync ("printf m9-probe").toString());\n',
+			],
+			[
+				"namespace exec",
+				'import * as cp from "node:child_process";\n',
+				'cp.exec("printf m9-probe", (error, out) => { if (error) throw error; console.log(out); });\n',
+			],
+		])("detects %s with an existing import", async (_name, before, added) => {
+			await write("src/run.mjs", before);
+			await commitAll("import");
+			await write("src/run.mjs", before + added);
+			const result = await freezeCandidate(repo);
+			if (!result.ok) throw new Error(result.reason);
+			const assessment = assessRisk(result.candidate, { none: "ordinary change" });
+			expect(assessment.level).toBe("high");
+			expect(assessment.reasons).toContain("shell_process: src/run.mjs:2");
+		});
+
+		it("does not take a regular expression's exec for a process", async () => {
+			await write("src/match.ts", "export const m = /a+/.exec(input);\nexport const n = re.exec(input);\n");
+			const result = await freezeCandidate(repo);
+			if (!result.ok) throw new Error(result.reason);
+			expect(assessRisk(result.candidate, { none: "ordinary change" }).level).toBe("medium");
+		});
+
+		it("ignores process mentions inside multiline comments, and code after one", async () => {
+			await write("src/comment.ts", '/*\nspawn("true");\n*/\nexport const c = 1;\n');
+			const result = await freezeCandidate(repo);
+			if (!result.ok) throw new Error(result.reason);
+			expect(assessRisk(result.candidate, { none: "comment only" }).level).toBe("medium");
+
+			await write("src/comment.ts", '/*\nnote\n*/ spawn("true");\n');
+			const after = await freezeCandidate(repo);
+			if (!after.ok) throw new Error(after.reason);
+			expect(assessRisk(after.candidate, { none: "code after a comment" }).reasons).toContain(
+				"shell_process: src/comment.ts:3",
+			);
+		});
+	});
 });

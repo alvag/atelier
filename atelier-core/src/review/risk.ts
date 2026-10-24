@@ -197,8 +197,8 @@ function fileSignals(files: readonly ChangedFile[]): string[] {
 /** One reason per file and kind of signal, at the first added line that shows it. */
 function contentSignals(candidate: Candidate): string[] {
 	const found = new Map<string, string>();
-	for (const { path, text, line } of candidate.signalLines)
-		for (const { kind, name } of signalsIn(path, text)) {
+	for (const { path, text, line, processModule } of candidate.signalLines)
+		for (const { kind, name } of signalsIn(path, text, { processModule: processModule === true })) {
 			const key = `${kind}\0${path}`;
 			if (!found.has(key)) found.set(key, `${kind}: ${path}:${line}${name === undefined ? "" : ` (${name})`}`);
 		}
