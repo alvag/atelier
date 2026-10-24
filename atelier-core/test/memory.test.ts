@@ -2,8 +2,12 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { connectEngram, type EngramMemory, parseObservationText } from "../src/memory/engram.ts";
+import { connectEngram, EngramMemory, parseObservationText } from "../src/memory/engram.ts";
 import { FakeMemory, MemoryUnavailableError } from "../src/memory/port.ts";
 
 const engramInstalled = (() => {
@@ -84,6 +88,40 @@ describe("FakeMemory", () => {
 			topicKey: "t/a",
 		});
 		expect(await memory.get(999)).toBeUndefined();
+	});
+});
+
+/** An EngramMemory over an in-process MCP server whose mem_save answers `answer`; `calls` counts the saves. */
+async function engramAnswering(answer: Record<string, unknown>) {
+	const server = new Server({ name: "engram", version: "0.0.0" }, { capabilities: { tools: {} } });
+	const calls: string[] = [];
+	server.setRequestHandler(CallToolRequestSchema, async (request) => {
+		calls.push(request.params.name);
+		return { content: [{ type: "text", text: JSON.stringify(answer) }] };
+	});
+	const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+	await server.connect(serverSide);
+	const client = new Client({ name: "atelier", version: "0.0.0" });
+	await client.connect(clientSide);
+	return { memory: new EngramMemory(client, "proj"), calls };
+}
+
+describe("EngramMemory save", () => {
+	it("keeps a save whose conflict detection did not finish, with a warning, and does not save again", async () => {
+		const { memory, calls } = await engramAnswering({ id: 12, candidate_detection_status: "incomplete" });
+		const saved = await memory.save({ title: "A", type: "decision", content: "alpha" });
+		await memory.close();
+		expect(saved.id).toBe(12);
+		expect(saved.warning).toMatch(/conflict/i);
+		expect(calls).toEqual(["mem_save"]);
+	});
+
+	it("has no warning when conflict detection finished or is not reported", async () => {
+		for (const answer of [{ id: 3, candidate_detection_status: "complete" }, { id: 3 }]) {
+			const { memory } = await engramAnswering(answer);
+			expect(await memory.save({ title: "A", type: "decision", content: "alpha" })).toEqual({ id: 3 });
+			await memory.close();
+		}
 	});
 });
 

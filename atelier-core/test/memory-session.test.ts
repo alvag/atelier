@@ -126,6 +126,19 @@ describe("memory tool", () => {
 		expect(backend.toolResults[0]?.output).not.toMatch(/sk-ant|ghp_|BEGIN/);
 	});
 
+	it("says when a save went through with a warning, to the agent and in the call's summary, without saving again", async () => {
+		const warned = new FakeMemory("proj");
+		const save = warned.save.bind(warned);
+		warned.save = async (entry) => ({ ...(await save(entry)), warning: "conflict detection did not finish" });
+		const { backend, session: s, send } = await session([[call("memory", SAVE), { event: finished }]], {}, warned);
+		const events = await send("go");
+		await s.close();
+		const expected = "Saved memory #1. Warning: conflict detection did not finish";
+		expect(warned.saved).toHaveLength(1);
+		expect(backend.toolResults).toEqual([{ ok: true, output: expected }]);
+		expect(events.find((e) => e.type === "tool_call_finished")).toMatchObject({ ok: true, summary: expected });
+	});
+
 	it("reports a missing entry and memory failures as tool errors, without ending the turn", async () => {
 		const failing = new FakeMemory("proj");
 		failing.search = async () => {
@@ -282,6 +295,33 @@ describe("feature mirror", () => {
 		expect(memory.saved).toHaveLength(1);
 		expect(memory.saved[0]?.content).not.toContain("sk-ant");
 		expect(memory.saved[0]?.content).toContain("Usuario: (message kept only in the feature document)");
+	});
+
+	it("says when the mirror was saved with a warning, and saves it once", async () => {
+		const warned = new FakeMemory("proj");
+		const save = warned.save.bind(warned);
+		warned.save = async (entry) => ({ ...(await save(entry)), warning: "conflict detection did not finish" });
+		const { session: s, send } = await session(
+			[
+				[
+					call("feature", { ...START, tasks: [START.tasks[0]] }, "1"),
+					call("feature", { action: "update_task", id: "T1", status: "done" }, "2"),
+					{ event: finished },
+				],
+			],
+			{ odd: true },
+			warned,
+		);
+		const events = await send("track it");
+		await s.close();
+		expect(warned.saved).toHaveLength(1);
+		expect(events.filter((e) => e.type === "error")).toEqual([
+			expect.objectContaining({
+				code: "memory_mirror_warning",
+				message: "Feature slug was saved to memory with a warning: conflict detection did not finish",
+				recoverable: true,
+			}),
+		]);
 	});
 
 	it("does not mirror a document whose own text holds something that looks like a secret, and says so", async () => {

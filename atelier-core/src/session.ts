@@ -596,12 +596,20 @@ export class Session {
 			return;
 		}
 		try {
-			await memory.save({
+			const { warning } = await memory.save({
 				title: `Feature ${feature.name}: ${feature.title}`,
 				type: "architecture",
 				content: feature.text,
 				topicKey: `odd/${feature.name}/tasks`,
 			});
+			if (warning !== undefined)
+				this.#turn?.push(
+					errorEvent(
+						"memory_mirror_warning",
+						`Feature ${feature.name} was saved to memory with a warning: ${warning}`,
+						true,
+					),
+				);
 		} catch (error) {
 			this.#turn?.push(
 				errorEvent(

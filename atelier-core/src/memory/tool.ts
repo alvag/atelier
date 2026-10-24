@@ -80,13 +80,14 @@ export function createMemoryTool(memory: MemoryPort): ToolDefinition {
 							return failed("save needs title, type and content.");
 						const secret = findSecret(`${input.title}\n${input.content}\n${input.topicKey ?? ""}`);
 						if (secret) return failed(`Not saved: it contains what looks like ${secret}. Never save secrets.`);
-						const { id } = await memory.save({
+						const { id, warning } = await memory.save({
 							title: input.title,
 							type: input.type,
 							content: input.content,
 							...(input.topicKey?.trim() ? { topicKey: input.topicKey.trim() } : {}),
 						});
-						return done(`Saved memory #${id}.`);
+						// On the first line, so the call's summary shows it to the user too.
+						return done(`Saved memory #${id}.${warning === undefined ? "" : ` Warning: ${warning}`}`);
 					}
 				}
 			} catch (error) {

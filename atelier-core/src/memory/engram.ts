@@ -10,6 +10,7 @@ import {
 	type MemoryPort,
 	MemoryUnavailableError,
 	type NewMemory,
+	type SavedMemory,
 } from "./port.ts";
 
 /**
@@ -45,7 +46,10 @@ export interface EngramOptions {
 }
 
 const projectResponse = z.object({ project: z.string().min(1) });
-const saveResponse = z.object({ id: z.number().int() });
+const saveResponse = z.object({ id: z.number().int(), candidate_detection_status: z.string().optional() });
+/** Engram saved the memory but could not look for the ones it may conflict with; saving again would not help. */
+const DETECTION_INCOMPLETE =
+	"conflict detection did not finish, so this memory may duplicate or contradict an existing one; search for it before relying on it.";
 const searchResponse = z.object({
 	results: z
 		.array(z.object({ id: z.number().int(), title: z.string(), type: z.string(), preview: z.string().optional() }))
@@ -118,8 +122,8 @@ export class EngramMemory implements MemoryPort {
 		return entry;
 	}
 
-	async save(entry: NewMemory): Promise<{ id: number }> {
-		const { id } = await this.call(
+	async save(entry: NewMemory): Promise<SavedMemory> {
+		const response = await this.call(
 			"mem_save",
 			{
 				title: entry.title,
@@ -131,7 +135,8 @@ export class EngramMemory implements MemoryPort {
 			},
 			saveResponse,
 		);
-		return { id };
+		if (response.candidate_detection_status === "incomplete") return { id: response.id, warning: DETECTION_INCOMPLETE };
+		return { id: response.id };
 	}
 
 	async summary(text: string): Promise<void> {

@@ -37,6 +37,12 @@ export interface NewMemory {
 	topicKey?: string;
 }
 
+export interface SavedMemory {
+	id: number;
+	/** The memory was saved, but the service reported something the agent and the user should know. */
+	warning?: string;
+}
+
 export interface MemoryPort {
 	/** The project the memories belong to, as the memory service resolved it for the session folder. */
 	readonly project: string;
@@ -44,7 +50,7 @@ export interface MemoryPort {
 	context(maxBytes: number): Promise<string>;
 	search(query: string, limit: number): Promise<MemoryHit[]>;
 	get(id: number): Promise<MemoryEntry | undefined>;
-	save(entry: NewMemory): Promise<{ id: number }>;
+	save(entry: NewMemory): Promise<SavedMemory>;
 	summary(text: string): Promise<void>;
 	close(): Promise<void>;
 }
@@ -94,7 +100,7 @@ export class FakeMemory implements MemoryPort {
 		return entry && { ...entry };
 	}
 
-	async save(entry: NewMemory): Promise<{ id: number }> {
+	async save(entry: NewMemory): Promise<SavedMemory> {
 		this.saved.push({ ...entry });
 		const existing =
 			entry.topicKey === undefined
