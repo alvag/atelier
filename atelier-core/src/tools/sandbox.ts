@@ -111,6 +111,8 @@ export interface WorktreeGit {
 	gitDir: string;
 	/** The main checkout's `.git`, shared by every worktree. */
 	commonDir: string;
+	/** The hooks directory git runs, `core.hooksPath` included, when it differs from `<common>/hooks`. */
+	hooks?: string;
 }
 
 /**
@@ -125,7 +127,7 @@ export interface WorktreeGit {
  */
 function worktreeGitPaths(worktreeGit: WorktreeGit | undefined): { allowWrite: string[]; denyWrite: string[] } {
 	if (worktreeGit === undefined) return { allowWrite: [], denyWrite: [] };
-	const { gitDir, commonDir } = worktreeGit;
+	const { gitDir, commonDir, hooks } = worktreeGit;
 	const directories = [gitDir, join(commonDir, "objects"), join(commonDir, "refs"), join(commonDir, "logs")];
 	return {
 		allowWrite: [
@@ -137,6 +139,8 @@ function worktreeGitPaths(worktreeGit: WorktreeGit | undefined): { allowWrite: s
 		],
 		denyWrite: [
 			join(commonDir, "hooks"),
+			// A configured core.hooksPath may sit in a directory granted above, such as refs/.
+			...(hooks === undefined ? [] : [hooks]),
 			join(commonDir, "config"),
 			join(commonDir, "config.worktree"),
 			join(commonDir, "objects", "info"),
@@ -163,10 +167,18 @@ export function linkedWorktreeGit(cwd: string): WorktreeGit | undefined {
 	if (!worktreeGitCache.has(cwd)) {
 		const found = spawnSync(
 			"git",
-			["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "--show-toplevel"],
+			[
+				"rev-parse",
+				"--path-format=absolute",
+				"--git-dir",
+				"--git-common-dir",
+				"--show-toplevel",
+				"--git-path",
+				"hooks",
+			],
 			{ cwd, encoding: "utf8", timeout: 5000 },
 		);
-		const [gitDir, commonDir, top] = found.status === 0 ? found.stdout.trim().split("\n") : [];
+		const [gitDir, commonDir, top, hooks] = found.status === 0 ? found.stdout.trim().split("\n") : [];
 		const linked =
 			gitDir !== undefined &&
 			commonDir !== undefined &&
@@ -175,7 +187,10 @@ export function linkedWorktreeGit(cwd: string): WorktreeGit | undefined {
 			dirname(gitDir) === join(commonDir, "worktrees") &&
 			!commonDir.startsWith(`${top}/`) &&
 			pointsBack(gitDir, top);
-		worktreeGitCache.set(cwd, linked ? { gitDir, commonDir } : null);
+		worktreeGitCache.set(
+			cwd,
+			linked ? { gitDir, commonDir, ...(hooks && hooks !== join(commonDir, "hooks") ? { hooks } : {}) } : null,
+		);
 	}
 	return worktreeGitCache.get(cwd) ?? undefined;
 }

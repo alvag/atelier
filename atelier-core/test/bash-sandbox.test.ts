@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBashTool } from "../src/tools/bash.ts";
-import { isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
+import { isInsideSandbox, linkedWorktreeGit, Sandbox } from "../src/tools/sandbox.ts";
 
 const onMac = process.platform === "darwin" && !isInsideSandbox();
 
@@ -369,6 +369,55 @@ describe.skipIf(!onMac)("the agent's bash in a linked git worktree", () => {
 		const result = await run("git branch tmp && git pack-refs --all && git branch -D tmp");
 		expect(result.output).not.toContain("Operation not permitted");
 		expect(result.ok).toBe(true);
+	});
+
+	// Independent verification (M11 L5): ordinary ref editing, configuration, pointers, hooks and secrets.
+	it.each(["branch", "tag"])("deletes a packed %s", async (kind) => {
+		git(main, kind, "packed-entry");
+		git(main, "pack-refs", "--all");
+		const result = await run(`git ${kind} ${kind === "branch" ? "-D" : "-d"} packed-entry`);
+		expect(result.ok, result.output).toBe(true);
+		expect(git(main, kind, "--list", "packed-entry")).toBe("");
+	});
+
+	it("cannot write worktree-specific configuration, even where the repository enables it", async () => {
+		git(main, "config", "extensions.worktreeConfig", "true");
+		const dir = git(worktree, "rev-parse", "--absolute-git-dir").trim();
+		const result = await run("git config --worktree core.hooksPath /unused");
+		expect(result.ok).toBe(false);
+		expect(result.output).toContain("Operation not permitted");
+		expect(await exists(join(dir, "config.worktree"))).toBe(false);
+	});
+
+	it.each(["refs", "objects"])("protects hooks the repository already configured under %s", async (dir) => {
+		const hooks = join(main, ".git", dir, "custom-hooks");
+		await mkdir(hooks, { recursive: true });
+		const hook = join(hooks, "pre-commit");
+		await writeFile(hook, "#!/bin/sh\nexit 0\n");
+		git(main, "config", "core.hooksPath", hooks);
+		const result = await run(`echo changed >> "${hook}"; echo x > "${hooks}/post-commit"`);
+		expect(result.ok).toBe(false);
+		expect(await readFile(hook, "utf8")).toBe("#!/bin/sh\nexit 0\n");
+		expect(await exists(join(hooks, "post-commit"))).toBe(false);
+	});
+
+	for (const directory of ["objects", "refs", "logs", "worktrees/wt"])
+		it.each([".env", ".env.local", "secret.pem", "secret.key"])(`protects ${directory}/%s`, async (file) => {
+			const path = join(main, ".git", directory, file);
+			const result = await run(`echo changed > "${path}"`);
+			expect(result.ok).toBe(false);
+			expect(await exists(path)).toBe(false);
+		});
+
+	it("detects only linked worktrees whose common directory is outside them, per working directory", async () => {
+		const first = linkedWorktreeGit(worktree);
+		expect(first?.commonDir).toBe(join(main, ".git"));
+		expect(linkedWorktreeGit(main)).toBeUndefined();
+		expect(linkedWorktreeGit(cwd)).toBeUndefined();
+		const second = join(outside, "second");
+		git(main, "worktree", "add", "-q", "--detach", second);
+		expect(linkedWorktreeGit(second)?.gitDir).not.toBe(first?.gitDir);
+		expect(linkedWorktreeGit(worktree)).toEqual(first);
 	});
 
 	it("still cannot write the shared git hooks or configuration, nor the main checkout's files", async () => {
