@@ -129,6 +129,27 @@ describe("agentPolicy", () => {
 		);
 	});
 
+	it("in a linked worktree, writes its git data in the main checkout but not the shared hooks or configuration", () => {
+		const worktreeGit = { gitDir: "/work/main/.git/worktrees/project", commonDir: "/work/main/.git" };
+		const { filesystem } = agentPolicy({ ...SESSION, worktreeGit });
+		for (const path of [
+			"/work/main/.git/worktrees/project",
+			"/work/main/.git/objects",
+			"/work/main/.git/refs",
+			"/work/main/.git/logs",
+			"/work/main/.git/packed-refs",
+			"/work/main/.git/packed-refs.lock",
+		])
+			expect(filesystem.allowWrite).toContain(path);
+		expect(filesystem.allowWrite).not.toContain("/work/main/.git");
+		expect(filesystem.allowWrite).not.toContain("/work/main");
+		expect(filesystem.denyWrite).toEqual(expect.arrayContaining(["/work/main/.git/hooks", "/work/main/.git/config"]));
+		const outsideCheckout = agentPolicy(SESSION).filesystem.allowWrite.map((entry) =>
+			typeof entry === "string" ? entry : entry.path,
+		);
+		expect(outsideCheckout.some((path) => path.startsWith("/work/main"))).toBe(false);
+	});
+
 	it("does not let a command write the project's .atelier directory, where its configuration lives", () => {
 		expect(agentPolicy(SESSION).filesystem.denyWrite).toContain("/work/project/.atelier");
 	});

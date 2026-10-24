@@ -101,6 +101,61 @@ export interface AgentPolicyInput {
 	home: string;
 	/** What the user's and the project's configuration files add; none when absent. */
 	additions?: SandboxAdditions;
+	/** The git data of a linked worktree that lives in the main checkout; absent anywhere else. */
+	worktreeGit?: WorktreeGit;
+}
+
+/** Where a linked worktree's git data lives: its own directory and the repository's shared one. */
+export interface WorktreeGit {
+	/** `<common>/worktrees/<name>`: the worktree's HEAD, index and logs. */
+	gitDir: string;
+	/** The main checkout's `.git`, shared by every worktree. */
+	commonDir: string;
+}
+
+/**
+ * The git data a linked worktree needs to write, which lives outside it, in
+ * the main checkout's `.git`: its own directory there and the repository's
+ * objects, refs and their logs. The shared hooks and configuration stay
+ * protected, as in the working directory itself.
+ */
+function worktreeGitPaths(worktreeGit: WorktreeGit | undefined): { allowWrite: string[]; denyWrite: string[] } {
+	if (worktreeGit === undefined) return { allowWrite: [], denyWrite: [] };
+	const { gitDir, commonDir } = worktreeGit;
+	return {
+		allowWrite: [
+			gitDir,
+			join(commonDir, "objects"),
+			join(commonDir, "refs"),
+			join(commonDir, "logs"),
+			join(commonDir, "packed-refs"),
+			// Taken while refs are updated or packed.
+			join(commonDir, "packed-refs.lock"),
+		],
+		denyWrite: [join(commonDir, "hooks"), join(commonDir, "config")],
+	};
+}
+
+const worktreeGitCache = new Map<string, WorktreeGit | null>();
+
+/** The git directories of `cwd` when it is a linked worktree whose shared `.git` is outside it; asked once per folder. */
+export function linkedWorktreeGit(cwd: string): WorktreeGit | undefined {
+	if (!worktreeGitCache.has(cwd)) {
+		const found = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], {
+			cwd,
+			encoding: "utf8",
+			timeout: 5000,
+		});
+		const [gitDir, commonDir] = found.status === 0 ? found.stdout.trim().split("\n") : [];
+		const linked =
+			gitDir !== undefined &&
+			commonDir !== undefined &&
+			gitDir !== commonDir &&
+			commonDir !== join(cwd, ".git") &&
+			!commonDir.startsWith(`${cwd}/`);
+		worktreeGitCache.set(cwd, linked ? { gitDir, commonDir } : null);
+	}
+	return worktreeGitCache.get(cwd) ?? undefined;
 }
 
 /**
@@ -116,8 +171,16 @@ export interface AgentPolicyInput {
  * added directory, and `.atelier` of the working directory (the project's
  * configuration) cannot be written by a command.
  */
-export function agentPolicy({ cwd, scratchDir, tempDir, home, additions }: AgentPolicyInput): SandboxPolicy {
+export function agentPolicy({
+	cwd,
+	scratchDir,
+	tempDir,
+	home,
+	additions,
+	worktreeGit,
+}: AgentPolicyInput): SandboxPolicy {
 	const writable = additions?.allowWrite ?? [];
+	const worktree = worktreeGitPaths(worktreeGit);
 	return {
 		filesystem: {
 			denyRead: [...secretDirectories(home), ...(additions?.denyRead ?? [])],
@@ -126,9 +189,11 @@ export function agentPolicy({ cwd, scratchDir, tempDir, home, additions }: Agent
 				tempDir,
 				...(scratchDir === undefined ? [] : [scratchDir]),
 				...packageCacheDirectories(home),
+				...worktree.allowWrite,
 				...writable,
 			],
 			denyWrite: [
+				...worktree.denyWrite,
 				...secretFilePatterns(cwd),
 				...writable.flatMap(secretFilePatterns),
 				...[cwd, ...writable].flatMap(libraryProtectedPaths),
@@ -149,6 +214,11 @@ export interface VerifierPolicyInput {
 
 function shellQuote(text: string): string {
 	return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+/** `{ [key]: value }`, or nothing when the value is absent. */
+function optional<K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } {
+	return (value === undefined ? {} : { [key]: value }) as { [P in K]?: V };
 }
 
 /** The readable toolchain directory for a `git` at `<dev>/usr/bin/git`. */
@@ -333,6 +403,7 @@ export class Sandbox {
 						home,
 						// Read at each command, so a file that became invalid stops the command instead of being ignored.
 						additions: loadSandboxAdditions({ cwd, home }),
+						...(this.#options.manager ? {} : optional("worktreeGit", linkedWorktreeGit(cwd))),
 					})
 				: verifierPolicy({
 						dir: cwd,

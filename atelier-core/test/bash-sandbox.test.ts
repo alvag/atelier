@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -300,6 +301,45 @@ describe.skipIf(!onMac)("the sandbox configuration files", () => {
 			),
 		);
 		expect(await exists(join(cwd, "ran.txt"))).toBe(false);
+	});
+});
+
+describe.skipIf(!onMac)("the agent's bash in a linked git worktree", () => {
+	let main: string;
+	let worktree: string;
+	const git = (cwd: string, ...args: string[]) =>
+		execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, encoding: "utf8" });
+	const run = (command: string) => createBashTool({ sandbox }).execute({ command }, { cwd: worktree });
+
+	beforeEach(async () => {
+		main = join(outside, "main");
+		worktree = join(outside, "wt");
+		await mkdir(main, { recursive: true });
+		git(main, "init", "-q");
+		await writeFile(join(main, "a.txt"), "a\n");
+		git(main, "add", "-A");
+		git(main, "commit", "-qm", "base");
+		git(main, "worktree", "add", "-q", "--detach", worktree);
+	});
+
+	it("creates a branch and commits, writing the git data that lives in the main checkout", async () => {
+		const result = await run(
+			"git switch -q -c feature && echo b > b.txt && git add b.txt && git -c user.email=t@t -c user.name=t commit -qm b && git log --oneline | wc -l",
+		);
+		expect(result.output).not.toContain("Operation not permitted");
+		expect(result.ok).toBe(true);
+		expect(result.output).toMatch(/^\s*2$/m);
+		expect(git(main, "branch", "--list", "feature")).toContain("feature");
+	});
+
+	it("still cannot write the shared git hooks or configuration, nor the main checkout's files", async () => {
+		const common = join(main, ".git");
+		const result = await run(
+			`echo x > ${common}/hooks/pre-commit; echo x >> ${common}/config; echo x > ${common}/description; echo x > ${main}/a.txt`,
+		);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(4);
+		expect(await exists(join(common, "hooks", "pre-commit"))).toBe(false);
+		expect(await readFile(join(main, "a.txt"), "utf8")).toBe("a\n");
 	});
 });
 
