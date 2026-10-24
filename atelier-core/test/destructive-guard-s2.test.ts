@@ -126,3 +126,16 @@ for (const command of allowedMore) {
 		expect(findDestructiveCommand(command, context)).toBeUndefined();
 	});
 }
+
+// An or operator or a list operator leaves the removal reachable without the narrowing test.
+const orRefused: [string, string][] = [
+	[join(["find", ".", "-name", "a", "-o", "-delete"]), project],
+	[join(["find", "/", "-name", "x", "-or", "-delete"]), root],
+	[join(["find", "$HOME", "-name", "x", ",", "-delete"]), home],
+	[join(["find", ".", "-name", "a", "-o", "-exec", "rm", "{}", "+"]), project],
+];
+for (const [command, rule] of orRefused) {
+	it(`S3 refuses ${command} (or operator)`, () => {
+		expect(findDestructiveCommand(command, context)).toBe(rule);
+	});
+}

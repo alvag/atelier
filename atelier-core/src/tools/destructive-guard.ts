@@ -288,9 +288,11 @@ function findRemovalKind(args: readonly string[], context: GuardContext): PathKi
 	if (roots.length === 0) roots.push(".");
 	let removes = false;
 	let narrowed = false;
+	let either = false;
 	for (; at < args.length; at++) {
 		const arg = args[at] as string;
-		if (arg === "-delete") removes = true;
+		if (arg === "-o" || arg === "-or" || arg === ",") either = true;
+		else if (arg === "-delete") removes = true;
 		else if (FIND_EXEC.has(arg)) {
 			const { words, end } = execCommand(args, at + 1);
 			if (runsRm(words)) removes = true;
@@ -301,7 +303,7 @@ function findRemovalKind(args: readonly string[], context: GuardContext): PathKi
 			at++;
 		}
 	}
-	if (!removes || narrowed) return undefined;
+	if (!removes || (narrowed && !either)) return undefined;
 	for (const root of roots) {
 		const kind = pathKind(root, context);
 		if (kind) return kind;
