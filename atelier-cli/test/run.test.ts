@@ -620,6 +620,20 @@ describe("run: review", () => {
 		expect(h.out()).toMatch(/✓ review approved · receipt \.git\/atelier\/reviews\/[0-9a-f]+\.json\n/);
 	});
 
+	it("asks with the lenses the agent chose and why, and runs only those", async () => {
+		await repoWithChange("src/auth.ts");
+		const input = { none: true, reason: "test", lenses: ["readability"], lensesReason: "renames the output" };
+		const chose: FakeStep = { toolCall: { tool: "risk", input, callId: "c-risk" } };
+		const turn: FakeStep[] = [chose, { event: { type: "text_delta", text: "done" } }, { event: finished }];
+		const h = harness([turn, ...lenses(2)], { isTTY: true, answers: ["y"] });
+		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
+		expect(h.out()).toContain(
+			"Review this change?\n  risk: high\n  reasons: path: src/auth.ts (auth)\n  lenses: risk, readability (renames the output)\n[y/N] ",
+		);
+		expect(h.backend.prompts).toHaveLength(3);
+		expect(h.out()).toContain("✓ review approved");
+	});
+
 	it("ignores a yes typed before the review question", async () => {
 		await repoWithChange("src/auth.ts");
 		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: ["y"], answers: [""], keepStdinOpen: true });

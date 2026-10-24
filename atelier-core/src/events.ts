@@ -183,6 +183,8 @@ export type AtelierEventBody =
 			files: string[];
 			changedLines: number;
 			lenses: string[];
+			/** Why the agent chose the lenses; absent when it did not. */
+			lensesReason?: string;
 			reviewDue: boolean;
 			declaration?: RiskDeclaration;
 			/** Short id of the commit the change is measured against, when it is not the current HEAD (the turn's commits are included). */
@@ -191,7 +193,14 @@ export type AtelierEventBody =
 			baseNote?: string;
 	  }
 	/** The core waits for session.review_consent; the turn stays open until it is answered. */
-	| { type: "review_consent_requested"; reviewId: string; level: string; reasons: string[]; lenses: string[] }
+	| {
+			type: "review_consent_requested";
+			reviewId: string;
+			level: string;
+			reasons: string[];
+			lenses: string[];
+			lensesReason?: string;
+	  }
 	/** Progress of a review the user agreed to or asked for; role events follow tagged `agent: "review:<role>"`. */
 	| { type: "review_progress"; reviewId: string; step: ReviewStep }
 	| {

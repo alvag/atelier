@@ -281,7 +281,12 @@ describe("the risk tool", () => {
 		const on = await start({ turns: [[{ event: finished }]] });
 		expect(on.main.startOptions?.tools.map((tool) => tool.name)).toContain("risk");
 		expect(on.main.startOptions?.systemPromptAppend).toContain(RISK_RULES);
-		expect(Buffer.byteLength(RISK_RULES)).toBeLessThanOrEqual(1800);
+		expect(RISK_RULES).toContain(
+			"Pick every lens pertinent to what you touched and how you touched it, and only those",
+		);
+		for (const lens of ["risk", "resilience", "readability", "reliability"])
+			expect(RISK_RULES).toContain(`\n- ${lens} when `);
+		expect(Buffer.byteLength(RISK_RULES)).toBeLessThanOrEqual(2400);
 		const off = await start({ review: false, turns: [[{ event: finished }]] });
 		expect(off.main.startOptions?.tools.map((tool) => tool.name)).not.toContain("risk");
 		expect(off.main.startOptions?.systemPromptAppend).not.toContain(RISK_RULES);
@@ -405,6 +410,29 @@ describe("the risk declaration", () => {
 			level: "high",
 			declaration: { kind: "items", items: [{ items: [2], reason: "handles sessions" }] },
 		});
+	});
+
+	it("reviews a declared high-risk change with only the lenses the agent chose, and shows why", async () => {
+		const declare = call("risk", {
+			items: [4],
+			reason: "events can arrive late",
+			lenses: ["resilience"],
+			lensesReason: "only the event order changes",
+		});
+		const s = await start({ turns: [[declare, ...MEDIUM_TURN]], roles: new RoleBackend(clean) });
+		const events = await s.send("edit");
+		const [assessed] = ofType(events, "review_assessed");
+		expect(assessed).toMatchObject({
+			level: "high",
+			lenses: ["resilience"],
+			lensesReason: "only the event order changes",
+		});
+		expect(ofType(events, "review_consent_requested")[0]).toMatchObject({
+			lenses: ["resilience"],
+			lensesReason: "only the event order changes",
+		});
+		expect(ofType(events, "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		expect(s.roles.roles.map((role) => role.role)).toEqual(["verifier", "resilience"]);
 	});
 
 	it("asks once, inside the turn, when a code change has no declaration; the answer counts", async () => {

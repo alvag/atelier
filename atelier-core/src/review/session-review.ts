@@ -42,6 +42,8 @@ export interface ReviewConsentRequest {
 	level: string;
 	reasons: string[];
 	lenses: string[];
+	/** Why the agent chose the lenses; absent when it did not. */
+	lensesReason?: string;
 }
 
 export interface ReviewOptions {
@@ -157,7 +159,8 @@ export class SessionReview {
 			assessRisk(candidate, {
 				escalations: this.#requests.escalations,
 				...(this.#requests.none === undefined ? {} : { none: this.#requests.none }),
-				...(this.#requests.lens === undefined ? {} : { lens: this.#requests.lens }),
+				...(this.#requests.lenses === undefined ? {} : { lenses: this.#requests.lenses }),
+				...(this.#requests.lensesReason === undefined ? {} : { lensesReason: this.#requests.lensesReason }),
 			});
 		let assessment = assess();
 		// A code change nobody declared the risk of: ask the agent once, inside this turn, then take its word or lack of it.
@@ -196,6 +199,7 @@ export class SessionReview {
 			files: assessment.files,
 			changedLines: assessment.changedLines,
 			lenses: assessment.lenses,
+			...lensesReasonOf(assessment),
 			reviewDue: assessment.reviewDue,
 			...(assessment.declaration === undefined ? {} : { declaration: assessment.declaration }),
 			...(candidate.since === undefined ? {} : { since: candidate.since }),
@@ -205,17 +209,15 @@ export class SessionReview {
 		if (!manual) {
 			const consent = this.#options.consent;
 			if (!assessment.reviewDue || !consent) return paid(none);
-			host.push({
-				type: "review_consent_requested",
+			const request: ReviewConsentRequest = {
 				reviewId,
 				level: assessment.level,
 				reasons: assessment.reasons,
 				lenses: assessment.lenses,
-			});
-			const answer = await untilAborted(
-				host.signal,
-				consent({ reviewId, level: assessment.level, reasons: assessment.reasons, lenses: assessment.lenses }),
-			).catch((error: unknown) => {
+				...lensesReasonOf(assessment),
+			};
+			host.push({ type: "review_consent_requested", ...request });
+			const answer = await untilAborted(host.signal, consent(request)).catch((error: unknown) => {
 				host.push(errorEvent("review_consent_failed", describeError(error), true));
 				return "aborted" as const;
 			});
@@ -562,4 +564,8 @@ function untilAborted<T>(signal: AbortSignal, promise: Promise<T>): Promise<T | 
 		signal.addEventListener("abort", onAbort, { once: true });
 		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
 	});
+}
+
+function lensesReasonOf(assessment: Assessment): { lensesReason?: string } {
+	return assessment.lensesReason === undefined ? {} : { lensesReason: assessment.lensesReason };
 }

@@ -315,21 +315,24 @@ describe("independent verification regressions (U1)", () => {
 		expect(assessRisk(result.candidate).level).toBe("passive");
 	});
 
-	it("S4: the documented lenses input selects the medium lens", async () => {
+	it("S4: the documented lenses input selects the lenses, with a lensesReason", async () => {
 		const state = new RiskRequests();
-		const result = await createRiskTool(state).execute({ lenses: ["resilience"] }, { cwd: repo });
+		const result = await createRiskTool(state).execute(
+			{ lenses: ["resilience"], lensesReason: "adds a retry" },
+			{ cwd: repo },
+		);
 		expect(result.ok).toBe(true);
-		expect(state.lens).toBe("resilience");
+		expect(state.lenses).toEqual(["resilience"]);
 	});
 
-	it("S4: a reason given with a lens is kept and reported", async () => {
+	it("S4: a lens with only an items reason is refused: the lenses need their own reason", async () => {
 		const state = new RiskRequests();
 		const result = await createRiskTool(state).execute(
 			{ lenses: ["readability"], reason: "explain lens" },
 			{ cwd: repo },
 		);
-		expect(result.output).toBe("Lens for a medium-risk review: readability (explain lens).");
-		expect(state.lensReason).toBe("explain lens");
+		expect(result).toMatchObject({ ok: false, output: "A lensesReason is required with lenses." });
+		expect(state.lenses).toBeUndefined();
 	});
 
 	describe("round-2 verification findings (F1, F2)", () => {

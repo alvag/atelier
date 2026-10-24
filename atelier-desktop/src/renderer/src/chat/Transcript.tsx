@@ -89,7 +89,10 @@ function ConsentCard({
 					<li key={reason}>{reason}</li>
 				))}
 			</ul>
-			<div>Lenses: {item.lenses.join(", ")}</div>
+			<div>
+				Lenses: {item.lenses.join(", ")}
+				{item.lensesReason === undefined ? "" : ` (${item.lensesReason})`}
+			</div>
 			{item.state === "pending" ? (
 				<div className="approval-actions">
 					<button type="button" onClick={() => onConsent(item.reviewId, "granted")}>
@@ -146,6 +149,7 @@ function ReviewBlock({ item, onAnswer }: { item: Extract<TurnItem, { kind: "revi
 			<div className="review-risk">
 				Review{item.level ? ` · ${item.level} risk` : ""}
 				{item.lenses.length > 0 ? ` · ${item.lenses.length} lens${item.lenses.length === 1 ? "" : "es"}` : ""}
+				{item.lensesReason === undefined ? "" : `: ${item.lenses.join(", ")}`}
 			</div>
 			<ul>
 				{item.reasons.map((reason) => (
@@ -153,6 +157,7 @@ function ReviewBlock({ item, onAnswer }: { item: Extract<TurnItem, { kind: "revi
 				))}
 			</ul>
 			{item.declaration?.kind === "none" ? <div>Declared none: {item.declaration.reason}</div> : null}
+			{item.lensesReason === undefined ? null : <div>Lenses chosen: {item.lensesReason}</div>}
 			{item.since ? <div>Changes since {item.since}</div> : null}
 			{item.baseNote ? <div>{item.baseNote}</div> : null}
 			{item.roles.map((role) => {

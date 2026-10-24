@@ -25,7 +25,13 @@ export const RISK_RULES = `Atelier reviews your changes for risk when you finish
 4. concurrency (asynchronous events or callbacks that can arrive in another order, turn or request than expected, interrupts and timeouts, races, shared mutable state, locks)
 5. delivery or environment (installers, release, CI, deploy, dependencies)
 6. no test would catch a regression in what changes
-Before declaring none, check whether the change touches code that existing behavior also uses (shared options, parsers, helpers). The declaration can raise the risk, never lower what Atelier finds.`;
+Before declaring none, check whether the change touches code that existing behavior also uses (shared options, parsers, helpers). The declaration can raise the risk, never lower what Atelier finds.
+With a high-risk item, also pick the review's lenses with a lensesReason naming what you touched and how. Pick every lens pertinent to what you touched and how you touched it, and only those; a change that touches one concern pays for one lens. Judge by consequence, not by file names or counts:
+- risk when a mistake could expose, lose or irreversibly change something: stored data, credentials, permissions, guards, or contracts others consume
+- resilience when it changes behavior under failure: errors, retries, timeouts, partial writes, load or concurrency
+- readability when it changes what others read or depend on: public APIs, command output and messages, documentation or code structure
+- reliability when it changes logic or observable behavior that tests should pin
+Without a choice the review uses all four.`;
 
 /** What the core says when a code change reaches the end of the turn without a declaration; asked once. */
 export const DECLARE_RISK_REQUEST =

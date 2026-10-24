@@ -70,9 +70,50 @@ describe("assessRisk", () => {
 		expect(result.reasons).toEqual(["code change without a high-risk signal"]);
 	});
 
-	it("medium uses the lens the agent chose", () => {
-		const result = assessRisk(candidate([file("src/format.ts")]), { lens: "readability" });
-		expect(result.lenses).toEqual(["readability"]);
+	it("medium uses the lenses the agent chose, with their reason", () => {
+		const result = assessRisk(candidate([file("src/format.ts")]), {
+			lenses: ["reliability", "readability"],
+			lensesReason: "renames the output",
+		});
+		expect(result).toMatchObject({ lenses: ["readability", "reliability"], lensesReason: "renames the output" });
+	});
+
+	it("high risk the agent declared uses only the lenses it chose, in their fixed order", () => {
+		const result = assessRisk(candidate([file("src/format.ts")]), {
+			escalations: [{ items: [4], reason: "events can arrive in another order" }],
+			lenses: ["reliability", "resilience"],
+			lensesReason: "only the order of events changes",
+		});
+		expect(result).toMatchObject({
+			level: "high",
+			reviewDue: true,
+			lenses: ["resilience", "reliability"],
+			lensesReason: "only the order of events changes",
+		});
+	});
+
+	it("high risk without a choice uses the four lenses and no lens reason", () => {
+		const result = assessRisk(candidate([file("src/format.ts")]), {
+			escalations: [{ items: [4], reason: "events can arrive in another order" }],
+		});
+		expect(result.lenses).toEqual([...LENSES]);
+		expect(result).not.toHaveProperty("lensesReason");
+	});
+
+	it.each([
+		["a path", candidate([file("src/auth.ts")])],
+		["a lockfile", candidate([file("pnpm-lock.yaml")])],
+		[
+			"the content",
+			candidate([file("src/run.ts")], { signalLines: [{ path: "src/run.ts", text: "eval(code);", line: 3 }] }),
+		],
+	])("high risk found from %s always includes the risk lens", (_, changed) => {
+		const result = assessRisk(changed, {
+			escalations: [{ items: [6], reason: "no test covers it" }],
+			lenses: ["readability"],
+			lensesReason: "a rename",
+		});
+		expect(result).toMatchObject({ level: "high", lenses: ["risk", "readability"], lensesReason: "a rename" });
 	});
 
 	it.each([
@@ -231,9 +272,6 @@ describe("assessRisk", () => {
 		const passive = assessRisk(candidate([file("README.md")]), { escalations: [{ items: [1, 3], reason: "format" }] });
 		expect(passive.level).toBe("high");
 		expect(passive.reasons).toContain("agent: items 1, 3 (format)");
-
-		const high = assessRisk(candidate([file("src/auth.ts")]), { lens: "readability" });
-		expect(high.lenses).toEqual([...LENSES]);
 	});
 
 	it("size and file count never raise the level, and the scan cap is the only content limit", () => {
@@ -310,41 +348,71 @@ describe("risk tool", () => {
 		);
 	});
 
-	it("records the lens for medium risk", async () => {
-		const { outcome, state } = await run({ lenses: ["resilience"] });
-		expect(outcome.output).toBe("Lens for a medium-risk review: resilience.");
-		expect(state.lens).toBe("resilience");
+	it("records the lenses the agent chose, with their reason", async () => {
+		const { outcome, state } = await run({ lenses: ["resilience"], lensesReason: "adds a retry" });
+		expect(outcome).toMatchObject({ ok: true, output: "Lenses for the review: resilience (adds a retry)." });
+		expect(state.lenses).toEqual(["resilience"]);
+		expect(state.lensesReason).toBe("adds a retry");
+	});
+
+	it("records lenses together with high-risk items", async () => {
+		const { outcome, state } = await run({
+			items: [4],
+			reason: "events can arrive late",
+			lenses: ["reliability", "resilience"],
+			lensesReason: "only the event order changes",
+		});
+		expect(outcome.output).toBe(
+			"Risk raised to high: item 4 (events can arrive late). It applies until this change is reviewed or declined.\nLenses for the review: reliability, resilience (only the event order changes).",
+		);
+		expect(state.escalations).toEqual([{ items: [4], reason: "events can arrive late" }]);
+		expect(state.lenses).toEqual(["reliability", "resilience"]);
+	});
+
+	it("describes the lenses and their reason", () => {
+		const { description } = createRiskTool(new RiskRequests());
+		expect(description).toContain("lenses (1 to 4) with a lensesReason");
 	});
 
 	it.each([
-		[{}, "Give items with a reason, none with a reason, or a lens for a medium-risk review."],
+		[{}, "Give items with a reason, none with a reason, or lenses with a lensesReason."],
+		[{ lenses: ["risk"] }, "A lensesReason is required with lenses."],
+		[{ lenses: ["risk"], lensesReason: " " }, "A lensesReason is required with lenses."],
+		[{ none: true, reason: "x", lensesReason: "why" }, "A lensesReason needs lenses."],
+		[{ lenses: ["risk", "risk"], lensesReason: "why" }, "Each lens can be chosen once."],
+		[{ lenses: ["risk"], lensesReason: "x".repeat(501) }, "The lensesReason is 501 bytes; the limit is 500."],
+		[{ items: [1], reason: "x", lenses: ["risk"] }, "A lensesReason is required with lenses."],
 		[{ items: [1] }, "A reason is required with items."],
 		[{ none: true }, "A reason is required with none."],
 		[{ none: true, reason: "  " }, "A reason is required with none."],
 		[{ none: true, items: [1], reason: "x" }, "Give items or none, not both."],
 		[{ none: true, reason: "x".repeat(501) }, "The reason is 501 bytes; the limit is 500."],
-		[{ reason: "why" }, "Give items with a reason, none with a reason, or a lens for a medium-risk review."],
+		[{ reason: "why" }, "Give items with a reason, none with a reason, or lenses with a lensesReason."],
 		[{ items: [1], reason: "x".repeat(501) }, "The reason is 501 bytes; the limit is 500."],
 		[{ items: [1], reason: "ñ".repeat(251) }, "The reason is 502 bytes; the limit is 500."],
 	])("rejects %j and records nothing", async (input, message) => {
 		const { outcome, state } = await run(input);
 		expect(outcome).toMatchObject({ ok: false, output: message });
 		expect(state.escalations).toEqual([]);
-		expect(state.lens).toBeUndefined();
+		expect(state.none).toBeUndefined();
+		expect(state.lenses).toBeUndefined();
+		expect(state.lensesReason).toBeUndefined();
 	});
 
-	it("rejects items outside 1-6 and more than one lens through input validation", async () => {
-		await expect(run({ lenses: ["risk", "resilience"] })).rejects.toThrow();
+	it("rejects items outside 1-6 and lenses outside 1-4 through input validation", async () => {
+		await expect(run({ lenses: [], lensesReason: "x" })).rejects.toThrow();
+		await expect(run({ lenses: [...LENSES, "risk"], lensesReason: "x" })).rejects.toThrow();
+		await expect(run({ lenses: ["style"], lensesReason: "x" })).rejects.toThrow();
 		await expect(run({ items: [7], reason: "x" })).rejects.toThrow();
 		await expect(run({ items: [], reason: "x" })).rejects.toThrow();
 	});
 
-	it("clear forgets escalations and the lens", async () => {
+	it("clear forgets escalations and the lenses", async () => {
 		const state = new RiskRequests();
-		await run({ items: [1], reason: "x", lenses: ["risk"] }, state);
+		await run({ items: [1], reason: "x", lenses: ["risk"], lensesReason: "y" }, state);
 		state.clear();
 		expect(state.escalations).toEqual([]);
-		expect(state.lens).toBeUndefined();
-		expect(state.lensReason).toBeUndefined();
+		expect(state.lenses).toBeUndefined();
+		expect(state.lensesReason).toBeUndefined();
 	});
 });

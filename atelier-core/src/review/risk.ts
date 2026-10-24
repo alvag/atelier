@@ -16,8 +16,10 @@ export interface RiskOptions {
 	escalations?: readonly Escalation[];
 	/** The agent's reason for declaring the change not high-risk; it never lowers a level. */
 	none?: string;
-	/** The lens for a medium-risk review; ignored at other levels. */
-	lens?: Lens;
+	/** The lenses the agent chose for the review; without them, high risk gets all four and medium `reliability`. */
+	lenses?: readonly Lens[];
+	/** Why the agent chose those lenses. */
+	lensesReason?: string;
 }
 
 export interface Assessment {
@@ -25,6 +27,8 @@ export interface Assessment {
 	/** Why, in order: each signal names the file or the agent's reason. */
 	reasons: string[];
 	lenses: Lens[];
+	/** Why the agent chose the lenses; absent when it did not choose them. */
+	lensesReason?: string;
 	files: string[];
 	changedLines: number;
 	/** Only high risk is reviewed without being asked for. */
@@ -76,13 +80,30 @@ const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall", "prepare"] as c
 export function assessRisk(candidate: Candidate, options: RiskOptions = {}): Assessment {
 	const assessment = classify(candidate, options);
 	if (assessment.empty || tierIsExplained(assessment.level, assessment.reasons, candidate.files)) return assessment;
+	const { lensesReason: _, ...unchosen } = assessment;
 	return {
-		...assessment,
+		...unchosen,
 		level: "high",
 		reasons: [...assessment.reasons, `tier_not_explained: ${assessment.level} is not supported by its reasons`],
 		lenses: [...LENSES],
 		reviewDue: true,
 	};
+}
+
+/**
+ * The lenses of a review: the ones the agent chose, in their fixed order, or
+ * the default. A high risk found by Atelier itself, not only declared by the
+ * agent, always keeps the risk lens.
+ */
+function lensesFor(
+	options: RiskOptions,
+	fallback: readonly Lens[],
+	keepRisk: boolean,
+): { lenses: Lens[]; lensesReason?: string } {
+	const chosen = options.lenses;
+	if (chosen === undefined || chosen.length === 0) return { lenses: [...fallback] };
+	const lenses = LENSES.filter((lens) => chosen.includes(lens) || (keepRisk && lens === "risk"));
+	return options.lensesReason === undefined ? { lenses } : { lenses, lensesReason: options.lensesReason };
 }
 
 /** The reasons that make a level high: the named signals, in the form `<name>: <where>`. */
@@ -123,12 +144,13 @@ function classify(candidate: Candidate, options: RiskOptions): Assessment {
 	const declaration = declarationOf(options, !docs);
 	const declared = declaration === undefined ? {} : { declaration };
 	if (signals.length > 0) {
+		const found = signals.some((signal) => !signal.startsWith("agent: "));
 		if (declaration?.kind === "missing") signals.push(NO_DECLARATION);
 		return {
 			...base,
 			level: "high",
 			reasons: signals,
-			lenses: [...LENSES],
+			...lensesFor(options, LENSES, found),
 			reviewDue: true,
 			empty: false,
 			...declared,
@@ -150,7 +172,7 @@ function classify(candidate: Candidate, options: RiskOptions): Assessment {
 		reasons: [
 			declaration?.kind === "missing" ? `code change; ${NO_DECLARATION}` : "code change without a high-risk signal",
 		],
-		lenses: [options.lens ?? "reliability"],
+		...lensesFor(options, ["reliability"], false),
 		reviewDue: false,
 		empty: false,
 		...declared,

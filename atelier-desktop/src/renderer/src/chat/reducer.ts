@@ -43,6 +43,8 @@ export type TurnItem =
 			level: string;
 			reasons: string[];
 			lenses: string[];
+			/** Why the agent chose the lenses; absent when it did not. */
+			lensesReason?: string;
 			/** closed: the review ended, or the turn did, before it was answered. */
 			state: "pending" | "granted" | "declined" | "closed";
 	  }
@@ -53,6 +55,8 @@ export type TurnItem =
 			level?: string;
 			reasons: string[];
 			lenses: string[];
+			/** Why the agent chose the lenses; absent when it did not. */
+			lensesReason?: string;
 			/** What the agent declared about the risk; absent for documentation. */
 			declaration?: RiskDeclaration;
 			/** Short id of the commit the change is measured from, when it is not the current HEAD. */
@@ -465,6 +469,7 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					level: event.level,
 					reasons: event.reasons,
 					lenses: event.lenses,
+					...(event.lensesReason === undefined ? {} : { lensesReason: event.lensesReason }),
 					...(event.declaration === undefined ? {} : { declaration: event.declaration }),
 					...(event.since === undefined ? {} : { since: event.since }),
 					...(event.baseNote === undefined ? {} : { baseNote: event.baseNote }),
@@ -480,6 +485,7 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					level: event.level,
 					reasons: event.reasons,
 					lenses: event.lenses,
+					...(event.lensesReason === undefined ? {} : { lensesReason: event.lensesReason }),
 					state: "pending",
 				},
 			];

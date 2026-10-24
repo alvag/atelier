@@ -617,6 +617,28 @@ describe("App", () => {
 			expect(block.textContent).not.toContain("left in your worktree");
 		});
 
+		it("shows the lenses the agent chose and why, in the review block and the consent card", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			const chosen = { lenses: ["risk", "readability"], lensesReason: "renames the output" };
+			fake.emit({
+				type: "review_assessed",
+				tree: "t",
+				level: "high",
+				reasons: ["path: src/auth.ts (auth)"],
+				files: ["src/auth.ts"],
+				changedLines: 9,
+				reviewDue: true,
+				...chosen,
+			});
+			fake.emit({ ...consent, ...chosen });
+			const block = await screen.findByTestId("review");
+			expect(block.textContent).toContain("2 lenses: risk, readability");
+			expect(block.textContent).toContain("Lenses chosen: renames the output");
+			const card = await screen.findByRole("group", { name: "Review this change?" });
+			expect(card.textContent).toContain("Lenses: risk, readability (renames the output)");
+		});
+
 		it("shows the agent's risk declaration in the review block", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");

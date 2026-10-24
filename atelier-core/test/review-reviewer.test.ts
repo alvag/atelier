@@ -37,7 +37,7 @@ async function setup(changed: number) {
 	await writeFile(join(root, "a.ts"), `base\n${lines(changed)}`);
 	const frozen = await freezeCandidate(root);
 	if (!frozen.ok) throw new Error(frozen.reason);
-	return { root, candidate: frozen.candidate, assessment: assessRisk(frozen.candidate, { lens: "reliability" }) };
+	return { root, candidate: frozen.candidate, assessment: assessRisk(frozen.candidate, { lenses: ["reliability"] }) };
 }
 
 const usage = (n = 1) => ({ input: n, output: n, cacheRead: 0, cacheWrite: 0 });

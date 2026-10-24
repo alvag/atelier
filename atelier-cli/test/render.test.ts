@@ -337,6 +337,25 @@ describe("Renderer", () => {
 			);
 		});
 
+		it("names the lenses the agent chose and why, and only then", () => {
+			const { stdout } = render([
+				{
+					type: "review_assessed",
+					tree: "t",
+					level: "high",
+					reasons: ["agent: item 4 (events can arrive late)"],
+					files: ["a.ts"],
+					changedLines: 1,
+					lenses: ["resilience", "reliability"],
+					lensesReason: "only the event order changes",
+					reviewDue: true,
+				},
+			]);
+			expect(stdout).toBe(
+				"◇ review high · 2 lenses: resilience, reliability (agent: item 4 (events can arrive late)) · lenses chosen: only the event order changes\n",
+			);
+		});
+
 		it("shows the content-derived reasons with their place", () => {
 			const { stdout } = render([
 				{

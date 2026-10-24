@@ -194,7 +194,12 @@ export async function run(
 		}
 		return /^y(es)?$/i.test(answer.line?.trim() ?? "");
 	};
-	const consent = async ({ level, reasons, lenses }: ReviewConsentRequest): Promise<"granted" | "declined"> => {
+	const consent = async ({
+		level,
+		reasons,
+		lenses,
+		lensesReason,
+	}: ReviewConsentRequest): Promise<"granted" | "declined"> => {
 		if (!io.isTTY) {
 			renderer.endLine();
 			io.stderr("review skipped: there is no terminal to ask; use /review in an interactive session to review it\n");
@@ -204,8 +209,9 @@ export async function run(
 		await new Promise((resolve) => setImmediate(resolve));
 		// Reasons come from file paths and contents: show control characters instead of letting the terminal run them.
 		const shown = reasons.map((reason) => visibleText(reason).text).join("; ");
+		const why = lensesReason === undefined ? "" : ` (${visibleText(lensesReason).text})`;
 		const answer = await askYesNo(
-			`Review this change?\n  risk: ${level}\n  reasons: ${shown}\n  lenses: ${lenses.join(", ")}\n`,
+			`Review this change?\n  risk: ${level}\n  reasons: ${shown}\n  lenses: ${lenses.join(", ")}${why}\n`,
 		);
 		return answer ? "granted" : "declined";
 	};

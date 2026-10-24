@@ -385,8 +385,10 @@ export class Renderer {
 					this.#style(
 						"dim",
 						`◇ review ${event.level} · ${event.lenses.length} ${event.lenses.length === 1 ? "lens" : "lenses"}${
-							event.reasons.length > 0 ? ` (${event.reasons.join("; ")})` : ""
-						}${event.declaration?.kind === "none" ? ` · declared none: ${event.declaration.reason}` : ""}${
+							event.lensesReason === undefined ? "" : `: ${event.lenses.join(", ")}`
+						}${event.reasons.length > 0 ? ` (${event.reasons.join("; ")})` : ""}${
+							event.declaration?.kind === "none" ? ` · declared none: ${event.declaration.reason}` : ""
+						}${event.lensesReason === undefined ? "" : ` · lenses chosen: ${event.lensesReason}`}${
 							event.since === undefined ? "" : ` · since ${event.since}`
 						}${event.baseNote === undefined ? "" : ` · ${event.baseNote}`}`,
 					),
