@@ -10,6 +10,14 @@ export interface ToolContext {
 	callId?: string;
 }
 
+/** What a tool says about a call before it runs. */
+export interface ToolGate {
+	/** The call never runs and nobody is asked: `output` is what the model is told, `summary` the line for the user. */
+	refusal?: { output: string; summary: string };
+	/** The user must approve the call; `always` asks even when approvals are skipped (`--yes`), and `reason` is the model's own. */
+	approval?: { command: string; reason?: string; always?: boolean };
+}
+
 export interface ToolOutcome {
 	ok: boolean;
 	/** Text returned to the model. */
@@ -27,6 +35,8 @@ export interface ToolDefinition {
 	readonly inputShape: z.ZodRawShape;
 	/** Returns the command the user must approve, or undefined when no approval is needed. */
 	approvalCommand(input: unknown): string | undefined;
+	/** Decides before the call runs; a tool without it only has `approvalCommand`. */
+	gate?(input: unknown, context: ToolContext): Promise<ToolGate>;
 	execute(input: unknown, context: ToolContext): Promise<ToolOutcome>;
 }
 
@@ -35,6 +45,7 @@ export interface ToolSpec<Shape extends z.ZodRawShape> {
 	description: string;
 	inputShape: Shape;
 	approvalCommand?: (input: z.output<z.ZodObject<Shape>>) => string | undefined;
+	gate?: (input: z.output<z.ZodObject<Shape>>, context: ToolContext) => Promise<ToolGate>;
 	execute: (input: z.output<z.ZodObject<Shape>>, context: ToolContext) => Promise<ToolOutcome>;
 }
 
@@ -49,11 +60,13 @@ export function defineTool<Shape extends z.ZodRawShape>(spec: ToolSpec<Shape>): 
 		if (!result.success) throw new ToolInputError(z.prettifyError(result.error));
 		return result.data;
 	};
+	const gate = spec.gate;
 	return {
 		name: spec.name,
 		description: spec.description,
 		inputShape: spec.inputShape,
 		approvalCommand: (input) => spec.approvalCommand?.(parse(input)),
+		...(gate ? { gate: async (input: unknown, context: ToolContext) => gate(parse(input), context) } : {}),
 		execute: async (input, context) => spec.execute(parse(input), context),
 	};
 }

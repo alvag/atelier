@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { findDestructiveCommand } from "./destructive-guard.ts";
 import { MAX_BYTES, takeTail } from "./limits.ts";
 import { type Sandbox, type SandboxPolicyName, sandbox as sharedSandbox } from "./sandbox.ts";
 import { defineTool } from "./types.ts";
@@ -124,6 +125,11 @@ function commandEnv(extra: Readonly<Record<string, string>>): NodeJS.ProcessEnv 
 	return { ...env, ...extra };
 }
 
+/** What the model and the user are told when the guard refuses a command. */
+function refusal(rule: string, command: string): { output: string; summary: string } {
+	return { output: `Refused: ${rule} — ${command}`, summary: `Refused: ${rule} — ${firstLine(command)}` };
+}
+
 export interface BashOptions {
 	/** Runs commands without asking the user: for a tool whose working directory is a throwaway copy. */
 	withoutApproval?: boolean;
@@ -155,7 +161,15 @@ export function createBashTool({
 			timeoutSec: z.number().int().min(1).max(3600).optional().describe("Timeout in seconds"),
 		},
 		approvalCommand: ({ command }) => (withoutApproval ? undefined : command),
+		async gate({ command }, { cwd }) {
+			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
+			if (rule !== undefined) return { refusal: refusal(rule, command) };
+			return withoutApproval ? {} : { approval: { command } };
+		},
 		async execute({ command, timeoutSec }, { cwd, signal, scratchDir }) {
+			// The session asks the gate first; this keeps a direct call from running what the guard refuses.
+			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
+			if (rule !== undefined) return { ok: false, ...refusal(rule, command), truncated: false };
 			const timeout = timeoutSec ?? DEFAULT_TIMEOUT_SEC;
 			if (signal?.aborted)
 				return { ok: false, output: "[command aborted]", summary: `${firstLine(command)} (aborted)`, truncated: false };

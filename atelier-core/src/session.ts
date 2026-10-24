@@ -20,7 +20,13 @@ import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
-import { type ToolContext, type ToolDefinition, ToolInputError, type ToolOutcome } from "./tools/types.ts";
+import {
+	type ToolContext,
+	type ToolDefinition,
+	type ToolGate,
+	ToolInputError,
+	type ToolOutcome,
+} from "./tools/types.ts";
 
 type TurnEvent = AtelierEventBody & SubagentTag;
 
@@ -30,6 +36,10 @@ const PARENT_ONLY = new Set([TASK_TOOL, FEATURE_TOOL, PHASE_TOOL, MEMORY_TOOL, R
 export interface ApprovalRequest {
 	callId: string;
 	command: string;
+	/** Why the agent asks to run the command outside the sandbox; present only for that request. */
+	reason?: string;
+	/** `--yes` does not answer this one: the user must. */
+	always?: boolean;
 }
 
 export interface SessionOptions {
@@ -419,19 +429,32 @@ export class Session {
 		if (!tool) return fail(`Unknown tool: ${call.tool}`);
 
 		try {
-			const command = tool.approvalCommand(call.input);
-			if (command !== undefined && !this.#options.autoApprove) {
-				emit({ type: "approval_requested", callId, command });
-				const approved = (await this.#options.approve?.({ callId, command })) ?? false;
-				if (!approved) return fail("The user denied this command.");
-			}
 			const signal = this.#abort?.signal;
-			const outcome = await tool.execute(call.input, {
+			const context: ToolContext = {
 				cwd: this.#options.cwd,
 				...(signal ? { signal } : {}),
 				...(this.#scratchDir === undefined ? {} : { scratchDir: this.#scratchDir }),
 				callId,
-			});
+			};
+			const gate = await this.#gate(tool, call.input, context);
+			if (gate.refusal) {
+				emit({ type: "tool_call_finished", callId, ok: false, summary: gate.refusal.summary, truncated: false });
+				return { ok: false, output: gate.refusal.output };
+			}
+			const { approval } = gate;
+			if (approval && (approval.always || !this.#options.autoApprove)) {
+				const { command, reason } = approval;
+				emit({ type: "approval_requested", callId, command, ...(reason === undefined ? {} : { reason }) });
+				const request = {
+					callId,
+					command,
+					...(reason === undefined ? {} : { reason }),
+					...(approval.always ? { always: true } : {}),
+				};
+				const approved = (await this.#options.approve?.(request)) ?? false;
+				if (!approved) return fail("The user denied this command.");
+			}
+			const outcome = await tool.execute(call.input, context);
 			emit({
 				type: "tool_call_finished",
 				callId,
@@ -445,6 +468,13 @@ export class Session {
 			const prefix = error instanceof ToolInputError ? "Invalid input" : "Tool failed";
 			return fail(`${prefix}: ${describeError(error)}`);
 		}
+	}
+
+	/** What the tool says about the call; a tool without a gate only has the command to approve. */
+	async #gate(tool: ToolDefinition, input: unknown, context: ToolContext): Promise<ToolGate> {
+		if (tool.gate) return tool.gate(input, context);
+		const command = tool.approvalCommand(input);
+		return command === undefined ? {} : { approval: { command } };
 	}
 
 	/** Runs one child turn with its own context and turns its final text into the report. */

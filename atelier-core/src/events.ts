@@ -109,7 +109,8 @@ export type AtelierEventBody =
 			truncated: boolean;
 			fullOutputPath?: string;
 	  }
-	| { type: "approval_requested"; callId: string; command: string }
+	/** `reason`: the agent asked to run the command outside the sandbox, and says why. */
+	| { type: "approval_requested"; callId: string; command: string; reason?: string }
 	/**
 	 * `requests`: model requests the turn made, when the backend knows it; `context`: how full the context is, when known.
 	 * `durationMs`: wall time of the whole turn, tools and end-of-turn review included; set by the session.
