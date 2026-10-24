@@ -116,23 +116,36 @@ export interface WorktreeGit {
 /**
  * The git data a linked worktree needs to write, which lives outside it, in
  * the main checkout's `.git`: its own directory there and the repository's
- * objects, refs and their logs. The shared hooks and configuration stay
- * protected, as in the working directory itself.
+ * objects, refs and their logs. Protected, because writing them would make git
+ * run code or work on another repository: the shared hooks and configuration,
+ * the worktree's `config.worktree` (a `core.hooksPath` there runs a hook the
+ * next time the user commits, outside the sandbox), its `commondir` and
+ * `gitdir` (which point git elsewhere) and the objects' alternates. The secret
+ * file patterns also hold in every directory added here.
  */
 function worktreeGitPaths(worktreeGit: WorktreeGit | undefined): { allowWrite: string[]; denyWrite: string[] } {
 	if (worktreeGit === undefined) return { allowWrite: [], denyWrite: [] };
 	const { gitDir, commonDir } = worktreeGit;
+	const directories = [gitDir, join(commonDir, "objects"), join(commonDir, "refs"), join(commonDir, "logs")];
 	return {
 		allowWrite: [
-			gitDir,
-			join(commonDir, "objects"),
-			join(commonDir, "refs"),
-			join(commonDir, "logs"),
+			...directories,
 			join(commonDir, "packed-refs"),
-			// Taken while refs are updated or packed.
+			// Taken and renamed while refs are updated or packed.
 			join(commonDir, "packed-refs.lock"),
+			join(commonDir, "packed-refs.new"),
 		],
-		denyWrite: [join(commonDir, "hooks"), join(commonDir, "config")],
+		denyWrite: [
+			join(commonDir, "hooks"),
+			join(commonDir, "config"),
+			join(commonDir, "config.worktree"),
+			join(commonDir, "objects", "info"),
+			join(gitDir, "config.worktree"),
+			join(gitDir, "commondir"),
+			join(gitDir, "gitdir"),
+			join(gitDir, "hooks"),
+			...directories.flatMap(secretFilePatterns),
+		],
 	};
 }
 

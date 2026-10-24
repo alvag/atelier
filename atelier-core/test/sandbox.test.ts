@@ -143,7 +143,19 @@ describe("agentPolicy", () => {
 			expect(filesystem.allowWrite).toContain(path);
 		expect(filesystem.allowWrite).not.toContain("/work/main/.git");
 		expect(filesystem.allowWrite).not.toContain("/work/main");
-		expect(filesystem.denyWrite).toEqual(expect.arrayContaining(["/work/main/.git/hooks", "/work/main/.git/config"]));
+		expect(filesystem.allowWrite).toContain("/work/main/.git/packed-refs.new");
+		expect(filesystem.denyWrite).toEqual(
+			expect.arrayContaining([
+				"/work/main/.git/hooks",
+				"/work/main/.git/config",
+				"/work/main/.git/config.worktree",
+				"/work/main/.git/objects/info",
+				"/work/main/.git/worktrees/project/config.worktree",
+				"/work/main/.git/worktrees/project/commondir",
+				"/work/main/.git/worktrees/project/gitdir",
+				"/work/main/.git/objects/**/*.key",
+			]),
+		);
 		const outsideCheckout = agentPolicy(SESSION).filesystem.allowWrite.map((entry) =>
 			typeof entry === "string" ? entry : entry.path,
 		);

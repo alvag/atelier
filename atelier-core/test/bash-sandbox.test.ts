@@ -332,6 +332,34 @@ describe.skipIf(!onMac)("the agent's bash in a linked git worktree", () => {
 		expect(git(main, "branch", "--list", "feature")).toContain("feature");
 	});
 
+	it("cannot write what would make git run code or look elsewhere: config.worktree, commondir, gitdir, alternates", async () => {
+		const common = join(main, ".git");
+		const own = join(common, "worktrees", "wt");
+		const result = await run(
+			[
+				`printf '[core]\\n\\thooksPath = ${common}/refs/x\\n' > ${own}/config.worktree`,
+				`echo ${outside} > ${own}/commondir`,
+				`echo ${outside}/x > ${own}/gitdir`,
+				`mkdir -p ${common}/objects/info && echo ${outside} > ${common}/objects/info/alternates`,
+			].join("; "),
+		);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(4);
+		expect(await exists(join(own, "config.worktree"))).toBe(false);
+		expect(await readFile(join(own, "commondir"), "utf8")).not.toContain(outside);
+	});
+
+	it("keeps the secret file patterns inside the git data it may write", async () => {
+		const common = join(main, ".git");
+		const result = await run(`echo x > ${common}/objects/private.key; echo x > ${common}/refs/.env`);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(2);
+	});
+
+	it("packs and deletes refs", async () => {
+		const result = await run("git branch tmp && git pack-refs --all && git branch -D tmp");
+		expect(result.output).not.toContain("Operation not permitted");
+		expect(result.ok).toBe(true);
+	});
+
 	it("still cannot write the shared git hooks or configuration, nor the main checkout's files", async () => {
 		const common = join(main, ".git");
 		const result = await run(
