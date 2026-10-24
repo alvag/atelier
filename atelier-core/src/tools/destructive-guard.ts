@@ -64,9 +64,19 @@ const WRAPPER_VALUE_OPTIONS: Record<string, readonly string[]> = {
 /** Unquoted words after which a command follows. */
 const RESERVED_WORDS = new Set(["then", "else", "elif", "do", "{", "!", "if", "while", "until"]);
 
-/** Where the real command starts in a segment, and the wrappers (`env`, `sudo`, ...) passed on the way. */
-function head(segment: readonly Token[]): { cursor: number; wrappers: string[] } {
+/** A redirection word (`2>file`, `>file`, `<in`, `>>log`, `>|f`); `withTarget` when the file is the next word (`2> file`). */
+const REDIRECTION = /^\d*(?:>>?|<<?|>\|)/;
+const BARE_REDIRECTION = /^\d*(?:>>?|<<?|>\|)$/;
+
+/**
+ * Where the real command starts in a segment, the wrappers (`env`, `sudo`, ...)
+ * passed on the way, and command lines a wrapper runs from a string (`env -S`).
+ * Redirections before the command or between wrappers are skipped: they never
+ * name the command.
+ */
+function head(segment: readonly Token[]): { cursor: number; wrappers: string[]; payloads: string[] } {
 	const wrappers: string[] = [];
+	const payloads: string[] = [];
 	let cursor = 0;
 	while (
 		cursor < segment.length &&
@@ -80,18 +90,38 @@ function head(segment: readonly Token[]): { cursor: number; wrappers: string[] }
 			cursor++;
 			continue;
 		}
+		const raw = segment[cursor]?.raw ?? "";
+		if (REDIRECTION.test(raw)) {
+			cursor += BARE_REDIRECTION.test(raw) ? 2 : 1;
+			continue;
+		}
 		const name = executable(value);
 		if (!WRAPPERS.includes(name)) break;
 		wrappers.push(name);
 		cursor++;
-		while (cursor < segment.length && segment[cursor]?.value.startsWith("-")) {
+		while (cursor < segment.length) {
+			const word = segment[cursor]?.raw ?? "";
+			if (REDIRECTION.test(word)) {
+				cursor += BARE_REDIRECTION.test(word) ? 2 : 1;
+				continue;
+			}
+			if (!segment[cursor]?.value.startsWith("-")) break;
 			const flag = segment[cursor++]?.value ?? "";
 			if (flag === "--") break;
+			// `env -S "cmd args"` runs the string as a command line: it is checked like `sh -c`.
+			if (name === "env" && (flag === "-S" || flag === "--split-string")) {
+				payloads.push(segment[cursor++]?.value ?? "");
+				return { cursor: segment.length, wrappers, payloads };
+			}
+			if (name === "env" && (flag.startsWith("--split-string=") || /^-S./.test(flag))) {
+				payloads.push(flag.startsWith("-S") ? flag.slice(2) : flag.slice("--split-string=".length));
+				return { cursor: segment.length, wrappers, payloads };
+			}
 			if (WRAPPER_VALUE_OPTIONS[name]?.includes(flag)) cursor++;
 		}
 		if (name === "timeout") cursor++;
 	}
-	return { cursor, wrappers };
+	return { cursor, wrappers, payloads };
 }
 
 /**
@@ -249,8 +279,12 @@ export function findDestructiveCommand(command: string, context: GuardContext, d
 		if (end < tokens.length && !tokens[end]?.operator) continue;
 		const segment = tokens.slice(start, end);
 		start = end + 1;
-		const { cursor, wrappers } = head(segment);
+		const { cursor, wrappers, payloads } = head(segment);
 		if (wrappers.includes("sudo")) return "sudo";
+		for (const payload of payloads) {
+			const found = findDestructiveCommand(payload, context, depth + 1);
+			if (found) return found;
+		}
 		const first = segment[cursor];
 		if (first === undefined) continue;
 		const name = executable(first.value);
