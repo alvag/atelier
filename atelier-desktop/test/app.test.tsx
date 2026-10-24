@@ -278,6 +278,31 @@ describe("App", () => {
 		expect(await screen.findByText("Denied")).toBeTruthy();
 	});
 
+	it("shows the reason on an approval card that asks to leave the sandbox", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "pnpm install" } });
+		fake.emit({
+			type: "approval_requested",
+			callId: "c1",
+			command: "pnpm install",
+			reason: "the install needs the network",
+		});
+		expect(await screen.findByText("Run this command outside the sandbox?")).toBeTruthy();
+		expect(screen.getByText("the install needs the network")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Allow" }));
+		await waitFor(() => expect(fake.commands.at(-1)).toMatchObject({ command: "session.approve", approved: true }));
+	});
+
+	it("keeps the plain approval card when there is no reason", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "ls" } });
+		fake.emit({ type: "approval_requested", callId: "c1", command: "ls" });
+		expect(await screen.findByText("Run this command?")).toBeTruthy();
+		expect(screen.queryByText(/outside the sandbox/)).toBeNull();
+	});
+
 	it("shows a failed command and lets the user try again", async () => {
 		const fake = fakeBridge();
 		fake.answers["session.send"] = { ok: false, error: { code: "busy", message: "A turn is already running." } };

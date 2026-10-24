@@ -20,6 +20,7 @@ import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
+import { SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
 import {
 	type ToolContext,
 	type ToolDefinition,
@@ -48,8 +49,13 @@ export interface SessionOptions {
 	model?: string;
 	tools: readonly ToolDefinition[];
 	systemPromptAppend?: string;
-	/** Skips approval for every tool call (`--yes`). */
+	/**
+	 * Skips approval for the tool calls that run sandboxed (`--yes`). Never for what a tool says
+	 * must always be asked: a command outside the sandbox, or any command when there is no sandbox.
+	 */
 	autoApprove?: boolean;
+	/** Turns the sandbox off for this session (`--no-sandbox`): `bash` runs unsandboxed, every command asks, and the verifier gets no `bash`. */
+	noSandbox?: boolean;
 	/** Asks the user; without it, calls that need approval are denied. */
 	approve?: (request: ApprovalRequest) => Promise<boolean>;
 	createId?: () => string;
@@ -97,6 +103,8 @@ export class Session {
 	/** The instruction files read at start; reported with the first turn. */
 	#instructions: ProjectInstructions | undefined;
 	#announced = false;
+	/** The sandbox warning was already said in this turn. */
+	#warned = false;
 	#abort: AbortController | undefined;
 	#closed = false;
 	#closing: Promise<void> | undefined;
@@ -119,7 +127,11 @@ export class Session {
 					options.memory ? (feature) => this.#mirror(feature) : undefined,
 				)
 			: undefined;
-		this.#review = options.review ? new SessionReview(options.review) : undefined;
+		this.#review = options.review
+			? new SessionReview(
+					options.noSandbox ? { ...options.review, sandbox: new Sandbox({ disabled: SANDBOX_OFF }) } : options.review,
+				)
+			: undefined;
 		const all = [
 			...tools,
 			...(this.#review ? [this.#review.tool] : []),
@@ -318,6 +330,7 @@ export class Session {
 
 		const turn = new Channel<TurnEvent>();
 		this.#turn = turn;
+		this.#warned = false;
 		const abort = new AbortController();
 		this.#abort = abort;
 		const started = performance.now();
@@ -435,11 +448,16 @@ export class Session {
 				...(signal ? { signal } : {}),
 				...(this.#scratchDir === undefined ? {} : { scratchDir: this.#scratchDir }),
 				callId,
+				...(this.#options.noSandbox ? { sandboxOff: true } : {}),
 			};
 			const gate = await this.#gate(tool, call.input, context);
 			if (gate.refusal) {
 				emit({ type: "tool_call_finished", callId, ok: false, summary: gate.refusal.summary, truncated: false });
 				return { ok: false, output: gate.refusal.output };
+			}
+			if (gate.warning !== undefined && !this.#warned) {
+				this.#warned = true;
+				emit({ type: "sandbox_warning", reason: gate.warning });
 			}
 			const { approval } = gate;
 			if (approval && (approval.always || !this.#options.autoApprove)) {
@@ -501,6 +519,7 @@ export class Session {
 				systemPromptAppend: agent.prompt,
 				maxRequestsPerTurn: agent.maxRequests,
 				...(this.#options.autoApprove === undefined ? {} : { autoApprove: this.#options.autoApprove }),
+				...(this.#options.noSandbox ? { noSandbox: true } : {}),
 				...(this.#options.approve === undefined ? {} : { approve: this.#options.approve }),
 				createId: this.#createId,
 			});

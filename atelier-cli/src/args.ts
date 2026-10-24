@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { reviewEnabled } from "@atelier/core";
+import { reviewEnabled, sandboxEnabled } from "@atelier/core";
 import { BACKEND_NAMES, type BackendName, DEFAULT_BACKEND } from "@atelier/core/protocol";
 
 export class UsageError extends Error {
@@ -18,6 +18,8 @@ export interface CliArgs {
 	version: boolean;
 	/** Changes are reviewed (RDD): on unless --no-review or ATELIER_REVIEW=off. */
 	review: boolean;
+	/** Present when `bash` runs without the sandbox: --no-sandbox or ATELIER_SANDBOX=off. */
+	noSandbox?: true;
 }
 
 export const USAGE = `Usage: atelier [options] [prompt]
@@ -26,7 +28,8 @@ Runs a coding agent in the working directory. With a prompt, runs one turn
 and exits; without one, starts an interactive session (/exit or Ctrl+D to quit).
 
 Options:
-  -y, --yes              Run bash commands without asking
+  -y, --yes              Run bash commands without asking, but only those that run in
+                         the sandbox (macOS): a command outside it is always asked
       --backend <name>   claude-code (default): Claude Code on your Claude subscription
                          anthropic-api: Atelier's own loop, billed to an API key read
                          from the macOS Keychain (service atelier-anthropic) or from
@@ -35,6 +38,8 @@ Options:
                          claude-sonnet-5-5 on anthropic-api)
       --cwd <dir>        Working directory (default: current directory)
       --no-review        Do not review or verify changes (see below)
+      --no-sandbox       Run bash without the macOS sandbox: every command asks, --yes
+                         does not apply, and each turn warns about it
   -h, --help             Show this help
   -v, --version          Show the version
 
@@ -53,6 +58,7 @@ anything.
 Environment:
   ATELIER_MEMORY=off     Run without long-term memory
   ATELIER_REVIEW=off     Run without reviewing or verifying changes, like --no-review
+  ATELIER_SANDBOX=off    Run bash without the sandbox, like --no-sandbox
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
                          older history (default: the model's window minus a reserve,
                          at most 200000; never more than the window minus the reserve)
@@ -84,6 +90,7 @@ export function parseCliArgs(
 		help: values.help ?? false,
 		version: values.version ?? false,
 		review: !(values["no-review"] ?? false) && reviewEnabled(env),
+		...((values["no-sandbox"] ?? false) || !sandboxEnabled(env) ? { noSandbox: true as const } : {}),
 	};
 }
 
@@ -100,6 +107,7 @@ function parse(argv: readonly string[]) {
 			help: { type: "boolean", short: "h" },
 			version: { type: "boolean", short: "v" },
 			"no-review": { type: "boolean" },
+			"no-sandbox": { type: "boolean" },
 		},
 	});
 }

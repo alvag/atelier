@@ -8,6 +8,8 @@ export interface ToolContext {
 	scratchDir?: string;
 	/** The call being executed. */
 	callId?: string;
+	/** The session runs with the sandbox turned off (`--no-sandbox`): `bash` runs unsandboxed and every command asks. */
+	sandboxOff?: boolean;
 }
 
 /** What a tool says about a call before it runs. */
@@ -16,6 +18,8 @@ export interface ToolGate {
 	refusal?: { output: string; summary: string };
 	/** The user must approve the call; `always` asks even when approvals are skipped (`--yes`), and `reason` is the model's own. */
 	approval?: { command: string; reason?: string; always?: boolean };
+	/** Said once per turn, before the first question: why the call runs without the protection it normally has. */
+	warning?: string;
 }
 
 export interface ToolOutcome {

@@ -1,9 +1,18 @@
 import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { type AtelierEvent, createBashTool, FakeBackend, Session } from "../src/index.ts";
-import { Sandbox } from "../src/tools/sandbox.ts";
+import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 
 const cwd = "/work/project";
+/** A sandbox that is there and wraps nothing. */
+const manager: SandboxManagerLike = {
+	isSupportedPlatform: () => true,
+	checkDependencies: () => ({ errors: [], warnings: [] }),
+	initialize: async () => {},
+	wrapWithSandbox: async (command) => command,
+	cleanupAfterCommand: () => {},
+	reset: async () => {},
+};
 const unavailable = () => new Sandbox({ platform: "linux" });
 const bash = (options: Parameters<typeof createBashTool>[0] = {}) =>
 	createBashTool({ sandbox: unavailable(), ...options });
@@ -178,7 +187,7 @@ describe("the guard in a session", () => {
 		const session = await Session.start({
 			backend,
 			cwd,
-			tools: [bash()],
+			tools: [bash({ sandbox: new Sandbox({ platform: "darwin", manager }) })],
 			approve: async (request) => {
 				questions.push(request);
 				return true;

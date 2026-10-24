@@ -45,6 +45,19 @@ describe("parseCliArgs", () => {
 		expect(parseCliArgs(["--no-review", "x"], "/h", {}).review).toBe(false);
 	});
 
+	it("runs bash in the sandbox unless --no-sandbox or ATELIER_SANDBOX=off", () => {
+		expect(parseCliArgs(["x"], "/h").noSandbox).toBeUndefined();
+		expect(parseCliArgs(["--no-sandbox", "x"], "/h").noSandbox).toBe(true);
+		expect(parseCliArgs(["x"], "/h", { ATELIER_SANDBOX: "off" }).noSandbox).toBe(true);
+		expect(parseCliArgs(["x"], "/h", { ATELIER_SANDBOX: "on" }).noSandbox).toBeUndefined();
+		expect(parseCliArgs(["--no-sandbox", "x"], "/h", {}).noSandbox).toBe(true);
+	});
+
+	it("documents both ways to turn the sandbox off in the help", () => {
+		expect(USAGE).toContain("--no-sandbox");
+		expect(USAGE).toContain("ATELIER_SANDBOX=off");
+	});
+
 	it("documents both ways to turn the review off in the help", () => {
 		expect(USAGE).toContain("--no-review");
 		expect(USAGE).toContain("ATELIER_REVIEW=off");

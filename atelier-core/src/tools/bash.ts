@@ -6,8 +6,14 @@ import { join } from "node:path";
 import { z } from "zod";
 import { findDestructiveCommand } from "./destructive-guard.ts";
 import { MAX_BYTES, takeTail } from "./limits.ts";
-import { type Sandbox, type SandboxPolicyName, sandbox as sharedSandbox } from "./sandbox.ts";
-import { defineTool } from "./types.ts";
+import {
+	SANDBOX_OFF,
+	type Sandbox,
+	type SandboxPolicyName,
+	type SandboxStatus,
+	sandbox as sharedSandbox,
+} from "./sandbox.ts";
+import { defineTool, ToolInputError } from "./types.ts";
 
 export const DEFAULT_TIMEOUT_SEC = 120;
 const KILL_GRACE_MS = 2000;
@@ -125,6 +131,14 @@ function commandEnv(extra: Readonly<Record<string, string>>): NodeJS.ProcessEnv 
 	return { ...env, ...extra };
 }
 
+/** Not a destructive command, but a request the verifier never gets. */
+const VERIFIER_UNSANDBOXED = "the verifier's bash cannot run outside the sandbox";
+
+/** The sandbox's status, or "off" when the session turned it off. */
+async function statusFor(sandbox: Sandbox, sandboxOff: boolean | undefined): Promise<SandboxStatus> {
+	return sandboxOff ? { available: false, reason: SANDBOX_OFF } : sandbox.status();
+}
+
 /** What the model and the user are told when the guard refuses a command. */
 function refusal(rule: string, command: string): { output: string; summary: string } {
 	return { output: `Refused: ${rule} — ${command}`, summary: `Refused: ${rule} — ${firstLine(command)}` };
@@ -159,14 +173,31 @@ export function createBashTool({
 		inputShape: {
 			command: z.string().min(1).describe("Command to run"),
 			timeoutSec: z.number().int().min(1).max(3600).optional().describe("Timeout in seconds"),
+			unsandboxed: z
+				.boolean()
+				.optional()
+				.describe(
+					"Run this one command outside the sandbox, only when it cannot work inside it (for example to install dependencies). The user is always asked, even with --yes; give the reason.",
+				),
+			reason: z.string().optional().describe("Required with unsandboxed: why this command must leave the sandbox"),
 		},
 		approvalCommand: ({ command }) => (withoutApproval ? undefined : command),
-		async gate({ command }, { cwd }) {
+		async gate({ command, unsandboxed, reason }, { cwd, sandboxOff }) {
 			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
 			if (rule !== undefined) return { refusal: refusal(rule, command) };
-			return withoutApproval ? {} : { approval: { command } };
+			if (unsandboxed) {
+				if (policy === "verifier") return { refusal: refusal(VERIFIER_UNSANDBOXED, command) };
+				if (reason === undefined || reason.trim() === "")
+					throw new ToolInputError("reason is required with unsandboxed: say why this command must leave the sandbox.");
+				return { approval: { command, reason: reason.trim(), always: true } };
+			}
+			if (withoutApproval) return {};
+			const status = await statusFor(sandbox, sandboxOff);
+			if (status.available) return { approval: { command } };
+			// Without the sandbox the approval is the only protection left: --yes cannot stand in for it.
+			return { approval: { command, always: true }, warning: status.reason };
 		},
-		async execute({ command, timeoutSec }, { cwd, signal, scratchDir }) {
+		async execute({ command, timeoutSec, unsandboxed }, { cwd, signal, scratchDir, sandboxOff }) {
 			// The session asks the gate first; this keeps a direct call from running what the guard refuses.
 			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
 			if (rule !== undefined) return { ok: false, ...refusal(rule, command), truncated: false };
@@ -174,7 +205,11 @@ export function createBashTool({
 			if (signal?.aborted)
 				return { ok: false, output: "[command aborted]", summary: `${firstLine(command)} (aborted)`, truncated: false };
 
-			const sandboxStatus = await sandbox.status();
+			if (unsandboxed && policy === "verifier")
+				return { ok: false, ...refusal(VERIFIER_UNSANDBOXED, command), truncated: false };
+			const sandboxStatus: SandboxStatus = unsandboxed
+				? { available: false, reason: "the agent asked to run this command outside the sandbox" }
+				: await statusFor(sandbox, sandboxOff);
 			if (!sandboxStatus.available && policy === "verifier")
 				return {
 					ok: false,

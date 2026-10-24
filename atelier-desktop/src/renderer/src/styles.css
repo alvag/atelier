@@ -131,6 +131,11 @@ main {
 	overflow-wrap: anywhere;
 }
 
+.approval-reason {
+	margin: 4px 0 8px;
+	overflow-wrap: anywhere;
+}
+
 .approval-actions {
 	display: flex;
 	gap: 8px;

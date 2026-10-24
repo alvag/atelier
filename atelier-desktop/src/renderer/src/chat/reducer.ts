@@ -26,7 +26,14 @@ export type TurnItem =
 			/** A task call's subagent: its work, shown under the call. */
 			subagent?: Subagent;
 	  }
-	| { kind: "approval"; callId: string; command: string; state: "pending" | "approved" | "denied" }
+	| {
+			kind: "approval";
+			callId: string;
+			command: string;
+			/** Why the agent asks to run the command outside the sandbox; absent for an ordinary command. */
+			reason?: string;
+			state: "pending" | "approved" | "denied";
+	  }
 	| {
 			kind: "review_consent";
 			reviewId: string;
@@ -389,7 +396,16 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 			);
 		}
 		case "approval_requested":
-			return [...items, { kind: "approval", callId: event.callId, command: event.command, state: "pending" }];
+			return [
+				...items,
+				{
+					kind: "approval",
+					callId: event.callId,
+					command: event.command,
+					...(event.reason === undefined ? {} : { reason: event.reason }),
+					state: "pending",
+				},
+			];
 		case "error":
 			return [...items, { kind: "error", code: event.code, message: event.message }];
 		case "cache_miss":

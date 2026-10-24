@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -753,5 +753,89 @@ describe("M9 baseline non-TTY output", () => {
 			stdout: interactive ? `first answer\n${tokens}second answer\n${tokens}` : `hello\n${tokens}`,
 			stderr: "no review: Review is off (--no-review or ATELIER_REVIEW=off).\n",
 		});
+	});
+});
+
+describe("bash outside the sandbox", () => {
+	const SANDBOX_OFF = "sandbox turned off for this session";
+	const bash = (input: Record<string, string | boolean>): FakeStep => ({ toolCall: { tool: "bash", input } });
+
+	it("asks every command with --no-sandbox, even with --yes, and warns once per turn", async () => {
+		const turn = [bash({ command: "echo one" }), bash({ command: "echo two" }), { event: finished }];
+		const h = harness([turn], { isTTY: true, answers: ["y", "n"] });
+		await run(["--no-sandbox", "--yes", "x"], h.io, h.createBackend);
+		expect(h.out().match(/Run this command\?/g)).toHaveLength(2);
+		expect(h.backend.toolResults.map((result) => result.ok)).toEqual([true, false]);
+		const warning = `warning: bash runs without a sandbox (${SANDBOX_OFF}): every command asks for approval and --yes does not apply\n`;
+		expect(h.err()).toContain(warning);
+		expect(h.err().match(/warning: bash runs without a sandbox/g)).toHaveLength(1);
+	});
+
+	it("reads ATELIER_SANDBOX=off like --no-sandbox", async () => {
+		const h = harness([[bash({ command: "echo one" }), { event: finished }]], {
+			isTTY: true,
+			answers: ["y"],
+			env: { ATELIER_SANDBOX: "off" },
+		});
+		await run(["--yes", "x"], h.io, h.createBackend);
+		expect(h.out()).toContain("Run this command?\n  echo one\n[y/N] ");
+		expect(h.err()).toContain(`warning: bash runs without a sandbox (${SANDBOX_OFF})`);
+	});
+
+	it("denies a command that must be asked when there is no terminal, --yes or not, and says why", async () => {
+		await writeFile(join(cwd, "marker"), "");
+		const h = harness([[bash({ command: "rm marker" }), { event: finished }]]);
+		await run(["--no-sandbox", "--yes", "x"], h.io, h.createBackend);
+		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+		expect(h.err()).toContain(
+			"bash command needs approval and there is no terminal to ask; --yes does not apply because the sandbox is off or unavailable: rm marker\n",
+		);
+		expect(await readFile(join(cwd, "marker"), "utf8")).toBe("");
+	});
+
+	const leave = { command: "echo outside", unsandboxed: true, reason: "pnpm install needs the network" };
+
+	it("asks to leave the sandbox with the reason, even with --yes, and runs it on yes", async () => {
+		const h = harness([[bash(leave), { event: finished }]], { isTTY: true, answers: ["y"] });
+		await run(["--yes", "x"], h.io, h.createBackend);
+		expect(h.out()).toContain(
+			"Run this command OUTSIDE the sandbox?\n  echo outside\n  reason: pnpm install needs the network\n[y/N] ",
+		);
+		expect(h.backend.toolResults[0]?.ok).toBe(true);
+		expect(h.backend.toolResults[0]?.output).toContain("outside");
+	});
+
+	it("does not leave the sandbox on no", async () => {
+		const h = harness([[bash(leave), { event: finished }]], { isTTY: true, answers: ["n"] });
+		await run(["--yes", "x"], h.io, h.createBackend);
+		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+	});
+
+	it("refuses to leave the sandbox without a terminal, even with --yes", async () => {
+		await writeFile(join(cwd, "marker"), "");
+		const h = harness([[bash({ command: "rm marker", unsandboxed: true, reason: "cleanup" }), { event: finished }]]);
+		await run(["--yes", "x"], h.io, h.createBackend);
+		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+		expect(h.err()).toContain(
+			"bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask (--yes does not allow this): rm marker\n  reason: cleanup\n",
+		);
+		expect(await readFile(join(cwd, "marker"), "utf8")).toBe("");
+	});
+
+	it("shows control characters of the reason instead of running them", async () => {
+		const h = harness([[bash({ ...leave, reason: "install\x1b[2Jnow" }), { event: finished }]], {
+			isTTY: true,
+			answers: ["n"],
+		});
+		await run(["x"], h.io, h.createBackend);
+		expect(h.out()).not.toContain("\x1b[2J");
+	});
+
+	it("refuses a destructive command without asking, with --yes", async () => {
+		const h = harness([[bash({ command: "sudo -n true" }), { event: finished }]], { isTTY: true });
+		await run(["--yes", "x"], h.io, h.createBackend);
+		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "Refused: sudo — sudo -n true" });
+		expect(h.out()).not.toContain("Run this command");
+		expect(h.out()).toContain("▸ bash Refused: sudo — sudo -n true ✗\n");
 	});
 });

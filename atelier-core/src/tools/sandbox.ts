@@ -10,6 +10,13 @@ import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
  */
 
 export const NOT_AVAILABLE_ON_PLATFORM = "sandbox not available on this platform";
+/** Why there is no sandbox when the user turned it off. */
+export const SANDBOX_OFF = "sandbox turned off for this session";
+
+/** The sandbox is on unless `ATELIER_SANDBOX=off`. */
+export function sandboxEnabled(env: Record<string, string | undefined>): boolean {
+	return env.ATELIER_SANDBOX !== "off";
+}
 
 export type SandboxStatus = { available: true } | { available: false; reason: string };
 
@@ -114,6 +121,8 @@ const SYSTEM_READ_PATHS = [
 ];
 
 export interface SandboxOptions {
+	/** Never starts: the sandbox is unavailable with this reason (the user turned it off). */
+	disabled?: string;
 	/** Defaults to the current platform; tests set it to exercise the unavailable path. */
 	platform?: NodeJS.Platform;
 	manager?: SandboxManagerLike;
@@ -167,6 +176,7 @@ export class Sandbox {
 	}
 
 	async #start(): Promise<SandboxStatus> {
+		if (this.#options.disabled !== undefined) return { available: false, reason: this.#options.disabled };
 		const platform = this.#options.platform ?? process.platform;
 		if (platform !== "darwin") return { available: false, reason: NOT_AVAILABLE_ON_PLATFORM };
 		try {

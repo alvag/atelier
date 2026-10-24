@@ -35,15 +35,17 @@ function ApprovalCard({
 	onAnswer: (callId: string, approved: boolean) => void;
 }) {
 	const command = visibleText(item.command);
+	const reason = item.reason === undefined ? undefined : visibleText(item.reason);
 	return (
 		<fieldset className="approval">
-			<legend>Run this command?</legend>
-			{command.hadHidden ? (
+			<legend>{reason ? "Run this command outside the sandbox?" : "Run this command?"}</legend>
+			{command.hadHidden || reason?.hadHidden ? (
 				<div className="warning">
 					This command contains invisible or control characters, shown below as markers. Check it carefully.
 				</div>
 			) : null}
 			<pre>{command.text}</pre>
+			{reason ? <div className="approval-reason">{reason.text}</div> : null}
 			{item.state === "pending" ? (
 				<div className="approval-actions">
 					<button type="button" onClick={() => onAnswer(item.callId, true)}>

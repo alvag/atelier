@@ -109,6 +109,8 @@ export type AtelierEventBody =
 			truncated: boolean;
 			fullOutputPath?: string;
 	  }
+	/** `bash` runs without the sandbox, so every command asks: said once per turn, before the first question. */
+	| { type: "sandbox_warning"; reason: string }
 	/** `reason`: the agent asked to run the command outside the sandbox, and says why. */
 	| { type: "approval_requested"; callId: string; command: string; reason?: string }
 	/**

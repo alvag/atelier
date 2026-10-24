@@ -290,6 +290,11 @@ export class Renderer {
 			case "text_delta":
 				this.write(event.text);
 				return;
+			case "sandbox_warning":
+				this.#warn(
+					`warning: bash runs without a sandbox (${event.reason}): every command asks for approval and --yes does not apply`,
+				);
+				return;
 			case "thinking_delta":
 			case "approval_requested":
 			case "review_consent_requested":

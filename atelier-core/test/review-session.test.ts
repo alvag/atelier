@@ -1169,6 +1169,16 @@ describe("independent verification", () => {
 			expect(roles.probed[0]?.ok).toBe(false);
 		});
 
+		it("gets no bash when the session turned the sandbox off", async () => {
+			const roles = new RoleBackend(verifying(vreport()), probing("echo should-not-run"));
+			const s = await start({ turns: [VERIFY_TURN], roles, consent: "declined", extra: { noSandbox: true } });
+			await s.send("edit");
+			const [run] = verifierRuns(roles);
+			expect(run?.tools).toEqual(["read", "grep"]);
+			expect(run?.system).toBe(VERIFIER_INSTRUCTION_WITHOUT_BASH);
+			expect(run?.prompt).toContain("bash is not available: sandbox turned off for this session");
+		});
+
 		it("never touches the user's worktree, index or refs", async () => {
 			const roles = new RoleBackend(
 				verifying(vreport()),
