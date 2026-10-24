@@ -39,6 +39,7 @@ const exitCode = await run(
 		stderr: (text) => process.stderr.write(text),
 		cwd: process.cwd(),
 		env: process.env,
+		...(process.getuid ? { uid: process.getuid() } : {}),
 		home: homedir(),
 		color: Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined,
 		...(process.stdin.isTTY && process.stdout.isTTY

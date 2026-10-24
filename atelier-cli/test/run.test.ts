@@ -38,6 +38,8 @@ function harness(
 		home?: string;
 		/** A terminal the CLI can put in raw mode, as when stdin and stdout are both terminals. */
 		raw?: boolean;
+		/** The user id the process runs as; unknown when absent. */
+		uid?: number;
 	} = {},
 ) {
 	const backend = new FakeBackend(turns);
@@ -70,6 +72,7 @@ function harness(
 			stderr += s;
 		},
 		cwd,
+		...(options.uid === undefined ? {} : { uid: options.uid }),
 		...(options.home === undefined ? {} : { home: options.home }),
 		color: false,
 		env: options.env ?? {},
@@ -837,5 +840,55 @@ describe("bash outside the sandbox", () => {
 		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "Refused: sudo — sudo -n true" });
 		expect(h.out()).not.toContain("Run this command");
 		expect(h.out()).toContain("▸ bash Refused: sudo — sudo -n true ✗\n");
+	});
+});
+
+describe("running as root", () => {
+	const reply: FakeStep[] = [{ event: started }, { event: { type: "text_delta", text: "hello" } }, { event: finished }];
+	const CONSENT = { ATELIER_ALLOW_ROOT: "I accept the risk" };
+
+	it("refuses to start without the exact consent, before anything runs", async () => {
+		const h = harness([reply], { uid: 0 });
+		expect(await run(["say hi"], h.io, h.createBackend)).toBe(1);
+		expect(h.err()).toBe(
+			'error: Atelier will not run as root (uid 0): a mistaken command could damage the whole system. To run as root anyway, set ATELIER_ALLOW_ROOT="I accept the risk" (exactly that text).\n',
+		);
+		expect(h.out()).toBe("");
+		expect(h.backend.prompts).toEqual([]);
+	});
+
+	it.each(["yes", "1", "i accept the risk", "I accept the risk "])(
+		"does not take ATELIER_ALLOW_ROOT=%j as consent",
+		async (given) => {
+			const h = harness([reply], { uid: 0, env: { ATELIER_ALLOW_ROOT: given } });
+			expect(await run(["say hi"], h.io, h.createBackend)).toBe(1);
+			expect(h.err()).toContain(`ATELIER_ALLOW_ROOT is set to ${JSON.stringify(given)}, which is not that exact text.`);
+			expect(h.backend.prompts).toEqual([]);
+		},
+	);
+
+	it("starts with the exact consent and repeats the warning on every start", async () => {
+		const warning =
+			"warning: running as root (uid 0) because ATELIER_ALLOW_ROOT is set: every command has full control of this system.\n";
+		for (let start = 0; start < 2; start++) {
+			const h = harness([reply], { uid: 0, env: CONSENT });
+			expect(await run(["say hi"], h.io, h.createBackend)).toBe(0);
+			expect(h.err()).toContain(warning);
+			expect(h.err().match(/running as root/g)).toHaveLength(1);
+			expect(h.backend.prompts).toEqual(["say hi"]);
+		}
+	});
+
+	it("says nothing to a normal user, with or without the variable", async () => {
+		const h = harness([reply], { uid: 501, env: CONSENT });
+		expect(await run(["say hi"], h.io, h.createBackend)).toBe(0);
+		expect(h.err()).not.toContain("root");
+	});
+
+	it("still prints help and version as root", async () => {
+		const h = harness([], { uid: 0 });
+		expect(await run(["--version"], h.io, h.createBackend)).toBe(0);
+		expect(h.out()).toMatch(/^atelier \d/);
+		expect(h.err()).toBe("");
 	});
 });

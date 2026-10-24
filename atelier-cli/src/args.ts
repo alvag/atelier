@@ -59,6 +59,8 @@ Environment:
   ATELIER_MEMORY=off     Run without long-term memory
   ATELIER_REVIEW=off     Run without reviewing or verifying changes, like --no-review
   ATELIER_SANDBOX=off    Run bash without the sandbox, like --no-sandbox
+  ATELIER_ALLOW_ROOT     As root (uid 0) Atelier refuses to start unless this is exactly
+                         "I accept the risk"; it then warns on every start
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
                          older history (default: the model's window minus a reserve,
                          at most 200000; never more than the window minus the reserve)

@@ -53,6 +53,23 @@ function serve(args: string[] = ["serve"]) {
 	return { child, messages, rawLines, stderr: () => stderr, exited, send, waitFor };
 }
 
+describe("atelier-core serve as a normal user", () => {
+	it("starts without a root warning even when ATELIER_ALLOW_ROOT is set", async () => {
+		const previous = process.env.ATELIER_ALLOW_ROOT;
+		process.env.ATELIER_ALLOW_ROOT = "I accept the risk";
+		try {
+			const s = serve();
+			await s.waitFor((m) => m.type === "hello");
+			s.send({ command: "shutdown" });
+			expect(await s.exited).toBe(0);
+			expect(s.stderr()).not.toContain("root");
+		} finally {
+			if (previous === undefined) delete process.env.ATELIER_ALLOW_ROOT;
+			else process.env.ATELIER_ALLOW_ROOT = previous;
+		}
+	});
+});
+
 describe("atelier-core serve", () => {
 	it("greets, runs a turn with the echo backend and exits 0 on shutdown", async () => {
 		const s = serve();

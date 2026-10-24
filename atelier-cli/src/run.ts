@@ -6,6 +6,7 @@ import {
 	type AtelierEvent,
 	type BackendName,
 	BUILTIN_AGENTS,
+	checkRoot,
 	coreTools,
 	createBackend as createNamedBackend,
 	describeError,
@@ -29,6 +30,8 @@ export interface CliIO {
 	cwd: string;
 	/** The environment the switches (ATELIER_REVIEW) are read from; none set when absent. */
 	env?: Record<string, string | undefined>;
+	/** The user id of the process; Atelier does not start as root (0) without ATELIER_ALLOW_ROOT. Unknown when absent. */
+	uid?: number;
 	/** Where the walk up from `cwd` for AGENTS.md / CLAUDE.md stops (excluded); none are read when absent. */
 	home?: string;
 	color: boolean;
@@ -87,6 +90,12 @@ export async function run(
 		io.stdout(`atelier ${VERSION}\n`);
 		return EXIT_OK;
 	}
+	const root = checkRoot(io.uid, io.env ?? {});
+	if (!root.allowed) {
+		io.stderr(`error: ${root.message}\n`);
+		return EXIT_FAILED;
+	}
+	if (root.warning) io.stderr(`${root.warning}\n`);
 	if (
 		!(await stat(args.cwd).then(
 			(s) => s.isDirectory(),
