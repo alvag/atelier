@@ -148,9 +148,25 @@ function worktreeGitPaths(worktreeGit: WorktreeGit | undefined): { allowWrite: s
 			join(gitDir, "commondir"),
 			join(gitDir, "gitdir"),
 			join(gitDir, "hooks"),
+			...operationStatePaths(gitDir),
 			...directories.flatMap(secretFilePatterns),
 		],
 	};
+}
+
+/**
+ * The pending steps of a rebase (`rebase-merge/`, `rebase-apply/`) and of a
+ * cherry-pick or revert (`sequencer/`) in a git directory. A command that
+ * writes them, such as an `exec` line in `rebase-merge/git-rebase-todo`, makes
+ * the `git rebase --continue` or `git cherry-pick --continue` the user runs
+ * later, outside the sandbox, run that code. So they are never writable, whether
+ * they exist or not: inside the sandbox those git commands fail and are run
+ * outside it, with approval. A linked worktree keeps them in its own git
+ * directory; the shared one is not writable there, so `<common>/sequencer`
+ * (the main checkout's) needs no entry.
+ */
+function operationStatePaths(gitDir: string): string[] {
+	return ["rebase-merge", "rebase-apply", "sequencer"].map((name) => join(gitDir, name));
 }
 
 const worktreeGitCache = new Map<string, WorktreeGit | null>();
@@ -244,6 +260,7 @@ export function agentPolicy({
 				...secretFilePatterns(cwd),
 				...writable.flatMap(secretFilePatterns),
 				...[cwd, ...writable].flatMap(libraryProtectedPaths),
+				...[cwd, ...writable].flatMap((dir) => operationStatePaths(join(dir, ".git"))),
 				join(cwd, ".atelier"),
 			],
 		},

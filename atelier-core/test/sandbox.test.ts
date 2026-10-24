@@ -162,6 +162,18 @@ describe("agentPolicy", () => {
 		expect(outsideCheckout.some((path) => path.startsWith("/work/main"))).toBe(false);
 	});
 
+	it("never writes the pending steps of a rebase, a cherry-pick or a revert, in the project's .git or a linked worktree's", () => {
+		const own = "/work/main/.git/worktrees/project";
+		const steps = (dir: string) => ["rebase-merge", "rebase-apply", "sequencer"].map((name) => `${dir}/${name}`);
+		expect(agentPolicy(SESSION).filesystem.denyWrite).toEqual(expect.arrayContaining(steps("/work/project/.git")));
+		const worktreeGit = { gitDir: own, commonDir: "/work/main/.git" };
+		const { denyWrite } = agentPolicy({ ...SESSION, worktreeGit }).filesystem;
+		expect(denyWrite).toEqual(expect.arrayContaining(steps(own)));
+		const added = agentPolicy({ ...SESSION, additions: { allowWrite: ["/data/shared"], denyRead: [] } }).filesystem
+			.denyWrite;
+		expect(added).toEqual(expect.arrayContaining(steps("/data/shared/.git")));
+	});
+
 	it("does not let a command write the project's .atelier directory, where its configuration lives", () => {
 		expect(agentPolicy(SESSION).filesystem.denyWrite).toContain("/work/project/.atelier");
 	});
@@ -175,6 +187,9 @@ describe("agentPolicy", () => {
 			"/work/project/**/*.pem",
 			"/work/project/**/*.key",
 			...LIBRARY_PROTECTED.map((path) => `/work/project/${path}`),
+			"/work/project/.git/rebase-merge",
+			"/work/project/.git/rebase-apply",
+			"/work/project/.git/sequencer",
 			"/work/project/.atelier",
 		]);
 	});

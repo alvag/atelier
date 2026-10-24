@@ -304,6 +304,115 @@ describe.skipIf(!onMac)("the sandbox configuration files", () => {
 	});
 });
 
+const OPERATION_STATE = ["rebase-merge", "rebase-apply", "sequencer"];
+
+describe.skipIf(!onMac)("the agent's bash and the git operations that run steps later", () => {
+	const git = (dir: string, ...args: string[]) =>
+		execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: dir, encoding: "utf8" });
+	const run = (command: string) => createBashTool({ sandbox }).execute({ command }, { cwd });
+
+	beforeEach(async () => {
+		git(cwd, "init", "-q", "-b", "main");
+		await writeFile(join(cwd, "a.txt"), "a\n");
+		git(cwd, "add", "-A");
+		git(cwd, "commit", "-qm", "base");
+	});
+
+	it.each(OPERATION_STATE)("cannot create %s in the project's .git", async (directory) => {
+		const result = await run(`mkdir .git/${directory} && echo 'exec touch pwned' > .git/${directory}/todo`);
+		expect(result.ok).toBe(false);
+		expect(result.output).toContain("Operation not permitted");
+		expect(await exists(join(cwd, ".git", directory))).toBe(false);
+	});
+
+	it.each(OPERATION_STATE)("cannot write the pending steps already in %s", async (directory) => {
+		const todo = join(cwd, ".git", directory, "git-rebase-todo");
+		await mkdir(join(cwd, ".git", directory));
+		await writeFile(todo, "pick abc123 first\n");
+		const result = await run(
+			`echo 'exec touch pwned' >> .git/${directory}/git-rebase-todo; echo x > .git/${directory}/new-file; rm .git/${directory}/git-rebase-todo`,
+		);
+		expect(result.ok).toBe(false);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(3);
+		expect(await readFile(todo, "utf8")).toBe("pick abc123 first\n");
+		expect(await exists(join(cwd, ".git", directory, "new-file"))).toBe(false);
+	});
+
+	it("cannot add an exec line to a rebase that stopped on a conflict", async () => {
+		git(cwd, "switch", "-q", "-c", "topic");
+		await writeFile(join(cwd, "a.txt"), "topic\n");
+		git(cwd, "commit", "-qam", "topic");
+		await writeFile(join(cwd, "b.txt"), "second\n");
+		git(cwd, "add", "-A");
+		git(cwd, "commit", "-qm", "second");
+		git(cwd, "switch", "-q", "main");
+		await writeFile(join(cwd, "a.txt"), "main\n");
+		git(cwd, "commit", "-qam", "main");
+		git(cwd, "switch", "-q", "topic");
+		expect(() => git(cwd, "rebase", "main")).toThrow();
+		const todo = join(cwd, ".git", "rebase-merge", "git-rebase-todo");
+		const before = await readFile(todo, "utf8");
+		const result = await run("echo 'exec touch pwned' >> .git/rebase-merge/git-rebase-todo");
+		expect(result.ok).toBe(false);
+		expect(result.output).toContain("Operation not permitted");
+		expect(await readFile(todo, "utf8")).toBe(before);
+	});
+
+	it("cannot start a rebase, a cherry-pick of several commits or a revert of several", async () => {
+		git(cwd, "switch", "-q", "-c", "topic");
+		for (const file of ["b", "c"]) {
+			await writeFile(join(cwd, `${file}.txt`), `${file}\n`);
+			git(cwd, "add", "-A");
+			git(cwd, "commit", "-qm", file);
+		}
+		git(cwd, "switch", "-q", "main");
+		await writeFile(join(cwd, "d.txt"), "d\n");
+		git(cwd, "add", "-A");
+		git(cwd, "commit", "-qm", "d");
+		const head = git(cwd, "rev-parse", "HEAD");
+		for (const command of ["git rebase topic", "git cherry-pick topic~1..topic", "git revert HEAD~1..HEAD"]) {
+			const result = await run(command);
+			expect(result.ok, command).toBe(false);
+			expect(result.output, command).toContain("Operation not permitted");
+		}
+		expect(git(cwd, "rev-parse", "HEAD")).toBe(head);
+		for (const directory of OPERATION_STATE) expect(await exists(join(cwd, ".git", directory))).toBe(false);
+	});
+
+	it("still commits, branches, stashes, merges, tags and deletes packed refs", async () => {
+		const result = await run(
+			[
+				"git switch -q -c topic",
+				"echo b > b.txt && git add b.txt && git -c user.email=t@t -c user.name=t commit -qm b",
+				"git switch -q main",
+				"git merge -q --ff-only topic",
+				"git switch -q -c other",
+				"echo c > c.txt && git add c.txt && git -c user.email=t@t -c user.name=t commit -qm c",
+				"git switch -q main",
+				"echo d > d.txt && git add d.txt && git -c user.email=t@t -c user.name=t commit -qm d",
+				"git -c user.email=t@t -c user.name=t merge -q --no-edit other",
+				"echo e >> a.txt && git stash -q && git stash pop -q",
+				"git tag v1 && git pack-refs --all && git tag -d v1 && git branch -D topic other",
+			].join(" && "),
+		);
+		expect(result.ok, result.output).toBe(true);
+		expect(git(cwd, "log", "--format=%s", "--no-merges").trim().split("\n")).toEqual(["d", "c", "b", "base"]);
+	});
+
+	it("still merges with a conflict, which leaves MERGE_HEAD", async () => {
+		git(cwd, "switch", "-q", "-c", "topic");
+		await writeFile(join(cwd, "a.txt"), "topic\n");
+		git(cwd, "commit", "-qam", "topic");
+		git(cwd, "switch", "-q", "main");
+		await writeFile(join(cwd, "a.txt"), "main\n");
+		git(cwd, "commit", "-qam", "main");
+		const result = await run("git merge topic");
+		expect(result.output).toContain("CONFLICT");
+		expect(result.output).not.toContain("Operation not permitted");
+		expect(await exists(join(cwd, ".git", "MERGE_HEAD"))).toBe(true);
+	});
+});
+
 describe.skipIf(!onMac)("the agent's bash in a linked git worktree", () => {
 	let main: string;
 	let worktree: string;
@@ -363,6 +472,42 @@ describe.skipIf(!onMac)("the agent's bash in a linked git worktree", () => {
 		const result = await run(`echo x > ${join(other, ".git", "refs", "heads", "planted")}`);
 		expect(result.output).toContain("Operation not permitted");
 		expect(await exists(join(other, ".git", "refs", "heads", "planted"))).toBe(false);
+	});
+
+	it.each(OPERATION_STATE)("cannot create %s in the worktree's git directory", async (directory) => {
+		const state = join(main, ".git", "worktrees", "wt", directory);
+		const result = await run(`mkdir ${state} && echo 'exec touch pwned' > ${state}/todo`);
+		expect(result.ok).toBe(false);
+		expect(result.output).toContain("Operation not permitted");
+		expect(await exists(state)).toBe(false);
+	});
+
+	it.each(OPERATION_STATE)("cannot write the pending steps already in the worktree's %s", async (directory) => {
+		const state = join(main, ".git", "worktrees", "wt", directory);
+		await mkdir(state);
+		await writeFile(join(state, "git-rebase-todo"), "pick abc123 first\n");
+		const result = await run(
+			`echo 'exec touch pwned' >> ${state}/git-rebase-todo; echo x > ${state}/new-file; rm ${state}/git-rebase-todo`,
+		);
+		expect(result.ok).toBe(false);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(3);
+		expect(await readFile(join(state, "git-rebase-todo"), "utf8")).toBe("pick abc123 first\n");
+		expect(await exists(join(state, "new-file"))).toBe(false);
+	});
+
+	it("cannot start a rebase, but still commits and merges", async () => {
+		git(main, "switch", "-q", "-c", "topic");
+		await writeFile(join(main, "t.txt"), "t\n");
+		git(main, "add", "-A");
+		git(main, "commit", "-qm", "t");
+		git(main, "switch", "-q", "-");
+		const rebase = await run("git rebase topic");
+		expect(rebase.ok).toBe(false);
+		expect(rebase.output).toContain("Operation not permitted");
+		const result = await run(
+			"git switch -q -c feature && echo b > b.txt && git add b.txt && git -c user.email=t@t -c user.name=t commit -qm b && git -c user.email=t@t -c user.name=t merge -q --no-edit topic",
+		);
+		expect(result.ok, result.output).toBe(true);
 	});
 
 	it("packs and deletes refs", async () => {
