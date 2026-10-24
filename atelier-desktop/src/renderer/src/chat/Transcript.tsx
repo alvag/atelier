@@ -288,7 +288,10 @@ function CompactionRow({ item }: { item: Extract<TurnItem, { kind: "compaction" 
 	return <div className="compaction">Context compacted · {parts.join(" · ")}</div>;
 }
 
-/** A finished turn in one line: model, wall time, total tokens and cost; the token breakdown, without the cost, folds under it. */
+/**
+ * A finished turn in one line: model, wall time, total tokens and cost; the token breakdown, without the cost, folds
+ * under it, with the cost by part when the turn had more than one.
+ */
 function UsageSummary({ finished, model }: { finished: NonNullable<Turn["finished"]>; model?: string | undefined }) {
 	const { input, output, cacheRead, cacheWrite } = finished.usage;
 	const head: string[] = [];
@@ -300,7 +303,25 @@ function UsageSummary({ finished, model }: { finished: NonNullable<Turn["finishe
 		<details className="usage" data-testid="usage">
 			<summary>{head.join(" · ")}</summary>
 			<TokenLine finished={finished} />
+			<PhaseList phases={finished.phases} />
 		</details>
+	);
+}
+
+/** One line per part of the turn: its tokens, requests and cost. A single part is the total, already shown. */
+function PhaseList({ phases }: { phases: NonNullable<Turn["finished"]>["phases"] }) {
+	const entries = Object.entries(phases ?? {});
+	if (entries.length < 2) return null;
+	return (
+		<ul className="phases">
+			{entries.map(([phase, spent]) => {
+				const { input, output, cacheRead, cacheWrite } = spent.usage;
+				const parts = [phase, `${compact.format(input + output + cacheRead + cacheWrite)} tokens`];
+				if (spent.requests !== undefined) parts.push(`${spent.requests} request${spent.requests === 1 ? "" : "s"}`);
+				if (spent.costUsd !== undefined) parts.push(`$${spent.costUsd.toFixed(4)}`);
+				return <li key={phase}>{parts.join(" · ")}</li>;
+			})}
+		</ul>
 	);
 }
 

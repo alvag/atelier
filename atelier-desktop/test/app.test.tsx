@@ -137,6 +137,36 @@ describe("App", () => {
 		);
 	});
 
+	it("lists the turn's cost by phase inside the folded breakdown", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		const part = (input: number) => ({ input, output: 0, cacheRead: 0, cacheWrite: 0 });
+		fake.emit({
+			type: "turn_finished",
+			stopReason: "end_turn",
+			usage: part(3500),
+			costUsd: 0.05,
+			requests: 4,
+			phases: {
+				main: { usage: part(3000), requests: 1, costUsd: 0.05 },
+				lenses: { usage: part(500), requests: 3 },
+			},
+		});
+		const usage = await screen.findByTestId("usage");
+		expect([...usage.querySelectorAll(".phases li")].map((li) => li.textContent)).toEqual([
+			"main · 3K tokens · 1 request · $0.0500",
+			"lenses · 500 tokens · 3 requests",
+		]);
+	});
+
+	it("lists no phases for a turn with only the main agent, which the total already says", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		const usage = { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 };
+		fake.emit({ type: "turn_finished", stopReason: "end_turn", usage, phases: { main: { usage } } });
+		expect((await screen.findByTestId("usage")).querySelector(".phases")).toBeNull();
+	});
+
 	it("labels each finished turn with the model it ran on, not the current one", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

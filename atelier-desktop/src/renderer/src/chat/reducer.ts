@@ -7,6 +7,7 @@ import type {
 	JsonValue,
 	Phase,
 	RiskDeclaration,
+	TurnPhases,
 	Usage,
 } from "@atelier/core/protocol";
 import type { HostMessage } from "../../../shared/bridge.ts";
@@ -121,6 +122,8 @@ export interface Finished {
 	costUsd?: number;
 	requests?: number;
 	durationMs?: number;
+	/** The same cost by part of the turn (main agent, declaration, verifier, review roles). */
+	phases?: TurnPhases;
 	/** The session's model when the turn finished, so a later session with another model does not relabel it. */
 	model?: string;
 }
@@ -387,6 +390,7 @@ function finishedOf(event: Extract<AtelierEvent, { type: "turn_finished" }>): Fi
 		...(event.costUsd === undefined ? {} : { costUsd: event.costUsd }),
 		...(event.requests === undefined ? {} : { requests: event.requests }),
 		...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
+		...(event.phases === undefined ? {} : { phases: event.phases }),
 	};
 }
 

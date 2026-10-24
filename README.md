@@ -53,7 +53,7 @@ pnpm desktop            # dev mode with hot reload
 pnpm -C atelier-desktop smoke   # build + Playwright smoke test (echo backend, no network)
 ```
 
-Open a folder, pick a backend and a model, and chat. Each tool call shows as a row with its status; `bash` commands ask for approval in a card that shows invisible and control characters as visible markers. Every turn ends with its tokens; the status bar shows the core status, whether `bash` is sandboxed, warnings and the latest error; a command the sandbox stopped lists why under its row (see "Sandbox (macOS)"). If the core process dies, the app says so and offers a restart.
+Open a folder, pick a backend and a model, and chat. Each tool call shows as a row with its status; `bash` commands ask for approval in a card that shows invisible and control characters as visible markers. Every turn ends with a one-line summary of its tokens and cost that unfolds into the token breakdown and, when the turn had more than one part, one line per part (`main`, `declare`, `verify`, `lenses`, `refuter`, `correction`, `validator`) with its tokens, requests and cost; the status bar shows the core status, whether `bash` is sandboxed, warnings and the latest error; a command the sandbox stopped lists why under its row (see "Sandbox (macOS)"). If the core process dies, the app says so and offers a restart.
 
 The desktop starts the core with Electron's own Node (no system Node needed) and talks to it over the Atelier protocol (version 5): one JSON message per line on stdin/stdout, a `hello` with the protocol version, an `id` on every command and exactly one response per command, and events tagged with their session. See `../docs/m2-diseno.md`.
 
