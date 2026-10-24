@@ -155,13 +155,17 @@ export class SessionReview {
 		}
 
 		const paid = (spent: Spent): Spent => (extra === undefined ? spent : addSpent(extra, spent));
-		const assess = () =>
-			assessRisk(candidate, {
+		const assess = () => {
+			if (!manual) this.#requests.tree = candidate.tree;
+			// The agent's lenses were chosen for the tree its turn assessed; another candidate gets the defaults.
+			const chosen = !manual || candidate.tree === this.#requests.tree;
+			return assessRisk(candidate, {
 				escalations: this.#requests.escalations,
 				...(this.#requests.none === undefined ? {} : { none: this.#requests.none }),
-				...(this.#requests.lenses === undefined ? {} : { lenses: this.#requests.lenses }),
-				...(this.#requests.lensesReason === undefined ? {} : { lensesReason: this.#requests.lensesReason }),
+				...(!chosen || this.#requests.lenses === undefined ? {} : { lenses: this.#requests.lenses }),
+				...(!chosen || this.#requests.lensesReason === undefined ? {} : { lensesReason: this.#requests.lensesReason }),
 			});
+		};
 		let assessment = assess();
 		// A code change nobody declared the risk of: ask the agent once, inside this turn, then take its word or lack of it.
 		let extra: Spent | undefined;

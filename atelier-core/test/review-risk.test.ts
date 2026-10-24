@@ -388,6 +388,10 @@ describe("risk tool", () => {
 		[{ none: true, items: [1], reason: "x" }, "Give items or none, not both."],
 		[{ none: true, reason: "x".repeat(501) }, "The reason is 501 bytes; the limit is 500."],
 		[{ reason: "why" }, "Give items with a reason, none with a reason, or lenses with a lensesReason."],
+		[
+			{ lenses: ["readability"], reason: "legacy reason", lensesReason: "new reason" },
+			"A reason goes with items or none; give the lenses' reason as lensesReason.",
+		],
 		[{ items: [1], reason: "x".repeat(501) }, "The reason is 501 bytes; the limit is 500."],
 		[{ items: [1], reason: "ñ".repeat(251) }, "The reason is 502 bytes; the limit is 500."],
 	])("rejects %j and records nothing", async (input, message) => {

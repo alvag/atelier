@@ -700,6 +700,27 @@ describe("Session.review", () => {
 		expect(events.at(-1)).toMatchObject({ type: "turn_finished", usage: { input: 2, output: 2 }, requests: 1 });
 	});
 
+	it("does not reuse an earlier candidate's lenses for a later high-risk manual review", async () => {
+		const choose = call("risk", { lenses: ["readability"], lensesReason: "only renames the old output" });
+		const s = await start({ roles: new RoleBackend(clean), turns: [[choose, DECLARED_NONE, ...MEDIUM_TURN]] });
+		await s.send("rename output");
+		await mkdir(join(s.cwd, "src"), { recursive: true });
+		await writeFile(join(s.cwd, "src/auth.ts"), "export const guarded = true;\n");
+		const [assessed] = ofType(await collect(s.session.review()), "review_assessed");
+		expect(assessed?.lenses).toEqual(["risk", "resilience", "readability", "reliability"]);
+		expect(assessed).not.toHaveProperty("lensesReason");
+		expect(s.roles.roles.map((role) => role.role).sort()).toEqual(["readability", "reliability", "resilience", "risk"]);
+	});
+
+	it("keeps the agent's lenses for a manual review of the same candidate its turn assessed", async () => {
+		const choose = call("risk", { lenses: ["readability"], lensesReason: "only renames the old output" });
+		const s = await start({ roles: new RoleBackend(clean), turns: [[choose, DECLARED_NONE, ...MEDIUM_TURN]] });
+		await s.send("rename output");
+		const [assessed] = ofType(await collect(s.session.review()), "review_assessed");
+		expect(assessed).toMatchObject({ lenses: ["readability"], lensesReason: "only renames the old output" });
+		expect(s.roles.roles.map((role) => role.role)).toEqual(["readability"]);
+	});
+
 	it("reviews a documentation-only change without a model call", async () => {
 		const s = await start();
 		await writeFile(join(s.cwd, "notes.md"), "# notes\n");

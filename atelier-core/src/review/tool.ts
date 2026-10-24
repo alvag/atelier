@@ -11,6 +11,8 @@ export class RiskRequests {
 	/** The lenses the agent chose for the review, and why. */
 	lenses: Lens[] | undefined;
 	lensesReason: string | undefined;
+	/** The candidate tree its turn assessed with those lenses: a review of another tree does not take them. */
+	tree: string | undefined;
 	/** The reason the agent gave for declaring the change not high-risk. */
 	none: string | undefined;
 
@@ -19,6 +21,7 @@ export class RiskRequests {
 		this.none = undefined;
 		this.lenses = undefined;
 		this.lensesReason = undefined;
+		this.tree = undefined;
 	}
 }
 
@@ -52,6 +55,8 @@ export function createRiskTool(state: RiskRequests): ToolDefinition {
 			if (declaresNone && blank(reason)) return fail("A reason is required with none.");
 			if (lenses === undefined && lensesReason !== undefined) return fail("A lensesReason needs lenses.");
 			if (lenses !== undefined && blank(lensesReason)) return fail("A lensesReason is required with lenses.");
+			if (reason !== undefined && items === undefined && !declaresNone)
+				return fail("A reason goes with items or none; give the lenses' reason as lensesReason.");
 			if (lenses !== undefined && new Set(lenses).size !== lenses.length) return fail("Each lens can be chosen once.");
 			const tooLong = overLimit("reason", reason) ?? overLimit("lensesReason", lensesReason);
 			if (tooLong !== undefined) return fail(tooLong);
