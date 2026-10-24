@@ -1638,6 +1638,18 @@ describe("independent M9 approval regression", () => {
 });
 
 describe("the turn's cost by phase", () => {
+	/** A sandbox that is there and wraps nothing, so these tests also run inside a sandbox, where a real one cannot start. */
+	const sandbox = new Sandbox({
+		platform: "darwin",
+		manager: {
+			isSupportedPlatform: () => true,
+			checkDependencies: () => ({ errors: [], warnings: [] }),
+			initialize: async () => {},
+			wrapWithSandbox: async (command) => command,
+			cleanupAfterCommand: () => {},
+			reset: async () => {},
+		},
+	});
 	type Finished = Extract<AtelierEvent, { type: "turn_finished" }>;
 	const closing = (events: AtelierEvent[]) =>
 		events.filter((event): event is Finished => event.type === "turn_finished" && event.agent === undefined)[0];
@@ -1670,7 +1682,7 @@ describe("the turn's cost by phase", () => {
 			[change("src/auth.ts", "export const a = 2;\n"), spent(30, 1, 0.005)],
 		];
 		const roles = new RoleBackend(verifying(vreport([vdefect()]), vreport()));
-		const s = await start({ turns, roles });
+		const s = await start({ turns, roles, sandbox });
 		const last = closing(await s.send("make the approval need a keypress"));
 
 		expect(s.main.prompts).toHaveLength(4);
@@ -1699,7 +1711,7 @@ describe("the turn's cost by phase", () => {
 	});
 
 	it("leaves out the parts that did not run: a clean on-demand review has no main agent, refuter or correction", async () => {
-		const s = await start({ roles: new RoleBackend(clean) });
+		const s = await start({ roles: new RoleBackend(clean), sandbox });
 		await writeFile(join(s.cwd, "src.ts"), "export const b = 1;\n");
 		const last = closing(await collect(s.session.review()));
 		expect(last?.phases).toEqual({ lenses: { usage: { ...usage, input: 2, output: 2 }, requests: 1 } });

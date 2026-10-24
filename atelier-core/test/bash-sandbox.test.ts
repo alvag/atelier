@@ -333,6 +333,22 @@ describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 		expect(result.output).not.toMatch(/user\.(name|email)=/);
 	});
 
+	it("runs /bin/sh, which reads the system's shell choice in /private/var/select, without an error", async () => {
+		const result = await run("/bin/sh -c 'echo sh-ok'");
+		expect(result.ok).toBe(true);
+		expect(result.output).toContain("sh-ok");
+		expect(result.output).not.toContain("Error opening");
+	});
+
+	it("has a home of its own, so git works even with the GIT_* variables removed, as Atelier's own git calls do", async () => {
+		const result = await run(
+			'git init -q repo && env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM git -C repo rev-parse --is-inside-work-tree && echo "home=$HOME"',
+		);
+		expect(result.ok).toBe(true);
+		expect(result.output).toContain("true");
+		expect(result.output).toContain(`home=${verifierDir}/`);
+	});
+
 	it("writes only inside its own directory", async () => {
 		expect((await run("echo ok > candidate/out.txt && echo ok > scratch.txt")).ok).toBe(true);
 		expect(await exists(join(verifierDir, "scratch.txt"))).toBe(true);

@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
 	type ApprovalRequest,
@@ -10,7 +11,8 @@ import {
 } from "../src/index.ts";
 import { NOT_AVAILABLE_ON_PLATFORM, Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 
-const cwd = "/tmp";
+/** The system temporary directory: commands need a working directory they can read, also inside a sandbox. */
+const cwd = tmpdir();
 
 /** A sandbox that is there and wraps nothing, counting the commands it wrapped. */
 function sandboxed() {

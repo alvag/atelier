@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
 	type AtelierEvent,
@@ -15,7 +16,8 @@ import {
 	type SandboxViolation,
 } from "../src/tools/sandbox.ts";
 
-const cwd = "/tmp";
+/** The system temporary directory: commands need a working directory they can read, also inside a sandbox. */
+const cwd = tmpdir();
 
 /** How the library keys a violation: the first 100 characters of the run's id (or of the command), in base64. */
 const keyOf = (idOrCommand: string) => Buffer.from(idOrCommand.slice(0, 100)).toString("base64");

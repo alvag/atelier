@@ -171,15 +171,20 @@ export function developerGit(): string | undefined {
 }
 
 /**
- * What the verifier's commands run with: the real `git` first on the PATH,
- * no system or global git configuration (the user's is not readable anyway),
- * and a temporary directory inside its own, where tests create theirs.
+ * What the verifier's commands run with: the real `git` first on the PATH, a
+ * home and a temporary directory inside its own (the user's home is not
+ * readable, and tools such as git read their configuration from home even when
+ * a caller clears the GIT_* variables), and no system or global git configuration.
  */
 export function verifierEnvironment(dir: string, git: string | undefined = developerGit()): Record<string, string> {
 	const tmp = join(dir, ".tmp");
+	const home = join(dir, ".home");
 	mkdirSync(tmp, { recursive: true });
+	mkdirSync(home, { recursive: true });
 	return {
 		...(git === undefined ? {} : { PATH: `${dirname(git)}:${process.env.PATH ?? ""}` }),
+		HOME: home,
+		XDG_CONFIG_HOME: join(home, ".config"),
 		GIT_CONFIG_NOSYSTEM: "1",
 		GIT_CONFIG_GLOBAL: "/dev/null",
 		TMPDIR: tmp,
@@ -231,6 +236,8 @@ const SYSTEM_READ_PATHS = [
 	"/private/etc",
 	"/dev",
 	"/opt/homebrew",
+	// The system's choice of shell and developer directory (`sh`, `developer_dir`): /bin/sh reads it on every start.
+	"/private/var/select",
 ];
 
 export interface SandboxOptions {

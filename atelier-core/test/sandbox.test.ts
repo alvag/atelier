@@ -191,7 +191,14 @@ describe("verifierPolicy", () => {
 			"/private/etc",
 			"/dev",
 			"/opt/homebrew",
+			"/private/var/select",
 		]);
+	});
+
+	it("adds the developer directory's usr/ when there is a real git to run", () => {
+		const { filesystem } = verifierPolicy({ ...verifier, toolchain: "/Applications/Xcode.app/Contents/Developer/usr" });
+		expect(filesystem.allowRead).toContain("/Applications/Xcode.app/Contents/Developer/usr");
+		expect(filesystem.allowRead).not.toContain("/Applications");
 	});
 
 	it("does not read /Library as a whole: its Keychains and the rest stay out", () => {
