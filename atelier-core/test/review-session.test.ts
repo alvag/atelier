@@ -324,7 +324,7 @@ describe("the risk declaration", () => {
 			"1. data that cannot be rebuilt or irreversible effects (migrations, rewriting or deleting existing records; not saving new records, caches or generated files)",
 			"2. security (auth, permissions, credentials, secrets, guards, sandbox)",
 			"3. changing or removing contracts others already consume (public API, CLI flags, config formats, exports; not adding a flag, command or optional field)",
-			"4. concurrency",
+			"4. concurrency (asynchronous events or callbacks that can arrive in another order, turn or request than expected, interrupts and timeouts, races, shared mutable state, locks)",
 			"5. delivery or environment (installers, release, CI, deploy, dependencies)",
 			"6. no test would catch a regression in what changes",
 		])

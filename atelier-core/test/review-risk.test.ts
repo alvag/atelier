@@ -303,6 +303,13 @@ describe("risk tool", () => {
 		expect(description).toContain("none with a reason");
 	});
 
+	it("says what concurrency covers, so an asynchronous ordering change is not declared none", () => {
+		const { description } = createRiskTool(new RiskRequests());
+		expect(description).toContain(
+			"4 concurrency (asynchronous events or callbacks that can arrive in another order, turn or request than expected, interrupts and timeouts, races, shared mutable state, locks)",
+		);
+	});
+
 	it("records the lens for medium risk", async () => {
 		const { outcome, state } = await run({ lenses: ["resilience"] });
 		expect(outcome.output).toBe("Lens for a medium-risk review: resilience.");

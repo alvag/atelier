@@ -27,7 +27,7 @@ export function createRiskTool(state: RiskRequests): ToolDefinition {
 		name: RISK_TOOL,
 		description: [
 			"Declares the risk of your current change; call it to close every code change. Name the high-risk items that apply with a reason (the change then gets a full review before it is reported done), or declare none with a reason. It can only raise the risk, never lower what the automatic check finds.",
-			"Items: 1 stored data that cannot be rebuilt or irreversible effects (migrations, rewriting or deleting existing records; not saving new records, caches or generated files), 2 security, 3 contracts others consume, 4 concurrency, 5 delivery or environment, 6 no test would catch a regression.",
+			"Items: 1 stored data that cannot be rebuilt or irreversible effects (migrations, rewriting or deleting existing records; not saving new records, caches or generated files), 2 security, 3 contracts others consume, 4 concurrency (asynchronous events or callbacks that can arrive in another order, turn or request than expected, interrupts and timeouts, races, shared mutable state, locks), 5 delivery or environment, 6 no test would catch a regression.",
 			"For a medium-risk change you can instead pick the one lens its review should use.",
 		].join("\n"),
 		inputShape: {
