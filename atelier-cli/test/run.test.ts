@@ -1108,3 +1108,63 @@ describe("running as root", () => {
 		expect(h.err()).toBe("");
 	});
 });
+
+describe("agent profiles", () => {
+	const profiles = (body: object) =>
+		JSON.stringify({ kind: "atelier.agent_model_profiles", version: 1, active: "p", profiles: { p: body } });
+	/** A home with `~/.atelier/profiles.json` holding the profile `p`, active. */
+	async function homeWith(body: object): Promise<string> {
+		const home = await mkdtemp(join(tmpdir(), "atelier-cli-home-"));
+		await mkdir(join(home, ".atelier"));
+		await writeFile(join(home, ".atelier", "profiles.json"), profiles(body));
+		return home;
+	}
+	/** Runs one turn; `names` are the backends the CLI asked for, in order. */
+	async function start(argv: string[], body: object | undefined) {
+		const home = body === undefined ? await mkdtemp(join(tmpdir(), "atelier-cli-home-")) : await homeWith(body);
+		try {
+			const h = harness([[{ event: finished }]], { home });
+			const names: (string | undefined)[] = [];
+			const code = await run(argv, h.io, (name) => {
+				names.push(name);
+				return h.backend;
+			});
+			return { h, names, code, home };
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	}
+
+	it("starts the main agent as always when there are no profile files", async () => {
+		const { h, names, code } = await start(["x"], undefined);
+		expect(code).toBe(0);
+		expect(names).toEqual(["claude-code"]);
+		expect(h.backend.startOptions?.model).toBeUndefined();
+		expect(h.backend.startOptions).not.toHaveProperty("thinking");
+		expect(h.err()).not.toContain("profile");
+	});
+
+	it("gives the main agent the orchestrator's backend, model and thinking level", async () => {
+		const { h, names } = await start(["x"], {
+			orchestrator: { model: "anthropic-api/claude-opus-5-5", thinking: "high" },
+		});
+		expect(names).toEqual(["anthropic-api"]);
+		expect(h.backend.startOptions).toMatchObject({ model: "claude-opus-5-5", thinking: "high" });
+	});
+
+	it("lets --backend and --model win over the orchestrator's", async () => {
+		const { h, names } = await start(["--backend", "claude-code", "--model", "sonnet", "x"], {
+			orchestrator: { model: "anthropic-api/claude-opus-5-5", thinking: "high" },
+		});
+		expect(names).toEqual(["claude-code"]);
+		expect(h.backend.startOptions).toMatchObject({ model: "sonnet", thinking: "high" });
+	});
+
+	it("prints what the profile files dropped as warnings and still runs", async () => {
+		const { h, code } = await start(["x"], { verifer: { model: "x" } });
+		expect(code).toBe(0);
+		expect(h.err()).toMatch(
+			/^error: \S+\/\.atelier\/profiles\.json: profile "p": unknown role "verifer", did you mean "verifier"\?, dropped\n/,
+		);
+	});
+});

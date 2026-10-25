@@ -13,6 +13,8 @@ export interface CliArgs {
 	yes: boolean;
 	model?: string;
 	backend: BackendName;
+	/** Present only when --backend was given: it wins over the backend the orchestrator's profile entry names. */
+	explicitBackend?: BackendName;
 	cwd: string;
 	help: boolean;
 	version: boolean;
@@ -90,6 +92,7 @@ export function parseCliArgs(
 		yes: values.yes ?? false,
 		...(values.model === undefined ? {} : { model: values.model }),
 		backend,
+		...(values.backend === undefined ? {} : { explicitBackend: backend }),
 		cwd: resolve(baseDir, values.cwd ?? "."),
 		help: values.help ?? false,
 		version: values.version ?? false,

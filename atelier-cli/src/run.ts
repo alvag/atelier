@@ -10,12 +10,14 @@ import {
 	coreTools,
 	createBackend as createNamedBackend,
 	describeError,
+	freezeProfile,
 	loadSandboxAdditions,
 	type MemoryPort,
 	type ReviewConsentRequest,
 	SandboxConfigError,
 	Session,
 	SYSTEM_PROMPT_APPEND,
+	sessionBackend,
 	type ToolDefinition,
 	VERSION,
 	visibleText,
@@ -122,9 +124,12 @@ export async function run(
 		}
 	}
 
+	// The profile is resolved once, here, and the session keeps it. Without a home there are no profile files to read.
+	const profile = io.home === undefined ? undefined : await freezeProfile({ cwd: args.cwd, home: io.home });
+	const kind = sessionBackend(profile, args.explicitBackend, args.backend);
 	let backend: AgentBackend;
 	try {
-		backend = await createBackend(args.backend);
+		backend = await createBackend(kind);
 	} catch (error) {
 		io.stderr(`error: ${describeError(error)}\n`);
 		return EXIT_FAILED;
@@ -233,9 +238,10 @@ export async function run(
 		backend,
 		...(memory ? { memory } : {}),
 		...(memoryUnavailable === undefined ? {} : { memoryUnavailable }),
-		subagents: { agents: BUILTIN_AGENTS, createBackend: () => createBackend(args.backend) },
+		...(profile === undefined ? {} : { profile }),
+		subagents: { agents: BUILTIN_AGENTS, createBackend: (name) => createBackend(name ?? kind) },
 		...(args.review
-			? { review: { createBackend: () => createBackend(args.backend), consent } }
+			? { review: { createBackend: () => createBackend(kind), consent } }
 			: { reviewUnavailable: "Review is off (--no-review or ATELIER_REVIEW=off)." }),
 		odd: true,
 		...(io.home === undefined ? {} : { projectInstructions: { home: io.home } }),

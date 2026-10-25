@@ -1,3 +1,14 @@
+export {
+	type FrozenProfile,
+	fingerprint,
+	freezeProfile,
+	profileChanges,
+	type RoleBackendFactory,
+	type RoleSettings,
+	roleSettings,
+	roleStartMessage,
+	sessionBackend,
+} from "./frozen.ts";
 export { PIN_KIND, PIN_VERSION, type PinPlaces, type PinRead, parsePin, pinPlaces, readPin } from "./pins.ts";
 export {
 	closestName,

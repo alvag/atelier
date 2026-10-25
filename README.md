@@ -77,7 +77,7 @@ Design and decisions: `../docs/m1-diseno.md`, `../docs/m2-diseno.md`, `../docs/m
 
 ## Agent profiles
 
-A profile says which model, backend and thinking level each agent role uses. This is the file format and the rules for choosing one; sessions do not read profiles yet (that comes next), so today nothing changes in how Atelier runs.
+A profile says which model, backend and thinking level each agent role uses. A session resolves its profile once, when it starts (the CLI and the server do; with no profile file nothing changes), and keeps it for its whole life: the roles that start later read that frozen profile, they never resolve it again. `--profile`, the desktop selector and `session.start.profile` do not exist yet, so the explicit layer below is not reachable from a client.
 
 `~/.atelier/profiles.json`:
 
@@ -102,6 +102,16 @@ A profile says which model, backend and thinking level each agent role uses. Thi
 - **Models** may only contain `A-Z a-z 0-9 . _ ~ : @ / + % -`. The prefix `anthropic-api/` (API key) or `claude-code/` (Claude Code subscription) picks the backend for that role; without a prefix the session's backend applies.
 - **Invalid content** is dropped and reported, and the rest of the file still counts: an unknown role (with a "did you mean" for a close name), an unsafe model, an unknown level, a profile that is not an object. A file without the expected `kind` and `version` is invalid as a whole. A missing file means no profiles.
 - **Choosing a profile**, first match wins: the explicit choice, then the local pin `<git common dir>/atelier/profile-pin.json`, then the repository's `.atelier/profile.json`, then `active` in `profiles.json`, then the default profile. A layer that names a profile that does not exist is reported and skipped. Both pins are `{ "kind": "atelier.profile_pin", "version": 1, "profile": "<name>" }`.
+
+### How a profile reaches each role
+
+- **`orchestrator`** is the main agent: its model and thinking level go to its backend, and its backend prefix chooses the session's backend. An explicit `--model` (or `session.start.model`) replaces its model, and an explicit `--backend` (or `session.start.backend`) its backend; with neither the profile nor a flag saying anything, the defaults are what they always were.
+- **`worker`** and **`explorer`** are the `task` tool's subagents. Each starts on its entry's backend (the session's kind without a prefix), with its model and thinking level. A model the entry omits is, for the explorer, its default for that backend (`haiku` on `claude-code`, `claude-haiku-5-5` on `anthropic-api`), and for the worker, the main agent's.
+- A level the entry omits sends nothing, as before.
+
+A role whose backend cannot start for lack of its credential fails with an error that names the role and the backend, and nothing retries on the other backend. For a subagent the `task` tool's result is that message, for example `worker: anthropic-api has no API key (No Anthropic API key in the Keychain. Store it with: ...)`. A role that starts but fails on its own backend (Claude Code not logged in) says so: `The explorer subagent failed on claude-code (error): ...`.
+
+What resolution dropped (an unknown role, an unsafe model, an unknown level, a missing pinned profile, a stale `active`) reaches the client in the first turn as recoverable `error` events with the code `profile_warning`, one per report: `<file>: <what was dropped>`. The CLI prints them as `error: ...` without failing the run.
 
 The agent cannot write `~/.atelier/` or the local pin: `edit`, `write` and the `bash` sandbox refuse them.
 

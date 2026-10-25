@@ -529,3 +529,49 @@ describe("session.compact", () => {
 		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
 	});
 });
+
+describe("session.start profiles", () => {
+	it("resolves the profile at session.start: the orchestrator's backend, model and thinking, unless the client chose", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-rpc-home-"));
+		try {
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "profiles.json"),
+				JSON.stringify({
+					kind: "atelier.agent_model_profiles",
+					version: 1,
+					active: "p",
+					profiles: { p: { orchestrator: { model: "anthropic-api/claude-opus-5-5", thinking: "high" } } },
+				}),
+			);
+			const input = new PassThrough();
+			const messages: ServerMessage[] = [];
+			const asked: { name: string; backend: FakeBackend }[] = [];
+			const server = new RpcServer({
+				input,
+				write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
+				createBackend: (name) => {
+					const backend = new FakeBackend([]);
+					asked.push({ name, backend });
+					return backend;
+				},
+				tools: [],
+				systemPromptAppend: "",
+				home,
+			});
+			void server.run();
+			const start = async (id: string, extra: object) => {
+				input.write(`${JSON.stringify({ type: "command", id, command: "session.start", cwd, ...extra })}\n`);
+				for (let i = 0; i < 200 && !messages.some((m) => m.type === "response" && m.id === id); i++)
+					await new Promise((resolve) => setTimeout(resolve, 5));
+			};
+			await start("a", {});
+			await start("b", { backend: "claude-code", model: "sonnet" });
+			expect(asked.map((a) => a.name)).toEqual(["anthropic-api", "claude-code"]);
+			expect(asked[0]?.backend.startOptions).toMatchObject({ model: "claude-opus-5-5", thinking: "high" });
+			expect(asked[1]?.backend.startOptions).toMatchObject({ model: "sonnet", thinking: "high" });
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+});

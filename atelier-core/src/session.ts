@@ -22,6 +22,13 @@ import {
 } from "./memory/index.ts";
 import type { CompletedFeature } from "./odd/tracker.ts";
 import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
+import {
+	type FrozenProfile,
+	type RoleBackendFactory,
+	roleSettings,
+	roleStartMessage,
+	type ThinkingLevel,
+} from "./profiles/index.ts";
 import { loadProjectInstructions, type ProjectInstructions } from "./project-instructions.ts";
 import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
@@ -57,6 +64,13 @@ export interface SessionOptions {
 	backend: AgentBackend;
 	cwd: string;
 	model?: string;
+	/** Thinking level for every request of this session; an explicit one wins over the orchestrator's. */
+	thinking?: ThinkingLevel;
+	/**
+	 * The profile resolved at start: kept as it is for the whole session. The orchestrator's entry gives the
+	 * main agent its model (unless `model` is given) and thinking level; the others reach the child roles.
+	 */
+	profile?: FrozenProfile;
 	tools: readonly ToolDefinition[];
 	systemPromptAppend?: string;
 	/**
@@ -89,8 +103,8 @@ export interface SessionOptions {
 
 export interface SubagentOptions {
 	agents: readonly SubagentDefinition[];
-	/** A fresh backend of the same kind as the parent's, for each child. */
-	createBackend: () => AgentBackend | Promise<AgentBackend>;
+	/** A fresh backend for each child: the one `name` says, or the parent's kind when the profile names none. */
+	createBackend: RoleBackendFactory;
 }
 
 /**
@@ -102,6 +116,11 @@ export class Session {
 	readonly #options: SessionOptions;
 	readonly #tools: Map<string, ToolDefinition>;
 	readonly #createId: () => string;
+	/** The main agent's model and thinking level: the explicit choice, then the orchestrator's entry. */
+	readonly #model: string | undefined;
+	readonly #thinking: ThinkingLevel | undefined;
+	/** What the profile reported at start; said once, in the first turn. */
+	readonly #profileNotices: string[];
 	#backendSession: BackendSession | undefined;
 	#turn: Channel<TurnEvent> | undefined;
 	/** The subagent running right now, so interrupting or closing reaches it. */
@@ -128,6 +147,10 @@ export class Session {
 
 	private constructor(options: SessionOptions) {
 		const subagents = options.subagents;
+		const orchestrator = roleSettings(options.profile, "orchestrator", undefined);
+		this.#model = options.model ?? orchestrator.model;
+		this.#thinking = options.thinking ?? orchestrator.thinking;
+		this.#profileNotices = (options.profile?.resolved.reports ?? []).map(({ path, message }) => `${path}: ${message}`);
 		const tools = subagents
 			? [
 					...options.tools,
@@ -186,7 +209,8 @@ export class Session {
 		try {
 			session.#backendSession = await options.backend.start({
 				cwd: options.cwd,
-				...(options.model === undefined ? {} : { model: options.model }),
+				...(session.#model === undefined ? {} : { model: session.#model }),
+				...(session.#thinking === undefined ? {} : { thinking: session.#thinking }),
 				systemPromptAppend: [
 					options.systemPromptAppend ?? "",
 					options.odd ? ODD_RULES : "",
@@ -267,6 +291,7 @@ export class Session {
 					turn.push({ type: "memory_status", available: false, reason: this.#options.memoryUnavailable });
 				if (!this.#options.review && this.#options.reviewUnavailable !== undefined)
 					turn.push({ type: "review_status", available: false, reason: this.#options.reviewUnavailable });
+				for (const notice of this.#profileNotices) turn.push(errorEvent("profile_warning", notice, true));
 				if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
 			}
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }> | undefined;
@@ -416,7 +441,7 @@ export class Session {
 		const feature = this.#odd?.snapshot().path;
 		return {
 			cwd: this.#options.cwd,
-			model: this.#options.model,
+			model: this.#model,
 			...(feature === undefined ? {} : { feature: resolve(this.#options.cwd, feature) }),
 			signal,
 			push: (event) => turn.push(event),
@@ -567,13 +592,17 @@ export class Session {
 	): Promise<ToolOutcome> {
 		const fail = (output: string): ToolOutcome => ({ ok: false, output, summary: output, truncated: false });
 		let child: Session;
+		// Only the worker and the explorer have an entry in the profile.
+		const role = agent.name === "worker" || agent.name === "explorer" ? agent.name : undefined;
+		const settings = roleSettings(role === undefined ? undefined : this.#options.profile, role ?? "worker", undefined);
 		try {
-			const backend = await options.createBackend();
-			const model = agent.models[backend.id] ?? this.#options.model;
+			const backend = await options.createBackend(settings.backend);
+			const model = settings.model ?? agent.models[backend.id] ?? this.#model;
 			child = await Session.start({
 				backend,
 				cwd: this.#options.cwd,
 				...(model === undefined ? {} : { model }),
+				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
 				// In the definition's order; a tool the parent lacks is skipped, and task never: children do not delegate.
 				tools: agent.tools.flatMap((name) => {
 					const tool = PARENT_ONLY.has(name) ? undefined : this.#tools.get(name);
@@ -587,6 +616,7 @@ export class Session {
 				createId: this.#createId,
 			});
 		} catch (error) {
+			if (settings.backend !== undefined) return fail(roleStartMessage(agent.name, settings.backend, error));
 			return fail(`The ${agent.name} subagent could not start: ${describeError(error)}`);
 		}
 		this.#child = child;
@@ -615,7 +645,8 @@ export class Session {
 			}
 			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined) {
 				const compaction = compactionFailure === undefined ? "" : `; its compaction failed: ${compactionFailure}`;
-				return fail(`The ${agent.name} subagent failed (${stopReason}): ${failure ?? "no details"}${compaction}`);
+				const on = settings.backend === undefined ? "" : ` on ${settings.backend}`;
+				return fail(`The ${agent.name} subagent failed${on} (${stopReason}): ${failure ?? "no details"}${compaction}`);
 			}
 			if (report.trim() === "") return fail(`The ${agent.name} subagent returned no report.`);
 			const bounded = boundReport(report);

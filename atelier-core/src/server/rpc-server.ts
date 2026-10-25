@@ -5,6 +5,7 @@ import type { AgentBackend } from "../backend.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { MemoryPort } from "../memory/index.ts";
+import { freezeProfile, sessionBackend } from "../profiles/index.ts";
 import { decodeClientMessage, encodeMessage, LineSplitter } from "../protocol/codec.ts";
 import {
 	type BackendName,
@@ -165,7 +166,7 @@ export class RpcServer {
 						message.cwd,
 						message.model,
 						message.autoApprove ?? false,
-						message.backend ?? DEFAULT_BACKEND,
+						message.backend,
 						message.review,
 						message.noSandbox === true || this.#options.noSandbox === true,
 					),
@@ -254,7 +255,8 @@ export class RpcServer {
 		cwd: string,
 		model: string | undefined,
 		autoApprove: boolean,
-		backend: BackendName,
+		/** Absent: the orchestrator's backend in the profile, then the default. */
+		requestedBackend: BackendName | undefined,
 		/** Absent means the server's default; an explicit true the server cannot honor is refused, never dropped. */
 		requested: boolean | undefined,
 		noSandbox: boolean,
@@ -280,6 +282,10 @@ export class RpcServer {
 				throw error;
 			}
 		}
+		// The profile is resolved once, here, and the session keeps it. Without a home there are no profile files to read.
+		const profile =
+			this.#options.home === undefined ? undefined : await freezeProfile({ cwd, home: this.#options.home });
+		const backend = sessionBackend(profile, requestedBackend, DEFAULT_BACKEND);
 		const approvals = new Map<string, (approved: boolean) => void>();
 		const consents = new Map<string, (answer: "granted" | "declined") => void>();
 		// Memory is optional: a session that cannot connect it starts anyway and says why.
@@ -298,6 +304,7 @@ export class RpcServer {
 				...(memory ? { memory } : {}),
 				...(memoryUnavailable === undefined ? {} : { memoryUnavailable }),
 				backend: await this.#options.createBackend(backend),
+				...(profile === undefined ? {} : { profile }),
 				cwd,
 				...(model === undefined ? {} : { model }),
 				tools: this.#options.tools,
@@ -321,7 +328,7 @@ export class RpcServer {
 						}),
 				subagents: {
 					agents: this.#options.subagents ?? BUILTIN_AGENTS,
-					createBackend: () => this.#options.createBackend(backend),
+					createBackend: (name) => this.#options.createBackend(name ?? backend),
 				},
 			});
 		} catch (error) {
