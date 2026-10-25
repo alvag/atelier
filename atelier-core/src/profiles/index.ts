@@ -1,3 +1,4 @@
+export { PIN_KIND, PIN_VERSION, type PinPlaces, type PinRead, parsePin, pinPlaces, readPin } from "./pins.ts";
 export {
 	closestName,
 	PROFILE_BACKENDS,
@@ -18,3 +19,10 @@ export {
 	type ThinkingLevel,
 	writeProfiles,
 } from "./profiles.ts";
+export {
+	type ProfileOrigin,
+	type ResolvedProfile,
+	type ResolveProfileInput,
+	resolveProfile,
+	roleEntry,
+} from "./resolve.ts";

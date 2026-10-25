@@ -75,6 +75,35 @@ The desktop starts the core with Electron's own Node (no system Node needed) and
 
 Design and decisions: `../docs/m1-diseno.md`, `../docs/m2-diseno.md`, `../docs/m3-diseno.md`, `../docs/m4-diseno.md`, `../docs/m5-diseno.md`, `../docs/m6-diseno.md`, `../docs/m7-diseno.md`, `../docs/m8-diseno.md`, `../docs/m10-diseno.md`.
 
+## Agent profiles
+
+A profile says which model, backend and thinking level each agent role uses. This is the file format and the rules for choosing one; sessions do not read profiles yet (that comes next), so today nothing changes in how Atelier runs.
+
+`~/.atelier/profiles.json`:
+
+```json
+{
+	"kind": "atelier.agent_model_profiles",
+	"version": 1,
+	"active": "cheap",
+	"profiles": {
+		"cheap": {
+			"verifier": { "model": "anthropic-api/claude-sonnet-5-5", "thinking": "medium" },
+			"review-readability": { "model": "claude-code/haiku", "thinking": "low" }
+		}
+	}
+}
+```
+
+- **Roles**: `orchestrator`, `worker`, `explorer`, `verifier`, `review-risk`, `review-resilience`, `review-readability`, `review-reliability`, `review-refuter`, `review-validator`, `compaction`.
+- **Levels**: `thinking` (or its alias `effort`) is one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+- **Inherit**: omit a field to inherit it. A role the profile does not list uses the default profile, which sets nothing; it never uses another profile.
+- **Models** may only contain `A-Z a-z 0-9 . _ ~ : @ / + % -`. The prefix `anthropic-api/` (API key) or `claude-code/` (Claude Code subscription) picks the backend for that role; without a prefix the session's backend applies.
+- **Invalid content** is dropped and reported, and the rest of the file still counts: an unknown role (with a "did you mean" for a close name), an unsafe model, an unknown level, a profile that is not an object. A file without the expected `kind` and `version` is invalid as a whole. A missing file means no profiles.
+- **Choosing a profile**, first match wins: the explicit choice, then the local pin `<git common dir>/atelier/profile-pin.json`, then the repository's `.atelier/profile.json`, then `active` in `profiles.json`, then the default profile. A layer that names a profile that does not exist is reported and skipped. Both pins are `{ "kind": "atelier.profile_pin", "version": 1, "profile": "<name>" }`.
+
+The agent cannot write `~/.atelier/` or the local pin: `edit`, `write` and the `bash` sandbox refuse them.
+
 ## Sandbox (macOS)
 
 On macOS every `bash` command of the agent, its workers and the verifier runs under the operating system's sandbox (Seatbelt, through `@anthropic-ai/sandbox-runtime` 0.0.81). It is built for macOS only: elsewhere, or if `sandbox-exec` does not answer, there is no sandbox and the commands fall back to approvals (see below). Design: `../docs/m10-diseno.md`.
