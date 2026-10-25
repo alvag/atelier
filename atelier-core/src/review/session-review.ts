@@ -96,7 +96,7 @@ export class SessionReview {
 	#turnPrompt = "";
 	#starting: Promise<void> = Promise.resolve();
 	/** The reviews this session finished with a receipt, oldest first, and where: what an undo needs. */
-	readonly #finished = new Map<string, { root: string; gitDir: string; receipt: Receipt }>();
+	readonly #finished = new Map<string, { root: string; gitDir: string; receipt: Receipt; headTree?: string }>();
 	/** Reviews whose correction this session undid. */
 	readonly #undone = new Set<string>();
 
@@ -160,7 +160,7 @@ export class SessionReview {
 					? "No escalated review of this session left a correction to undo."
 					: `No review ${reviewId} in this session.`,
 			);
-		const { root, gitDir, receipt } = found;
+		const { root, gitDir, receipt, headTree } = found;
 		if (receipt.verdict !== "escalated")
 			return refuse(
 				"not_escalated",
@@ -170,7 +170,12 @@ export class SessionReview {
 		const stored = await findReceipt(gitDir, receipt.candidate);
 		if (this.#undone.has(id) || stored?.undoneAt !== undefined)
 			return refuse("correction_already_undone", "This correction was already undone.");
-		const result = await undoCorrection(root, receipt.candidate, receipt.corrected);
+		if (headTree === undefined)
+			return refuse(
+				"undo_failed",
+				"HEAD could not be read when the review ended, so a commit of the correction cannot be told.",
+			);
+		const result = await undoCorrection(root, receipt.candidate, receipt.corrected, headTree);
 		if (!result.ok) return refuse(result.code, result.message);
 		this.#undone.add(id);
 		try {
@@ -364,7 +369,16 @@ export class SessionReview {
 		const { gitDir } = candidate;
 		let receiptPath: string | undefined;
 		if (store) {
-			this.#finished.set(reviewId, { root: candidate.root, gitDir, receipt });
+			// HEAD as the review left it: a later commit of the correction is told from what HEAD already held.
+			const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { cwd: candidate.root }).catch(
+				() => undefined,
+			);
+			this.#finished.set(reviewId, {
+				root: candidate.root,
+				gitDir,
+				receipt,
+				...(head?.code === 0 ? { headTree: head.stdout.toString("utf8").trim() } : {}),
+			});
 			try {
 				receiptPath = await writeReceipt(gitDir, receipt);
 				// The corrected change is what the worktree holds now: it must not be offered again either.

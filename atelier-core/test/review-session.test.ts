@@ -2105,8 +2105,8 @@ describe("undoing an escalated correction", () => {
 	];
 
 	/** A session whose first turn ends with an escalated review that left its correction in the worktree. */
-	async function escalated(more: FakeStep[][] = []) {
-		const s = await start({ turns: [TURN, OVER_BUDGET_FIX, ...more] });
+	async function escalated(turns: FakeStep[][] = [TURN, OVER_BUDGET_FIX]) {
+		const s = await start({ turns });
 		const events = await s.send("add auth");
 		const [done] = ofType(events, "review_finished");
 		expect(done).toMatchObject({ verdict: "escalated", cause: "over_budget" });
@@ -2152,6 +2152,51 @@ describe("undoing an escalated correction", () => {
 		const reviewed = stored.find(({ receipt }) => (receipt as Record<string, unknown>).corrected !== null);
 		expect(reviewed?.receipt).toMatchObject({ verdict: "escalated", undoneAt: expect.any(String) });
 		expect(s.main.prompts).toHaveLength(2);
+	});
+
+	it("brings back a file the turn created and the correction deleted, and undoes a revert to HEAD", async () => {
+		const turn: FakeStep[] = [
+			DECLARED_NONE,
+			change("src/auth.ts", "export const a = 1;\n"),
+			change("src/tmp.ts", "agent\n"),
+			change("a.ts", "base\nmore\n"),
+			{ event: finished },
+		];
+		const fix: FakeStep[] = [
+			change("src/auth.ts", "export const a = 2;\nexport const b = 3;\nexport const c = 4;\n"),
+			call("remove", { path: "src/tmp.ts" }),
+			change("a.ts", "base\n"),
+			{ event: finished },
+		];
+		const s = await escalated([turn, fix]);
+		const events = await s.undo();
+		expect(ofType(events, "error")).toEqual([]);
+		expect(ofType(events, "correction_undone")).toMatchObject([
+			{ restored: ["a.ts", "src/auth.ts", "src/tmp.ts"], removed: [] },
+		]);
+		expect(await read(s.cwd, "src/tmp.ts")).toBe("agent\n");
+		expect(await read(s.cwd, "a.ts")).toBe("base\nmore\n");
+		expect(await read(s.cwd, "src/auth.ts")).toBe("export const a = 1;\n");
+	});
+
+	it("puts back a file the correction turned into a directory", async () => {
+		const turn: FakeStep[] = [
+			DECLARED_NONE,
+			change("src/auth.ts", "export const a = 1;\n"),
+			change("x", "file\n"),
+			{ event: finished },
+		];
+		const fix: FakeStep[] = [
+			change("src/auth.ts", "export const a = 2;\nexport const b = 3;\n"),
+			call("remove", { path: "x" }),
+			change("x/y", "dir\n"),
+			{ event: finished },
+		];
+		const s = await escalated([turn, fix]);
+		const events = await s.undo();
+		expect(ofType(events, "error")).toEqual([]);
+		expect(ofType(events, "correction_undone")).toMatchObject([{ restored: ["src/auth.ts", "x"], removed: ["x/y"] }]);
+		expect(await read(s.cwd, "x")).toBe("file\n");
 	});
 
 	it("restores nothing and names the files changed since the correction", async () => {

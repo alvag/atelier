@@ -1,4 +1,4 @@
-import { chmod, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { describeError } from "../events.ts";
 import { freezeCandidate } from "./candidate.ts";
@@ -27,18 +27,27 @@ const EXECUTABLE = "100755";
 /**
  * Puts the files a correction changed back to what they held in the candidate tree: modified and deleted
  * files get the candidate's bytes and mode, created ones are removed. It fails closed before writing
- * anything: when a correction file is committed, or the worktree no longer holds the corrected version of
- * one of them. Other files, the index and the commits are never touched.
+ * anything: when HEAD moved since the review (`headAtReview`, its tree then) to the corrected version of one
+ * of those files, or the worktree no longer holds the corrected version of one of them. Other files, the index
+ * and the commits are never touched.
  */
-export async function undoCorrection(root: string, candidate: string, corrected: string): Promise<UndoResult> {
+export async function undoCorrection(
+	root: string,
+	candidate: string,
+	corrected: string,
+	headAtReview: string,
+): Promise<UndoResult> {
 	try {
 		const changed = await changedFiles(root, candidate, corrected);
 		if (changed.length === 0) return { ok: false, code: "no_correction", message: "The correction changed no file." };
 		const paths = changed.map((file) => file.path);
 		const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { cwd: root });
 		if (head.code === 0) {
-			const differs = await differingPaths(root, corrected, head.stdout.toString("utf8").trim());
-			const committed = paths.filter((path) => !differs.has(path));
+			const now = head.stdout.toString("utf8").trim();
+			// A file HEAD already held as corrected (one the correction reverted or deleted) proves nothing: only a commit since the review does.
+			const moved = await differingPaths(root, headAtReview, now);
+			const differs = await differingPaths(root, corrected, now);
+			const committed = paths.filter((path) => moved.has(path) && !differs.has(path));
 			if (committed.length > 0)
 				return {
 					ok: false,
@@ -77,7 +86,9 @@ async function restore(root: string, changed: Changed[], blobs: Map<string, Buff
 	try {
 		for (const file of changed) {
 			if (file.sha !== undefined) continue;
-			await rm(await inside(top, file.path), { force: true });
+			const path = await inside(top, file.path);
+			await rm(path, { force: true });
+			await pruneEmpty(top, dirname(path));
 			removed.push(file.path);
 		}
 		for (const file of changed) {
@@ -103,6 +114,17 @@ async function restore(root: string, changed: Changed[], blobs: Map<string, Buff
 		};
 	}
 	return { ok: true, restored, removed };
+}
+
+/** Removes the folders a removal left empty, up to the worktree's root: one may hide a file the candidate had there. */
+async function pruneEmpty(top: string, folder: string): Promise<void> {
+	for (let at = folder; at !== top && dirname(at) !== at; at = dirname(at)) {
+		try {
+			await rmdir(at);
+		} catch {
+			return;
+		}
+	}
 }
 
 /** The absolute path of a repository path, refused when it or a symbolic link on its way leads outside the worktree. */
