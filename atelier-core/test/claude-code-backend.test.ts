@@ -119,6 +119,13 @@ const echo = defineTool({
 	execute: async ({ text }) => ({ ok: true, output: text, summary: text, truncated: false }),
 });
 
+const plainStart = {
+	cwd: "/w",
+	systemPromptAppend: "",
+	tools: [],
+	executeTool: async () => ({ ok: true, output: "" }),
+};
+
 describe("ClaudeCodeBackend options", () => {
 	it("runs only Atelier tools, isolated from the user's Claude Code configuration", async () => {
 		const { query, calls } = fakeQuery([], []);
@@ -166,7 +173,7 @@ describe("ClaudeCodeBackend options", () => {
 	it("passes the requested effort to Claude Code, and none when not asked", async () => {
 		const start = { cwd: "/w", systemPromptAppend: "", tools: [], executeTool: async () => ({ ok: true, output: "" }) };
 		const asked = fakeQuery([init], [[result(0.01)]]);
-		const session = await new ClaudeCodeBackend({ query: asked.query, env: {} }).start({ ...start, effort: "xhigh" });
+		const session = await new ClaudeCodeBackend({ query: asked.query, env: {} }).start({ ...start, thinking: "xhigh" });
 		expect(asked.calls.options.effort).toBe("xhigh");
 		const [started] = await collectBodies(session.send("hi"));
 		expect(started).toMatchObject({ type: "session_started", model: "claude-opus-5-5", effort: "xhigh" });
@@ -181,7 +188,7 @@ describe("ClaudeCodeBackend options", () => {
 		const session = await new ClaudeCodeBackend({ query, env: {} }).start({
 			cwd: "/w",
 			model: "claude-sonnet-4-6",
-			effort: "xhigh",
+			thinking: "xhigh",
 			systemPromptAppend: "",
 			tools: [],
 			executeTool: async () => ({ ok: true, output: "" }),
@@ -189,6 +196,46 @@ describe("ClaudeCodeBackend options", () => {
 		expect(calls.options).not.toHaveProperty("effort");
 		const [started] = await collectBodies(session.send("hi"));
 		expect(started).toMatchObject({ type: "session_started", model: "claude-sonnet-4-6", effort: "unsupported" });
+	});
+
+	it("passes minimal as effort low", async () => {
+		const { query, calls } = fakeQuery([init], [[result(0.01)]]);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start({ ...plainStart, thinking: "minimal" });
+		expect(calls.options.effort).toBe("low");
+		const [started] = await collectBodies(session.send("hi"));
+		expect(started).toMatchObject({ type: "session_started", effort: "low" });
+	});
+
+	it.each(["claude-haiku-5-5", "claude-opus-5"])(
+		"turns thinking off on %s with disabled and says off",
+		async (model) => {
+			const { query, calls } = fakeQuery([{ ...init, model } as SDKMessage], [[result(0.01)]]);
+			const session = await new ClaudeCodeBackend({ query, env: {} }).start({ ...plainStart, model, thinking: "off" });
+			expect(calls.options.thinking).toEqual({ type: "disabled" });
+			expect(calls.options).not.toHaveProperty("effort");
+			const [started] = await collectBodies(session.send("hi"));
+			expect(started).toMatchObject({ type: "session_started", model, effort: "off" });
+		},
+	);
+
+	it.each(["claude-sonnet-5-5", "claude-opus-5-5"])(
+		"does not turn thinking off on %s, which the Agent SDK cannot do there, and marks it unsupported",
+		async (model) => {
+			const { query, calls } = fakeQuery([{ ...init, model } as SDKMessage], [[result(0.01)]]);
+			const session = await new ClaudeCodeBackend({ query, env: {} }).start({ ...plainStart, model, thinking: "off" });
+			expect(calls.options).not.toHaveProperty("thinking");
+			expect(calls.options).not.toHaveProperty("effort");
+			const [started] = await collectBodies(session.send("hi"));
+			expect(started).toMatchObject({ type: "session_started", model, effort: "unsupported" });
+		},
+	);
+
+	it("passes no thinking and says no effort when no level was asked", async () => {
+		const { query, calls } = fakeQuery([init], [[result(0.01)]]);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		expect(calls.options).not.toHaveProperty("thinking");
+		const [started] = await collectBodies(session.send("hi"));
+		expect(started).not.toHaveProperty("effort");
 	});
 
 	it("caps a turn's model requests with maxTurns when asked", async () => {

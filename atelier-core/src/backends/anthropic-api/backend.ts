@@ -24,7 +24,7 @@ import {
 	type Usage,
 	ZERO_USAGE,
 } from "../../events.ts";
-import { costOfRequest, effortToSend } from "../../pricing.ts";
+import { costOfRequest, type ThinkingOff, type ThinkingSend, thinkingToSend } from "../../pricing.ts";
 import { UsageMeter } from "../../usage-meter.ts";
 import { systemPrompt } from "./system-prompt.ts";
 import { toAnthropicTools } from "./tool-schema.ts";
@@ -65,8 +65,8 @@ interface CompactionConfig {
 	keepRecent: number;
 }
 
-/** A history message, with the effort an assistant answer was asked with; the API never sees `effort`. */
-export type StoredMessage = Anthropic.MessageParam & { effort?: Effort };
+/** A history message, with the effort (or `off`) an assistant answer was asked with; the API never sees `effort`. */
+export type StoredMessage = Anthropic.MessageParam & { effort?: Effort | "off" };
 
 /** Everything a request is built from. The prefix (tools, system) is fixed when the session starts. */
 export interface RequestState {
@@ -74,6 +74,8 @@ export interface RequestState {
 	maxTokens: number;
 	/** Sent as `output_config.effort`; absent when none was asked or the model does not support it. */
 	effort?: Effort;
+	/** Sent as `thinking`, to turn thinking off; absent when none was asked or the model cannot turn it off. */
+	thinking?: ThinkingOff;
 	system: string;
 	tools: readonly Anthropic.Tool[];
 	/** Stored history: it only grows and never carries cache breakpoints. */
@@ -98,6 +100,7 @@ export function buildRequest(state: RequestState): Anthropic.MessageCreateParams
 		system: [{ type: "text", text: state.system, cache_control: BREAKPOINT }],
 		...(tools.length === 0 ? {} : { tools }),
 		...(state.effort === undefined ? {} : { output_config: { effort: state.effort } }),
+		...(state.thinking === undefined ? {} : { thinking: { type: state.thinking } }),
 		messages: state.messages.map((message, index) =>
 			index === state.messages.length - 1 ? withBreakpoint(toParam(message)) : toParam(message),
 		),
@@ -148,11 +151,12 @@ export class AnthropicApiBackend implements AgentBackend {
 			...(this.#options.maxRetries === undefined ? {} : { maxRetries: this.#options.maxRetries }),
 		});
 		const model = start.model ?? this.#options.model ?? DEFAULT_API_MODEL;
-		const effort = effortToSend(model, start.effort);
+		const sent = thinkingToSend(model, start.thinking, BACKEND_ID);
 		const state: RequestState = {
 			model,
 			maxTokens: this.#options.maxTokens ?? DEFAULT_MAX_TOKENS,
-			...(effort === undefined || effort === "unsupported" ? {} : { effort }),
+			...(sent?.effort === undefined ? {} : { effort: sent.effort }),
+			...(sent?.thinking === undefined ? {} : { thinking: sent.thinking }),
 			system: systemPrompt(start.cwd, start.systemPromptAppend),
 			tools: Object.freeze(toAnthropicTools(start.tools)),
 			messages: [],
@@ -174,7 +178,7 @@ export class AnthropicApiBackend implements AgentBackend {
 			maxRequests,
 			this.#options.apiKey,
 			compaction,
-			effort,
+			sent?.report,
 			start.compactionState,
 			start.compacted,
 		);
@@ -206,7 +210,7 @@ class AnthropicApiSession implements BackendSession {
 	readonly #apiKey: string;
 	readonly #compactionReady: Promise<CompactionConfig>;
 	/** What `session_started` says about the effort. */
-	readonly #effort: Effort | "unsupported" | undefined;
+	readonly #effort: ThinkingSend["report"] | undefined;
 	/** Set once the window lookup answered, before the first request. */
 	#config: CompactionConfig | undefined;
 	readonly #compactionState: (() => string | undefined) | undefined;
@@ -231,7 +235,7 @@ class AnthropicApiSession implements BackendSession {
 		maxRequests: number,
 		apiKey: string,
 		compaction: Promise<CompactionConfig>,
-		effort: Effort | "unsupported" | undefined,
+		effort: ThinkingSend["report"] | undefined,
 		compactionState?: () => string | undefined,
 		compacted?: (summary: string) => void,
 	) {
@@ -317,7 +321,7 @@ class AnthropicApiSession implements BackendSession {
 				// Only complete messages enter the history; an interrupted stream leaves nothing behind.
 				// The API rejects empty text blocks and empty assistant messages, so neither is kept.
 				const content = message.content.filter((block) => block.type !== "text" || block.text !== "");
-				const effort = this.#state.effort;
+				const effort = this.#state.thinking === undefined ? this.#state.effort : "off";
 				if (content.length > 0)
 					this.#state.messages.push({ role: "assistant", content, ...(effort === undefined ? {} : { effort }) });
 				this.#measured = { tokens: contextTokens(usage), length: this.#state.messages.length };

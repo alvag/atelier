@@ -1,4 +1,5 @@
 import type { Effort, Usage } from "./events.ts";
+import type { ThinkingLevel } from "./profiles/index.ts";
 
 /** USD per million tokens. `cacheWrite` is the 5-minute cache write; Atelier writes no 1-hour entries. */
 export interface PriceTier {
@@ -57,10 +58,49 @@ const ALIASES: Readonly<Record<string, string>> = Object.freeze({
 	"claude-opus-4-5": "claude-opus-4-5-20251101",
 });
 
-/** The effort to send to `model`: none when none was asked, `unsupported` when the model does not take that level. */
-export function effortToSend(model: string, effort: Effort | undefined): Effort | "unsupported" | undefined {
-	if (effort === undefined) return undefined;
-	return EFFORT_LEVELS[ALIASES[model] ?? model]?.includes(effort) ? effort : "unsupported";
+/** How a model's thinking is turned off, as the `thinking` request field takes it. */
+export type ThinkingOff = "disabled" | "between_tools";
+
+/**
+ * How to turn thinking off, from the same effort docs (2026-10-25). Haiku 5.5 and Opus 5 take
+ * `disabled`; Sonnet 5.5 takes `between_tools` instead. Any other model, Opus 5.5 included (it answers 400
+ * to `disabled`), gets nothing: Atelier does not guess.
+ */
+export const THINKING_OFF: Readonly<Record<string, ThinkingOff>> = Object.freeze({
+	"claude-haiku-5-5": "disabled",
+	"claude-opus-5": "disabled",
+	"claude-sonnet-5-5": "between_tools",
+});
+
+export type ThinkingBackend = "anthropic-api" | "claude-code";
+
+/** What a backend sends for a thinking level, and what `session_started.effort` says about it. */
+export interface ThinkingSend {
+	/** The effort sent, `off` when thinking was turned off, `unsupported` when the level could not be sent. */
+	report: Effort | "off" | "unsupported";
+	effort?: Effort;
+	thinking?: ThinkingOff;
+}
+
+/**
+ * What to send to `model` for a profile level: nothing when none was asked. `minimal` is sent as `low`, as pi
+ * does. `off` is sent only where the docs say how; the Claude Agent SDK's `ThinkingConfig` has no
+ * `between_tools`, so on `claude-code` Sonnet 5.5 cannot turn thinking off.
+ */
+export function thinkingToSend(
+	model: string,
+	level: ThinkingLevel | undefined,
+	backend: ThinkingBackend,
+): ThinkingSend | undefined {
+	if (level === undefined) return undefined;
+	const id = ALIASES[model] ?? model;
+	if (level === "off") {
+		const off = THINKING_OFF[id];
+		if (off === undefined || (off === "between_tools" && backend === "claude-code")) return { report: "unsupported" };
+		return { report: "off", thinking: off };
+	}
+	const effort = level === "minimal" ? "low" : level;
+	return EFFORT_LEVELS[id]?.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
 }
 
 /** Cost of one API request, or undefined when the model is not in the table. */

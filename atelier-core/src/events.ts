@@ -160,8 +160,17 @@ export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = (typeof EFFORTS)[number];
 
 export type AtelierEventBody =
-	/** `effort`: the reasoning effort sent with every request, or `unsupported` when one was asked for a model without it. */
-	| { type: "session_started"; backend: string; model: string; authSource: AuthSource; effort?: Effort | "unsupported" }
+	/**
+	 * `effort`: the thinking level asked for, as sent with every request: the reasoning effort, `off` when thinking
+	 * was turned off, or `unsupported` when the model cannot take that level. Absent when no level was asked.
+	 */
+	| {
+			type: "session_started";
+			backend: string;
+			model: string;
+			authSource: AuthSource;
+			effort?: Effort | "off" | "unsupported";
+	  }
 	| { type: "text_delta"; text: string }
 	| { type: "thinking_delta"; text: string }
 	| { type: "tool_call_started"; callId: string; tool: string; input: JsonValue }

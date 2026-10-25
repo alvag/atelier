@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { toAnthropicTools } from "../src/backends/anthropic-api/tool-schema.ts";
 import { cacheHitRate } from "../src/events.ts";
-import { costOfRequest, effortToSend, PRICES } from "../src/pricing.ts";
+import { costOfRequest, PRICES, thinkingToSend } from "../src/pricing.ts";
 import { coreTools } from "../src/tools/index.ts";
 import { UsageMeter } from "../src/usage-meter.ts";
 
@@ -108,23 +108,56 @@ describe("UsageMeter", () => {
 	});
 });
 
-describe("effortToSend", () => {
+describe("thinkingToSend", () => {
+	const api = (model: string, level: Parameters<typeof thinkingToSend>[1]) =>
+		thinkingToSend(model, level, "anthropic-api");
+	const code = (model: string, level: Parameters<typeof thinkingToSend>[1]) =>
+		thinkingToSend(model, level, "claude-code");
+
 	it("sends the effort only to models that support it, by id or by Claude Code alias", () => {
-		expect(effortToSend("claude-opus-5-5", "max")).toBe("max");
-		expect(effortToSend("sonnet", "low")).toBe("low");
-		expect(effortToSend("claude-haiku-5-5", "low")).toBe("low");
-		expect(effortToSend("haiku", "xhigh")).toBe("xhigh");
-		expect(effortToSend("claude-fable-5-1", "max")).toBe("max");
-		expect(effortToSend("a-model-atelier-does-not-know", "high")).toBe("unsupported");
-		expect(effortToSend("claude-opus-5-5", undefined)).toBeUndefined();
+		expect(api("claude-opus-5-5", "max")).toEqual({ report: "max", effort: "max" });
+		expect(code("sonnet", "low")).toEqual({ report: "low", effort: "low" });
+		expect(api("claude-haiku-5-5", "low")).toEqual({ report: "low", effort: "low" });
+		expect(code("haiku", "xhigh")).toEqual({ report: "xhigh", effort: "xhigh" });
+		expect(api("claude-fable-5-1", "max")).toEqual({ report: "max", effort: "max" });
+		expect(api("a-model-atelier-does-not-know", "high")).toEqual({ report: "unsupported" });
+		expect(api("claude-opus-5-5", undefined)).toBeUndefined();
 	});
 
 	it("sends only the levels each model takes", () => {
-		expect(effortToSend("claude-opus-4-6", "max")).toBe("max");
-		expect(effortToSend("claude-opus-4-6", "xhigh")).toBe("unsupported");
-		expect(effortToSend("claude-sonnet-4-6", "xhigh")).toBe("unsupported");
-		expect(effortToSend("claude-opus-4-5", "high")).toBe("high");
-		expect(effortToSend("claude-opus-4-5-20251101", "max")).toBe("unsupported");
-		expect(effortToSend("claude-haiku-4-5", "low")).toBe("unsupported");
+		expect(api("claude-opus-4-6", "max")).toEqual({ report: "max", effort: "max" });
+		expect(api("claude-opus-4-6", "xhigh")).toEqual({ report: "unsupported" });
+		expect(api("claude-sonnet-4-6", "xhigh")).toEqual({ report: "unsupported" });
+		expect(api("claude-opus-4-5", "high")).toEqual({ report: "high", effort: "high" });
+		expect(api("claude-opus-4-5-20251101", "max")).toEqual({ report: "unsupported" });
+		expect(api("claude-haiku-4-5", "low")).toEqual({ report: "unsupported" });
+	});
+
+	it("sends minimal as low, as pi does", () => {
+		expect(api("claude-opus-5-5", "minimal")).toEqual({ report: "low", effort: "low" });
+		expect(api("claude-opus-4-5-20251101", "minimal")).toEqual({ report: "low", effort: "low" });
+		expect(api("claude-haiku-4-5", "minimal")).toEqual({ report: "unsupported" });
+	});
+
+	it("turns thinking off with disabled on Haiku 5.5 and Opus 5, in both backends", () => {
+		for (const backend of ["anthropic-api", "claude-code"] as const) {
+			expect(thinkingToSend("claude-haiku-5-5", "off", backend)).toEqual({ report: "off", thinking: "disabled" });
+			expect(thinkingToSend("haiku", "off", backend)).toEqual({ report: "off", thinking: "disabled" });
+			expect(thinkingToSend("claude-opus-5", "off", backend)).toEqual({ report: "off", thinking: "disabled" });
+		}
+	});
+
+	it("turns thinking off on Sonnet 5.5 with between_tools, which only the API takes", () => {
+		expect(api("claude-sonnet-5-5", "off")).toEqual({ report: "off", thinking: "between_tools" });
+		expect(api("sonnet", "off")).toEqual({ report: "off", thinking: "between_tools" });
+		expect(code("claude-sonnet-5-5", "off")).toEqual({ report: "unsupported" });
+		expect(code("sonnet", "off")).toEqual({ report: "unsupported" });
+	});
+
+	it("does not turn thinking off where the docs do not say how", () => {
+		expect(api("claude-opus-5-5", "off")).toEqual({ report: "unsupported" });
+		expect(code("opus", "off")).toEqual({ report: "unsupported" });
+		expect(api("claude-opus-4-6", "off")).toEqual({ report: "unsupported" });
+		expect(api("a-model-atelier-does-not-know", "off")).toEqual({ report: "unsupported" });
 	});
 });

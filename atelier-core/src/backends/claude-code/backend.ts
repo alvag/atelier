@@ -10,8 +10,8 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentBackend, BackendSession, BackendStartOptions, ToolExecutor } from "../../backend.ts";
 import { Channel } from "../../channel.ts";
-import { type AtelierEventBody, describeError, type Effort, errorEvent, type JsonValue } from "../../events.ts";
-import { effortToSend } from "../../pricing.ts";
+import { type AtelierEventBody, describeError, errorEvent, type JsonValue } from "../../events.ts";
+import { type ThinkingSend, thinkingToSend } from "../../pricing.ts";
 import type { ToolDefinition } from "../../tools/types.ts";
 import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./map.ts";
 
@@ -114,13 +114,14 @@ export class ClaudeCodeBackend implements AgentBackend {
 		const input = new Channel<SDKUserMessage>();
 		const run = this.#options.query ?? (sdkQuery as QueryFunction);
 		const model = start.model ?? DEFAULT_MODEL;
-		const effort = effortToSend(model, start.effort);
+		const sent = thinkingToSend(model, start.thinking, "claude-code");
 		const query = run({
 			prompt: input,
 			options: {
 				cwd: start.cwd,
 				model,
-				...(effort === undefined || effort === "unsupported" ? {} : { effort }),
+				...(sent?.effort === undefined ? {} : { effort: sent.effort }),
+				...(sent?.thinking === "disabled" ? { thinking: { type: "disabled" as const } } : {}),
 				tools: [],
 				mcpServers: { [MCP_SERVER_NAME]: server },
 				strictMcpConfig: true,
@@ -152,7 +153,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 			input,
 			observe,
 			this.#options.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS,
-			effort,
+			sent?.report,
 			start.compactionState,
 		);
 	}
@@ -197,7 +198,7 @@ class ClaudeCodeSession implements BackendSession {
 	#failure: string | undefined;
 	readonly #compactionState: (() => string | undefined) | undefined;
 	/** What `session_started` says about the effort. */
-	readonly #effort: Effort | "unsupported" | undefined;
+	readonly #effort: ThinkingSend["report"] | undefined;
 	/** Claude Code compacted; the core's state goes with the next prompt. */
 	#stateDue = false;
 
@@ -206,7 +207,7 @@ class ClaudeCodeSession implements BackendSession {
 		input: Channel<SDKUserMessage>,
 		observe: (message: SDKMessage) => void,
 		interruptGraceMs: number,
-		effort: Effort | "unsupported" | undefined,
+		effort: ThinkingSend["report"] | undefined,
 		compactionState?: () => string | undefined,
 	) {
 		this.#query = query;

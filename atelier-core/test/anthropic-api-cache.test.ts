@@ -100,6 +100,20 @@ describe("buildRequest cache breakpoints", () => {
 		expect(JSON.stringify(request.messages)).not.toContain("effort");
 		expect(s.messages[1]).toEqual({ role: "assistant", content: "hello", effort: "high" });
 	});
+
+	it("sends thinking when off applies, and keeps the stamp of an answer asked with it off out of the request", () => {
+		const request = buildRequest({
+			...state([
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: "hello", effort: "off" },
+				{ role: "user", content: "and?" },
+			]),
+			thinking: "disabled" as const,
+		});
+		expect(request.thinking).toEqual({ type: "disabled" });
+		expect(request).not.toHaveProperty("output_config");
+		expect(JSON.stringify(request.messages)).not.toContain("effort");
+	});
 });
 
 describe("system prompt", () => {

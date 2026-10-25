@@ -290,7 +290,7 @@ describe("AnthropicApiBackend", () => {
 			undefined,
 			{},
 			undefined,
-			{ effort: "high" },
+			{ thinking: "high" },
 		);
 		const events = await collect(session.send("Hi"));
 		expect(events[0]).toEqual({
@@ -311,10 +311,61 @@ describe("AnthropicApiBackend", () => {
 			undefined,
 			{ model: "claude-opus-4-6" },
 			undefined,
-			{ effort: "xhigh" },
+			{ thinking: "xhigh" },
 		);
 		const events = await collect(session.send("Hi"));
 		expect(events[0]).toMatchObject({ type: "session_started", model: "claude-opus-4-6", effort: "unsupported" });
+		expect(api.bodies[0]).not.toHaveProperty("output_config");
+	});
+
+	it("sends minimal as effort low", async () => {
+		const { session, api } = await start([{ blocks: [{ type: "text", text: "ok" }] }], undefined, {}, undefined, {
+			thinking: "minimal",
+		});
+		const events = await collect(session.send("Hi"));
+		expect(events[0]).toMatchObject({ type: "session_started", effort: "low" });
+		expect(api.bodies[0]?.output_config).toEqual({ effort: "low" });
+	});
+
+	it.each([
+		["claude-haiku-5-5", "disabled"],
+		["claude-opus-5", "disabled"],
+		["claude-sonnet-5-5", "between_tools"],
+	])("turns thinking off on %s with %s, sends no effort and says off", async (model, type) => {
+		const { session, api } = await start(
+			[{ blocks: [{ type: "text", text: "ok" }] }],
+			undefined,
+			{ model },
+			undefined,
+			{
+				thinking: "off",
+			},
+		);
+		const events = await collect(session.send("Hi"));
+		expect(events[0]).toMatchObject({ type: "session_started", model, effort: "off" });
+		expect(api.bodies[0]?.thinking).toEqual({ type });
+		expect(api.bodies[0]).not.toHaveProperty("output_config");
+	});
+
+	it("does not turn thinking off on Opus 5.5, which answers 400 to it, and marks it unsupported", async () => {
+		const { session, api } = await start(
+			[{ blocks: [{ type: "text", text: "ok" }] }],
+			undefined,
+			{ model: "claude-opus-5-5" },
+			undefined,
+			{ thinking: "off" },
+		);
+		const events = await collect(session.send("Hi"));
+		expect(events[0]).toMatchObject({ type: "session_started", model: "claude-opus-5-5", effort: "unsupported" });
+		expect(api.bodies[0]).not.toHaveProperty("thinking");
+		expect(api.bodies[0]).not.toHaveProperty("output_config");
+	});
+
+	it("sends no thinking and no effort field when no level was asked", async () => {
+		const { session, api } = await start([{ blocks: [{ type: "text", text: "ok" }] }]);
+		const events = await collect(session.send("Hi"));
+		expect(events[0]).not.toHaveProperty("effort");
+		expect(api.bodies[0]).not.toHaveProperty("thinking");
 		expect(api.bodies[0]).not.toHaveProperty("output_config");
 	});
 
@@ -874,7 +925,7 @@ describe("AnthropicApiBackend compaction", () => {
 			async () => ({ ok: true, output: "" }),
 			{ contextWindow: 200_000, compactAt: 1_000_000, keepRecentTokens: 1 },
 			undefined,
-			{ effort: "medium" },
+			{ thinking: "medium" },
 		);
 		await collect(session.send("first"));
 		await collect(session.send("second"));
@@ -882,6 +933,26 @@ describe("AnthropicApiBackend compaction", () => {
 		expect(ofType(events, "compaction_finished")[0]).toMatchObject({ ok: true });
 		expect(api.bodies[2]?.output_config).toEqual({ effort: "medium" });
 		expect(JSON.stringify(messagesOf(api.bodies[2]))).not.toContain("effort");
+	});
+
+	it("asks for the summary with the thinking turned off when the session turned it off", async () => {
+		const { session, api } = await start(
+			[
+				{ blocks: [{ type: "text", text: "first answer" }] },
+				{ blocks: [{ type: "text", text: "second answer" }] },
+				summaryReply(),
+			],
+			async () => ({ ok: true, output: "" }),
+			{ contextWindow: 200_000, compactAt: 1_000_000, keepRecentTokens: 1 },
+			undefined,
+			{ thinking: "off" },
+		);
+		await collect(session.send("first"));
+		await collect(session.send("second"));
+		const events = await collect(compactOf(session));
+		expect(ofType(events, "compaction_finished")[0]).toMatchObject({ ok: true });
+		expect(api.bodies[2]?.thinking).toEqual({ type: "between_tools" });
+		expect(api.bodies[2]).not.toHaveProperty("output_config");
 	});
 
 	it("says there is nothing to compact in a short history, and keeps it", async () => {
