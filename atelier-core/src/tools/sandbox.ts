@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
@@ -103,6 +103,8 @@ export interface AgentPolicyInput {
 	additions?: SandboxAdditions;
 	/** The git data of a linked worktree that lives in the main checkout; absent anywhere else. */
 	worktreeGit?: WorktreeGit;
+	/** The git places that run code, as `gitProtectedPaths` finds them; none outside a repository. */
+	gitPaths?: string[];
 }
 
 /** Where a linked worktree's git data lives: its own directory and the repository's shared one. */
@@ -167,6 +169,57 @@ export function worktreeGitPaths(worktreeGit: WorktreeGit | undefined): { allowW
  */
 export function operationStatePaths(gitDir: string): string[] {
 	return ["rebase-merge", "rebase-apply", "sequencer"].map((name) => join(gitDir, name));
+}
+
+/**
+ * Every place of the repository `cwd` belongs to where git runs code or is
+ * pointed elsewhere, as git itself reports it, so it holds whether the git
+ * directory is inside `cwd` or not (a subdirectory of a repository, a linked
+ * worktree, a `.git` file): the hooks directory git runs (`core.hooksPath`
+ * included), the `config` and `config.worktree` of the git directory and of
+ * the shared one, the pending steps of a rebase or cherry-pick, the `.git`
+ * file when it is one, and the linked worktree's own set. Asked at each call,
+ * because the configuration can change. Empty outside a repository, and when
+ * git's answer is unusable: the conventional `.git/hooks` and `.git/config`
+ * of the working directory are protected anyway.
+ */
+export function gitProtectedPaths(cwd: string): string[] {
+	const found = spawnSync(
+		"git",
+		[
+			"rev-parse",
+			"--path-format=absolute",
+			"--show-toplevel",
+			"--absolute-git-dir",
+			"--git-common-dir",
+			"--git-path",
+			"hooks",
+		],
+		{ cwd, encoding: "utf8", timeout: 5000 },
+	);
+	if (found.status !== 0) return [];
+	const [top, gitDir, commonDir, hooks] = found.stdout.trim().split("\n");
+	if (![top, gitDir, commonDir, hooks].every((path) => path?.startsWith("/"))) return [];
+	return [
+		hooks as string,
+		...[gitDir as string, commonDir as string].flatMap((dir) => [
+			join(dir, "hooks"),
+			join(dir, "config"),
+			join(dir, "config.worktree"),
+		]),
+		...operationStatePaths(gitDir as string),
+		...(isFileOrLink(join(top as string, ".git")) ? [join(top as string, ".git")] : []),
+		...worktreeGitPaths(linkedWorktreeGit(cwd)).denyWrite.filter((path) => !path.includes("*")),
+	];
+}
+
+/** Whether `path` is a file or a link, not a directory (and not missing). */
+function isFileOrLink(path: string): boolean {
+	try {
+		return !lstatSync(path).isDirectory();
+	} catch {
+		return false;
+	}
 }
 
 const worktreeGitCache = new Map<string, WorktreeGit | null>();
@@ -241,6 +294,7 @@ export function agentPolicy({
 	home,
 	additions,
 	worktreeGit,
+	gitPaths = [],
 }: AgentPolicyInput): SandboxPolicy {
 	const writable = additions?.allowWrite ?? [];
 	const worktree = worktreeGitPaths(worktreeGit);
@@ -257,6 +311,7 @@ export function agentPolicy({
 			],
 			denyWrite: [
 				...worktree.denyWrite,
+				...gitPaths,
 				...secretFilePatterns(cwd),
 				...writable.flatMap(secretFilePatterns),
 				...[cwd, ...writable].flatMap(libraryProtectedPaths),
@@ -468,6 +523,7 @@ export class Sandbox {
 						// Read at each command, so a file that became invalid stops the command instead of being ignored.
 						additions: loadSandboxAdditions({ cwd, home }),
 						...(this.#options.manager ? {} : optional("worktreeGit", linkedWorktreeGit(cwd))),
+						...(this.#options.manager ? {} : { gitPaths: gitProtectedPaths(cwd) }),
 					})
 				: verifierPolicy({
 						dir: cwd,

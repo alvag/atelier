@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { danglingLink, foldPath, isInsideFolded, linkTargets, realpathAllowMissing } from "./paths.ts";
-import { linkedWorktreeGit, operationStatePaths, worktreeGitPaths } from "./sandbox.ts";
+import { gitProtectedPaths, operationStatePaths } from "./sandbox.ts";
 import { loadSandboxAdditions } from "./sandbox-config.ts";
 import { libraryProtectedPaths } from "./sandbox-paths.ts";
 
@@ -48,18 +48,19 @@ async function isProjectConfig(cwd: string, lexical: string, real: string): Prom
 /**
  * The git files the agent's `bash` sandbox denies because git runs code from
  * them: hooks and configuration, the pending steps of a rebase or a
- * cherry-pick, and, in a linked worktree, the shared hooks and configuration
- * and the files that point git elsewhere. Built from the sandbox's own lists.
+ * cherry-pick, and what git reports for the working directory's repository
+ * (the effective hooks directory, the configuration of the git directories,
+ * the `.git` file of a linked worktree), wherever the git directory is. Built
+ * from the sandbox's own lists.
  */
 function gitExecutionPaths(cwd: string, home: string): string[] {
 	const directories = [cwd, ...loadSandboxAdditions({ cwd, home }).allowWrite];
-	const worktree = worktreeGitPaths(linkedWorktreeGit(cwd)).denyWrite.filter((path) => !path.includes("*"));
 	return [
 		...directories
 			.flatMap(libraryProtectedPaths)
 			.filter((path) => basename(path).startsWith(".git") || basename(dirname(path)) === ".git"),
 		...directories.flatMap((dir) => operationStatePaths(join(dir, ".git"))),
-		...worktree,
+		...gitProtectedPaths(cwd),
 	];
 }
 
