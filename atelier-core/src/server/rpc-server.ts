@@ -317,7 +317,7 @@ export class RpcServer {
 				...(review
 					? {
 							review: {
-								createBackend: () => this.#options.createBackend(backend),
+								createBackend: (name) => this.#options.createBackend(name ?? backend),
 								consent: ({ reviewId }) => new Promise((resolve) => consents.set(reviewId, resolve)),
 							},
 						}

@@ -241,7 +241,7 @@ export async function run(
 		...(profile === undefined ? {} : { profile }),
 		subagents: { agents: BUILTIN_AGENTS, createBackend: (name) => createBackend(name ?? kind) },
 		...(args.review
-			? { review: { createBackend: () => createBackend(kind), consent } }
+			? { review: { createBackend: (name) => createBackend(name ?? kind), consent } }
 			: { reviewUnavailable: "Review is off (--no-review or ATELIER_REVIEW=off)." }),
 		odd: true,
 		...(io.home === undefined ? {} : { projectInstructions: { home: io.home } }),

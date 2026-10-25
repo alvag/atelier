@@ -14,6 +14,8 @@ import {
 	type Usage,
 	ZERO_USAGE,
 } from "../events.ts";
+import type { ProfileBackend, Role, RoleBackendFactory, RoleSettings } from "../profiles/index.ts";
+import { roleStartMessage } from "../profiles/index.ts";
 import { DECLARE_RISK_REQUEST } from "../prompt.ts";
 import type { Session, SessionOptions } from "../session.ts";
 import { addPhaseSpent, addPhases, onePhase } from "../spent.ts";
@@ -50,8 +52,8 @@ export interface ReviewConsentRequest {
 }
 
 export interface ReviewOptions {
-	/** A fresh backend of the same kind as the session's, for each review role. */
-	createBackend: () => AgentBackend | Promise<AgentBackend>;
+	/** A fresh backend for each review role: the one `name` says, or the session's kind when the profile names none. */
+	createBackend: RoleBackendFactory;
 	/** Asks the user about a high-risk candidate; without it a high-risk change is assessed but never offered. */
 	consent?: (request: ReviewConsentRequest) => Promise<"granted" | "declined">;
 	/** The sandbox the verifier's bash runs in; tests pass their own. */
@@ -71,6 +73,8 @@ export interface Spent extends PhaseSpent {
 export interface ReviewHost {
 	cwd: string;
 	model: string | undefined;
+	/** What the session's frozen profile says for `role`; the model is the session's where the entry sets none. */
+	settings(role: Role): RoleSettings;
 	/** The active ODD feature document, absolute. */
 	feature?: string;
 	signal: AbortSignal;
@@ -470,6 +474,13 @@ export class SessionReview {
 			});
 		}
 		try {
+			const settings = host.settings("verifier");
+			let backend: AgentBackend;
+			try {
+				backend = await this.#options.createBackend(settings.backend);
+			} catch (error) {
+				return failedRole(startFailure("The verifier could not start", "verifier", settings, error));
+			}
 			const sandboxStatus = await (this.#options.sandbox ?? sandbox).status();
 			// Without it the verifier marks the branch and commit requirements unverified, as it would anyway.
 			const git = await readTurnGit(candidate).catch(() => undefined);
@@ -488,9 +499,10 @@ export class SessionReview {
 				host,
 				{ parentCallId: call.verifyId, agent: "verify:verifier" },
 				{
-					backend: await this.#options.createBackend(),
+					backend,
 					cwd: workspace.dir,
-					...(host.model === undefined ? {} : { model: host.model }),
+					...(settings.model === undefined ? {} : { model: settings.model }),
+					...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
 					// Without the sandbox the verifier has no way to stay in its copy or off the network: it gets no bash.
 					tools: sandboxStatus.available
 						? [
@@ -511,6 +523,8 @@ export class SessionReview {
 				"verifier",
 				prompt,
 				count,
+				undefined,
+				ownBackend("verifier", settings),
 			);
 			return sandboxStatus.available ? result : { ...result, bashUnavailable: sandboxStatus.reason };
 		} catch (error) {
@@ -529,17 +543,20 @@ export class SessionReview {
 		count: (requests: number | undefined) => void,
 	): Promise<RoleResult> {
 		let options: SessionOptions;
+		const profileRole: Role = `review-${call.role}`;
+		const settings = host.settings(profileRole);
 		try {
 			options = {
-				backend: await this.#options.createBackend(),
+				backend: await this.#options.createBackend(settings.backend),
 				cwd: host.cwd,
-				...(host.model === undefined ? {} : { model: host.model }),
+				...(settings.model === undefined ? {} : { model: settings.model }),
+				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
 				tools: createTreeTools(candidate.root, call.tree),
 				systemPromptAppend: call.instruction,
 				createId: host.createId,
 			};
 		} catch (error) {
-			return failedRole(`The ${call.role} role could not start: ${describeError(error)}`);
+			return failedRole(startFailure(`The ${call.role} role could not start`, profileRole, settings, error));
 		}
 		return this.#runChild(
 			host,
@@ -549,6 +566,7 @@ export class SessionReview {
 			call.prompt,
 			count,
 			call.signal,
+			ownBackend(profileRole, settings),
 		);
 	}
 
@@ -561,11 +579,14 @@ export class SessionReview {
 		prompt: string,
 		count: (requests: number | undefined) => void,
 		signal: AbortSignal | undefined = host.signal,
+		/** Set when the profile gives the role its own backend: its failures then name the role and that backend. */
+		own?: { role: Role; backend: ProfileBackend },
 	): Promise<RoleResult> {
 		let child: Session;
 		try {
 			child = await host.startChild(options);
 		} catch (error) {
+			if (own) return failedRole(roleStartMessage(own.role, own.backend, error));
 			return failedRole(`The ${role} role could not start: ${describeError(error)}`);
 		}
 		this.#children.add(child);
@@ -601,7 +622,7 @@ export class SessionReview {
 			};
 			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined)
 				return failedRole(
-					`${stopReason}: ${failure ?? "no details"}`,
+					`${own ? `${own.role}: ${own.backend}: ` : ""}${stopReason}: ${failure ?? "no details"}`,
 					childRefusal(stopReason, failure, requests ?? options.maxRequestsPerTurn),
 					spent,
 				);
@@ -620,6 +641,17 @@ export class SessionReview {
 			await child.close();
 		}
 	}
+}
+
+/** The role and backend to name in a failure, when the profile gives the role its own backend. */
+function ownBackend(role: Role, { backend }: RoleSettings): { role: Role; backend: ProfileBackend } | undefined {
+	return backend === undefined ? undefined : { role, backend };
+}
+
+/** Why a role could not start: with its own backend the message names the role and the backend. */
+function startFailure(plain: string, role: Role, settings: RoleSettings, error: unknown): string {
+	if (settings.backend !== undefined) return roleStartMessage(role, settings.backend, error);
+	return `${plain}: ${describeError(error)}`;
 }
 
 /** A role that did not answer; without a cause it failed, with its error as the value observed. */

@@ -442,6 +442,7 @@ export class Session {
 		return {
 			cwd: this.#options.cwd,
 			model: this.#model,
+			settings: (role) => roleSettings(this.#options.profile, role, this.#model),
 			...(feature === undefined ? {} : { feature: resolve(this.#options.cwd, feature) }),
 			signal,
 			push: (event) => turn.push(event),

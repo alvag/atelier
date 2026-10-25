@@ -10,9 +10,15 @@ import { errorEvent } from "../src/events.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
+	type BackendName,
+	createBackend,
 	decodeServerMessage,
 	FakeBackend,
 	type FakeStep,
+	type FrozenProfile,
+	freezeProfile,
+	MissingApiKeyError,
+	type QueryFunction,
 	RpcServer,
 	type ServerMessage,
 	Session,
@@ -115,7 +121,15 @@ type Reply = string | typeof HOLD | typeof LIMIT;
 /** The review roles' backend: answers by role, recording what each one saw. */
 class RoleBackend implements AgentBackend {
 	readonly id = "fake";
-	readonly roles: { role: string; tools: string[]; model?: string; prompt: string; cwd: string; system: string }[] = [];
+	readonly roles: {
+		role: string;
+		tools: string[];
+		model?: string;
+		thinking?: string;
+		prompt: string;
+		cwd: string;
+		system: string;
+	}[] = [];
 	/** What the tool calls a role made through `probes` answered, in order. */
 	readonly probed: { ok: boolean; output: string }[] = [];
 	interrupts = 0;
@@ -148,6 +162,7 @@ class RoleBackend implements AgentBackend {
 					cwd: options.cwd,
 					system: options.systemPromptAppend,
 					...(options.model === undefined ? {} : { model: options.model }),
+					...(options.thinking === undefined ? {} : { thinking: options.thinking }),
 				});
 				for (const probe of probes(role, prompt)) {
 					const result = await options.executeTool(probe);
@@ -2334,4 +2349,185 @@ describe("undoing an escalated correction", () => {
 			expect(await read(s.cwd, "a.ts")).toBe("base\nmore\n");
 		},
 	);
+});
+
+describe("review roles and profiles", () => {
+	const VERIFY_TURN: FakeStep[] = [
+		call("risk", { items: [2], reason: "guards the bash approval" }),
+		change("a.ts", "base\ncandidate\n"),
+		text("done"),
+		{ event: finished },
+	];
+	/** The profile `p` of a fresh home, frozen. */
+	async function freeze(entries: Record<string, unknown>): Promise<FrozenProfile> {
+		const home = await mkdtemp(join(tmpdir(), "atelier-review-profile-"));
+		dirs.push(home);
+		await mkdir(join(home, ".atelier"));
+		await writeFile(
+			join(home, ".atelier", "profiles.json"),
+			JSON.stringify({ kind: "atelier.agent_model_profiles", version: 1, active: "p", profiles: { p: entries } }),
+		);
+		return freezeProfile({ cwd: home, home, pins: {} });
+	}
+	/** A session whose roles run on `roles`; `asked` is the backend each role asked for, by role. */
+	async function profiled(
+		entries: Record<string, unknown> | undefined,
+		roles = new RoleBackend(clean),
+		turns?: FakeStep[][],
+	) {
+		const asked: { role: string; name: BackendName | undefined }[] = [];
+		const s = await start({
+			roles,
+			...(turns ? { turns } : {}),
+			extra: {
+				model: "session-model",
+				...(entries === undefined ? {} : { profile: await freeze(entries) }),
+				review: {
+					createBackend: (name) => ({
+						id: "fake",
+						start: (options) => {
+							asked.push({ role: roleOf(options.systemPromptAppend), name });
+							return roles.start(options);
+						},
+					}),
+					consent: async () => "granted",
+				},
+			},
+		});
+		return { ...s, asked, roles };
+	}
+	const byRole = (h: { roles: RoleBackend }, role: string) => h.roles.roles.find((r) => r.role === role);
+
+	it("starts every role on the session's backend and model, with no thinking, when there is no profile", async () => {
+		const h = await profiled(undefined, new RoleBackend(verifying(vreport())), [VERIFY_TURN]);
+		await h.send("make it need a keypress");
+		const roles = new Set(h.roles.roles.map((r) => r.role));
+		expect([...roles]).toEqual(expect.arrayContaining(["verifier", "reliability", "refuter"]));
+		expect(h.asked.every((a) => a.name === undefined)).toBe(true);
+		for (const r of h.roles.roles) {
+			expect(r.model).toBe("session-model");
+			expect(r).not.toHaveProperty("thinking");
+		}
+	});
+
+	it("gives the verifier, each lens, the refuter and the validator their own entry", async () => {
+		const h = await profiled(
+			{
+				verifier: { model: "anthropic-api/claude-sonnet-5-5", thinking: "medium" },
+				"review-risk": { model: "claude-code/haiku", thinking: "low" },
+				"review-reliability": { model: "claude-opus-5-5" },
+				"review-refuter": { thinking: "high" },
+				"review-validator": { model: "claude-sonnet-5-5", thinking: "off" },
+			},
+			new RoleBackend(verifying(vreport())),
+			[VERIFY_TURN, [change("a.ts", "base\nfixed\n"), text("fixed"), { event: finished }]],
+		);
+		await h.send("make it need a keypress");
+		const asked = (role: string) => h.asked.find((a) => a.role === role)?.name;
+		expect(byRole(h, "verifier")).toMatchObject({ model: "claude-sonnet-5-5", thinking: "medium" });
+		expect(asked("verifier")).toBe("anthropic-api");
+		expect(byRole(h, "risk")).toMatchObject({ model: "haiku", thinking: "low" });
+		expect(asked("risk")).toBe("claude-code");
+		expect(byRole(h, "reliability")).toMatchObject({ model: "claude-opus-5-5" });
+		expect(byRole(h, "reliability")).not.toHaveProperty("thinking");
+		expect(asked("reliability")).toBeUndefined();
+		// An entry that sets only the level keeps the session's model.
+		expect(byRole(h, "refuter")).toMatchObject({ model: "session-model", thinking: "high" });
+		expect(byRole(h, "validator")).toMatchObject({ model: "claude-sonnet-5-5", thinking: "off" });
+		// A lens the profile does not name inherits.
+		expect(byRole(h, "resilience")).toMatchObject({ model: "session-model" });
+		expect(byRole(h, "resilience")).not.toHaveProperty("thinking");
+		expect(asked("resilience")).toBeUndefined();
+	});
+
+	it("fails a lens whose backend has no credential, naming the role and the backend, and asks for no other backend", async () => {
+		const roles = new RoleBackend(clean);
+		const asked: (BackendName | undefined)[] = [];
+		const s = await start({
+			roles,
+			extra: {
+				profile: await freeze({ "review-reliability": { model: "anthropic-api/claude-opus-5-5" } }),
+				review: {
+					createBackend: (name) => {
+						asked.push(name);
+						if (name === "anthropic-api") throw new MissingApiKeyError("No Anthropic API key. Set ANTHROPIC_API_KEY.");
+						return roles;
+					},
+				},
+			},
+		});
+		await writeFile(join(s.cwd, "a.ts"), "base\nmore\n");
+		const events = await collect(s.session.review());
+		const [done] = ofType(events, "review_finished");
+		expect(done).toMatchObject({ verdict: "unavailable", cause: "role_failed" });
+		expect(done?.reason).toBe(
+			"Lens reliability failed: review-reliability: anthropic-api has no API key (No Anthropic API key. Set ANTHROPIC_API_KEY.)",
+		);
+		expect(asked).toEqual(["anthropic-api"]);
+		expect(roles.roles).toEqual([]);
+	});
+
+	it("fails the verifier the same way, without falling back to the other backend", async () => {
+		const roles = new RoleBackend(verifying(vreport()));
+		const asked: (BackendName | undefined)[] = [];
+		const s = await start({
+			roles,
+			turns: [VERIFY_TURN],
+			extra: {
+				profile: await freeze({ verifier: { model: "anthropic-api/claude-opus-5-5" } }),
+				review: {
+					createBackend: (name) => {
+						asked.push(name);
+						if (name === "anthropic-api") throw new MissingApiKeyError("No Anthropic API key. Set ANTHROPIC_API_KEY.");
+						return roles;
+					},
+				},
+			},
+		});
+		const events = await s.send("make it need a keypress");
+		const [done] = ofType(events, "verification_finished");
+		expect(JSON.stringify(done)).toContain(
+			"verifier: anthropic-api has no API key (No Anthropic API key. Set ANTHROPIC_API_KEY.)",
+		);
+		expect(asked.filter((name) => name === "anthropic-api")).toHaveLength(asked.length);
+		expect(roles.roles.filter((r) => r.role === "verifier")).toEqual([]);
+	});
+
+	it("names the role and the backend when a role on its own backend starts but fails, as Claude Code does without a login", async () => {
+		const s = await start({
+			extra: {
+				profile: await freeze({ "review-reliability": { model: "claude-code/haiku" } }),
+				review: { createBackend: () => new FakeBackend([[{ throw: "Not logged in" }]]) },
+			},
+		});
+		await writeFile(join(s.cwd, "a.ts"), "base\nmore\n");
+		const [done] = ofType(await collect(s.session.review()), "review_finished");
+		expect(done).toMatchObject({ verdict: "unavailable", cause: "role_failed" });
+		expect(done?.reason).toBe(
+			"Lens reliability failed: review-reliability: claude-code: error: backend_error: Not logged in",
+		);
+	});
+
+	it("does not hand ANTHROPIC_API_KEY to a role on claude-code, even in a session whose environment has it", async () => {
+		const seen: (string | undefined)[] = [];
+		const query: QueryFunction = ({ options }) => {
+			seen.push(options.env?.ANTHROPIC_API_KEY);
+			return { async *[Symbol.asyncIterator]() {}, interrupt: async () => {}, close() {} };
+		};
+		const s = await start({
+			extra: {
+				profile: await freeze({ "review-reliability": { model: "claude-code/haiku" } }),
+				review: {
+					createBackend: (name) =>
+						createBackend(name ?? "anthropic-api", {
+							claudeCode: { query, env: { ANTHROPIC_API_KEY: "sk-secret", PATH: "/bin" } },
+							resolveApiKey: async () => "sk-secret",
+						}),
+				},
+			},
+		});
+		await writeFile(join(s.cwd, "a.ts"), "base\nmore\n");
+		await collect(s.session.review());
+		expect(seen).toEqual([undefined]);
+	});
 });
