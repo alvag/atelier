@@ -191,6 +191,7 @@ async function start(
 		output: `ran ${call.tool}`,
 	}),
 	options: Partial<AnthropicApiBackendOptions> = {},
+	summaries?: string[],
 ): Promise<Harness> {
 	const api = fakeApi(script);
 	const calls: ToolCall[] = [];
@@ -203,6 +204,7 @@ async function start(
 			calls.push(call);
 			return execute(call);
 		},
+		...(summaries === undefined ? {} : { compacted: (summary: string) => void summaries.push(summary) }),
 	});
 	return { session, calls, api };
 }
@@ -660,14 +662,46 @@ const ofType = <T extends AtelierEventBody["type"]>(events: AtelierEventBody[], 
 
 describe("AnthropicApiBackend compaction", () => {
 	/** A small window so a test history crosses it; `keepRecentTokens: 1` keeps only the last exchange. */
-	async function compacting(script: Scripted[], options: Partial<AnthropicApiBackendOptions> = {}) {
-		return start(script, async () => ({ ok: true, output: "x".repeat(400) }), {
-			contextWindow: 200_000,
-			compactAt: 1000,
-			keepRecentTokens: 1,
-			...options,
-		});
+	async function compacting(
+		script: Scripted[],
+		options: Partial<AnthropicApiBackendOptions> = {},
+		summaries?: string[],
+	) {
+		return start(
+			script,
+			async () => ({ ok: true, output: "x".repeat(400) }),
+			{
+				contextWindow: 200_000,
+				compactAt: 1000,
+				keepRecentTokens: 1,
+				...options,
+			},
+			summaries,
+		);
 	}
+
+	it("hands the core each summary that replaced the history, and none that was refused", async () => {
+		const summaries: string[] = [];
+		const { session } = await compacting(
+			[
+				{
+					blocks: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "a" } }],
+					stopReason: "tool_use",
+					usage: { input: 2000 },
+				},
+				summaryReply("max_tokens"),
+				{ blocks: [{ type: "text", text: "done" }] },
+				summaryReply(),
+			],
+			{},
+			summaries,
+		);
+		await collect(session.send("Refactor"));
+		expect(summaries).toEqual([]);
+		const events = await collect(compactOf(session));
+		expect(ofType(events, "compaction_finished")).toMatchObject([{ ok: true, reason: "manual" }]);
+		expect(summaries).toEqual([SUMMARY]);
+	});
 
 	it("compacts between requests of a turn and goes on with the summary and the verbatim tail", async () => {
 		const { session, api } = await compacting([

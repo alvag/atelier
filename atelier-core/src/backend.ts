@@ -26,6 +26,8 @@ export interface BackendStartOptions {
 	executeTool: ToolExecutor;
 	/** The core's state (ODD feature, phase, memory) to give once after a compaction; undefined when there is none. */
 	compactionState?: () => string | undefined;
+	/** Called with the summary of each compaction that replaced the history, during the turn that compacted. */
+	compacted?: (summary: string) => void;
 	/** Caps the model requests of one turn; backends without such a cap ignore it. */
 	maxRequestsPerTurn?: number;
 }

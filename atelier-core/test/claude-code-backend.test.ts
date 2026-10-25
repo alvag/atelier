@@ -433,6 +433,33 @@ describe("ClaudeCodeBackend compaction", () => {
 		expect(events).toEqual(["session_started", "compaction_started", "compaction_finished", "turn_finished"]);
 	});
 
+	it("hands Claude Code's summary to the core from its PostCompact hook, only when the core asks for it", async () => {
+		const { query, calls } = fakeQuery([init], []);
+		const summaries: string[] = [];
+		await new ClaudeCodeBackend({ query, env: {} }).start({
+			cwd: "/w",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+			compacted: (summary) => summaries.push(summary),
+		});
+		const [matcher] = calls.options.hooks?.PostCompact ?? [];
+		const [hook] = matcher?.hooks ?? [];
+		if (!hook) throw new Error("No PostCompact hook.");
+		const input = { hook_event_name: "PostCompact", trigger: "auto", compact_summary: "## Goal\n- x" };
+		expect(await hook(input as never, undefined, { signal: new AbortController().signal })).toEqual({});
+		expect(summaries).toEqual(["## Goal\n- x"]);
+
+		const without = fakeQuery([init], []);
+		await new ClaudeCodeBackend({ query: without.query, env: {} }).start({
+			cwd: "/w",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+		});
+		expect(without.calls.options.hooks).toBeUndefined();
+	});
+
 	it("sends a bare /compact without instructions and no state when the core has none", async () => {
 		const { query, calls } = fakeQuery([init], [[boundary, result(0.01)], [result(0.02)]]);
 		const session = await new ClaudeCodeBackend({ query, env: {} }).start({

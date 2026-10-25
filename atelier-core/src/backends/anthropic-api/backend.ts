@@ -158,6 +158,7 @@ export class AnthropicApiBackend implements AgentBackend {
 			this.#options.apiKey,
 			compaction,
 			start.compactionState,
+			start.compacted,
 		);
 	}
 }
@@ -189,6 +190,7 @@ class AnthropicApiSession implements BackendSession {
 	/** Set once the window lookup answered, before the first request. */
 	#config: CompactionConfig | undefined;
 	readonly #compactionState: (() => string | undefined) | undefined;
+	readonly #compacted: ((summary: string) => void) | undefined;
 	#abort: AbortController | undefined;
 	#announced = false;
 	#closed = false;
@@ -210,6 +212,7 @@ class AnthropicApiSession implements BackendSession {
 		apiKey: string,
 		compaction: Promise<CompactionConfig>,
 		compactionState?: () => string | undefined,
+		compacted?: (summary: string) => void,
 	) {
 		this.#client = client;
 		this.#state = state;
@@ -218,6 +221,7 @@ class AnthropicApiSession implements BackendSession {
 		this.#apiKey = apiKey;
 		this.#compactionReady = compaction;
 		this.#compactionState = compactionState;
+		this.#compacted = compacted;
 	}
 
 	async *send(prompt: string): AsyncIterable<AtelierEventBody> {
@@ -436,6 +440,7 @@ class AnthropicApiSession implements BackendSession {
 			this.#turnStart = -1;
 			this.#turnPrompt = carried;
 		}
+		this.#compacted?.(summary.text);
 		const costUsd = costOfRequest(this.#state.model, usage);
 		yield {
 			type: "compaction_finished",

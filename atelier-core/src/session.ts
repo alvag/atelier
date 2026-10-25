@@ -12,7 +12,14 @@ import {
 	type SubagentTag,
 	ZERO_USAGE,
 } from "./events.ts";
-import { CONTEXT_BYTES, createMemoryTool, findSecret, MEMORY_TOOL, type MemoryPort } from "./memory/index.ts";
+import {
+	CONTEXT_BYTES,
+	createMemoryTool,
+	findSecret,
+	MEMORY_TOOL,
+	type MemoryPort,
+	SESSION_SUMMARY_TYPE,
+} from "./memory/index.ts";
 import type { CompletedFeature } from "./odd/tracker.ts";
 import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
 import { loadProjectInstructions, type ProjectInstructions } from "./project-instructions.ts";
@@ -114,6 +121,10 @@ export class Session {
 	#closed = false;
 	#closing: Promise<void> | undefined;
 	#scratchDir: string | undefined;
+	/** Every compaction summary of this session updates the same memory. */
+	readonly #summaryKey = `session/${randomUUID()}/summary`;
+	/** Summaries being saved; the turn that compacted waits for them before it finishes. */
+	readonly #archiving = new Set<Promise<void>>();
 
 	private constructor(options: SessionOptions) {
 		const subagents = options.subagents;
@@ -188,6 +199,7 @@ export class Session {
 				tools: session.#options.tools,
 				executeTool: (call) => session.#executeTool(call),
 				compactionState: () => session.#compactionState(),
+				...(options.memory ? { compacted: (summary: string) => session.#archive(summary) } : {}),
 				...(options.maxRequestsPerTurn === undefined ? {} : { maxRequestsPerTurn: options.maxRequestsPerTurn }),
 			});
 		} catch (error) {
@@ -365,6 +377,7 @@ export class Session {
 				turn.push(errorEvent("turn_failed", describeError(error)));
 				finish = { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
 			}
+			await Promise.all(this.#archiving);
 			turn.push({ ...finish, durationMs: Math.round(performance.now() - started) });
 			turn.close();
 		})();
@@ -443,6 +456,7 @@ export class Session {
 				.then(() => this.#child?.close())
 				.then(() => this.#review?.close())
 				.then(() => this.#odd?.close())
+				.then(() => Promise.all(this.#archiving))
 				.then(() => this.#options.memory?.close().catch(() => {}))
 				.then(() => this.#backendSession?.close())
 				.finally(() => (scratchDir === undefined ? undefined : rm(scratchDir, { recursive: true, force: true })));
@@ -596,6 +610,53 @@ export class Session {
 		}
 	}
 
+	/** Starts saving a compaction summary; the turn waits for it, the backend does not. */
+	#archive(summary: string): void {
+		const saving = this.#saveSummary(summary).finally(() => this.#archiving.delete(saving));
+		this.#archiving.add(saving);
+	}
+
+	/** Keeps the summary in memory, once, under the session's key. Never throws: the compaction already happened. */
+	async #saveSummary(summary: string): Promise<void> {
+		const memory = this.#options.memory;
+		if (!memory) return;
+		const secret = findSecret(summary);
+		if (secret) {
+			this.#turn?.push(
+				errorEvent(
+					"memory_summary_skipped",
+					`The compaction summary was not saved to memory: it contains what looks like ${secret}.`,
+					true,
+				),
+			);
+			return;
+		}
+		try {
+			const { warning } = await memory.save({
+				title: `Session summary: ${memory.project}, ${localDate(new Date())}`,
+				type: SESSION_SUMMARY_TYPE,
+				content: summary,
+				topicKey: this.#summaryKey,
+			});
+			if (warning !== undefined)
+				this.#turn?.push(
+					errorEvent(
+						"memory_summary_warning",
+						`The compaction summary was saved to memory with a warning: ${warning}`,
+						true,
+					),
+				);
+		} catch (error) {
+			this.#turn?.push(
+				errorEvent(
+					"memory_summary_failed",
+					`The compaction summary was not saved to memory: ${describeError(error)}`,
+					true,
+				),
+			);
+		}
+	}
+
 	/** Keeps a finished feature in memory. Never throws: the feature change it follows is already saved. */
 	async #mirror(feature: CompletedFeature): Promise<void> {
 		const memory = this.#options.memory;
@@ -636,6 +697,12 @@ export class Session {
 			);
 		}
 	}
+}
+
+/** YYYY-MM-DD in the local time zone. */
+function localDate(date: Date): string {
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 /** Stop reasons after which a turn is neither assessed nor trusted as a correction. */

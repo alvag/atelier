@@ -13,6 +13,8 @@ export const MEMORY_TYPES = [
 	"config",
 ] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
+/** Saved by the core itself, never by the agent: the summary of a compaction. */
+export const SESSION_SUMMARY_TYPE = "session_summary";
 
 export interface MemoryHit {
 	id: number;
@@ -31,7 +33,7 @@ export interface MemoryEntry {
 
 export interface NewMemory {
 	title: string;
-	type: MemoryType;
+	type: MemoryType | typeof SESSION_SUMMARY_TYPE;
 	content: string;
 	/** Saving again with the same key updates that entry instead of adding one. */
 	topicKey?: string;

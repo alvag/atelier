@@ -1,6 +1,7 @@
 import {
 	type AccountInfo,
 	createSdkMcpServer,
+	type HookCallback,
 	type Options,
 	type SDKMessage,
 	type SDKUserMessage,
@@ -128,6 +129,9 @@ export class ClaudeCodeBackend implements AgentBackend {
 				includePartialMessages: true,
 				...(start.maxRequestsPerTurn === undefined ? {} : { maxTurns: start.maxRequestsPerTurn }),
 				persistSession: false,
+				...(start.compacted === undefined
+					? {}
+					: { hooks: { PostCompact: [{ hooks: [summaryHook(start.compacted)] }] } }),
 				env: childEnv(this.#options),
 				...(this.#options.pathToClaudeCodeExecutable === undefined
 					? {}
@@ -147,6 +151,15 @@ export class ClaudeCodeBackend implements AgentBackend {
 			start.compactionState,
 		);
 	}
+}
+
+/** Claude Code reports its compaction summary only to a PostCompact hook; the hook changes nothing. */
+function summaryHook(compacted: (summary: string) => void): HookCallback {
+	return async (input) => {
+		if (input.hook_event_name === "PostCompact" && input.compact_summary.trim() !== "")
+			compacted(input.compact_summary);
+		return {};
+	};
 }
 
 /** Resolves to a subscription only when the account confirms one on Anthropic's own API. */

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
+import type { AgentBackend, BackendStartOptions } from "../src/backend.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -349,6 +350,158 @@ describe("feature mirror", () => {
 		expect(events.filter((e) => e.type === "error")).toEqual([
 			expect.objectContaining({ code: "memory_mirror_skipped", recoverable: true }),
 		]);
+	});
+});
+
+describe("compaction summary", () => {
+	const SUMMARY = "## Goal\n- refactor the parser";
+	const today = () => {
+		const now = new Date();
+		const pad = (n: number) => String(n).padStart(2, "0");
+		return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+	};
+
+	/** A backend that reports `summaries` through the core's callback as it compacts, mid-turn or on /compact. */
+	function summarizing(summaries: string[]) {
+		let options: BackendStartOptions | undefined;
+		const compaction = async function* (reason: "threshold" | "manual"): AsyncGenerator<AtelierEventBody> {
+			yield { type: "compaction_started", reason, tokens: 900 };
+			options?.compacted?.(summaries.shift() ?? SUMMARY);
+			yield { type: "compaction_finished", ok: true, reason, tokensBefore: 900, tokensAfter: 100, kept: 2, usage };
+		};
+		const backend: AgentBackend & { options: () => BackendStartOptions | undefined } = {
+			id: "fake",
+			options: () => options,
+			start: async (start) => {
+				options = start;
+				return {
+					async *send() {
+						yield* compaction("threshold");
+						yield finished;
+					},
+					async *compact() {
+						yield* compaction("manual");
+						yield finished;
+					},
+					interrupt: async () => {},
+					close: async () => {},
+				};
+			},
+		};
+		return backend;
+	}
+
+	async function run(events: AsyncIterable<AtelierEvent>): Promise<AtelierEvent[]> {
+		const out: AtelierEvent[] = [];
+		for await (const event of events) out.push(event);
+		return out;
+	}
+
+	it("saves each compaction's summary under one key per session, so the next one updates it", async () => {
+		const memory = new FakeMemory("proj");
+		const s = await Session.start({ backend: summarizing([SUMMARY, "## Goal\n- later"]), cwd, tools, memory });
+		const first = await run(s.send("go"));
+		const second = await run(s.compact());
+		await s.close();
+		expect(memory.saved).toEqual([
+			{
+				type: "session_summary",
+				title: `Session summary: proj, ${today()}`,
+				content: SUMMARY,
+				topicKey: expect.any(String),
+			},
+			expect.objectContaining({ type: "session_summary", content: "## Goal\n- later" }),
+		]);
+		expect(memory.saved[0]?.topicKey).toMatch(/^session\/.+\/summary$/);
+		expect(memory.saved[1]?.topicKey).toBe(memory.saved[0]?.topicKey);
+		expect(memory.entries).toHaveLength(1);
+		for (const events of [first, second]) {
+			expect(events.filter((e) => e.type === "error")).toEqual([]);
+			expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+		}
+
+		const other = await Session.start({ backend: summarizing([SUMMARY]), cwd, tools, memory });
+		await run(other.compact());
+		await other.close();
+		expect(memory.saved[2]?.topicKey).not.toBe(memory.saved[0]?.topicKey);
+	});
+
+	it("does not save a summary that holds something that looks like a credential, and says so", async () => {
+		const memory = new FakeMemory("proj");
+		const backend = summarizing([`${SUMMARY}\nkey sk-ant-api03-abcdefghijklmnopqrstuvwx`]);
+		const s = await Session.start({ backend, cwd, tools, memory });
+		const events = await run(s.compact());
+		await s.close();
+		expect(memory.saved).toEqual([]);
+		expect(events.filter((e) => e.type === "error")).toEqual([
+			expect.objectContaining({
+				code: "memory_summary_skipped",
+				message: "The compaction summary was not saved to memory: it contains what looks like an Anthropic API key.",
+				recoverable: true,
+			}),
+		]);
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+	});
+
+	it("warns once when memory fails or saves with a warning, without retrying, and the turn goes on", async () => {
+		const failing = new FakeMemory("proj");
+		let attempts = 0;
+		failing.save = async () => {
+			attempts++;
+			throw new MemoryError("Engram mem_save failed: closed");
+		};
+		const s = await Session.start({ backend: summarizing([]), cwd, tools, memory: failing });
+		const events = await run(s.send("go"));
+		await s.close();
+		expect(attempts).toBe(1);
+		expect(events.filter((e) => e.type === "error")).toEqual([
+			expect.objectContaining({
+				code: "memory_summary_failed",
+				message: "The compaction summary was not saved to memory: Engram mem_save failed: closed",
+				recoverable: true,
+			}),
+		]);
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+
+		const warned = new FakeMemory("proj");
+		const save = warned.save.bind(warned);
+		warned.save = async (entry) => ({ ...(await save(entry)), warning: "conflict detection did not finish" });
+		const w = await Session.start({ backend: summarizing([]), cwd, tools, memory: warned });
+		const warnedEvents = await run(w.compact());
+		await w.close();
+		expect(warned.saved).toHaveLength(1);
+		expect(warnedEvents.filter((e) => e.type === "error")).toEqual([
+			expect.objectContaining({
+				code: "memory_summary_warning",
+				message: "The compaction summary was saved to memory with a warning: conflict detection did not finish",
+				recoverable: true,
+			}),
+		]);
+	});
+
+	it("is not asked for without memory, nor by subagents", async () => {
+		const none = summarizing([]);
+		const s = await Session.start({ backend: none, cwd, tools });
+		const events = await run(s.compact());
+		await s.close();
+		expect(none.options()?.compacted).toBeUndefined();
+		expect(events.filter((e) => e.type === "error")).toEqual([]);
+
+		const child = new FakeBackend([[{ event: { type: "text_delta", text: "r" } }, { event: finished }]]);
+		const {
+			backend,
+			session: parent,
+			send,
+		} = await session([[call("task", { agent: "w", prompt: "x" }), { event: finished }]], {
+			subagents: {
+				agents: [{ name: "w", description: "w", tools: ["read"], prompt: "p", models: {}, maxRequests: 5 }],
+				createBackend: () => child,
+			},
+		});
+		await send("go");
+		await parent.close();
+		expect(backend.startOptions?.compacted).toBeTypeOf("function");
+		expect(child.startOptions?.compacted).toBeUndefined();
 	});
 });
 
