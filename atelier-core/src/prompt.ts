@@ -14,7 +14,8 @@ export const ODD_RULES = `Work in ODD (Organic Driven Development):
 /** Added when the session has long-term memory. Byte-stable and short: secrets are refused by code. */
 export const MEMORY_RULES = `You have long-term memory of this project (the memory tool), shared across sessions.
 - Before work that may build on earlier sessions, search memory; recent memory also comes with the first message.
-- Save only what is worth knowing next time: a decision the user confirmed, a bug fixed with its cause, a non-obvious discovery, a user preference. Use **What** / **Why** / **Where** / **Learned**, and a topicKey for something that evolves.
+- Save only verified knowledge worth keeping: a decision the user confirmed, a bug fixed with its cause, a non-obvious discovery, a user preference. One memory per topic, not per event; no routine progress or guesses. Use **What** / **Why** / **Where** / **Learned**.
+- Before saving, search the topic; if a memory covers it, get it and save under its topicKey with its still-valid facts, or save nothing. If search fails, save nothing.
 - Never save secrets. Finished feature documents are saved for you.`;
 
 /** Added when the session reviews its changes. Byte-stable: the declaration is the gentle-shell rule, the items its fixed list. */

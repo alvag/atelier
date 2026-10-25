@@ -654,13 +654,40 @@ describe("independent U2 regressions (S4, S1)", () => {
 	});
 });
 
+describe("memory tool text", () => {
+	it("tells the agent to save selectively, one memory per topic", async () => {
+		const { backend, session: s } = await session([]);
+		await s.close();
+		const tool = backend.startOptions?.tools.find((t) => t.name === "memory");
+		expect(tool?.description).toBe(
+			[
+				"Long-term memory of project proj, shared across sessions.",
+				"search (query): find earlier decisions, fixes and discoveries. get (id): read one in full.",
+				"save (title, type, content, topicKey?): keep verified knowledge worth knowing next time, one memory per topic, as **What** / **Why** / **Where** / **Learned**. The same topicKey replaces that memory, so keep its still-valid facts. Never save secrets.",
+			].join("\n"),
+		);
+		expect((tool?.inputShape.topicKey as z.ZodType | undefined)?.description).toBe(
+			"save: stable key for one topic, like project/topic; reuse it to update that topic",
+		);
+	});
+});
+
 describe("memory rules in the prompt", () => {
 	it("are appended only with memory, after the rest, and stay under 1 KB", async () => {
 		const { backend, session: s } = await session([], { systemPromptAppend: "BASE" });
 		await s.close();
 		expect(backend.startOptions?.systemPromptAppend).toBe(`BASE\n\n${MEMORY_RULES}`);
-		expect(Buffer.byteLength(MEMORY_RULES)).toBeLessThanOrEqual(1024);
-		for (const word of ["search", "save", "secret", "topicKey"]) expect(MEMORY_RULES).toContain(word);
+		expect(MEMORY_RULES).toBe(
+			[
+				"You have long-term memory of this project (the memory tool), shared across sessions.",
+				"- Before work that may build on earlier sessions, search memory; recent memory also comes with the first message.",
+				"- Save only verified knowledge worth keeping: a decision the user confirmed, a bug fixed with its cause, a non-obvious discovery, a user preference. One memory per topic, not per event; no routine progress or guesses. Use **What** / **Why** / **Where** / **Learned**.",
+				"- Before saving, search the topic; if a memory covers it, get it and save under its topicKey with its still-valid facts, or save nothing. If search fails, save nothing.",
+				"- Never save secrets. Finished feature documents are saved for you.",
+			].join("\n"),
+		);
+		// At most about 200 bytes over the 507 it had before Engram's selective guidance.
+		expect(Buffer.byteLength(MEMORY_RULES)).toBeLessThanOrEqual(707);
 
 		const plain = new FakeBackend([]);
 		await (await Session.start({ backend: plain, cwd, tools, systemPromptAppend: "BASE" })).close();

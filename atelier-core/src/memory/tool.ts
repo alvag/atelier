@@ -40,7 +40,7 @@ export function createMemoryTool(memory: MemoryPort): ToolDefinition {
 		description: [
 			`Long-term memory of project ${memory.project}, shared across sessions.`,
 			"search (query): find earlier decisions, fixes and discoveries. get (id): read one in full.",
-			"save (title, type, content, topicKey?): keep something worth knowing next time, as **What** / **Why** / **Where** / **Learned**. The same topicKey updates that memory instead of adding one. Never save secrets.",
+			"save (title, type, content, topicKey?): keep verified knowledge worth knowing next time, one memory per topic, as **What** / **Why** / **Where** / **Learned**. The same topicKey replaces that memory, so keep its still-valid facts. Never save secrets.",
 		].join("\n"),
 		inputShape: {
 			action: z.enum(["search", "get", "save"]),
@@ -50,7 +50,10 @@ export function createMemoryTool(memory: MemoryPort): ToolDefinition {
 			title: z.string().optional().describe("save: short and searchable"),
 			type: z.enum(MEMORY_TYPES).optional().describe("save"),
 			content: z.string().optional().describe("save"),
-			topicKey: z.string().optional().describe("save: stable key for something that evolves, like project/topic"),
+			topicKey: z
+				.string()
+				.optional()
+				.describe("save: stable key for one topic, like project/topic; reuse it to update that topic"),
 		},
 		execute: async (input) => {
 			try {
