@@ -38,6 +38,8 @@ for (const pattern of ["[*]", "[a-z]*", "[?*]"]) {
 		expect(findDestructiveCommand(join(["find", ".", "-name", quote(pattern), "-delete"]), context)).toBeUndefined();
 	});
 }
-it("allows a regex that excludes slash-containing paths", () => {
-	expect(findDestructiveCommand(join(["find", ".", "-regex", quote("[^/]*"), "-delete"]), context)).toBeUndefined();
+it("refuses a regex with no literal character, even one that excludes slash-containing paths", () => {
+	expect(findDestructiveCommand(join(["find", ".", "-regex", quote("[^/]*"), "-delete"]), context)).toBe(
+		"recursive removal of the project directory",
+	);
 });

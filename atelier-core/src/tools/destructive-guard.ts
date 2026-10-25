@@ -299,12 +299,54 @@ const HARMLESS_DEVICES = /^\/dev\/(?:null|stdout|stderr|stdin|tty|fd\/\d+)$/;
 
 const FIND_NAMES = ["find", "gfind"];
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
-/** `find` tests that choose files by name; with a pattern that is not just `*` they narrow what is removed. */
+/** `find` tests that choose files by name; with a pattern that does not match everything they narrow what is removed. */
 const FIND_NARROWING = new Set(["-name", "-iname", "-path", "-ipath", "-wholename", "-regex", "-iregex"]);
 
-/** A pattern that selects every file: only `*` and `?` for the glob tests, `.*`-style for the regex ones. */
+/** Regex operators: none of them requires a given character in the path. */
+const REGEX_OPERATORS = new Set([".", "*", "+", "?", "^", "$", "(", ")", "|", "{", "}"]);
+/**
+ * Escapes that are operators rather than a literal: groups, alternatives and
+ * intervals in emacs and basic regexes, `\<`, `\>`, `` \` ``, `\'`, and
+ * letters or digits (`\w`, `\s`, back references).
+ */
+const REGEX_ESCAPED_OPERATOR = /^[\p{L}\p{N}(){}|<>'`]$/u;
+
+/** The index just past a bracket class that starts at `from`, or the end when it is not closed. */
+function classEnd(pattern: string, from: number): number {
+	let at = from + 1;
+	if (pattern[at] === "^") at++;
+	if (pattern[at] === "]") at++;
+	while (at < pattern.length && pattern[at] !== "]") {
+		const close =
+			pattern[at] === "[" && /[:.=]/.test(pattern[at + 1] ?? "") ? pattern.indexOf(`${pattern[at + 1]}]`, at + 2) : -1;
+		at = close < 0 ? at + 1 : close + 2;
+	}
+	return at + 1;
+}
+
+/**
+ * Whether a regex requires some literal character: one outside bracket classes,
+ * intervals and operators, an escaped punctuation character included. It fails
+ * closed, so `[^/]*` or `.{0,}` has none.
+ */
+function regexHasLiteral(pattern: string): boolean {
+	for (let at = 0; at < pattern.length; at++) {
+		const char = pattern[at] as string;
+		if (char === "\\") {
+			const escaped = pattern[++at];
+			if (escaped !== undefined && !REGEX_ESCAPED_OPERATOR.test(escaped)) return true;
+		} else if (char === "[") at = classEnd(pattern, at) - 1;
+		else if (char === "{") {
+			const close = pattern.indexOf("}", at);
+			at = close < 0 ? pattern.length : close;
+		} else if (!REGEX_OPERATORS.has(char)) return true;
+	}
+	return false;
+}
+
+/** A pattern that selects every file: only `*` and `?` for the glob tests, no literal character for the regex ones. */
 function matchesEverything(test: string, pattern: string): boolean {
-	if (test.endsWith("regex")) return /^\^?\.[*+]\$?$/.test(pattern);
+	if (test.endsWith("regex")) return !regexHasLiteral(pattern);
 	return /^[*?]+$/.test(pattern);
 }
 
