@@ -1082,6 +1082,53 @@ describe("a repository without commits", () => {
 		expect(s.asked).toHaveLength(1);
 	});
 
+	/** A repository with history the turn does not write: `src/auth.ts` and twenty more files on main. */
+	async function upstream(): Promise<string> {
+		const root = await emptyRepo();
+		gitIn(root, "checkout", "-qb", "main");
+		await mkdir(join(root, "src"));
+		await writeFile(join(root, "src/auth.ts"), "export const token = 1;\n");
+		for (let i = 0; i < 20; i++) await writeFile(join(root, `f${i}.ts`), "export const x = 1;\n");
+		gitIn(root, "add", "-A");
+		gitIn(root, "commit", "-qm", "upstream");
+		return root;
+	}
+
+	it("does not take history the turn pulled for its own", async () => {
+		const from = await upstream();
+		const cwd = await emptyRepo();
+		const turn = [
+			DECLARED_NONE,
+			call("git", { args: ["pull", "-q", from, "main"] }),
+			change("mine.ts", "x\n"),
+			{ event: finished },
+		];
+		const s = await start({ cwd, turns: [turn] });
+		const [assessed] = ofType(await s.send("pull and add"), "review_assessed");
+		expect(assessed).toMatchObject({ level: "medium", files: ["mine.ts"], changedLines: 1 });
+		expect(assessed?.baseNote).toBeUndefined();
+	});
+
+	it("measures the turn's own commits from where a checkout of existing history left HEAD", async () => {
+		const cwd = await upstream();
+		gitIn(cwd, "checkout", "-q", "--orphan", "scratch");
+		gitIn(cwd, "rm", "-rqf", ".");
+		const landed = gitIn(cwd, "rev-parse", "main").trim();
+		const turn = [
+			DECLARED_NONE,
+			call("git", { args: ["checkout", "-qf", "main"] }),
+			change("mine.ts", "x\n"),
+			...commit("mine"),
+			change("more.ts", "y\n"),
+			{ event: finished },
+		];
+		const s = await start({ cwd, turns: [turn] });
+		const [assessed] = ofType(await s.send("checkout and add"), "review_assessed");
+		expect(assessed).toMatchObject({ level: "medium", changedLines: 2, since: landed.slice(0, 7) });
+		expect([...(assessed?.files ?? [])].sort()).toEqual(["mine.ts", "more.ts"]);
+		expect(assessed?.baseNote).toBeUndefined();
+	});
+
 	it("measures the next turn from the first commit as usual", async () => {
 		const cwd = await emptyRepo();
 		const turns = [

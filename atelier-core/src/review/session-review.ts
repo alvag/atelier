@@ -18,7 +18,7 @@ import { addPhaseSpent, addPhases, onePhase } from "../spent.ts";
 import { createBashTool, grepTool, readTool, sandbox } from "../tools/index.ts";
 import type { Sandbox } from "../tools/sandbox.ts";
 import type { ToolDefinition } from "../tools/types.ts";
-import { type Candidate, type FreezeOptions, freezeCandidate, readTurnGit } from "./candidate.ts";
+import { type Candidate, emptyStartBase, type FreezeOptions, freezeCandidate, readTurnGit } from "./candidate.ts";
 import type { Finding } from "./findings.ts";
 import { runGit } from "./git.ts";
 import { findReceipt, type Receipt, writeReceipt } from "./receipts.ts";
@@ -87,7 +87,7 @@ export class SessionReview {
 	readonly #children = new Set<Session>();
 	/** The commit HEAD pointed at when the current turn started; undefined without one. */
 	#turnStart: string | undefined;
-	/** HEAD had no commit when the current turn started: its first commit is part of its candidate. */
+	/** HEAD had no commit when the current turn started: its reflog then tells its own commits from history it pulled. */
 	#startedEmpty = false;
 	/** What the user asked in the current turn, verbatim: the verifier's brief. */
 	#turnPrompt = "";
@@ -109,7 +109,7 @@ export class SessionReview {
 		this.#starting = runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd }).then(
 			(head) => {
 				if (head.code === 0) this.#turnStart = head.stdout.toString("utf8").trim();
-				// No commit, or not yet a repository: whatever the turn commits is its own.
+				// No commit, or not yet a repository.
 				else this.#startedEmpty = true;
 			},
 			// Not a git repository, or no git: the review reports it when the turn ends.
@@ -139,7 +139,7 @@ export class SessionReview {
 		};
 		await this.#starting;
 		// The user's /review measures against HEAD or the ref they gave; the end of a turn, against where the turn started.
-		const freezing: FreezeOptions = ref !== undefined ? { ref } : manual ? {} : this.#startOf();
+		const freezing: FreezeOptions = ref !== undefined ? { ref } : manual ? {} : await this.#startOf(host.cwd);
 		let candidate: Candidate;
 		try {
 			const frozen = await freezeCandidate(host.cwd, freezing);
@@ -237,8 +237,8 @@ export class SessionReview {
 		return paid(await this.#cycle(host, reviewId, candidate, assessment));
 	}
 
-	#startOf(): FreezeOptions {
-		if (this.#startedEmpty) return { fromEmpty: true };
+	async #startOf(cwd: string): Promise<FreezeOptions> {
+		if (this.#startedEmpty) return emptyStartBase(cwd).catch(() => ({}));
 		return this.#turnStart === undefined ? {} : { turnStart: this.#turnStart };
 	}
 

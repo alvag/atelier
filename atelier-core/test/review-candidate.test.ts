@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { freezeCandidate, holdsCommits, readTreeFile, readTurnGit } from "../src/review/candidate.ts";
+import { emptyStartBase, freezeCandidate, holdsCommits, readTreeFile, readTurnGit } from "../src/review/candidate.ts";
 import { assessRisk } from "../src/review/risk.ts";
 import { createRiskTool, RiskRequests } from "../src/review/tool.ts";
 
@@ -171,6 +171,27 @@ describe("freezeCandidate", () => {
 		const usual = await freezeCandidate(repo);
 		if (!usual.ok) throw new Error(usual.reason);
 		expect(holdsCommits(usual.candidate)).toBe(false);
+	});
+
+	it("takes the empty tree as the base only when the reflog shows nothing but the turn's own commits", async () => {
+		const fresh = join(root, "fresh");
+		await mkdir(fresh);
+		const inFresh = (...args: string[]) =>
+			execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: fresh, encoding: "utf8" });
+		inFresh("init", "-q");
+		await writeFile(join(fresh, "a.txt"), "a\n");
+		inFresh("add", "-A");
+		inFresh("commit", "-qm", "first");
+		inFresh("commit", "-q", "--amend", "-m", "first again");
+		expect(await emptyStartBase(fresh)).toEqual({ fromEmpty: true });
+		inFresh("pull", "-q", "--no-rebase", "--allow-unrelated-histories", "--no-edit", repo, "HEAD");
+		const merged = inFresh("rev-parse", "HEAD").trim();
+		await writeFile(join(fresh, "b.txt"), "b\n");
+		inFresh("add", "-A");
+		inFresh("commit", "-qm", "second");
+		expect(await emptyStartBase(fresh)).toEqual({ turnStart: merged });
+		await rm(join(fresh, ".git", "logs"), { recursive: true });
+		expect(await emptyStartBase(fresh)).toEqual({});
 	});
 
 	it("ignores GIT_INDEX_FILE and GIT_DIR from the environment", async () => {

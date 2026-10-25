@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describeError } from "../events.ts";
@@ -93,6 +93,38 @@ export interface FreezeOptions {
 
 const EMPTY_BASE_NOTE =
 	"The repository had no commits when the turn started: the base is the empty tree, so the turn's commits are part of the candidate";
+
+/** HEAD reflog messages of commits made in the repository itself; anything else (pull, merge, checkout, reset...) moved HEAD onto other history. */
+const OWN_COMMIT = /^commit( \((initial|amend)\))?: /;
+
+/** HEAD's reflog, oldest first: where each entry moved HEAD from and to, and why; empty without a reflog or a repository. */
+async function headReflog(cwd: string): Promise<{ from: string; to: string; message: string }[]> {
+	const path = await runGit(["rev-parse", "--path-format=absolute", "--git-path", "logs/HEAD"], { cwd });
+	if (path.code !== 0) return [];
+	const text = await readFile(withoutNewline(path.stdout.toString("utf8")), "utf8").catch(() => "");
+	return text
+		.split("\n")
+		.filter((line) => line !== "")
+		.map((line) => {
+			const tab = line.indexOf("\t");
+			const [from = "", to = ""] = line.split(" ");
+			return { from, to, message: tab < 0 ? "" : line.slice(tab + 1) };
+		});
+}
+
+/**
+ * The base of a turn that started without commits. HEAD left that state with the last reflog entry that moved
+ * it from nothing (all zeros), so that entry and the ones after it are the turn's: the empty tree when all of
+ * them are its own commits; where HEAD landed after the last one that was not (a pull, a checkout of existing
+ * history), so history the turn did not write is never its candidate; the current HEAD when the reflog cannot tell.
+ */
+export async function emptyStartBase(cwd: string): Promise<FreezeOptions> {
+	const reflog = await headReflog(cwd);
+	const born = reflog.findLastIndex((entry) => /^0+$/.test(entry.from));
+	if (born < 0) return {};
+	const foreign = reflog.slice(born).findLast((entry) => !OWN_COMMIT.test(entry.message));
+	return foreign === undefined ? { fromEmpty: true } : { turnStart: foreign.to };
+}
 
 /** The candidate's base is an earlier commit than HEAD, or the empty tree under a first commit: some of its work is committed. */
 export function holdsCommits(candidate: Candidate): boolean {
