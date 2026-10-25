@@ -640,6 +640,54 @@ describe("Renderer", () => {
 			);
 		});
 
+		it("shows a subagent's compaction under the subagent, with its own expected miss", () => {
+			const child = { parentCallId: "c1", agent: "worker" };
+			const miss: AtelierEventBody = { type: "cache_miss", reason: "messages_changed", missedTokens: 5000 };
+			const { stdout, stderr } = render([
+				{ ...started, ...child },
+				{
+					type: "compaction_finished",
+					ok: true,
+					reason: "threshold",
+					tokensBefore: 180_000,
+					tokensAfter: 30_000,
+					kept: 2,
+					usage: zero,
+					...child,
+				},
+				{ ...miss, ...child },
+				{ ...miss, ...child },
+				{
+					type: "compaction_finished",
+					ok: false,
+					reason: "overflow",
+					tokensBefore: 900,
+					kept: 0,
+					usage: zero,
+					error: "The summary was cut short.",
+					...child,
+				},
+				// The child's compaction does not change what the parent's context expects.
+				miss,
+			]);
+			expect(stdout).toBe(
+				[
+					"  │ ◇ compacting context (threshold, 180,000 tokens)",
+					"  │ ◇ context compacted: 180,000 → 30,000 tokens · 2 messages kept",
+					"  │ cache miss after compaction: messages_changed (expected)",
+					"",
+				].join("\n"),
+			);
+			expect(stderr).toBe(
+				[
+					"  │ cache miss: messages_changed (5,000 tokens not read from the cache)",
+					"  │ compaction failed: The summary was cut short.",
+					"cache miss: messages_changed (5,000 tokens not read from the cache)",
+					"",
+				].join("\n"),
+			);
+		});
+
 		it("adds how full the context is to the tokens line", () => {
 			const { stdout } = render([
 				{

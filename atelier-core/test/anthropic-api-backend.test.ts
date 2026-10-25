@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { BackendSession, ToolCall, ToolCallResult } from "../src/backend.ts";
 import { AnthropicApiBackend, type AnthropicApiBackendOptions } from "../src/backends/anthropic-api/backend.ts";
-import type { AtelierEventBody } from "../src/events.ts";
+import type { AtelierEvent, AtelierEventBody } from "../src/events.ts";
+import { FakeBackend } from "../src/fake-backend.ts";
+import { FakeMemory } from "../src/memory/port.ts";
 import { Session } from "../src/session.ts";
 import { defineTool } from "../src/tools/types.ts";
 
@@ -967,5 +969,90 @@ describe("AnthropicApiBackend compaction", () => {
 			expect(api.lookups).toEqual(["https://api.anthropic.com/v1/models/claude-sonnet-5-5"]);
 			expect(finished(events)[0]).toMatchObject({ context: { window, compactAt } });
 		}
+	});
+});
+
+describe("AnthropicApiBackend subagent compaction", () => {
+	const done: AtelierEventBody = {
+		type: "turn_finished",
+		stopReason: "end_turn",
+		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+	};
+	const worker = { name: "worker", description: "w", tools: ["echo"], prompt: "p", models: {}, maxRequests: 10 };
+
+	/** A parent that delegates once to a worker whose anthropic-api backend plays `script`; the parent has memory. */
+	async function delegate(script: Scripted[], options: Partial<AnthropicApiBackendOptions> = {}) {
+		const api = fakeApi(script);
+		const parent = new FakeBackend([
+			[{ toolCall: { tool: "task", input: { agent: "worker", prompt: "Refactor" }, callId: "c1" } }, { event: done }],
+		]);
+		const memory = new FakeMemory("proj");
+		const session = await Session.start({
+			backend: parent,
+			cwd: process.cwd(),
+			tools: [echoTool],
+			memory,
+			subagents: {
+				agents: [worker],
+				createBackend: () =>
+					new AnthropicApiBackend({
+						apiKey: API_KEY,
+						fetch: api.fetch,
+						maxRetries: 0,
+						contextWindow: 200_000,
+						keepRecentTokens: 1,
+						...options,
+					}),
+			},
+		});
+		const events: AtelierEvent[] = [];
+		for await (const event of session.send("go")) events.push(event);
+		await session.close();
+		const child = events.filter((e) => e.parentCallId === "c1");
+		return { events, child, result: parent.toolResults[0], memory };
+	}
+	const toolUse: Reply = {
+		blocks: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "a" } }],
+		stopReason: "tool_use",
+		usage: { input: 2000 },
+	};
+	const report: Reply = { blocks: [{ type: "text", text: "the report" }] };
+	const types = (events: AtelierEvent[]) =>
+		events.filter((e) => e.type.startsWith("compaction")).map((e) => [e.type, e.parentCallId, e.agent]);
+
+	it("compacts a child past the threshold, under the task call, and the child finishes its task", async () => {
+		const { child, result, memory } = await delegate([toolUse, summaryReply(), report], { compactAt: 1000 });
+		expect(types(child)).toEqual([
+			["compaction_started", "c1", "worker"],
+			["compaction_finished", "c1", "worker"],
+		]);
+		expect(child.find((e) => e.type === "compaction_finished")).toMatchObject({ ok: true, reason: "threshold" });
+		expect(result).toMatchObject({ ok: true, output: "the report" });
+		// Subagents have no memory: the child's summary is not saved.
+		expect(memory.saved).toEqual([]);
+	});
+
+	it("compacts a child once on an overflow and retries, and the child finishes its task", async () => {
+		const { child, result, memory } = await delegate([toolUse, overflow, summaryReply(), report], {
+			compactAt: 1_000_000,
+		});
+		expect(types(child)).toEqual([
+			["compaction_started", "c1", "worker"],
+			["compaction_finished", "c1", "worker"],
+		]);
+		expect(child.find((e) => e.type === "compaction_finished")).toMatchObject({ ok: true, reason: "overflow" });
+		expect(child.filter((e) => e.type === "error")).toEqual([]);
+		expect(result).toMatchObject({ ok: true, output: "the report" });
+		expect(memory.saved).toEqual([]);
+	});
+
+	it("fails the task with the overflow and the compaction's cause when the child's compaction fails", async () => {
+		const { child, result } = await delegate([toolUse, overflow, summaryReply("max_tokens")], {
+			compactAt: 1_000_000,
+		});
+		expect(child.find((e) => e.type === "compaction_finished")).toMatchObject({ ok: false, reason: "overflow" });
+		expect(result?.ok).toBe(false);
+		expect(result?.output).toMatch(/^The worker subagent failed \(error\): invalid_request: .*prompt is too long/);
+		expect(result?.output).toMatch(/its compaction failed: .*max_tokens/);
 	});
 });

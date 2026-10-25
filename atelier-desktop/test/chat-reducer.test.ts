@@ -737,6 +737,38 @@ describe("reduceChat: review", () => {
 			]);
 			expect(state.turns[2]?.items).toEqual([{ kind: "cache_miss", reason: "messages_changed", missedTokens: 1 }]);
 		});
+
+		it("shows a subagent's compaction under the subagent, with its own expected miss", () => {
+			const child = (body: Record<string, unknown>) =>
+				event({ ...body, parentCallId: "c1", agent: "worker" } as unknown as AtelierEventBody);
+			const miss = { type: "cache_miss", reason: "messages_changed", missedTokens: 500 };
+			const state = run([
+				...turn,
+				event({ type: "tool_call_started", callId: "c1", tool: "task", input: { agent: "worker" } }),
+				child({ type: "compaction_started", reason: "overflow", tokens: 9000 }),
+				child({ type: "compaction_finished", ok: true, reason: "overflow", tokensBefore: 9000, kept: 2, usage: zero }),
+				child(miss),
+				child(miss),
+				// The child's compaction does not change what the parent's context expects.
+				event({ type: "cache_miss", reason: "messages_changed", missedTokens: 700 }),
+			]);
+			expect(state.turns[0]?.items).toEqual([
+				expect.objectContaining({
+					kind: "tool",
+					callId: "c1",
+					subagent: {
+						agent: "worker",
+						items: [
+							{ kind: "compaction", reason: "overflow", tokensBefore: 9000, kept: 2, state: "done" },
+							{ kind: "cache_miss", reason: "messages_changed", missedTokens: 500, expected: true },
+							{ kind: "cache_miss", reason: "messages_changed", missedTokens: 500 },
+						],
+					},
+				}),
+				{ kind: "cache_miss", reason: "messages_changed", missedTokens: 700 },
+			]);
+			expect(state.expectedMissTurns).toBeUndefined();
+		});
 	});
 });
 

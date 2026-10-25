@@ -403,8 +403,23 @@ function reduceChildItems(items: TurnItem[], event: AtelierEvent, parentCallId: 
 		const subagent = item.subagent ?? { agent: event.agent ?? item.tool, items: [] };
 		if (event.type === "session_started") return { ...item, subagent: { ...subagent, model: event.model } };
 		if (event.type === "turn_finished") return { ...item, subagent: { ...subagent, finished: finishedOf(event) } };
+		if (event.type === "cache_miss" && missExpected(subagent.items)) {
+			const miss: TurnItem = {
+				kind: "cache_miss",
+				reason: event.reason,
+				missedTokens: event.missedTokens,
+				expected: true,
+			};
+			return { ...item, subagent: { ...subagent, items: [...subagent.items, miss] } };
+		}
 		return { ...item, subagent: { ...subagent, items: reduceItems(subagent.items, event) } };
 	});
+}
+
+/** A subagent runs one turn: its first cache miss after its own compaction is the expected one. */
+function missExpected(items: TurnItem[]): boolean {
+	const last = items.findLast((item) => item.kind === "compaction" || item.kind === "cache_miss");
+	return last?.kind === "compaction" && last.state === "done";
 }
 
 function finishedOf(event: Extract<AtelierEvent, { type: "turn_finished" }>): Finished {

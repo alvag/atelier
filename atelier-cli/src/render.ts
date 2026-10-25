@@ -44,6 +44,27 @@ function tokensLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): st
 	return `tokens: ${parts.join(" · ")}`;
 }
 
+function compactingLine(event: Extract<AtelierEvent, { type: "compaction_started" }>): string {
+	return `◇ compacting context (${event.reason}, ${numbers.format(event.tokens)} tokens)`;
+}
+
+/** How much the context went down, what was kept and the cost, as far as the backend reports them. */
+function compactedLine(event: Extract<AtelierEvent, { type: "compaction_finished" }>): string {
+	const before = numbers.format(event.tokensBefore);
+	const parts = [
+		event.tokensAfter === undefined
+			? `${before} tokens before`
+			: `${before} → ${numbers.format(event.tokensAfter)} tokens`,
+	];
+	if (event.kept > 0) parts.push(`${plural(event.kept, "message")} kept`);
+	if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
+	return `◇ context compacted: ${parts.join(" · ")}`;
+}
+
+function compactionFailedLine(event: Extract<AtelierEvent, { type: "compaction_finished" }>): string {
+	return `compaction failed: ${event.error ?? "no reason given"}`;
+}
+
 /** The turn's cost by part, under its tokens line; undefined when the turn had a single part, which the total already says. */
 function phasesLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): string | undefined {
 	const phases = Object.entries(event.phases ?? {}) as [TurnPhase, PhaseSpent][];
@@ -107,6 +128,8 @@ export class Renderer {
 	 * result of a compaction that rewrote the history on purpose.
 	 */
 	#expectedMissTurns = 0;
+	/** Subagents, by task call, whose next cache miss is the expected result of their own compaction. */
+	readonly #childMissExpected = new Set<string>();
 	/** A non-recoverable error or an errored turn happened since the last reset. */
 	failed = false;
 
@@ -161,7 +184,22 @@ export class Renderer {
 			case "turn_finished":
 				this.#line(`${CHILD}${this.#style("dim", tokensLine(event))}`);
 				return;
+			case "compaction_started":
+				this.#line(`${CHILD}${this.#style("dim", compactingLine(event))}`);
+				return;
+			case "compaction_finished":
+				if (!event.ok) {
+					this.#warn(`${CHILD}${compactionFailedLine(event)}`);
+					return;
+				}
+				if (event.parentCallId !== undefined) this.#childMissExpected.add(event.parentCallId);
+				this.#line(`${CHILD}${this.#style("dim", compactedLine(event))}`);
+				return;
 			case "cache_miss":
+				if (event.parentCallId !== undefined && this.#childMissExpected.delete(event.parentCallId)) {
+					this.#line(`${CHILD}${this.#style("dim", `cache miss after compaction: ${event.reason} (expected)`)}`);
+					return;
+				}
 				this.#warn(
 					`${CHILD}cache miss: ${event.reason} (${numbers.format(event.missedTokens)} tokens not read from the cache)`,
 				);
@@ -192,19 +230,11 @@ export class Renderer {
 
 	#renderCompaction(event: Extract<AtelierEvent, { type: "compaction_finished" }>): void {
 		if (!event.ok) {
-			this.#warn(`compaction failed: ${event.error ?? "no reason given"}`);
+			this.#warn(compactionFailedLine(event));
 			return;
 		}
 		this.#expectedMissTurns = 2;
-		const before = numbers.format(event.tokensBefore);
-		const parts = [
-			event.tokensAfter === undefined
-				? `${before} tokens before`
-				: `${before} → ${numbers.format(event.tokensAfter)} tokens`,
-		];
-		if (event.kept > 0) parts.push(`${plural(event.kept, "message")} kept`);
-		if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
-		this.#line(this.#style("dim", `◇ context compacted: ${parts.join(" · ")}`));
+		this.#line(this.#style("dim", compactedLine(event)));
 	}
 
 	/** What the sandbox blocked in a call, one line per cause under the tool line. */
@@ -361,9 +391,7 @@ export class Renderer {
 				return;
 			}
 			case "compaction_started":
-				this.#line(
-					this.#style("dim", `◇ compacting context (${event.reason}, ${numbers.format(event.tokens)} tokens)`),
-				);
+				this.#line(this.#style("dim", compactingLine(event)));
 				return;
 			case "compaction_finished":
 				this.#renderCompaction(event);

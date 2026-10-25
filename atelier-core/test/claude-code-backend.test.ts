@@ -8,7 +8,7 @@ import {
 	type SdkQuery,
 } from "../src/backends/claude-code/backend.ts";
 import { Channel } from "../src/channel.ts";
-import { type AtelierEvent, defineTool, Session, type ToolCall } from "../src/index.ts";
+import { type AtelierEvent, defineTool, FakeBackend, FakeMemory, Session, type ToolCall } from "../src/index.ts";
 
 function msg(value: Record<string, unknown>): SDKMessage {
 	return { uuid: "u", session_id: "s", ...value } as unknown as SDKMessage;
@@ -562,5 +562,80 @@ describe("createToolBridge", () => {
 		expect(bridge.definitions.map((d) => [d.name, d.description, Object.keys(d.inputSchema)])).toEqual([
 			["echo", "Echo", ["text"]],
 		]);
+	});
+});
+
+describe("ClaudeCodeBackend subagent compaction", () => {
+	const auto = msg({
+		type: "system",
+		subtype: "compact_boundary",
+		compact_metadata: { trigger: "auto", pre_tokens: 9000 },
+	});
+	const tooLong = msg({
+		type: "result",
+		subtype: "success",
+		is_error: true,
+		stop_reason: "end_turn",
+		total_cost_usd: 0.01,
+		result: "Prompt is too long",
+		usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+	});
+
+	/** A parent with memory that delegates once to a worker whose Claude Code plays `reply`. */
+	async function delegate(reply: SDKMessage[]) {
+		const child = fakeQuery([init], [reply]);
+		const parent = new FakeBackend([
+			[
+				{ toolCall: { tool: "task", input: { agent: "worker", prompt: "Refactor" }, callId: "c1" } },
+				{
+					event: {
+						type: "turn_finished",
+						stopReason: "end_turn",
+						usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+					},
+				},
+			],
+		]);
+		const memory = new FakeMemory("proj");
+		const session = await Session.start({
+			backend: parent,
+			cwd: process.cwd(),
+			tools: [],
+			memory,
+			subagents: {
+				agents: [{ name: "worker", description: "w", tools: [], prompt: "p", models: {}, maxRequests: 10 }],
+				createBackend: () => new ClaudeCodeBackend({ query: child.query, env: {} }),
+			},
+		});
+		const events: AtelierEvent[] = [];
+		for await (const event of session.send("go")) events.push(event);
+		await session.close();
+		return {
+			child: events.filter((e) => e.parentCallId === "c1"),
+			result: parent.toolResults[0],
+			memory,
+			calls: child.calls,
+		};
+	}
+
+	it("shows Claude Code's own compaction of a child under the task call, and keeps its summary out of memory", async () => {
+		const { child, result: outcome, memory, calls } = await delegate([auto, text("the report"), result(0.01)]);
+		expect(child.filter((e) => e.type.startsWith("compaction")).map((e) => [e.type, e.agent])).toEqual([
+			["compaction_started", "worker"],
+			["compaction_finished", "worker"],
+		]);
+		expect(child.find((e) => e.type === "compaction_started")).toMatchObject({ reason: "threshold" });
+		expect(outcome).toMatchObject({ ok: true, output: "the report" });
+		// No PostCompact hook: Claude Code never hands the child's summary to the core.
+		expect(calls.options.hooks).toBeUndefined();
+		expect(memory.saved).toEqual([]);
+	});
+
+	it("fails the task with Claude Code's error when the child's context overflows", async () => {
+		const { result } = await delegate([tooLong]);
+		expect(result).toMatchObject({
+			ok: false,
+			output: "The worker subagent failed (end_turn): result_error: Prompt is too long",
+		});
 	});
 });

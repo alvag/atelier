@@ -596,6 +596,8 @@ export class Session {
 			// Only the text after the child's last tool call is its answer.
 			let report = "";
 			let failure: string | undefined;
+			// The parent model never sees the child's compaction rows: a failed one goes with the failure.
+			let compactionFailure: string | undefined;
 			let stopReason = "incomplete";
 			for await (const event of child.send(prompt)) {
 				// Clients see the child's work in the parent's turn; the parent model never does.
@@ -606,10 +608,14 @@ export class Session {
 				if (event.type === "text_delta") report += event.text;
 				else if (event.type === "tool_call_started") report = "";
 				else if (event.type === "error") failure ??= `${event.code}: ${event.message}`;
+				else if (event.type === "compaction_finished" && !event.ok)
+					compactionFailure = event.error ?? "no reason given";
 				else if (event.type === "turn_finished") stopReason = event.stopReason;
 			}
-			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined)
-				return fail(`The ${agent.name} subagent failed (${stopReason}): ${failure ?? "no details"}`);
+			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined) {
+				const compaction = compactionFailure === undefined ? "" : `; its compaction failed: ${compactionFailure}`;
+				return fail(`The ${agent.name} subagent failed (${stopReason}): ${failure ?? "no details"}${compaction}`);
+			}
 			if (report.trim() === "") return fail(`The ${agent.name} subagent returned no report.`);
 			const bounded = boundReport(report);
 			return {
