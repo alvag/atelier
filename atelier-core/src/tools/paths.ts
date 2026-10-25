@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { loadSandboxAdditions } from "./sandbox-config.ts";
+import { loadSandboxAdditions, protectedWritePaths } from "./sandbox-config.ts";
 import { secretDirectories } from "./sandbox-paths.ts";
 
 export class PathOutsideError extends Error {
@@ -24,7 +24,7 @@ export function isInside(root: string, target: string): boolean {
 }
 
 /** Real path of `path`, following symlinks through its nearest existing ancestor. */
-async function realpathAllowMissing(path: string): Promise<string> {
+export async function realpathAllowMissing(path: string): Promise<string> {
 	const missing: string[] = [];
 	let current = path;
 	while (true) {
@@ -94,4 +94,15 @@ export async function resolveOutside(cwd: string, path: string, protectedPaths: 
 	const real = await realpathAllowMissing(absolute);
 	if (isProtected(absolute, protectedPaths) || isProtected(real, protectedPaths)) throw new PathProtectedError(path);
 	return real;
+}
+
+/** Whether the file is named like the secret files the sandbox never lets `bash` write (`.env`, `.env.*`, `*.pem`, `*.key`). */
+export function isSecretFile(path: string): boolean {
+	const name = basename(path);
+	return name === ".env" || name.startsWith(".env.") || name.endsWith(".pem") || name.endsWith(".key");
+}
+
+/** The places `edit` never writes, approved or not: the home's secret directories and the user's `.atelier`. Real paths. */
+export function protectedWriteDirectories(home: string = homedir()): string[] {
+	return protectedWritePaths(home).inside;
 }

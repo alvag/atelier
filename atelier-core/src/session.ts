@@ -42,6 +42,8 @@ export interface ApprovalRequest {
 	reason?: string;
 	/** `--yes` does not answer this one: the user must. */
 	always?: boolean;
+	/** Present when the question is not about a `bash` command: `edit` asks to change a file outside the usual places. */
+	tool?: string;
 }
 
 export interface SessionOptions {
@@ -106,6 +108,8 @@ export class Session {
 	#announced = false;
 	/** The sandbox warning was already said in this turn. */
 	#warned = false;
+	/** Real paths outside the usual places that the user approved for editing; only that exact file, only this session. */
+	readonly #approvedPaths = new Set<string>();
 	#abort: AbortController | undefined;
 	#closed = false;
 	#closing: Promise<void> | undefined;
@@ -468,6 +472,7 @@ export class Session {
 				...(this.#scratchDir === undefined ? {} : { scratchDir: this.#scratchDir }),
 				callId,
 				...(this.#options.noSandbox ? { sandboxOff: true } : {}),
+				approvedPaths: this.#approvedPaths,
 			};
 			const gate = await this.#gate(tool, call.input, context);
 			if (gate.refusal) {
@@ -480,16 +485,24 @@ export class Session {
 			}
 			const { approval } = gate;
 			if (approval && (approval.always || !this.#options.autoApprove)) {
-				const { command, reason } = approval;
-				emit({ type: "approval_requested", callId, command, ...(reason === undefined ? {} : { reason }) });
+				const { command, reason, tool: asking } = approval;
+				emit({
+					type: "approval_requested",
+					callId,
+					command,
+					...(reason === undefined ? {} : { reason }),
+					...(asking === undefined ? {} : { tool: asking }),
+				});
 				const request = {
 					callId,
 					command,
 					...(reason === undefined ? {} : { reason }),
 					...(approval.always ? { always: true } : {}),
+					...(asking === undefined ? {} : { tool: asking }),
 				};
 				const approved = (await this.#options.approve?.(request)) ?? false;
-				if (!approved) return fail("The user denied this command.");
+				if (!approved) return fail(approval.denial ?? "The user denied this command.");
+				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
 			}
 			const outcome = await tool.execute(call.input, context);
 			emit({

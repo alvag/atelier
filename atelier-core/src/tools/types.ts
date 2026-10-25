@@ -11,6 +11,8 @@ export interface ToolContext {
 	callId?: string;
 	/** The session runs with the sandbox turned off (`--no-sandbox`): `bash` runs unsandboxed and every command asks. */
 	sandboxOff?: boolean;
+	/** Real paths outside the usual places that the user approved for the rest of the session; `edit` writes only those. */
+	approvedPaths?: ReadonlySet<string>;
 }
 
 /** What a tool says about a call before it runs. */
@@ -18,7 +20,17 @@ export interface ToolGate {
 	/** The call never runs and nobody is asked: `output` is what the model is told, `summary` the line for the user. */
 	refusal?: { output: string; summary: string };
 	/** The user must approve the call; `always` asks even when approvals are skipped (`--yes`), and `reason` is the model's own. */
-	approval?: { command: string; reason?: string; always?: boolean };
+	approval?: {
+		command: string;
+		reason?: string;
+		always?: boolean;
+		/** The tool asking, when the client should word the question for it (`edit`); absent for `bash`. */
+		tool?: string;
+		/** A real path that stays allowed for the rest of the session once the user approves. */
+		grant?: string;
+		/** What the model is told when the user denies, or there is nobody to ask. */
+		denial?: string;
+	};
 	/** Said once per turn, before the first question: why the call runs without the protection it normally has. */
 	warning?: string;
 }

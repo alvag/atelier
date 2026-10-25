@@ -215,12 +215,15 @@ describe("edit", () => {
 		expect((await stat(join(cwd, "run.sh"))).mode & 0o777).toBe(0o755);
 	});
 
-	it("refuses files outside cwd and missing files", async () => {
+	it("refuses unapproved files outside cwd and missing files", async () => {
 		const escaped = await editTool.execute(
 			{ path: "../outside/secret.txt", edits: [{ oldText: "top", newText: "no" }] },
 			ctx,
 		);
 		expect(escaped.ok).toBe(false);
+		expect(escaped.output).toBe(
+			`Not edited: ${await realpath(join(outside, "secret.txt"))} is outside the working directory and the user did not approve editing it.`,
+		);
 		expect(await readFile(join(outside, "secret.txt"), "utf8")).toBe("top secret\n");
 		expect((await editTool.execute({ path: "nope.txt", edits: [{ oldText: "a", newText: "b" }] }, ctx)).ok).toBe(false);
 	});
