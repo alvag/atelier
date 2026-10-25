@@ -69,6 +69,8 @@ export type TurnItem =
 			/** Each lens, the refuter and the validator, in the order they first spoke. */
 			roles: Subagent[];
 			result?: ReviewResult;
+			/** The escalated correction was undone: the files put back and the ones removed. */
+			undone?: { restored: string[]; removed: string[] };
 			/** The turn ended without a result (the review failed): it is no longer running. */
 			ended?: boolean;
 	  }
@@ -337,6 +339,13 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 			return event.available
 				? state
 				: { ...state, review: { available: false, ...(event.reason === undefined ? {} : { reason: event.reason }) } };
+		case "correction_undone":
+			// The review block is in an earlier turn than the undo.
+			return mapItems(state, (item) =>
+				item.kind === "review" && item.reviewId === event.reviewId
+					? { ...item, undone: { restored: event.restored, removed: event.removed } }
+					: item,
+			);
 		case "feature_changed":
 			return { ...state, feature: { name: event.name, path: event.path, title: event.title, tasks: event.tasks } };
 		case "error": {

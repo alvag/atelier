@@ -753,6 +753,15 @@ describe("run: review", () => {
 		expect(h.err()).toContain("There are no changes to review.");
 	});
 
+	it("runs /undo-correction as a turn of its own, and says when there is no correction to undo", async () => {
+		await repoWithChange("notes.ts");
+		const h = harness([], { input: ["/undo-correction"] });
+		expect(await run([], h.io, h.createBackend)).toBe(0);
+		expect(h.err()).toContain("No escalated review of this session left a correction to undo.");
+		expect(h.backend.prompts).toEqual([]);
+		expect(h.out()).toContain("tokens: ");
+	});
+
 	it("answers /review with an error, not a prompt, when the review is off", async () => {
 		const h = harness([mainTurn], { input: ["/review"], env: { ATELIER_REVIEW: "off" } });
 		await run([], h.io, h.createBackend);

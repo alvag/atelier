@@ -28,6 +28,7 @@ import { type ReviewDeps, type RoleName, type RoleResult, runReview } from "./re
 import { type Assessment, assessRisk, type Escalation } from "./risk.ts";
 import { createRiskTool, RiskRequests } from "./tool.ts";
 import { createTreeTools } from "./tree-tools.ts";
+import { undoCorrection } from "./undo.ts";
 import { type VerifierRun, verify } from "./verification.ts";
 import {
 	buildVerifierPrompt,
@@ -94,6 +95,10 @@ export class SessionReview {
 	/** What the user asked in the current turn, verbatim: the verifier's brief. */
 	#turnPrompt = "";
 	#starting: Promise<void> = Promise.resolve();
+	/** The reviews this session finished with a receipt, oldest first, and where: what an undo needs. */
+	readonly #finished = new Map<string, { root: string; gitDir: string; receipt: Receipt }>();
+	/** Reviews whose correction this session undid. */
+	readonly #undone = new Set<string>();
 
 	constructor(options: ReviewOptions) {
 		this.#options = options;
@@ -131,6 +136,50 @@ export class SessionReview {
 
 	async close(): Promise<void> {
 		await Promise.allSettled([...this.#children].map((child) => child.close()));
+	}
+
+	/**
+	 * Undoes the correction an escalated review left in the worktree: the review `reviewId` names, or the
+	 * latest escalated one with a correction. Refuses (with an error event) anything else; true when undone.
+	 */
+	async undo(host: Pick<ReviewHost, "push">, reviewId?: string): Promise<boolean> {
+		const refuse = (code: string, message: string) => {
+			host.push(errorEvent(code, message, true));
+			return false;
+		};
+		const id =
+			reviewId ??
+			[...this.#finished].findLast(
+				([, { receipt }]) => receipt.verdict === "escalated" && receipt.corrected !== null,
+			)?.[0];
+		const found = id === undefined ? undefined : this.#finished.get(id);
+		if (id === undefined || found === undefined)
+			return refuse(
+				"no_correction",
+				reviewId === undefined
+					? "No escalated review of this session left a correction to undo."
+					: `No review ${reviewId} in this session.`,
+			);
+		const { root, gitDir, receipt } = found;
+		if (receipt.verdict !== "escalated")
+			return refuse(
+				"not_escalated",
+				`The review was ${receipt.verdict}, not escalated: there is no correction to undo.`,
+			);
+		if (receipt.corrected === null) return refuse("no_correction", "The review left no correction in the worktree.");
+		const stored = await findReceipt(gitDir, receipt.candidate);
+		if (this.#undone.has(id) || stored?.undoneAt !== undefined)
+			return refuse("correction_already_undone", "This correction was already undone.");
+		const result = await undoCorrection(root, receipt.candidate, receipt.corrected);
+		if (!result.ok) return refuse(result.code, result.message);
+		this.#undone.add(id);
+		try {
+			await writeReceipt(gitDir, { ...(stored ?? receipt), undoneAt: new Date().toISOString() });
+		} catch (error) {
+			host.push(errorEvent("review_receipt_failed", `The receipt was not updated: ${describeError(error)}`, true));
+		}
+		host.push({ type: "correction_undone", reviewId: id, restored: result.restored, removed: result.removed });
+		return true;
 	}
 
 	async #run(host: ReviewHost, manual: boolean, ref?: string): Promise<Spent> {
@@ -246,7 +295,7 @@ export class SessionReview {
 
 	async #declined(host: ReviewHost, reviewId: string, candidate: Candidate, assessment: Assessment): Promise<Spent> {
 		const receipt = receiptOf(host, candidate, assessment, "declined");
-		await this.#finish(host, reviewId, candidate.gitDir, receipt);
+		await this.#finish(host, reviewId, candidate, receipt);
 		return { usage: { ...ZERO_USAGE } };
 	}
 
@@ -295,7 +344,7 @@ export class SessionReview {
 			return { usage: { ...ZERO_USAGE }, refused: true };
 		}
 		const interrupted = receipt.verdict === "unavailable" && receipt.unavailableReason === "interrupted";
-		await this.#finish(host, reviewId, candidate.gitDir, receipt, !interrupted);
+		await this.#finish(host, reviewId, candidate, receipt, !interrupted);
 		return {
 			usage: receipt.usage,
 			...(receipt.costUsd === undefined ? {} : { costUsd: receipt.costUsd }),
@@ -305,9 +354,17 @@ export class SessionReview {
 	}
 
 	/** Stores the receipt (not for an interrupted review), announces the end, and forgets what the agent raised. */
-	async #finish(host: ReviewHost, reviewId: string, gitDir: string, receipt: Receipt, store = true): Promise<void> {
+	async #finish(
+		host: ReviewHost,
+		reviewId: string,
+		candidate: Candidate,
+		receipt: Receipt,
+		store = true,
+	): Promise<void> {
+		const { gitDir } = candidate;
 		let receiptPath: string | undefined;
 		if (store) {
+			this.#finished.set(reviewId, { root: candidate.root, gitDir, receipt });
 			try {
 				receiptPath = await writeReceipt(gitDir, receipt);
 				// The corrected change is what the worktree holds now: it must not be offered again either.

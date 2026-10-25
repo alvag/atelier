@@ -819,6 +819,54 @@ describe("App", () => {
 			expect(warning.textContent).toContain("The correction is left in your worktree. Review it before committing.");
 		});
 
+		it("undoes an escalated correction from the review block and says what came back", async () => {
+			const fake = fakeBridge();
+			fake.answers["session.undo_correction"] = { ok: true, result: { turnId: "t2" } };
+			await openFolderAndSend(fake, "x");
+			fake.emit({
+				...finishedReview,
+				verdict: "escalated",
+				reason: "The correction changed 30 lines, over the budget of 12.",
+				correction: { budget: 12, used: 30 },
+			} as AtelierEventBody);
+			fake.emit({ type: "turn_finished", stopReason: "end_turn", usage: finishedReview.usage } as AtelierEventBody);
+			const review = await screen.findByTestId("review");
+			fireEvent.click(within(review).getByRole("button", { name: "Undo correction" }));
+			await waitFor(() =>
+				expect(fake.commands.at(-1)).toEqual({ command: "session.undo_correction", sessionId: "s1", reviewId: "r1" }),
+			);
+			fake.push({
+				type: "event",
+				sessionId: "s1",
+				event: {
+					type: "correction_undone",
+					reviewId: "r1",
+					restored: ["a.ts"],
+					removed: ["b.ts"],
+					seq: 1,
+					turnId: "t2",
+				},
+			});
+			await waitFor(() =>
+				expect(screen.getByTestId("review").textContent).toContain("Correction undone · restored a.ts · removed b.ts"),
+			);
+			expect(within(screen.getByTestId("review")).queryByRole("button", { name: "Undo correction" })).toBeNull();
+		});
+
+		it("offers no undo for a review that did not leave a correction", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({ ...finishedReview, correction: { budget: 2, used: 2 } } as AtelierEventBody);
+			fake.emit({
+				...finishedReview,
+				reviewId: "r2",
+				verdict: "escalated",
+				reason: "The correction failed.",
+			} as AtelierEventBody);
+			await screen.findByRole("alert");
+			expect(screen.queryByRole("button", { name: "Undo correction" })).toBeNull();
+		});
+
 		it("does not claim a correction when none was applied, and says declined or unavailable", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");

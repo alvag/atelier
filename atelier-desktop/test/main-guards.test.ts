@@ -38,7 +38,17 @@ describe("parseCommand: review commands", () => {
 		});
 	});
 
+	it("accepts a session.undo_correction with or without a review id", () => {
+		const undo = { command: "session.undo_correction", sessionId: "s1" };
+		expect(parseCommand(undo)).toEqual({ ok: true, command: undo });
+		expect(parseCommand({ ...undo, reviewId: consent.reviewId })).toEqual({
+			ok: true,
+			command: { ...undo, reviewId: consent.reviewId },
+		});
+	});
+
 	it.each([
+		["an undo with a review id with a path", { command: "session.undo_correction", sessionId: "s1", reviewId: "../x" }],
 		["an answer outside the enum", { ...consent, answer: "maybe" }],
 		["a boolean answer", { ...consent, answer: true }],
 		["no answer", consent],

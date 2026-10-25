@@ -420,6 +420,13 @@ export class Renderer {
 			case "review_finished":
 				this.#renderReviewFinished(event);
 				return;
+			case "correction_undone": {
+				const parts = ["correction undone"];
+				if (event.restored.length > 0) parts.push(`restored ${event.restored.join(", ")}`);
+				if (event.removed.length > 0) parts.push(`removed ${event.removed.join(", ")}`);
+				this.#line(`${this.#style("green", "✓")} ${parts.join(" · ")}`);
+				return;
+			}
 			case "phase_changed":
 				this.#line(this.#style("dim", `· ${event.phase}`));
 				return;

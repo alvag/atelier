@@ -53,7 +53,8 @@ keeping the latest messages and what the instructions ask for.
 
 In an interactive session, /review reviews the current changes at any risk, against
 HEAD; /review <ref> reviews them against that git ref instead. A review never commits
-anything.
+anything. /undo-correction puts back the files the latest escalated review's correction
+changed, unless they changed since or the correction was committed.
 
 Environment:
   ATELIER_MEMORY=off     Run without long-term memory

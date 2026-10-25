@@ -16,6 +16,8 @@ export interface Chat {
 	answerReviewConsent(reviewId: string, answer: "granted" | "declined"): Promise<void>;
 	/** Reviews the session's current uncommitted change, at any risk. */
 	review(): Promise<void>;
+	/** Undoes the correction the escalated review `reviewId` left in the worktree. */
+	undoCorrection(reviewId: string): Promise<void>;
 	restartCore(): Promise<void>;
 	pickFolder(): Promise<string | undefined>;
 }
@@ -115,6 +117,14 @@ export function useChat(bridge: AtelierBridge): Chat {
 			if (!session) return;
 			dispatch({ type: "prompt_sent", text: "/review" });
 			const result = await request({ command: "session.review", sessionId: session.id });
+			if (result.ok && typeof result.result.turnId === "string")
+				dispatch({ type: "turn_accepted", turnId: result.result.turnId });
+		},
+		undoCorrection: async (reviewId) => {
+			const session = stateRef.current.session;
+			if (!session) return;
+			dispatch({ type: "prompt_sent", text: "/undo-correction" });
+			const result = await request({ command: "session.undo_correction", sessionId: session.id, reviewId });
 			if (result.ok && typeof result.result.turnId === "string")
 				dispatch({ type: "turn_accepted", turnId: result.result.turnId });
 		},

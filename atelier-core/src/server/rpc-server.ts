@@ -189,6 +189,17 @@ export class RpcServer {
 				);
 				return { turnId };
 			}
+			case "session.undo_correction": {
+				const entry = this.#session(message.sessionId);
+				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
+				const turnId = this.#createId();
+				const reviewId = message.reviewId;
+				this.#runTurn(message.sessionId, entry, () => entry.session.undoCorrection(reviewId, turnId)).catch(
+					(error: unknown) =>
+						process.stderr.write(`atelier-core: undo turn ${turnId} stopped: ${describeError(error)}\n`),
+				);
+				return { turnId };
+			}
 			case "session.compact": {
 				const entry = this.#session(message.sessionId);
 				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");

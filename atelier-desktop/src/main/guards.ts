@@ -22,7 +22,11 @@ export function parseCommand(
 		const decoded = decodeClientMessage(line);
 		if (decoded.ok) {
 			const { id: _decodedId, type: _decodedType, ...valid } = decoded.message;
-			if (valid.command === "session.review_consent" && !REVIEW_ID.test(valid.reviewId))
+			if (
+				(valid.command === "session.review_consent" || valid.command === "session.undo_correction") &&
+				valid.reviewId !== undefined &&
+				!REVIEW_ID.test(valid.reviewId)
+			)
 				return { ok: false, error: { code: "invalid_command", message: "Invalid review id." } };
 			return { ok: true, command: valid as ClientCommand };
 		}

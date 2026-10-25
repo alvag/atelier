@@ -314,6 +314,21 @@ export class Session {
 		});
 	}
 
+	/**
+	 * Undoes the correction an escalated review left in the worktree: the review `reviewId` names, or the session's
+	 * latest escalated one. A turn like `send`, with one `turn_finished`; no model call and no review follow it.
+	 */
+	async *undoCorrection(reviewId?: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
+		yield* this.#stream(turnId, async (turn) => {
+			if (!this.#review) {
+				turn.push(errorEvent("review_unavailable", "Review is off for this session.", true));
+				return { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
+			}
+			const undone = await this.#review.undo({ push: (event) => turn.push(event) }, reviewId);
+			return { type: "turn_finished", stopReason: undone ? "end_turn" : "error", usage: { ...ZERO_USAGE } };
+		});
+	}
+
 	/** Summarizes the older history now. A turn like `send`, with one `turn_finished`; no review follows it. */
 	async *compact(instructions?: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
 		yield* this.#stream(turnId, async (turn, _signal, backendSession) => {
@@ -339,7 +354,7 @@ export class Session {
 		});
 	}
 
-	/** The turn machinery `send`, `review` and `compact` share: closed/busy rules, the channel, and exactly one `turn_finished`. */
+	/** The turn machinery `send`, `review`, `undoCorrection` and `compact` share: closed/busy rules, the channel, and exactly one `turn_finished`. */
 	async *#stream(
 		turnId: string,
 		work: (

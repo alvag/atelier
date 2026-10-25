@@ -263,6 +263,8 @@ export type AtelierEventBody =
 			usage: Usage;
 			costUsd?: number;
 	  }
+	/** An escalated review's correction was undone: `restored` got the candidate's version back (modified or deleted by the correction), `removed` were created by it. */
+	| { type: "correction_undone"; reviewId: string; restored: string[]; removed: string[] }
 	/** The core launched the independent verifier for a declared high-risk item; its events follow tagged `agent: "verify:verifier"` under `verifyId`. */
 	| {
 			type: "verification_started";

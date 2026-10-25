@@ -77,6 +77,7 @@ function ApprovalCard({
 }
 
 type OnConsent = (reviewId: string, answer: "granted" | "declined") => void;
+type OnUndo = (reviewId: string) => void;
 
 const CONSENT_STATE = { granted: "Review requested", declined: "Not now", closed: "Closed" } as const;
 
@@ -116,7 +117,15 @@ function ConsentCard({
 	);
 }
 
-function ReviewVerdict({ result }: { result: NonNullable<Extract<TurnItem, { kind: "review" }>["result"]> }) {
+function ReviewVerdict({
+	item,
+	result,
+	onUndo,
+}: {
+	item: Extract<TurnItem, { kind: "review" }>;
+	result: NonNullable<Extract<TurnItem, { kind: "review" }>["result"]>;
+	onUndo?: OnUndo | undefined;
+}) {
 	if (result.verdict === "declined") return <div className="review-verdict">Review declined</div>;
 	if (result.verdict === "unavailable")
 		return <div className="review-verdict">Review unavailable: {describeRefusal(result)}</div>;
@@ -126,7 +135,9 @@ function ReviewVerdict({ result }: { result: NonNullable<Extract<TurnItem, { kin
 			{escalated ? (
 				<div className="warning" role="alert">
 					Escalated: {describeRefusal(result)}
-					{result.correction ? " The correction is left in your worktree. Review it before committing." : ""}
+					{result.correction && !item.undone
+						? " The correction is left in your worktree. Review it before committing."
+						: ""}
 				</div>
 			) : (
 				<div>
@@ -140,6 +151,14 @@ function ReviewVerdict({ result }: { result: NonNullable<Extract<TurnItem, { kin
 					{found.line === undefined ? "" : `:${found.line}`} — {found.claim}
 				</div>
 			))}
+			{escalated && result.correction && item.reviewId && !item.undone && onUndo ? (
+				<div className="approval-actions">
+					<button type="button" onClick={() => onUndo(item.reviewId as string)}>
+						Undo correction
+					</button>
+				</div>
+			) : null}
+			{item.undone ? <div>{undoneText(item.undone)}</div> : null}
 			{result.followUps > 0 ? <div>{result.followUps} follow-up(s) in the receipt</div> : null}
 			{result.receiptPath ? (
 				<div>
@@ -150,7 +169,23 @@ function ReviewVerdict({ result }: { result: NonNullable<Extract<TurnItem, { kin
 	);
 }
 
-function ReviewBlock({ item, onAnswer }: { item: Extract<TurnItem, { kind: "review" }>; onAnswer: OnAnswer }) {
+/** What undoing a correction put back and removed. */
+function undoneText(undone: { restored: string[]; removed: string[] }): string {
+	const parts = ["Correction undone"];
+	if (undone.restored.length > 0) parts.push(`restored ${undone.restored.join(", ")}`);
+	if (undone.removed.length > 0) parts.push(`removed ${undone.removed.join(", ")}`);
+	return parts.join(" · ");
+}
+
+function ReviewBlock({
+	item,
+	onAnswer,
+	onUndo,
+}: {
+	item: Extract<TurnItem, { kind: "review" }>;
+	onAnswer: OnAnswer;
+	onUndo?: OnUndo | undefined;
+}) {
 	return (
 		<section className="review" data-testid="review">
 			<div className="review-risk">
@@ -183,7 +218,7 @@ function ReviewBlock({ item, onAnswer }: { item: Extract<TurnItem, { kind: "revi
 			{item.reviewId && !item.result ? (
 				<div className="review-verdict">{item.ended ? "The review stopped without a result." : "Reviewing…"}</div>
 			) : null}
-			{item.result ? <ReviewVerdict result={item.result} /> : null}
+			{item.result ? <ReviewVerdict item={item} result={item.result} onUndo={onUndo} /> : null}
 		</section>
 	);
 }
@@ -359,7 +394,17 @@ function TokenLine({ finished }: { finished: NonNullable<Turn["finished"]> }) {
 
 type OnAnswer = (callId: string, approved: boolean) => void;
 
-function Items({ items, onAnswer, onConsent }: { items: TurnItem[]; onAnswer: OnAnswer; onConsent?: OnConsent }) {
+function Items({
+	items,
+	onAnswer,
+	onConsent,
+	onUndo,
+}: {
+	items: TurnItem[];
+	onAnswer: OnAnswer;
+	onConsent?: OnConsent;
+	onUndo?: OnUndo | undefined;
+}) {
 	return items.map((item, index) => {
 		const key =
 			item.kind === "tool" || item.kind === "approval"
@@ -382,7 +427,7 @@ function Items({ items, onAnswer, onConsent }: { items: TurnItem[]; onAnswer: On
 			case "review_consent":
 				return <ConsentCard key={key} item={item} onConsent={onConsent ?? (() => {})} />;
 			case "review":
-				return <ReviewBlock key={key} item={item} onAnswer={onAnswer} />;
+				return <ReviewBlock key={key} item={item} onAnswer={onAnswer} onUndo={onUndo} />;
 			case "verification":
 				return <VerificationBlock key={`${item.kind}-${item.verifyId}`} item={item} onAnswer={onAnswer} />;
 			case "sandbox_warning":
@@ -442,11 +487,21 @@ function SubagentBlock({
 	);
 }
 
-function TurnView({ turn, onAnswer, onConsent }: { turn: Turn; onAnswer: OnAnswer; onConsent?: OnConsent }) {
+function TurnView({
+	turn,
+	onAnswer,
+	onConsent,
+	onUndo,
+}: {
+	turn: Turn;
+	onAnswer: OnAnswer;
+	onConsent?: OnConsent;
+	onUndo?: OnUndo | undefined;
+}) {
 	return (
 		<section className="turn">
 			{turn.prompt ? <div className="prompt">{turn.prompt}</div> : null}
-			<Items items={turn.items} onAnswer={onAnswer} {...(onConsent ? { onConsent } : {})} />
+			<Items items={turn.items} onAnswer={onAnswer} onUndo={onUndo} {...(onConsent ? { onConsent } : {})} />
 			{turn.finished ? <UsageSummary finished={turn.finished} model={turn.finished.model} /> : null}
 		</section>
 	);
@@ -459,19 +514,22 @@ export function Transcript({
 	turns,
 	onAnswer,
 	onConsent,
+	onUndo,
 }: {
 	turns: Turn[];
 	onAnswer: (callId: string, approved: boolean) => void;
 	onConsent?: OnConsent;
+	/** Undoes the correction an escalated review left in the worktree. */
+	onUndo?: OnUndo;
 }) {
 	const consent = onConsent ? { onConsent } : {};
 	return (
 		<div className="transcript">
 			{turns.map((turn, index) =>
 				turn.finished ? (
-					<FinishedTurn key={turn.id ?? index} turn={turn} onAnswer={onAnswer} {...consent} />
+					<FinishedTurn key={turn.id ?? index} turn={turn} onAnswer={onAnswer} onUndo={onUndo} {...consent} />
 				) : (
-					<TurnView key={turn.id ?? index} turn={turn} onAnswer={onAnswer} {...consent} />
+					<TurnView key={turn.id ?? index} turn={turn} onAnswer={onAnswer} onUndo={onUndo} {...consent} />
 				),
 			)}
 		</div>

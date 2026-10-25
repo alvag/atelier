@@ -55,6 +55,17 @@ const changeTool = defineTool({
 	},
 });
 
+/** The main agent deleting a file of the worktree. */
+const removeTool = defineTool({
+	name: "remove",
+	description: "Deletes a file",
+	inputShape: { path: z.string() },
+	execute: async ({ path }, { cwd }) => {
+		await rm(join(cwd, path));
+		return { ok: true, output: "removed", summary: path, truncated: false };
+	},
+});
+
 const gitIn = (root: string, ...args: string[]) =>
 	execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
 
@@ -261,7 +272,7 @@ async function start(setup: Setup = {}) {
 	const session = await Session.start({
 		backend: main,
 		cwd,
-		tools: [changeTool, gitTool],
+		tools: [changeTool, gitTool, removeTool],
 		...(setup.review === false
 			? {}
 			: {
@@ -943,6 +954,24 @@ describe("RpcServer review", () => {
 		const response = await off.answerOf(off.send({ command: "session.start", cwd: off.cwd, review: true }));
 		expect(response).toMatchObject({ ok: false, error: { code: "review_unavailable" } });
 		expect(off.messages.filter((m) => m.type === "event")).toEqual([]);
+	});
+
+	it("undoes an escalated correction with session.undo_correction, answered like session.send", async () => {
+		const h = await serve([HIGH_TURN, OVER_BUDGET_FIX.slice(0, 2).concat({ event: finished })], { review: true });
+		const sessionId = await h.begin();
+		h.send({ command: "session.send", sessionId, prompt: "add auth" });
+		const { event } = await h.eventOf("review_consent_requested");
+		const reviewId = (event as { reviewId: string }).reviewId;
+		h.send({ command: "session.review_consent", sessionId, reviewId, answer: "granted" });
+		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished" && m.event.agent === undefined);
+		expect(ofType(h.events(sessionId), "review_finished")[0]).toMatchObject({ verdict: "escalated" });
+
+		const response = await h.answerOf(h.send({ command: "session.undo_correction", sessionId, reviewId }));
+		expect(response.ok).toBe(true);
+		const turnId = (response as unknown as { result: { turnId: string } }).result.turnId;
+		const { event: undone } = await h.eventOf("correction_undone");
+		expect(undone).toMatchObject({ turnId, reviewId, restored: ["src/auth.ts"], removed: ["src/extra.ts"] });
+		expect(await readFile(join(h.cwd, "src/auth.ts"), "utf8")).toBe("export const a = 1;\n");
 	});
 
 	it("reviews by default when the server has review on", async () => {
@@ -2055,5 +2084,122 @@ describe("the turn's cost by phase", () => {
 		expect(last?.phases).toEqual({ lenses: { usage: { ...usage, input: 2, output: 2 }, requests: 1 } });
 		expect(last?.usage).toEqual(last?.phases?.lenses?.usage);
 		expect(last?.requests).toBe(1);
+	});
+});
+
+/** A correction over the budget of 2 lines: it changes src/auth.ts, creates src/extra.ts and deletes a.ts. */
+const OVER_BUDGET_FIX: FakeStep[] = [
+	change("src/auth.ts", "export const a = 2;\n"),
+	change("src/extra.ts", "export const b = 1;\nexport const c = 2;\n"),
+	call("remove", { path: "a.ts" }),
+	{ event: finished },
+];
+
+describe("undoing an escalated correction", () => {
+	const TURN: FakeStep[] = [
+		DECLARED_NONE,
+		change("src/auth.ts", "export const a = 1;\n"),
+		change("src/keep.ts", "export const keep = 1;\n"),
+		text("done"),
+		{ event: finished },
+	];
+
+	/** A session whose first turn ends with an escalated review that left its correction in the worktree. */
+	async function escalated(more: FakeStep[][] = []) {
+		const s = await start({ turns: [TURN, OVER_BUDGET_FIX, ...more] });
+		const events = await s.send("add auth");
+		const [done] = ofType(events, "review_finished");
+		expect(done).toMatchObject({ verdict: "escalated", cause: "over_budget" });
+		return { ...s, reviewId: done?.reviewId as string, undo: (id?: string) => collect(s.session.undoCorrection(id)) };
+	}
+	const read = (cwd: string, path: string) => readFile(join(cwd, path), "utf8").catch(() => undefined);
+	/** Everything undoing may not touch, and the files of the worktree. */
+	const snapshot = async (cwd: string) => ({
+		head: gitIn(cwd, "rev-parse", "HEAD"),
+		index: gitIn(cwd, "ls-files", "--stage"),
+		files: Object.fromEntries(
+			await Promise.all(
+				["a.ts", "src/auth.ts", "src/extra.ts", "src/keep.ts"].map(async (p) => [p, await read(cwd, p)]),
+			),
+		),
+	});
+
+	it("puts back what the correction modified, created and deleted, and nothing else", async () => {
+		const s = await escalated();
+		const before = await snapshot(s.cwd);
+		expect(before.files).toEqual({
+			"a.ts": undefined,
+			"src/auth.ts": "export const a = 2;\n",
+			"src/extra.ts": "export const b = 1;\nexport const c = 2;\n",
+			"src/keep.ts": "export const keep = 1;\n",
+		});
+		const events = await s.undo();
+		expect(ofType(events, "correction_undone")).toMatchObject([
+			{ reviewId: s.reviewId, restored: ["a.ts", "src/auth.ts"], removed: ["src/extra.ts"] },
+		]);
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+		const after = await snapshot(s.cwd);
+		expect(after.files).toEqual({
+			"a.ts": "base\n",
+			"src/auth.ts": "export const a = 1;\n",
+			"src/extra.ts": undefined,
+			"src/keep.ts": "export const keep = 1;\n",
+		});
+		expect(after.head).toBe(before.head);
+		expect(after.index).toBe(before.index);
+		// The receipt of the reviewed candidate says the correction was undone.
+		const stored = await receipts(s.cwd);
+		const reviewed = stored.find(({ receipt }) => (receipt as Record<string, unknown>).corrected !== null);
+		expect(reviewed?.receipt).toMatchObject({ verdict: "escalated", undoneAt: expect.any(String) });
+		expect(s.main.prompts).toHaveLength(2);
+	});
+
+	it("restores nothing and names the files changed since the correction", async () => {
+		const s = await escalated();
+		await writeFile(join(s.cwd, "src/extra.ts"), "mine\n");
+		const before = await snapshot(s.cwd);
+		const events = await s.undo(s.reviewId);
+		const [refused] = ofType(events, "error");
+		expect(refused).toMatchObject({ code: "correction_changed", recoverable: true });
+		expect(refused?.message).toContain("src/extra.ts");
+		expect(refused?.message).not.toContain("src/auth.ts");
+		expect(ofType(events, "correction_undone")).toEqual([]);
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
+		expect(await snapshot(s.cwd)).toEqual(before);
+	});
+
+	it("touches nothing when the correction was committed", async () => {
+		const s = await escalated();
+		gitIn(s.cwd, "add", "-A");
+		gitIn(s.cwd, "commit", "-qm", "keep the correction");
+		const before = await snapshot(s.cwd);
+		const [refused] = ofType(await s.undo(), "error");
+		expect(refused).toMatchObject({ code: "correction_committed", recoverable: true });
+		expect(refused?.message).toContain("src/auth.ts");
+		expect(await snapshot(s.cwd)).toEqual(before);
+	});
+
+	it("does not undo the same correction twice", async () => {
+		const s = await escalated();
+		await s.undo();
+		await writeFile(join(s.cwd, "src/keep.ts"), "edited\n");
+		const before = await snapshot(s.cwd);
+		const [refused] = ofType(await s.undo(s.reviewId), "error");
+		expect(refused).toMatchObject({ code: "correction_already_undone", recoverable: true });
+		expect(await snapshot(s.cwd)).toEqual(before);
+	});
+
+	it("refuses a review that did not escalate, and says when there is no correction to undo", async () => {
+		const s = await start({ turns: [TURN], roles: new RoleBackend(clean) });
+		const [done] = ofType(await s.send("add auth"), "review_finished");
+		expect(done).toMatchObject({ verdict: "approved" });
+		const before = await snapshot(s.cwd);
+		const [notEscalated] = ofType(await collect(s.session.undoCorrection(done?.reviewId)), "error");
+		expect(notEscalated).toMatchObject({ code: "not_escalated", recoverable: true });
+		const [none] = ofType(await collect(s.session.undoCorrection()), "error");
+		expect(none).toMatchObject({ code: "no_correction", recoverable: true });
+		const [unknown] = ofType(await collect(s.session.undoCorrection("nope")), "error");
+		expect(unknown).toMatchObject({ code: "no_correction", recoverable: true });
+		expect(await snapshot(s.cwd)).toEqual(before);
 	});
 });

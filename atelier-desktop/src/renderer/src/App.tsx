@@ -44,6 +44,8 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 		[chat],
 	);
 
+	const onUndo = useCallback((reviewId: string) => void chat.undoCorrection(reviewId), [chat]);
+
 	const openFolder = async () => {
 		const cwd = await chat.pickFolder();
 		if (cwd) await chat.openSession(cwd, model, backend, noSandbox);
@@ -112,7 +114,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 
 			<div className="workspace">
 				<main>
-					<Transcript turns={state.turns} onAnswer={onAnswer} onConsent={onConsent} />
+					<Transcript turns={state.turns} onAnswer={onAnswer} onConsent={onConsent} onUndo={onUndo} />
 				</main>
 				{state.feature ? <FeaturePanel feature={state.feature} /> : null}
 			</div>

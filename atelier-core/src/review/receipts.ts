@@ -40,6 +40,8 @@ export const receiptSchema = z.object({
 	/** Why an escalated or unavailable review ended so, from a closed set, and the value observed. */
 	cause: z.enum(REFUSAL_CAUSES).optional(),
 	observed: z.string().optional(),
+	/** When the user undid the escalated correction, putting the candidate's files back. */
+	undoneAt: z.string().optional(),
 	usage: usageSchema,
 	costUsd: z.number().optional(),
 });

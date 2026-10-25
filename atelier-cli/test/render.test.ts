@@ -828,4 +828,14 @@ describe("Renderer", () => {
 			expect(stdout).toBe("  │ probing");
 		});
 	});
+
+	it("says which files an undone correction put back and removed", () => {
+		const { stdout } = render([
+			{ type: "correction_undone", reviewId: "r1", restored: ["a.ts", "src/auth.ts"], removed: ["src/extra.ts"] },
+			{ type: "correction_undone", reviewId: "r2", restored: ["a.ts"], removed: [] },
+		]);
+		expect(stdout).toBe(
+			"✓ correction undone · restored a.ts, src/auth.ts · removed src/extra.ts\n✓ correction undone · restored a.ts\n",
+		);
+	});
 });
