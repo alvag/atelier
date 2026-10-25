@@ -42,7 +42,7 @@ const SUMMARY_INSTRUCTION = `Summarize the conversation above so that work can c
 
 Keep each section concise. Preserve exact file paths, function names and error messages. If the conversation begins with a summary of earlier history, update that summary with what happened since instead of starting over.`;
 
-/** Paths touched by the read and edit tools, extracted by the core rather than by the model. */
+/** Paths touched by the read, edit and write tools, extracted by the core rather than by the model. */
 export interface FileActivity {
 	read: string[];
 	edited: string[];
@@ -166,7 +166,7 @@ export function fileActivity(
 			const path = (block.input as { path?: unknown } | null)?.path;
 			if (typeof path !== "string") continue;
 			if (block.name === "read") read.add(path);
-			else if (block.name === "edit") edited.add(path);
+			else if (block.name === "edit" || block.name === "write") edited.add(path);
 		}
 	}
 	return { read: [...read].sort(), edited: [...edited].sort() };

@@ -130,7 +130,7 @@ export class OddTracker {
 		const value = (key: string) =>
 			typeof input === "object" && input !== null && !Array.isArray(input) ? input[key] : undefined;
 		if (tool === "read" || tool === "grep") this.#setPhase("exploring", "inferred");
-		else if (tool === "edit") this.#setPhase("implementing", "inferred");
+		else if (tool === "edit" || tool === "write") this.#setPhase("implementing", "inferred");
 		else if (tool === "bash" && TEST_COMMAND.test(String(value("command") ?? "")))
 			this.#setPhase("checking", "inferred");
 		else if (tool === "task") this.#setPhase(value("agent") === "explorer" ? "exploring" : "implementing", "inferred");

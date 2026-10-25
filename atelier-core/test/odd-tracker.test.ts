@@ -364,6 +364,15 @@ describe("phases", () => {
 	const phases = (events: AtelierEvent[]) =>
 		events.flatMap((e) => (e.type === "phase_changed" ? [`${e.phase}:${e.source}`] : []));
 
+	it("infers implementing from a write call", async () => {
+		const { session: s, send } = await session([[call("write", { path: "a" }, "1"), { event: finished }]], {
+			tools: ["read", "edit", "write", "bash", "grep"].map(stub),
+		});
+		const events = await send("go");
+		await s.close();
+		expect(phases(events)).toEqual(["implementing:inferred"]);
+	});
+
 	it("infers the phase from the tools and announces only changes", async () => {
 		const { session: s, send } = await session([
 			[

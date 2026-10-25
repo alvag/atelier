@@ -262,6 +262,21 @@ describe("fileActivity", () => {
 	});
 });
 
+describe("fileActivity with write", () => {
+	it("counts a file created or replaced with write as edited", () => {
+		const messages: Message[] = [
+			user("go"),
+			toolUse("a", "write", { path: "src/new.ts", content: "x" }),
+			toolResult("a", "ok"),
+			toolUse("b", "edit", { path: "src/a.ts", edits: [] }),
+			toolResult("b", "ok"),
+			toolUse("c", "write", { path: "src/a.ts", content: "y" }),
+			toolResult("c", "ok"),
+		];
+		expect(fileActivity(messages)).toEqual({ read: [], edited: ["src/a.ts", "src/new.ts"] });
+	});
+});
+
 describe("replaceHistory", () => {
 	const messages = longTurn("Refactor the parser\nkeeping the API", 10, 100);
 	const cut = 7;
