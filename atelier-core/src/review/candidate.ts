@@ -135,6 +135,31 @@ export async function freezeCandidate(cwd: string, options: FreezeOptions = {}):
 }
 
 const SHORT_ID = 7;
+/** Commits listed in the turn's git state; the rest are counted. */
+const TURN_COMMITS = 50;
+
+/** What the repository shows about the turn's work, which a copy without `.git` cannot. */
+export interface TurnGit {
+	/** The current branch; absent on a detached HEAD. */
+	branch?: string;
+	/** `<short id> <subject>` of each commit from the base to HEAD, oldest first. */
+	commits: string[];
+	/** The worktree differs from HEAD. */
+	uncommitted: boolean;
+}
+
+/** The branch, the commits since the candidate's base and whether the worktree holds more than HEAD. */
+export async function readTurnGit(candidate: Candidate): Promise<TurnGit> {
+	const cwd = candidate.root;
+	const symbolic = await runGit(["symbolic-ref", "--short", "--quiet", "HEAD"], { cwd });
+	const branch = symbolic.code === 0 ? withoutNewline(symbolic.stdout.toString("utf8")) : undefined;
+	const log = await gitText(["log", "--reverse", `--format=%h %s`, `${candidate.baseCommit}..HEAD`], { cwd });
+	const all = log.split("\n").filter((line) => line !== "");
+	const commits = all.slice(0, TURN_COMMITS);
+	if (all.length > commits.length) commits.push(`... and ${all.length - commits.length} more commits`);
+	const headTree = (await gitText(["rev-parse", "HEAD^{tree}"], { cwd })).trim();
+	return { ...(branch ? { branch } : {}), commits, uncommitted: headTree !== candidate.tree };
+}
 
 /** The commit a revision names, or undefined when there is none. A revision starting with `-` is never passed to git. */
 async function commitOf(root: string, revision: string): Promise<string | undefined> {

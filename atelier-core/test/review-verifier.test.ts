@@ -127,6 +127,29 @@ describe("buildVerifierPrompt", () => {
 		expect(prompt).toContain("Round 1 of 2.");
 		expect(prompt).not.toContain("Feature document");
 		expect(prompt).not.toContain("handed to the agent");
+		expect(prompt).not.toContain("Git:");
+	});
+
+	it("gives the branch, the turn's commits and whether work is left uncommitted", () => {
+		const prompt = buildVerifierPrompt({
+			...input,
+			git: {
+				branch: "feat/keypress",
+				commits: ["1234567 feat(cli): ask for a keypress", "89abcde test(cli): cover it"],
+				uncommitted: false,
+			},
+		});
+		expect(prompt).toContain("Git: candidate/ and base/ have no .git, so this is what the repository shows.");
+		expect(prompt).toContain("- Branch: feat/keypress");
+		expect(prompt).toContain(
+			"- Commits since base abcdef0, oldest first:\n  - 1234567 feat(cli): ask for a keypress\n  - 89abcde test(cli): cover it",
+		);
+		expect(prompt).toContain("- Nothing is left uncommitted: candidate/ is HEAD.");
+
+		const detached = buildVerifierPrompt({ ...input, git: { commits: [], uncommitted: true } });
+		expect(detached).toContain("- Branch: none (detached HEAD)");
+		expect(detached).toContain("- No commits since base abcdef0.");
+		expect(detached).toContain("- The worktree has uncommitted changes: candidate/ differs from HEAD.");
 	});
 
 	it("names the feature document copy, and what round 1 found when it is round 2", () => {

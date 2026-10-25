@@ -18,7 +18,7 @@ import { addPhaseSpent, addPhases, onePhase } from "../spent.ts";
 import { createBashTool, grepTool, readTool, sandbox } from "../tools/index.ts";
 import type { Sandbox } from "../tools/sandbox.ts";
 import type { ToolDefinition } from "../tools/types.ts";
-import { type Candidate, type FreezeOptions, freezeCandidate } from "./candidate.ts";
+import { type Candidate, type FreezeOptions, freezeCandidate, readTurnGit } from "./candidate.ts";
 import type { Finding } from "./findings.ts";
 import { runGit } from "./git.ts";
 import { findReceipt, type Receipt, writeReceipt } from "./receipts.ts";
@@ -371,6 +371,8 @@ export class SessionReview {
 		}
 		try {
 			const sandboxStatus = await (this.#options.sandbox ?? sandbox).status();
+			// Without it the verifier marks the branch and commit requirements unverified, as it would anyway.
+			const git = await readTurnGit(candidate).catch(() => undefined);
 			const prompt = buildVerifierPrompt({
 				request: this.#turnPrompt,
 				...(workspace.feature === undefined ? {} : { feature: workspace.feature }),
@@ -380,6 +382,7 @@ export class SessionReview {
 				...(call.handedBack === undefined ? {} : { handedBack: call.handedBack }),
 				dependencies: workspace.dependencies,
 				...(sandboxStatus.available ? {} : { bashUnavailable: sandboxStatus.reason }),
+				...(git === undefined ? {} : { git }),
 			});
 			return await this.#runChild(
 				host,

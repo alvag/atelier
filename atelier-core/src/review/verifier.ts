@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { describeError, type VerifyDefect, type VerifyRequirement } from "../events.ts";
-import type { Candidate } from "./candidate.ts";
+import type { Candidate, TurnGit } from "./candidate.ts";
 import type { Escalation } from "./risk.ts";
 import { commitInstruction, extractJson } from "./roles.ts";
 
@@ -169,6 +169,21 @@ export interface VerifierPromptInput {
 	dependencies: string;
 	/** Why the verifier has no bash, when it has none. */
 	bashUnavailable?: string;
+	/** The branch and the turn's commits, which the copies cannot show. */
+	git?: TurnGit;
+}
+
+function gitLines(git: TurnGit, base: string): string[] {
+	return [
+		"Git: candidate/ and base/ have no .git, so this is what the repository shows.",
+		`- Branch: ${git.branch ?? "none (detached HEAD)"}`,
+		...(git.commits.length === 0
+			? [`- No commits since base ${base}.`]
+			: [`- Commits since base ${base}, oldest first:`, ...git.commits.map((commit) => `  - ${commit}`)]),
+		git.uncommitted
+			? "- The worktree has uncommitted changes: candidate/ differs from HEAD."
+			: "- Nothing is left uncommitted: candidate/ is HEAD.",
+	];
 }
 
 export function buildVerifierPrompt(input: VerifierPromptInput): string {
@@ -187,6 +202,7 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
 	lines.push(
 		`${candidate.files.length} files, ${candidate.changedLines} changed lines.`,
 		...(candidate.baseNote === undefined ? [] : [candidate.baseNote]),
+		...(input.git === undefined ? [] : ["", ...gitLines(input.git, candidate.baseCommit.slice(0, 7))]),
 		"",
 		`Dependencies: ${input.dependencies}`,
 		...(input.bashUnavailable === undefined

@@ -1157,6 +1157,33 @@ describe("independent verification", () => {
 			expect(events.filter((event) => event.type === "turn_finished" && event.agent === undefined)).toHaveLength(1);
 		});
 
+		it("tells the verifier the branch and the subjects of the turn's commits", async () => {
+			const roles = new RoleBackend(verifying(vreport()));
+			const s = await start({
+				turns: [
+					[
+						DECLARED,
+						call("git", { args: ["checkout", "-qb", "feat/keypress"] }),
+						change("a.ts", "base\none\n"),
+						...commit("feat(cli): ask for a keypress"),
+						change("a.ts", "base\none\ntwo\n"),
+						...commit("test(cli): cover it"),
+						text("done"),
+						{ event: finished },
+					],
+				],
+				roles,
+				consent: "declined",
+			});
+			await s.send("make the approval need a keypress");
+			const prompt = verifierRuns(roles)[0]?.prompt ?? "";
+			expect(prompt).toContain("- Branch: feat/keypress");
+			expect(prompt).toMatch(
+				/oldest first:\n {2}- [0-9a-f]{7} feat\(cli\): ask for a keypress\n {2}- [0-9a-f]{7} test\(cli\): cover it\n/,
+			);
+			expect(prompt).toContain("- Nothing is left uncommitted: candidate/ is HEAD.");
+		});
+
 		it.each([
 			["declared none", [call("risk", { none: true, reason: "x" }), change("a.ts", "base\nmore\n")]],
 			["no declaration", [change("a.ts", "base\nmore\n")]],
