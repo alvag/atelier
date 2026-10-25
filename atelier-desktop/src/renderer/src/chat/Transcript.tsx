@@ -42,11 +42,11 @@ function ApprovalCard({
 	onAnswer: (callId: string, approved: boolean) => void;
 }) {
 	const command = visibleText(item.command);
-	const editing = item.tool === "edit";
-	// An edit's reason is the legend itself; only bash's says why it leaves the sandbox.
-	const reason = item.reason === undefined || editing ? undefined : visibleText(item.reason);
-	const title = editing
-		? "Edit a file outside the working directory?"
+	const fileTool = item.tool === "edit" || item.tool === "write";
+	// An edit's or a write's reason is the legend itself; only bash's says why it leaves the sandbox.
+	const reason = item.reason === undefined || fileTool ? undefined : visibleText(item.reason);
+	const title = fileTool
+		? `${item.tool === "edit" ? "Edit" : "Write"} a file outside the working directory?`
 		: reason
 			? "Run this command outside the sandbox?"
 			: "Run this command?";

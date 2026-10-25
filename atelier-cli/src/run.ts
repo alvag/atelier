@@ -249,20 +249,22 @@ export async function run(
 			// The command and the reason come from the model: show escape sequences and bidi controls instead of letting the terminal run them.
 			const shown = visibleText(command);
 			const why = reason === undefined ? undefined : visibleText(reason);
-			if (tool === "edit") {
-				// The command is `edit <real absolute path>`: the question shows the path alone.
-				const path = visibleText(command.slice("edit ".length));
+			if (tool === "edit" || tool === "write") {
+				// The command is `<tool> <real absolute path>`: the question shows the path alone.
+				const path = visibleText(command.slice(`${tool} `.length));
 				if (!io.isTTY) {
 					renderer.endLine();
+					const change = tool === "edit" ? "change a file" : "create or replace a file";
 					io.stderr(
-						`edit asks to change a file outside the working directory and needs your approval, but there is no terminal to ask (--yes does not allow this): ${path.text}\n`,
+						`${tool} asks to ${change} outside the working directory and needs your approval, but there is no terminal to ask (--yes does not allow this): ${path.text}\n`,
 					);
 					return false;
 				}
 				const note = path.hadHidden
 					? "warning: the path contains invisible or control characters, shown as markers.\n"
 					: "";
-				return askYesNo(`Edit a file outside the working directory?\n  ${path.text}\n${note}`);
+				const verb = tool === "edit" ? "Edit" : "Write";
+				return askYesNo(`${verb} a file outside the working directory?\n  ${path.text}\n${note}`);
 			}
 			if (!io.isTTY) {
 				renderer.endLine();

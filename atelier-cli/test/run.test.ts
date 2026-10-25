@@ -942,6 +942,56 @@ describe("bash outside the sandbox", () => {
 		});
 	});
 
+	describe("a write outside the working directory", () => {
+		let elsewhere: string;
+		beforeEach(async () => {
+			elsewhere = await realpath(await mkdtemp(join(tmpdir(), "atelier-cli-elsewhere-")));
+		});
+		afterEach(async () => {
+			await rm(elsewhere, { recursive: true, force: true });
+		});
+		const write = (path: string): FakeStep => ({ toolCall: { tool: "write", input: { path, content: "made\n" } } });
+
+		it("asks with the absolute path, even with --yes, and writes on yes", async () => {
+			const target = join(elsewhere, "deep", "made.txt");
+			const h = harness([[write(target), { event: finished }]], { isTTY: true, answers: ["y"] });
+			await run(["--yes", "x"], h.io, h.createBackend);
+			expect(h.out()).toContain(`Write a file outside the working directory?\n  ${target}\n[y/N] `);
+			expect(h.out()).not.toContain("Run this command");
+			expect(h.out()).toContain(`▸ write ${target} (5 bytes) ✓\n`);
+			expect(await readFile(target, "utf8")).toBe("made\n");
+		});
+
+		it("leaves the disk alone and shows the denial on no", async () => {
+			const target = join(elsewhere, "made.txt");
+			const h = harness([[write(target), { event: finished }]], { isTTY: true, answers: ["n"] });
+			await run(["x"], h.io, h.createBackend);
+			expect(h.backend.toolResults[0]).toEqual({
+				ok: false,
+				output: `Not written: ${target} is outside the working directory and the user did not approve writing it.`,
+			});
+			expect(h.out()).toContain("▸ write Not written: ");
+			await expect(readFile(target, "utf8")).rejects.toThrow();
+		});
+
+		it("says there is no terminal to ask, even with --yes, and writes nothing", async () => {
+			const target = join(elsewhere, "made.txt");
+			const h = harness([[write(target), { event: finished }]]);
+			await run(["--yes", "x"], h.io, h.createBackend);
+			expect(h.err()).toContain(
+				`write asks to create or replace a file outside the working directory and needs your approval, but there is no terminal to ask (--yes does not allow this): ${target}\n`,
+			);
+			await expect(readFile(target, "utf8")).rejects.toThrow();
+		});
+
+		it("writes inside the working directory without asking", async () => {
+			const h = harness([[write("in.txt"), { event: finished }]], { isTTY: true });
+			await run(["x"], h.io, h.createBackend);
+			expect(h.out()).not.toContain("[y/N]");
+			expect(await readFile(join(cwd, "in.txt"), "utf8")).toBe("made\n");
+		});
+	});
+
 	it("refuses a destructive command without asking, with --yes", async () => {
 		const h = harness([[bash({ command: "sudo -n true" }), { event: finished }]], { isTTY: true });
 		await run(["--yes", "x"], h.io, h.createBackend);

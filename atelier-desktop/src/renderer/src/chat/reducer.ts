@@ -36,7 +36,7 @@ export type TurnItem =
 			command: string;
 			/** Why the agent asks to run the command outside the sandbox; absent for an ordinary command. */
 			reason?: string;
-			/** `edit` when the question is about changing a file outside the working directory; absent for `bash`. */
+			/** `edit` or `write` when the question is about changing a file outside the working directory; absent for `bash`. */
 			tool?: string;
 			state: "pending" | "approved" | "denied";
 	  }

@@ -432,6 +432,38 @@ describe("App", () => {
 		expect(await screen.findByText("Allowed")).toBeTruthy();
 	});
 
+	it("shows a write approval in the same card, with the path, and answers it", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({
+			type: "tool_call_started",
+			callId: "c1",
+			tool: "write",
+			input: { path: "/tmp/other/a.txt", content: "x" },
+		});
+		fake.emit({
+			type: "approval_requested",
+			callId: "c1",
+			command: "write /tmp/other/a.txt",
+			reason: "outside the working directory",
+			tool: "write",
+		});
+		expect(await screen.findByText("Write a file outside the working directory?")).toBeTruthy();
+		expect(screen.getByText("write /tmp/other/a.txt")).toBeTruthy();
+		expect(screen.queryByText(/outside the sandbox/)).toBeNull();
+		expect(screen.queryByText("outside the working directory")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Allow" }));
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({
+				command: "session.approve",
+				sessionId: "s1",
+				callId: "c1",
+				approved: true,
+			}),
+		);
+		expect(await screen.findByText("Allowed")).toBeTruthy();
+	});
+
 	it("denies an edit approval", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");
