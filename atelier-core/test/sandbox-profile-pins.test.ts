@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -102,6 +102,26 @@ describe("edit and write refuse the profile files, without asking", () => {
 		expect(questions).toEqual([]);
 		expect(results).toEqual([refusal(pin)]);
 		expect(await exists(pin)).toBe(false);
+	});
+
+	it.each(["main", "linked"] as const)("refuses pin symlinks and case variants from a %s checkout", async (kind) => {
+		const main = await repo(join(base, "main"));
+		const cwd = kind === "main" ? main : join(base, "wt");
+		if (kind === "linked") git(main, "worktree", "add", "-q", "--detach", cwd);
+		const directory = join(main, ".git", "atelier");
+		const pin = join(directory, "profile-pin.json");
+		await mkdir(directory);
+		await writeFile(pin, "old\n");
+		await symlink(directory, join(cwd, "pin-alias"));
+		const before = await readFile(pin);
+		for (const path of ["pin-alias/profile-pin.json", join(main, ".git", "ATELIER", "profile-pin.json")]) {
+			for (const call of [writeCall(path), editCall(path, "old")]) {
+				const { questions, results } = await turn(cwd, [call]);
+				expect(questions).toEqual([]);
+				expect(results).toEqual([refusal(path)]);
+				expect(await readFile(pin)).toEqual(before);
+			}
+		}
 	});
 
 	it("refuses ~/.atelier/profiles.json", async () => {
