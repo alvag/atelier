@@ -121,6 +121,8 @@ export class Session {
 	readonly #thinking: ThinkingLevel | undefined;
 	/** What the profile reported at start; said once, in the first turn. */
 	readonly #profileNotices: string[];
+	/** The summary request's model and level, from the compaction entry; none on a backend that compacts on its own. */
+	readonly #compaction: { model?: string; thinking?: ThinkingLevel } | undefined;
 	#backendSession: BackendSession | undefined;
 	#turn: Channel<TurnEvent> | undefined;
 	/** The subagent running right now, so interrupting or closing reaches it. */
@@ -151,6 +153,22 @@ export class Session {
 		this.#model = options.model ?? orchestrator.model;
 		this.#thinking = options.thinking ?? orchestrator.thinking;
 		this.#profileNotices = (options.profile?.resolved.reports ?? []).map(({ path, message }) => `${path}: ${message}`);
+		const compaction = roleSettings(options.profile, "compaction", undefined);
+		// Claude Code compacts on its own: there is no summary request to give a model or level to.
+		const compacts = options.backend.id !== "claude-code";
+		if (compaction.backend !== undefined)
+			this.#profileNotices.push(
+				`compaction: the summary runs in the session's own backend, so the "${compaction.backend}" prefix is ignored`,
+			);
+		if (!compacts && (compaction.model !== undefined || compaction.thinking !== undefined))
+			this.#profileNotices.push("compaction: claude-code compacts on its own, so the compaction entry does not apply");
+		this.#compaction =
+			compacts && (compaction.model !== undefined || compaction.thinking !== undefined)
+				? {
+						...(compaction.model === undefined ? {} : { model: compaction.model }),
+						...(compaction.thinking === undefined ? {} : { thinking: compaction.thinking }),
+					}
+				: undefined;
 		const tools = subagents
 			? [
 					...options.tools,
@@ -211,6 +229,7 @@ export class Session {
 				cwd: options.cwd,
 				...(session.#model === undefined ? {} : { model: session.#model }),
 				...(session.#thinking === undefined ? {} : { thinking: session.#thinking }),
+				...(session.#compaction === undefined ? {} : { compaction: session.#compaction }),
 				systemPromptAppend: [
 					options.systemPromptAppend ?? "",
 					options.odd ? ODD_RULES : "",

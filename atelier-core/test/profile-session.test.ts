@@ -228,3 +228,39 @@ describe("the subagents", () => {
 		});
 	});
 });
+
+describe("the compaction entry", () => {
+	const started = async (entries: Record<string, unknown>, backend = new FakeBackend([[{ event: finished }]])) => {
+		const session = await Session.start({ backend, cwd: base, tools, profile: await freeze(entries) });
+		const events = await drain(session);
+		await session.close();
+		return { backend, warnings: events.flatMap((e) => (e.type === "error" ? [e.message] : [])) };
+	};
+
+	it("gives the backend the entry's model and level for the summary request", async () => {
+		const { backend, warnings } = await started({ p: { compaction: { model: "claude-haiku-5-5", thinking: "low" } } });
+		expect(backend.startOptions?.compaction).toEqual({ model: "claude-haiku-5-5", thinking: "low" });
+		expect(warnings).toEqual([]);
+	});
+
+	it("gives it nothing when the profile has no compaction entry", async () => {
+		const { backend } = await started({ p: { worker: { thinking: "low" } } });
+		expect(backend.startOptions).not.toHaveProperty("compaction");
+	});
+
+	it("ignores a backend prefix, because the summary runs in the session's own backend, and says so", async () => {
+		const { backend, warnings } = await started({ p: { compaction: { model: "claude-code/haiku" } } });
+		expect(backend.startOptions?.compaction).toEqual({ model: "haiku" });
+		expect(warnings).toEqual([
+			`compaction: the summary runs in the session's own backend, so the "claude-code" prefix is ignored`,
+		]);
+	});
+
+	it("is reported as not applicable on claude-code, which compacts on its own, and is not passed on", async () => {
+		const backend = new FakeBackend([[{ event: finished }]]);
+		Object.defineProperty(backend, "id", { value: "claude-code" });
+		const { warnings } = await started({ p: { compaction: { thinking: "low" } } }, backend);
+		expect(backend.startOptions).not.toHaveProperty("compaction");
+		expect(warnings).toEqual(["compaction: claude-code compacts on its own, so the compaction entry does not apply"]);
+	});
+});

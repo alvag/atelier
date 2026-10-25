@@ -68,6 +68,51 @@ interface CompactionConfig {
 /** A history message, with the effort (or `off`) an assistant answer was asked with; the API never sees `effort`. */
 export type StoredMessage = Anthropic.MessageParam & { effort?: Effort | "off" };
 
+/** What the summary request changes in the request state: the model and how it thinks. */
+export type SummaryRequestState = Pick<RequestState, "model" | "effort" | "thinking">;
+
+/** Totals a turn's requests; the summary may run on another model, so it is priced on its own. */
+class TurnMeter {
+	readonly #main: UsageMeter;
+	readonly #summary: UsageMeter | undefined;
+
+	constructor(model: string, summaryModel?: string) {
+		this.#main = new UsageMeter(model);
+		this.#summary = summaryModel === undefined ? undefined : new UsageMeter(summaryModel);
+	}
+
+	add(usage: Usage): void {
+		this.#main.add(usage);
+	}
+
+	addSummary(usage: Usage): void {
+		(this.#summary ?? this.#main).add(usage);
+	}
+
+	get usage(): Usage {
+		const main = this.#main.usage;
+		const summary = this.#summary?.usage ?? ZERO_USAGE;
+		return {
+			input: main.input + summary.input,
+			output: main.output + summary.output,
+			cacheRead: main.cacheRead + summary.cacheRead,
+			cacheWrite: main.cacheWrite + summary.cacheWrite,
+		};
+	}
+
+	get requests(): number {
+		return this.#main.requests + (this.#summary?.requests ?? 0);
+	}
+
+	/** Undefined when either model has no price. */
+	get costUsd(): number | undefined {
+		if (this.#summary === undefined) return this.#main.costUsd;
+		const main = this.#main.costUsd;
+		const summary = this.#summary.costUsd;
+		return main === undefined || summary === undefined ? undefined : main + summary;
+	}
+}
+
 /** Everything a request is built from. The prefix (tools, system) is fixed when the session starts. */
 export interface RequestState {
 	model: string;
@@ -161,6 +206,20 @@ export class AnthropicApiBackend implements AgentBackend {
 			tools: Object.freeze(toAnthropicTools(start.tools)),
 			messages: [],
 		};
+		// The summary request has its own model and level when the profile's compaction entry sets them.
+		const summaryModel = start.compaction?.model ?? model;
+		const summarySent =
+			start.compaction === undefined
+				? undefined
+				: thinkingToSend(summaryModel, start.compaction.thinking ?? start.thinking, BACKEND_ID);
+		const summary: SummaryRequestState | undefined =
+			start.compaction === undefined
+				? undefined
+				: {
+						model: summaryModel,
+						...(summarySent?.effort === undefined ? {} : { effort: summarySent.effort }),
+						...(summarySent?.thinking === undefined ? {} : { thinking: summarySent.thinking }),
+					};
 		const maxRequests = start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
 		// The window lookup runs while the session starts; the first request waits for it, never the start.
 		const { contextWindow, compactAt, keepRecentTokens } = this.#options;
@@ -181,6 +240,7 @@ export class AnthropicApiBackend implements AgentBackend {
 			sent?.report,
 			start.compactionState,
 			start.compacted,
+			summary,
 		);
 	}
 }
@@ -215,6 +275,8 @@ class AnthropicApiSession implements BackendSession {
 	#config: CompactionConfig | undefined;
 	readonly #compactionState: (() => string | undefined) | undefined;
 	readonly #compacted: ((summary: string) => void) | undefined;
+	/** Set when the summary request runs on another model or level than the session's. */
+	readonly #summary: SummaryRequestState | undefined;
 	#abort: AbortController | undefined;
 	#announced = false;
 	#closed = false;
@@ -238,6 +300,7 @@ class AnthropicApiSession implements BackendSession {
 		effort: ThinkingSend["report"] | undefined,
 		compactionState?: () => string | undefined,
 		compacted?: (summary: string) => void,
+		summary?: SummaryRequestState,
 	) {
 		this.#client = client;
 		this.#state = state;
@@ -248,6 +311,7 @@ class AnthropicApiSession implements BackendSession {
 		this.#effort = effort;
 		this.#compactionState = compactionState;
 		this.#compacted = compacted;
+		this.#summary = summary;
 	}
 
 	async *send(prompt: string): AsyncIterable<AtelierEventBody> {
@@ -264,7 +328,7 @@ class AnthropicApiSession implements BackendSession {
 		}
 		const abort = new AbortController();
 		this.#abort = abort;
-		const meter = new UsageMeter(this.#state.model);
+		const meter = new TurnMeter(this.#state.model, this.#summary?.model);
 		let stopReason = "error";
 		this.#appendUser([{ type: "text", text: prompt }]);
 		this.#turnStart = this.#state.messages.length - 1;
@@ -357,7 +421,7 @@ class AnthropicApiSession implements BackendSession {
 			yield interruptedBeforeAnyRequest();
 			return;
 		}
-		const meter = new UsageMeter(this.#state.model);
+		const meter = new TurnMeter(this.#state.model, this.#summary?.model);
 		let ok = false;
 		try {
 			ok = yield* this.#compact("manual", abort.signal, meter, instructions);
@@ -367,7 +431,7 @@ class AnthropicApiSession implements BackendSession {
 		yield this.#finished(abort.signal.aborted ? "interrupted" : ok ? "end_turn" : "error", meter);
 	}
 
-	#finished(stopReason: string, meter: UsageMeter): AtelierEventBody {
+	#finished(stopReason: string, meter: TurnMeter): AtelierEventBody {
 		const costUsd = meter.costUsd;
 		return {
 			type: "turn_finished",
@@ -416,13 +480,13 @@ class AnthropicApiSession implements BackendSession {
 	async *#compact(
 		reason: CompactionReason,
 		signal: AbortSignal,
-		meter: UsageMeter,
+		meter: TurnMeter,
 		instructions?: string,
 	): AsyncGenerator<AtelierEventBody, boolean> {
 		const tokensBefore = this.#contextTokens();
 		yield { type: "compaction_started", reason, tokens: tokensBefore };
 		const failed = (error: string, usage: Usage = { ...ZERO_USAGE }): AtelierEventBody => {
-			const costUsd = costOfRequest(this.#state.model, usage);
+			const costUsd = costOfRequest(this.#summary?.model ?? this.#state.model, usage);
 			return {
 				type: "compaction_finished",
 				ok: false,
@@ -442,14 +506,14 @@ class AnthropicApiSession implements BackendSession {
 		}
 		let response: Anthropic.Message;
 		try {
-			const request = buildSummaryRequest(this.#state, cut, instructions);
+			const request = buildSummaryRequest(this.#summaryState(), cut, instructions);
 			response = await this.#client.messages.stream(request, { signal }).finalMessage();
 		} catch (error) {
 			yield failed(signal.aborted ? "Interrupted by the user." : this.#redact(describeError(error)));
 			return false;
 		}
 		const usage = toUsage(response.usage);
-		meter.add(usage);
+		meter.addSummary(usage);
 		const summary = validateSummary(response);
 		if (!summary.ok) {
 			yield failed(summary.reason, usage);
@@ -475,7 +539,7 @@ class AnthropicApiSession implements BackendSession {
 			this.#turnPrompt = carried;
 		}
 		this.#compacted?.(summary.text);
-		const costUsd = costOfRequest(this.#state.model, usage);
+		const costUsd = costOfRequest(this.#summary?.model ?? this.#state.model, usage);
 		yield {
 			type: "compaction_finished",
 			ok: true,
@@ -487,6 +551,13 @@ class AnthropicApiSession implements BackendSession {
 			...(costUsd === undefined ? {} : { costUsd }),
 		};
 		return true;
+	}
+
+	/** The state the summary request is built from: the session's, with the compaction entry's model and level. */
+	#summaryState(): RequestState {
+		if (this.#summary === undefined) return this.#state;
+		const { effort: _effort, thinking: _thinking, ...rest } = this.#state;
+		return { ...rest, ...this.#summary };
 	}
 
 	#redact(message: string): string {

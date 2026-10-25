@@ -31,6 +31,11 @@ export interface BackendStartOptions {
 	compacted?: (summary: string) => void;
 	/** Thinking level for every request; not sent when the model does not support it (see `thinkingToSend`). */
 	thinking?: ThinkingLevel;
+	/**
+	 * The model and level for the request that summarizes the history, when they differ from the session's;
+	 * only a backend that makes such a request uses it (anthropic-api).
+	 */
+	compaction?: { model?: string; thinking?: ThinkingLevel };
 	/** Caps the model requests of one turn; backends without such a cap ignore it. */
 	maxRequestsPerTurn?: number;
 }

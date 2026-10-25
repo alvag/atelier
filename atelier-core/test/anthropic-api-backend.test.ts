@@ -5,6 +5,7 @@ import { AnthropicApiBackend, type AnthropicApiBackendOptions } from "../src/bac
 import type { AtelierEvent, AtelierEventBody } from "../src/events.ts";
 import { FakeBackend } from "../src/fake-backend.ts";
 import { FakeMemory } from "../src/memory/port.ts";
+import { costOfRequest } from "../src/pricing.ts";
 import { Session } from "../src/session.ts";
 import { defineTool } from "../src/tools/types.ts";
 
@@ -1185,5 +1186,64 @@ describe("AnthropicApiBackend subagent compaction", () => {
 		expect(result?.ok).toBe(false);
 		expect(result?.output).toMatch(/^The worker subagent failed \(error\): invalid_request: .*prompt is too long/);
 		expect(result?.output).toMatch(/its compaction failed: .*max_tokens/);
+	});
+});
+
+describe("AnthropicApiBackend compaction entry", () => {
+	const toolUse: Scripted = {
+		blocks: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "a" } }],
+		stopReason: "tool_use",
+		usage: { input: 2000 },
+	};
+	const done: Scripted = { blocks: [{ type: "text", text: "done" }] };
+	/** A turn that crosses the threshold once: the requests are main, summary, main. */
+	async function compactingWith(startOptions: Partial<BackendStartOptions>) {
+		const { session, api } = await start(
+			[toolUse, summaryReply(), done],
+			async () => ({ ok: true, output: "x".repeat(400) }),
+			{ contextWindow: 200_000, compactAt: 1000, keepRecentTokens: 1 },
+			undefined,
+			startOptions,
+		);
+		const events = await collect(session.send("Refactor the parser"));
+		return { api, events };
+	}
+
+	it("asks for the summary with the compaction model and level, and for everything else with the session's", async () => {
+		const { api } = await compactingWith({
+			thinking: "high",
+			compaction: { model: "claude-opus-5-5", thinking: "medium" },
+		});
+		expect(api.bodies.map((body) => [body.model, body.output_config])).toEqual([
+			["claude-sonnet-5-5", { effort: "high" }],
+			["claude-opus-5-5", { effort: "medium" }],
+			["claude-sonnet-5-5", { effort: "high" }],
+		]);
+	});
+
+	it("keeps the session's level for the summary when the entry sets only the model", async () => {
+		const { api } = await compactingWith({ thinking: "high", compaction: { model: "claude-opus-5-5" } });
+		expect(api.bodies[1]).toMatchObject({ model: "claude-opus-5-5", output_config: { effort: "high" } });
+	});
+
+	it("sends the summary request as before when there is no compaction entry", async () => {
+		const { api } = await compactingWith({ thinking: "high" });
+		expect(api.bodies.map((body) => [body.model, body.output_config])).toEqual(
+			Array(3).fill(["claude-sonnet-5-5", { effort: "high" }]),
+		);
+	});
+
+	it("prices the summary at the compaction model and the turn as the sum of both", async () => {
+		const { events } = await compactingWith({ compaction: { model: "claude-opus-5-5" } });
+		const [compacted] = ofType(events, "compaction_finished");
+		const summaryCost = costOfRequest("claude-opus-5-5", { input: 100, output: 300, cacheRead: 2000, cacheWrite: 0 });
+		expect(compacted?.costUsd).toBeCloseTo(summaryCost as number, 10);
+		const [turn] = finished(events);
+		const mainCost =
+			(costOfRequest("claude-sonnet-5-5", { input: 2000, output: 1, cacheRead: 0, cacheWrite: 0 }) as number) +
+			(costOfRequest("claude-sonnet-5-5", { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }) as number);
+		expect(turn).toMatchObject({ requests: 3 });
+		expect((turn as { costUsd: number }).costUsd).toBeGreaterThan(summaryCost as number);
+		expect((turn as { costUsd: number }).costUsd).toBeLessThan((summaryCost as number) + mainCost * 1.5);
 	});
 });
