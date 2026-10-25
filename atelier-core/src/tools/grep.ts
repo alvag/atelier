@@ -20,6 +20,8 @@ function clip(line: string): string {
 	return line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)}...` : line;
 }
 
+const NOTICE = /^(.*)(: binary file matches \(found "\\0" byte around offset \d+\))$/s;
+
 interface SearchResult {
 	matches: string[];
 	/** The search stopped before the end: too many matches, timeout or abort. */
@@ -65,11 +67,34 @@ function runSearch(
 			const path = toRelative(record.slice(0, nul));
 			if (accept(path)) matches.push(clip(`${path}:${record.slice(nul + 1)}`));
 		};
+		/**
+		 * ripgrep's binary-match notice has no NUL: `<path>: binary file matches (found "\0" byte around offset N)`.
+		 * It counts as a notice only when the path before the final suffix passes `accept` (which, for the open
+		 * tools, means it exists and is not protected); otherwise it is the start of a file name that holds a
+		 * newline, and stays part of the next record's path, which is then checked as a whole.
+		 */
+		const takeNotice = (): boolean => {
+			const nl = pending.indexOf("\n");
+			const nul = pending.indexOf("\0");
+			if (nl === -1 || (nul !== -1 && nul < nl)) return false;
+			const found = NOTICE.exec(pending.slice(0, nl));
+			if (!found) return false;
+			const path = toRelative(found[1] ?? "");
+			if (!accept(path)) return false;
+			matches.push(clip(`${path}${found[2] ?? ""}`));
+			pending = pending.slice(nl + 1);
+			return true;
+		};
 		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
 			if (stopped) return;
 			pending += chunk;
 			// A record is `path NUL rest NL`; the path may hold newlines, the rest never does.
 			while (true) {
+				const notice = takeNotice();
+				if (notice) {
+					if (matches.length > MAX_GREP_MATCHES) return stop("limit");
+					continue;
+				}
 				const nul = pending.indexOf("\0");
 				const end = nul === -1 ? -1 : pending.indexOf("\n", nul);
 				if (end === -1) break;
