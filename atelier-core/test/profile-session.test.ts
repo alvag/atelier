@@ -358,3 +358,61 @@ describe("a profile file that changes after the session started", () => {
 		await session.close();
 	});
 });
+
+describe("a profiled orchestrator whose backend refuses its credentials mid-turn", () => {
+	const failures = [
+		{
+			backend: "claude-code",
+			code: "not_logged_in",
+			message: "Claude Code is not logged in. Run `claude`, use /login, and try again.",
+		},
+		{ backend: "anthropic-api", code: "authentication_error", message: "invalid x-api-key" },
+	] as const;
+
+	it.each(failures)("names the orchestrator and $backend in the $code error", async ({ backend, code, message }) => {
+		const events = await failWith(backend, code, message, { orchestrator: { model: `${backend}/opus` } });
+		expect(events.filter((event) => event.type === "error" && event.code === code)).toEqual([
+			expect.objectContaining({ code, message: `orchestrator: ${backend}: ${message}`, recoverable: false }),
+		]);
+	});
+
+	it.each(failures)(
+		"keeps the $code error as it was when the profile did not choose the backend",
+		async ({ backend, code, message }) => {
+			const other = backend === "claude-code" ? "anthropic-api" : "claude-code";
+			// No profile, a profile that names no backend, and one whose backend an explicit choice overrode.
+			for (const profile of [
+				undefined,
+				{ orchestrator: { model: "opus" } },
+				{ orchestrator: { model: `${other}/opus` } },
+			]) {
+				const events = await failWith(backend, code, message, profile);
+				expect(events.filter((event) => event.type === "error" && event.code === code)).toEqual([
+					expect.objectContaining({ code, message, recoverable: false }),
+				]);
+			}
+		},
+	);
+
+	async function failWith(
+		backend: string,
+		code: string,
+		message: string,
+		orchestrator: Record<string, unknown> | undefined,
+	): Promise<AtelierEvent[]> {
+		const fake = new FakeBackend([
+			[
+				{ event: { type: "error", code, message, recoverable: false } },
+				{ event: { type: "turn_finished", stopReason: "error", usage } },
+			],
+		]);
+		Object.defineProperty(fake, "id", { value: backend });
+		const profile = orchestrator === undefined ? undefined : await freeze({ p: orchestrator });
+		const session = await Session.start({ backend: fake, cwd: base, tools, ...(profile ? { profile } : {}) });
+		try {
+			return await drain(session);
+		} finally {
+			await session.close();
+		}
+	}
+});

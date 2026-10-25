@@ -25,6 +25,7 @@ import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
 import {
 	compactionSettings,
 	type FrozenProfile,
+	orchestratorBackend,
 	profileChanges,
 	type RoleBackendFactory,
 	roleSettings,
@@ -48,6 +49,8 @@ import {
 
 type TurnEvent = AtelierEventBody & SubagentTag;
 
+/** Errors a backend reports when its credentials are missing or refused. */
+const CREDENTIAL_ERRORS: ReadonlySet<string> = new Set(["not_logged_in", "authentication_error"]);
 /** Tools a subagent never gets: delegation and the ODD document belong to the parent. */
 const PARENT_ONLY = new Set([TASK_TOOL, FEATURE_TOOL, PHASE_TOOL, MEMORY_TOOL, RISK_TOOL]);
 
@@ -318,7 +321,7 @@ export class Session {
 					if (event.type === "turn_finished") finish ??= event;
 					else {
 						if (event.type === "error") failed = true;
-						turn.push(event);
+						turn.push(this.#withOrchestrator(event));
 					}
 				}
 			} catch (error) {
@@ -460,6 +463,14 @@ export class Session {
 		const { changes, files } = await profileChanges(profile, this.#profileFiles);
 		this.#profileFiles = files;
 		for (const { path, message } of changes) turn.push(errorEvent("profile_changed", `${path} ${message}`, true));
+	}
+
+	/** A credential error of the backend the profile chose for the orchestrator (not an explicit one) names that role and backend. */
+	#withOrchestrator(event: AtelierEventBody): AtelierEventBody {
+		if (event.type !== "error" || !CREDENTIAL_ERRORS.has(event.code)) return event;
+		const backend = orchestratorBackend(this.#options.profile);
+		if (backend === undefined || backend !== this.#options.backend.id) return event;
+		return { ...event, message: `orchestrator: ${backend}: ${event.message}` };
 	}
 
 	/** What a review may use of this session: the turn's stream, its signal, one correction turn and child sessions. */
