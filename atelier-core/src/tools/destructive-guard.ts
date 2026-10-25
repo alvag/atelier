@@ -63,7 +63,8 @@ const SPLIT_SEPARATORS: Record<string, string> = { _: " ", t: "\t", n: "\n", v: 
 
 /**
  * What `env -S` makes of its string: words split on blanks and on the escapes
- * `\_ \t \n \v \f`, quotes respected, `\c` ends the string, no shell operators.
+ * `\_ \t \n \v \f`, quotes respected, no shell operators. `\c` would end the string, but the
+ * guard fails closed and drops it, reading every word.
  */
 function splitWords(text: string): Token[] {
 	const words: string[] = [];
@@ -73,12 +74,12 @@ function splitWords(text: string): Token[] {
 		if (word !== undefined) words.push(word);
 		word = undefined;
 	};
-	scan: for (let at = 0; at < text.length; at++) {
+	for (let at = 0; at < text.length; at++) {
 		const char = text[at] as string;
 		if (char === "\\") {
 			const next = text[++at];
 			if (next === undefined) break;
-			if (next === "c") break scan;
+			if (next === "c") continue;
 			if (next in SPLIT_SEPARATORS && quote === undefined) end();
 			else word = (word ?? "") + (quote === '"' || next in SPLIT_SEPARATORS ? (SPLIT_SEPARATORS[next] ?? next) : next);
 		} else if (quote !== undefined) {
@@ -120,7 +121,12 @@ const ENV_VALUE_FLAGS = "uCP";
  * the string with its words. Redirections before the command or between
  * wrappers are skipped: they never name the command.
  */
-function head(segment: readonly Token[]): { segment: readonly Token[]; cursor: number; wrappers: string[] } {
+function head(segment: readonly Token[]): {
+	segment: readonly Token[];
+	cursor: number;
+	wrappers: string[];
+	extra: Token[][];
+} {
 	const wrappers: string[] = [];
 	let cursor = 0;
 	while (
@@ -163,8 +169,15 @@ function head(segment: readonly Token[]): { segment: readonly Token[]; cursor: n
 					if (split.takesNext) cursor++;
 					// `env -S` splits the string into words, which env then reads as its own arguments: options first, then one command.
 					const env: Token = { value: "env", raw: "env", operator: false, index: 0 };
-					const inner = head([env, ...splitWords(split.text), ...segment.slice(cursor)]);
-					return { ...inner, wrappers: [...wrappers, ...inner.wrappers] };
+					const rest = segment.slice(cursor);
+					const inner = head([env, ...splitWords(split.text), ...rest]);
+					// What follows a `\c` is judged as a command of its own too, in case env stops there.
+					const after = [...split.text.matchAll(/\\c/g)].map((match) => [
+						env,
+						...splitWords(split.text.slice((match.index ?? 0) + 2)),
+						...rest,
+					]);
+					return { ...inner, wrappers: [...wrappers, ...inner.wrappers], extra: [...inner.extra, ...after] };
 				}
 				if (envValueFlag(flag)) cursor++;
 				continue;
@@ -173,7 +186,7 @@ function head(segment: readonly Token[]): { segment: readonly Token[]; cursor: n
 		}
 		if (name === "timeout") cursor++;
 	}
-	return { segment, cursor, wrappers };
+	return { segment, cursor, wrappers, extra: [] };
 }
 
 /** The string of `env -S`, `--split-string`, `--split-string=...` or a cluster such as `-iS`/`-vSstring`, and whether it is the next word. */
@@ -387,40 +400,44 @@ export function findDestructiveCommand(command: string, context: GuardContext, d
 	let start = 0;
 	for (let end = 0; end <= tokens.length; end++) {
 		if (end < tokens.length && !tokens[end]?.operator) continue;
-		const { segment, cursor, wrappers } = head(tokens.slice(start, end));
+		const queue = [tokens.slice(start, end)];
 		start = end + 1;
-		if (wrappers.includes("sudo")) return "sudo";
-		const first = segment[cursor];
-		if (first === undefined) continue;
-		const name = executable(first.value);
-		const args = segment.slice(cursor + 1).map((token) => token.value);
-		// Commands that run another command line: `sh -c`, `eval`, `find -exec`.
-		const nested: string[] = [];
-		if (["sh", "bash", "zsh", "dash"].includes(name)) {
-			const flag = args.findIndex((arg) => /^-[a-z]*c[a-z]*$/.test(arg));
-			const payload = flag >= 0 ? args[flag + 1] : undefined;
-			if (payload) nested.push(payload);
-		}
-		if (name === "eval") nested.push((args[0] === "--" ? args.slice(1) : args).join(" "));
-		if (FIND_NAMES.includes(name)) {
-			for (let at = 0; at < args.length; at++) {
-				if (!FIND_EXEC.has(args[at] ?? "")) continue;
-				const rest = args.slice(at + 1);
-				const stop = rest.findIndex((arg) => arg === ";" || arg === "+");
-				nested.push((stop < 0 ? rest : rest.slice(0, stop)).join(" "));
-				if (stop < 0) break;
-				at += stop + 1;
+		for (let at = 0; at < queue.length; at++) {
+			const { segment, cursor, wrappers, extra } = head(queue[at] as Token[]);
+			queue.push(...extra);
+			if (wrappers.includes("sudo")) return "sudo";
+			const first = segment[cursor];
+			if (first === undefined) continue;
+			const name = executable(first.value);
+			const args = segment.slice(cursor + 1).map((token) => token.value);
+			// Commands that run another command line: `sh -c`, `eval`, `find -exec`.
+			const nested: string[] = [];
+			if (["sh", "bash", "zsh", "dash"].includes(name)) {
+				const flag = args.findIndex((arg) => /^-[a-z]*c[a-z]*$/.test(arg));
+				const payload = flag >= 0 ? args[flag + 1] : undefined;
+				if (payload) nested.push(payload);
 			}
+			if (name === "eval") nested.push((args[0] === "--" ? args.slice(1) : args).join(" "));
+			if (FIND_NAMES.includes(name)) {
+				for (let at = 0; at < args.length; at++) {
+					if (!FIND_EXEC.has(args[at] ?? "")) continue;
+					const rest = args.slice(at + 1);
+					const stop = rest.findIndex((arg) => arg === ";" || arg === "+");
+					nested.push((stop < 0 ? rest : rest.slice(0, stop)).join(" "));
+					if (stop < 0) break;
+					at += stop + 1;
+				}
+			}
+			// The broadest removal wins between a command and the command lines it runs.
+			const found: string[] = [];
+			for (const payload of nested) {
+				const rule = findDestructiveCommand(payload, context, depth + 1);
+				if (rule) found.push(rule);
+			}
+			const own = commandRule(name, args, context);
+			if (own) found.push(own);
+			if (found.length > 0) return broadest(found);
 		}
-		// The broadest removal wins between a command and the command lines it runs.
-		const found: string[] = [];
-		for (const payload of nested) {
-			const rule = findDestructiveCommand(payload, context, depth + 1);
-			if (rule) found.push(rule);
-		}
-		const own = commandRule(name, args, context);
-		if (own) found.push(own);
-		if (found.length > 0) return broadest(found);
 	}
 	for (const body of substitutionBodies(text)) {
 		const found = findDestructiveCommand(body, context, depth + 1);
