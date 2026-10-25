@@ -1,4 +1,4 @@
-import type { Usage } from "./events.ts";
+import type { Effort, Usage } from "./events.ts";
 
 /** USD per million tokens. `cacheWrite` is the 5-minute cache write; Atelier writes no 1-hour entries. */
 export interface PriceTier {
@@ -23,6 +23,22 @@ export const PRICES: Readonly<Record<string, readonly PriceTier[]>> = Object.fre
 		{ input: 0.5, output: 2.5, cacheWrite: 0.625, cacheRead: 0.05 },
 	],
 });
+
+/** Models that take every effort level; any other model, known or not, gets none. */
+export const EFFORT_MODELS: ReadonlySet<string> = new Set(["claude-opus-5-5", "claude-sonnet-5-5"]);
+
+/** Claude Code's model aliases, so a model named either way finds its effort support. */
+const ALIASES: Readonly<Record<string, string>> = Object.freeze({
+	opus: "claude-opus-5-5",
+	sonnet: "claude-sonnet-5-5",
+	haiku: "claude-haiku-5-5",
+});
+
+/** The effort to send to `model`: none when none was asked, `unsupported` when the model does not take it. */
+export function effortToSend(model: string, effort: Effort | undefined): Effort | "unsupported" | undefined {
+	if (effort === undefined) return undefined;
+	return EFFORT_MODELS.has(ALIASES[model] ?? model) ? effort : "unsupported";
+}
 
 /** Cost of one API request, or undefined when the model is not in the table. */
 export function costOfRequest(model: string, usage: Usage): number | undefined {

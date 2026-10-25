@@ -10,7 +10,8 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentBackend, BackendSession, BackendStartOptions, ToolExecutor } from "../../backend.ts";
 import { Channel } from "../../channel.ts";
-import { type AtelierEventBody, describeError, errorEvent, type JsonValue } from "../../events.ts";
+import { type AtelierEventBody, describeError, type Effort, errorEvent, type JsonValue } from "../../events.ts";
+import { effortToSend } from "../../pricing.ts";
 import type { ToolDefinition } from "../../tools/types.ts";
 import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./map.ts";
 
@@ -112,11 +113,14 @@ export class ClaudeCodeBackend implements AgentBackend {
 		const server = createSdkMcpServer({ name: MCP_SERVER_NAME, version: "0.0.0", tools: bridge.definitions });
 		const input = new Channel<SDKUserMessage>();
 		const run = this.#options.query ?? (sdkQuery as QueryFunction);
+		const model = start.model ?? DEFAULT_MODEL;
+		const effort = effortToSend(model, start.effort);
 		const query = run({
 			prompt: input,
 			options: {
 				cwd: start.cwd,
-				model: start.model ?? DEFAULT_MODEL,
+				model,
+				...(effort === undefined || effort === "unsupported" ? {} : { effort }),
 				tools: [],
 				mcpServers: { [MCP_SERVER_NAME]: server },
 				strictMcpConfig: true,
@@ -148,6 +152,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 			input,
 			observe,
 			this.#options.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS,
+			effort,
 			start.compactionState,
 		);
 	}
@@ -191,6 +196,8 @@ class ClaudeCodeSession implements BackendSession {
 	#closing = false;
 	#failure: string | undefined;
 	readonly #compactionState: (() => string | undefined) | undefined;
+	/** What `session_started` says about the effort. */
+	readonly #effort: Effort | "unsupported" | undefined;
 	/** Claude Code compacted; the core's state goes with the next prompt. */
 	#stateDue = false;
 
@@ -199,12 +206,14 @@ class ClaudeCodeSession implements BackendSession {
 		input: Channel<SDKUserMessage>,
 		observe: (message: SDKMessage) => void,
 		interruptGraceMs: number,
+		effort: Effort | "unsupported" | undefined,
 		compactionState?: () => string | undefined,
 	) {
 		this.#query = query;
 		this.#input = input;
 		this.#interruptGraceMs = interruptGraceMs;
 		this.#compactionState = compactionState;
+		this.#effort = effort;
 		void this.#read(observe);
 	}
 
@@ -215,11 +224,9 @@ class ClaudeCodeSession implements BackendSession {
 				if (message.type === "system" && message.subtype === "compact_boundary") this.#stateDue = true;
 				const events = mapSdkMessage(message, this.#context);
 				for (const event of events) {
-					if (
-						event.type === "session_started" &&
-						event.authSource === "other" &&
-						(await confirmSubscription(this.#query))
-					)
+					if (event.type !== "session_started") continue;
+					if (this.#effort !== undefined) event.effort = this.#effort;
+					if (event.authSource === "other" && (await confirmSubscription(this.#query)))
 						event.authSource = "subscription";
 				}
 				this.#deliver(events);

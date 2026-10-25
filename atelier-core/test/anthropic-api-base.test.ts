@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { toAnthropicTools } from "../src/backends/anthropic-api/tool-schema.ts";
 import { cacheHitRate } from "../src/events.ts";
-import { costOfRequest, PRICES } from "../src/pricing.ts";
+import { costOfRequest, effortToSend, PRICES } from "../src/pricing.ts";
 import { coreTools } from "../src/tools/index.ts";
 import { UsageMeter } from "../src/usage-meter.ts";
 
@@ -105,5 +105,16 @@ describe("UsageMeter", () => {
 		meter.add(usage(1, 1));
 		meter.usage.input = 999;
 		expect(meter.usage.input).toBe(1);
+	});
+});
+
+describe("effortToSend", () => {
+	it("sends the effort only to models that support it, by id or by Claude Code alias", () => {
+		expect(effortToSend("claude-opus-5-5", "max")).toBe("max");
+		expect(effortToSend("sonnet", "low")).toBe("low");
+		expect(effortToSend("claude-haiku-5-5", "low")).toBe("unsupported");
+		expect(effortToSend("haiku", "high")).toBe("unsupported");
+		expect(effortToSend("a-model-atelier-does-not-know", "high")).toBe("unsupported");
+		expect(effortToSend("claude-opus-5-5", undefined)).toBeUndefined();
 	});
 });

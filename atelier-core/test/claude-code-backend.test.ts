@@ -8,7 +8,15 @@ import {
 	type SdkQuery,
 } from "../src/backends/claude-code/backend.ts";
 import { Channel } from "../src/channel.ts";
-import { type AtelierEvent, defineTool, FakeBackend, FakeMemory, Session, type ToolCall } from "../src/index.ts";
+import {
+	type AtelierEvent,
+	type AtelierEventBody,
+	defineTool,
+	FakeBackend,
+	FakeMemory,
+	Session,
+	type ToolCall,
+} from "../src/index.ts";
 
 function msg(value: Record<string, unknown>): SDKMessage {
 	return { uuid: "u", session_id: "s", ...value } as unknown as SDKMessage;
@@ -98,6 +106,12 @@ async function collect(events: AsyncIterable<AtelierEvent>) {
 	return out;
 }
 
+async function collectBodies(events: AsyncIterable<AtelierEventBody>): Promise<AtelierEventBody[]> {
+	const out: AtelierEventBody[] = [];
+	for await (const event of events) out.push(event);
+	return out;
+}
+
 const echo = defineTool({
 	name: "echo",
 	description: "Echo",
@@ -147,6 +161,34 @@ describe("ClaudeCodeBackend options", () => {
 		});
 		expect(calls.options.model).toBe("sonnet");
 		expect(calls.options).not.toHaveProperty("maxTurns");
+	});
+
+	it("passes the requested effort to Claude Code, and none when not asked", async () => {
+		const start = { cwd: "/w", systemPromptAppend: "", tools: [], executeTool: async () => ({ ok: true, output: "" }) };
+		const asked = fakeQuery([init], [[result(0.01)]]);
+		const session = await new ClaudeCodeBackend({ query: asked.query, env: {} }).start({ ...start, effort: "xhigh" });
+		expect(asked.calls.options.effort).toBe("xhigh");
+		const [started] = await collectBodies(session.send("hi"));
+		expect(started).toMatchObject({ type: "session_started", model: "claude-opus-5-5", effort: "xhigh" });
+
+		const plain = fakeQuery([], []);
+		await new ClaudeCodeBackend({ query: plain.query, env: {} }).start(start);
+		expect(plain.calls.options).not.toHaveProperty("effort");
+	});
+
+	it("does not pass an effort the model does not support, and marks it unsupported", async () => {
+		const { query, calls } = fakeQuery([{ ...init, model: "claude-haiku-5-5" } as SDKMessage], [[result(0.01)]]);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start({
+			cwd: "/w",
+			model: "haiku",
+			effort: "max",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+		});
+		expect(calls.options).not.toHaveProperty("effort");
+		const [started] = await collectBodies(session.send("hi"));
+		expect(started).toMatchObject({ type: "session_started", model: "claude-haiku-5-5", effort: "unsupported" });
 	});
 
 	it("caps a turn's model requests with maxTurns when asked", async () => {

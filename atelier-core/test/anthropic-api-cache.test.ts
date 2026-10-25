@@ -1,13 +1,13 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
-import { buildRequest, type RequestState } from "../src/backends/anthropic-api/backend.ts";
+import { buildRequest, type RequestState, type StoredMessage } from "../src/backends/anthropic-api/backend.ts";
 import { BASE_SYSTEM_PROMPT, systemPrompt } from "../src/backends/anthropic-api/system-prompt.ts";
 import { toAnthropicTools } from "../src/backends/anthropic-api/tool-schema.ts";
 import { coreTools } from "../src/tools/index.ts";
 
 const EPHEMERAL = { type: "ephemeral" };
 
-function state(messages: Anthropic.MessageParam[], previousMessageId?: string): RequestState {
+function state(messages: StoredMessage[], previousMessageId?: string): RequestState {
 	return {
 		model: "claude-sonnet-5-5",
 		maxTokens: 1000,
@@ -83,6 +83,22 @@ describe("buildRequest cache breakpoints", () => {
 	it("turns a plain string message into a marked text block", () => {
 		const request = buildRequest(state([{ role: "user", content: "hi" }]));
 		expect(request.messages[0]?.content).toEqual([{ type: "text", text: "hi", cache_control: EPHEMERAL }]);
+	});
+
+	it("keeps the effort each answer was asked with out of the request, and leaves the history as it was", () => {
+		const s = {
+			...state([
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: "hello", effort: "high" },
+				{ role: "user", content: "and?" },
+				{ role: "assistant", content: "more", effort: "high" },
+			]),
+			effort: "high" as const,
+		};
+		const request = buildRequest(s);
+		expect(request.output_config).toEqual({ effort: "high" });
+		expect(JSON.stringify(request.messages)).not.toContain("effort");
+		expect(s.messages[1]).toEqual({ role: "assistant", content: "hello", effort: "high" });
 	});
 });
 

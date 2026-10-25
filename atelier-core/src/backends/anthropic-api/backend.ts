@@ -18,12 +18,13 @@ import {
 	type CompactionReason,
 	type ContextUsage,
 	describeError,
+	type Effort,
 	errorEvent,
 	type JsonValue,
 	type Usage,
 	ZERO_USAGE,
 } from "../../events.ts";
-import { costOfRequest } from "../../pricing.ts";
+import { costOfRequest, effortToSend } from "../../pricing.ts";
 import { UsageMeter } from "../../usage-meter.ts";
 import { systemPrompt } from "./system-prompt.ts";
 import { toAnthropicTools } from "./tool-schema.ts";
@@ -64,14 +65,19 @@ interface CompactionConfig {
 	keepRecent: number;
 }
 
+/** A history message, with the effort an assistant answer was asked with; the API never sees `effort`. */
+export type StoredMessage = Anthropic.MessageParam & { effort?: Effort };
+
 /** Everything a request is built from. The prefix (tools, system) is fixed when the session starts. */
 export interface RequestState {
 	model: string;
 	maxTokens: number;
+	/** Sent as `output_config.effort`; absent when none was asked or the model does not support it. */
+	effort?: Effort;
 	system: string;
 	tools: readonly Anthropic.Tool[];
 	/** Stored history: it only grows and never carries cache breakpoints. */
-	messages: Anthropic.MessageParam[];
+	messages: StoredMessage[];
 	/** Id of the last response, so the API can say why the cache missed. */
 	previousMessageId?: string;
 }
@@ -91,11 +97,19 @@ export function buildRequest(state: RequestState): Anthropic.MessageCreateParams
 		max_tokens: state.maxTokens,
 		system: [{ type: "text", text: state.system, cache_control: BREAKPOINT }],
 		...(tools.length === 0 ? {} : { tools }),
+		...(state.effort === undefined ? {} : { output_config: { effort: state.effort } }),
 		messages: state.messages.map((message, index) =>
-			index === state.messages.length - 1 ? withBreakpoint(message) : message,
+			index === state.messages.length - 1 ? withBreakpoint(toParam(message)) : toParam(message),
 		),
 		diagnostics: { previous_message_id: state.previousMessageId ?? null },
 	};
+}
+
+/** The message as the API takes it: without the effort Atelier keeps next to it. */
+function toParam(message: StoredMessage): Anthropic.MessageParam {
+	if (message.effort === undefined) return message;
+	const { effort: _effort, ...param } = message;
+	return param;
 }
 
 function withBreakpoint(message: Anthropic.MessageParam): Anthropic.MessageParam {
@@ -133,9 +147,12 @@ export class AnthropicApiBackend implements AgentBackend {
 			...(this.#options.fetch === undefined ? {} : { fetch: this.#options.fetch }),
 			...(this.#options.maxRetries === undefined ? {} : { maxRetries: this.#options.maxRetries }),
 		});
+		const model = start.model ?? this.#options.model ?? DEFAULT_API_MODEL;
+		const effort = effortToSend(model, start.effort);
 		const state: RequestState = {
-			model: start.model ?? this.#options.model ?? DEFAULT_API_MODEL,
+			model,
 			maxTokens: this.#options.maxTokens ?? DEFAULT_MAX_TOKENS,
+			...(effort === undefined || effort === "unsupported" ? {} : { effort }),
 			system: systemPrompt(start.cwd, start.systemPromptAppend),
 			tools: Object.freeze(toAnthropicTools(start.tools)),
 			messages: [],
@@ -157,6 +174,7 @@ export class AnthropicApiBackend implements AgentBackend {
 			maxRequests,
 			this.#options.apiKey,
 			compaction,
+			effort,
 			start.compactionState,
 			start.compacted,
 		);
@@ -187,6 +205,8 @@ class AnthropicApiSession implements BackendSession {
 	readonly #maxRequests: number;
 	readonly #apiKey: string;
 	readonly #compactionReady: Promise<CompactionConfig>;
+	/** What `session_started` says about the effort. */
+	readonly #effort: Effort | "unsupported" | undefined;
 	/** Set once the window lookup answered, before the first request. */
 	#config: CompactionConfig | undefined;
 	readonly #compactionState: (() => string | undefined) | undefined;
@@ -211,6 +231,7 @@ class AnthropicApiSession implements BackendSession {
 		maxRequests: number,
 		apiKey: string,
 		compaction: Promise<CompactionConfig>,
+		effort: Effort | "unsupported" | undefined,
 		compactionState?: () => string | undefined,
 		compacted?: (summary: string) => void,
 	) {
@@ -220,6 +241,7 @@ class AnthropicApiSession implements BackendSession {
 		this.#maxRequests = maxRequests;
 		this.#apiKey = apiKey;
 		this.#compactionReady = compaction;
+		this.#effort = effort;
 		this.#compactionState = compactionState;
 		this.#compacted = compacted;
 	}
@@ -228,7 +250,13 @@ class AnthropicApiSession implements BackendSession {
 		if (this.#closed) throw new Error("The anthropic-api session is closed.");
 		if (!this.#announced) {
 			this.#announced = true;
-			yield { type: "session_started", backend: BACKEND_ID, model: this.#state.model, authSource: "api_key" };
+			yield {
+				type: "session_started",
+				backend: BACKEND_ID,
+				model: this.#state.model,
+				authSource: "api_key",
+				...(this.#effort === undefined ? {} : { effort: this.#effort }),
+			};
 		}
 		const abort = new AbortController();
 		this.#abort = abort;
@@ -289,7 +317,9 @@ class AnthropicApiSession implements BackendSession {
 				// Only complete messages enter the history; an interrupted stream leaves nothing behind.
 				// The API rejects empty text blocks and empty assistant messages, so neither is kept.
 				const content = message.content.filter((block) => block.type !== "text" || block.text !== "");
-				if (content.length > 0) this.#state.messages.push({ role: "assistant", content });
+				const effort = this.#state.effort;
+				if (content.length > 0)
+					this.#state.messages.push({ role: "assistant", content, ...(effort === undefined ? {} : { effort }) });
 				this.#measured = { tokens: contextTokens(usage), length: this.#state.messages.length };
 				this.#unmeasured = false;
 				if (message.stop_reason !== "tool_use") {

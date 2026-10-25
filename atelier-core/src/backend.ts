@@ -1,4 +1,4 @@
-import type { AtelierEventBody, JsonValue } from "./events.ts";
+import type { AtelierEventBody, Effort, JsonValue } from "./events.ts";
 import type { ToolDefinition } from "./tools/types.ts";
 
 /** A tool call routed by a backend to the core, which owns execution and approval. */
@@ -28,6 +28,8 @@ export interface BackendStartOptions {
 	compactionState?: () => string | undefined;
 	/** Called with the summary of each compaction that replaced the history, during the turn that compacted. */
 	compacted?: (summary: string) => void;
+	/** Reasoning effort for every request; not sent when the model does not support it (see `effortToSend`). */
+	effort?: Effort;
 	/** Caps the model requests of one turn; backends without such a cap ignore it. */
 	maxRequestsPerTurn?: number;
 }

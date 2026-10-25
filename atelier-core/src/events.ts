@@ -155,8 +155,13 @@ export function describeRefusal(event: { cause?: RefusalCause; observed?: string
 	return event.observed === undefined ? event.cause : `${event.cause} (${event.observed})`;
 }
 
+/** Anthropic's reasoning effort levels, from the cheapest to the most thorough. */
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type Effort = (typeof EFFORTS)[number];
+
 export type AtelierEventBody =
-	| { type: "session_started"; backend: string; model: string; authSource: AuthSource }
+	/** `effort`: the reasoning effort sent with every request, or `unsupported` when one was asked for a model without it. */
+	| { type: "session_started"; backend: string; model: string; authSource: AuthSource; effort?: Effort | "unsupported" }
 	| { type: "text_delta"; text: string }
 	| { type: "thinking_delta"; text: string }
 	| { type: "tool_call_started"; callId: string; tool: string; input: JsonValue }

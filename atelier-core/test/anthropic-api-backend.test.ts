@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { BackendSession, ToolCall, ToolCallResult } from "../src/backend.ts";
+import type { BackendSession, BackendStartOptions, ToolCall, ToolCallResult } from "../src/backend.ts";
 import { AnthropicApiBackend, type AnthropicApiBackendOptions } from "../src/backends/anthropic-api/backend.ts";
 import type { AtelierEvent, AtelierEventBody } from "../src/events.ts";
 import { FakeBackend } from "../src/fake-backend.ts";
@@ -194,6 +194,7 @@ async function start(
 	}),
 	options: Partial<AnthropicApiBackendOptions> = {},
 	summaries?: string[],
+	startOptions: Partial<BackendStartOptions> = {},
 ): Promise<Harness> {
 	const api = fakeApi(script);
 	const calls: ToolCall[] = [];
@@ -207,6 +208,7 @@ async function start(
 			return execute(call);
 		},
 		...(summaries === undefined ? {} : { compacted: (summary: string) => void summaries.push(summary) }),
+		...startOptions,
 	});
 	return { session, calls, api };
 }
@@ -251,6 +253,7 @@ describe("AnthropicApiBackend", () => {
 		]);
 		const body = api.bodies[0];
 		expect(body?.model).toBe("claude-sonnet-5-5");
+		expect(body).not.toHaveProperty("output_config");
 		expect(body?.stream).toBe(true);
 		expect(JSON.stringify(body?.system)).toContain("/work");
 		expect(JSON.stringify(body?.system)).toContain("APPEND");
@@ -276,6 +279,43 @@ describe("AnthropicApiBackend", () => {
 		expect(second.some((e) => e.type === "session_started")).toBe(false);
 		expect(api.bodies[1]?.model).toBe("claude-opus-5-5");
 		expect(messagesOf(api.bodies[1])).toHaveLength(3);
+	});
+
+	it("sends the requested effort as output_config.effort on every request and says it when the session starts", async () => {
+		const { session, api } = await start(
+			[
+				{ blocks: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "a" } }], stopReason: "tool_use" },
+				{ blocks: [{ type: "text", text: "done" }] },
+			],
+			undefined,
+			{},
+			undefined,
+			{ effort: "high" },
+		);
+		const events = await collect(session.send("Hi"));
+		expect(events[0]).toEqual({
+			type: "session_started",
+			backend: "anthropic-api",
+			model: "claude-sonnet-5-5",
+			authSource: "api_key",
+			effort: "high",
+		});
+		expect(api.bodies.map((body) => body.output_config)).toEqual([{ effort: "high" }, { effort: "high" }]);
+		// The effort each answer was asked with stays in Atelier's history, never in what the API receives.
+		expect(JSON.stringify(messagesOf(api.bodies[1]))).not.toContain("effort");
+	});
+
+	it("does not send an effort the model does not support, and marks it unsupported", async () => {
+		const { session, api } = await start(
+			[{ blocks: [{ type: "text", text: "ok" }] }],
+			undefined,
+			{ model: "claude-haiku-5-5" },
+			undefined,
+			{ effort: "low" },
+		);
+		const events = await collect(session.send("Hi"));
+		expect(events[0]).toMatchObject({ type: "session_started", model: "claude-haiku-5-5", effort: "unsupported" });
+		expect(api.bodies[0]).not.toHaveProperty("output_config");
 	});
 
 	it("runs tools in order across several requests and keeps the history valid", async () => {
@@ -822,6 +862,26 @@ describe("AnthropicApiBackend compaction", () => {
 		expect(textOfBody(api.bodies[2])).toContain("Keep the API decisions.");
 		// Between turns no request is carried into the summary.
 		expect(textOfBody(api.bodies[2])).not.toContain("<request>");
+	});
+
+	it("asks for the summary with the session's effort", async () => {
+		const { session, api } = await start(
+			[
+				{ blocks: [{ type: "text", text: "first answer" }] },
+				{ blocks: [{ type: "text", text: "second answer" }] },
+				summaryReply(),
+			],
+			async () => ({ ok: true, output: "" }),
+			{ contextWindow: 200_000, compactAt: 1_000_000, keepRecentTokens: 1 },
+			undefined,
+			{ effort: "medium" },
+		);
+		await collect(session.send("first"));
+		await collect(session.send("second"));
+		const events = await collect(compactOf(session));
+		expect(ofType(events, "compaction_finished")[0]).toMatchObject({ ok: true });
+		expect(api.bodies[2]?.output_config).toEqual({ effort: "medium" });
+		expect(JSON.stringify(messagesOf(api.bodies[2]))).not.toContain("effort");
 	});
 
 	it("says there is nothing to compact in a short history, and keeps it", async () => {
