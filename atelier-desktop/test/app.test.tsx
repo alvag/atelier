@@ -339,6 +339,40 @@ describe("App", () => {
 		);
 	});
 
+	it("starts a session without the sandbox only when the option is checked, and says so in the status bar", async () => {
+		const fake = fakeBridge();
+		render(<App bridge={fake.bridge} />);
+		await screen.findByText("core 0.0.0");
+		const option = screen.getByLabelText("run bash without the sandbox") as HTMLInputElement;
+		expect(option.checked).toBe(false);
+		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
+		await waitFor(() =>
+			expect(fake.commands).toEqual([
+				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
+			]),
+		);
+		expect(screen.queryByText("bash: NOT SANDBOXED (turned off)")).toBeNull();
+
+		fireEvent.click(option);
+		fireEvent.click(screen.getByRole("button", { name: "New session…" }));
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({
+				command: "session.start",
+				cwd: "/work",
+				model: "opus",
+				backend: "claude-code",
+				noSandbox: true,
+			}),
+		);
+		const off = await screen.findByText("bash: NOT SANDBOXED (turned off)");
+		expect(off.className).toContain("warning");
+		expect(off.getAttribute("title")).toBe(
+			"sandbox turned off for this session: every command asks for approval and --yes does not apply",
+		);
+		fake.emit({ type: "sandbox_status", sandboxed: false, reason: "sandbox turned off for this session" });
+		expect(screen.getAllByText(/^bash:/)).toHaveLength(1);
+	});
+
 	it("shows the sandbox warning in the turn and why a command was blocked in its tool row", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

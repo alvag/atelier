@@ -120,7 +120,7 @@ Without a sandbox (another platform, a sandbox that fails to start, `--no-sandbo
 
 ### Turning it off
 
-`--no-sandbox` or `ATELIER_SANDBOX=off` runs `bash` without the sandbox, with the behavior above. `atelier-core serve` honors `ATELIER_SANDBOX=off` for every session, and `session.start` accepts `noSandbox: true` for one session (that is how a client such as the desktop starts one without it). With the sandbox off the configuration files below are not read or validated.
+`--no-sandbox` or `ATELIER_SANDBOX=off` runs `bash` without the sandbox, with the behavior above. `atelier-core serve` honors `ATELIER_SANDBOX=off` for every session, and `session.start` accepts `noSandbox: true` for one session (that is how a client such as the desktop starts one without it). In the desktop it is the `run bash without the sandbox` checkbox in the toolbar, unchecked by default, which applies to the sessions opened while it is checked; such a session shows `bash: NOT SANDBOXED (turned off)` in the warning style in the status bar from the moment it opens, in place of the usual sandbox line. With the sandbox off the configuration files below are not read or validated.
 
 ### Commands that are always refused
 

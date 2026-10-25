@@ -332,7 +332,7 @@ describe("reduceChat", () => {
 			{ type: "prompt_sent", text: "x" },
 			{ type: "session_opened", sessionId: "s2", cwd: "/other" },
 		]);
-		expect(state.session).toEqual({ id: "s2", cwd: "/other" });
+		expect(state.session).toEqual({ id: "s2", cwd: "/other", noSandbox: false });
 		expect(state.turns).toEqual([]);
 		expect(state.busy).toBe(false);
 	});

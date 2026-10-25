@@ -14,6 +14,9 @@ const BACKENDS = Object.keys(MODELS) as BackendName[];
 
 const numbers = new Intl.NumberFormat("en-US");
 
+/** The core's reason for a session started with `noSandbox`. */
+const SANDBOX_TURNED_OFF = "sandbox turned off for this session";
+
 function contextLabel({ tokens, window }: { tokens: number; window: number }): string {
 	return `context ${numbers.format(tokens)} / ${numbers.format(window)} (${Math.round((tokens / window) * 100)}%)`;
 }
@@ -29,6 +32,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 	const { state } = chat;
 	const [backend, setBackend] = useState<BackendName>(DEFAULT_BACKEND);
 	const [model, setModel] = useState(MODELS[DEFAULT_BACKEND][0] as string);
+	const [noSandbox, setNoSandbox] = useState(false);
 	const [draft, setDraft] = useState("");
 	const onAnswer = useCallback(
 		(callId: string, approved: boolean) => void chat.answerApproval(callId, approved),
@@ -42,7 +46,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 
 	const openFolder = async () => {
 		const cwd = await chat.pickFolder();
-		if (cwd) await chat.openSession(cwd, model, backend);
+		if (cwd) await chat.openSession(cwd, model, backend, noSandbox);
 	};
 	const submit = (event?: FormEvent) => {
 		event?.preventDefault();
@@ -83,6 +87,15 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 							<option key={name}>{name}</option>
 						))}
 					</select>
+				</label>
+				<label className={noSandbox ? "warning" : undefined}>
+					<input
+						type="checkbox"
+						checked={noSandbox}
+						onChange={(event) => setNoSandbox(event.target.checked)}
+						disabled={state.busy}
+					/>{" "}
+					run bash without the sandbox
 				</label>
 				<button type="button" onClick={() => void chat.review()} disabled={!state.session || state.busy}>
 					Review
@@ -134,7 +147,11 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 						{contextLabel(state.context)}
 					</span>
 				) : null}
-				{state.sandbox ? (
+				{state.session?.noSandbox ? (
+					<span className="warning" title={`${SANDBOX_TURNED_OFF}: ${UNSANDBOXED_EFFECT}`}>
+						bash: NOT SANDBOXED (turned off)
+					</span>
+				) : state.sandbox ? (
 					state.sandbox.sandboxed ? (
 						<span>bash: sandboxed ({state.sandbox.mechanism ?? "sandbox"})</span>
 					) : (

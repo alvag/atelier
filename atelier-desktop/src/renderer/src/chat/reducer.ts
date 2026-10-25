@@ -149,7 +149,8 @@ export interface Subagent {
 
 export interface ChatState {
 	core: { status: "starting" | "ready" | "failed" | "exited"; version?: string; message?: string };
-	session?: { id: string; cwd: string };
+	/** `noSandbox`: the session was started with `bash` outside the sandbox. */
+	session?: { id: string; cwd: string; noSandbox: boolean };
 	backend?: string;
 	model?: string;
 	authSource?: AuthSource;
@@ -181,7 +182,7 @@ export interface ChatState {
 /** Host messages plus what the renderer itself knows (it sent a prompt, a command failed...). */
 export type ChatAction =
 	| HostMessage
-	| { type: "session_opened"; sessionId: string; cwd: string }
+	| { type: "session_opened"; sessionId: string; cwd: string; noSandbox?: boolean }
 	| { type: "prompt_sent"; text: string }
 	| { type: "turn_accepted"; turnId: string }
 	| { type: "approval_answered"; callId: string; approved: boolean }
@@ -224,7 +225,12 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 				expectedMissTurns: _expected,
 				...rest
 			} = state;
-			return { ...rest, session: { id: action.sessionId, cwd: action.cwd }, turns: [], busy: false };
+			return {
+				...rest,
+				session: { id: action.sessionId, cwd: action.cwd, noSandbox: action.noSandbox === true },
+				turns: [],
+				busy: false,
+			};
 		}
 		case "prompt_sent": {
 			const { lastError: _cleared, notice: _notice, ...rest } = state;

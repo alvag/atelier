@@ -8,7 +8,8 @@ const nextFrame = (callback: () => void) =>
 
 export interface Chat {
 	state: ChatState;
-	openSession(cwd: string, model: string | undefined, backend: BackendName): Promise<void>;
+	/** With `noSandbox`, the session's `bash` runs without the sandbox. */
+	openSession(cwd: string, model: string | undefined, backend: BackendName, noSandbox?: boolean): Promise<void>;
 	send(prompt: string): Promise<void>;
 	interrupt(): Promise<void>;
 	answerApproval(callId: string, approved: boolean): Promise<void>;
@@ -59,12 +60,18 @@ export function useChat(bridge: AtelierBridge): Chat {
 
 	return {
 		state,
-		openSession: async (cwd, model, backend) => {
+		openSession: async (cwd, model, backend, noSandbox = false) => {
 			const previous = stateRef.current.session;
 			if (previous) await request({ command: "session.close", sessionId: previous.id });
-			const result = await request({ command: "session.start", cwd, ...(model ? { model } : {}), backend });
+			const result = await request({
+				command: "session.start",
+				cwd,
+				...(model ? { model } : {}),
+				backend,
+				...(noSandbox ? { noSandbox: true } : {}),
+			});
 			if (result.ok && typeof result.result.sessionId === "string")
-				dispatch({ type: "session_opened", sessionId: result.result.sessionId, cwd });
+				dispatch({ type: "session_opened", sessionId: result.result.sessionId, cwd, noSandbox });
 		},
 		send: async (prompt) => {
 			const session = stateRef.current.session;
