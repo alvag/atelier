@@ -15,10 +15,10 @@ export const VALIDATOR_INSTRUCTION = [
 	'Your final message is only this JSON object, no other text: {"results":[{"id":"RL-001","resolved":true,"evidence":"what you checked, with path:line"}]}. Answer every finding id you were given.',
 ].join("\n");
 
-/** What a correction request says about committing: commit it too once the turn has committed, so corrected work is not left uncommitted. */
+/** What a correction request says about committing: commit it too when the reviewed work is already committed (by the turn or before an on-demand review), so corrected work is not left uncommitted. */
 export function commitInstruction(committed: boolean): string {
 	return committed
-		? "You already committed during this turn: commit the correction on the same branch once your checks pass."
+		? "The reviewed work is already committed: commit the correction on the same branch once your checks pass."
 		: "Do not commit.";
 }
 

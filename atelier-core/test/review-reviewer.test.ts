@@ -262,7 +262,7 @@ describe("runReview", () => {
 		expect(receipt.findings.map((f) => f.id)).toEqual(["RL-001"]);
 	});
 
-	it("asks to commit the correction when the turn already committed", async () => {
+	it("asks to commit the correction when the reviewed work is already committed", async () => {
 		const env = await setup(20);
 		const committed = { ...env, candidate: { ...env.candidate, since: "1a2b3c4" } };
 		const { deps, corrections } = harness(committed, {
@@ -273,7 +273,10 @@ describe("runReview", () => {
 		});
 		await drive(committed, deps);
 		expect(corrections).toHaveLength(1);
-		expect(corrections[0]).toContain("commit the correction on the same branch once your checks pass");
+		expect(corrections[0]).toContain(
+			"The reviewed work is already committed: commit the correction on the same branch once your checks pass.",
+		);
+		expect(corrections[0]).not.toContain("during this turn");
 		expect(corrections[0]).not.toContain("Do not commit");
 	});
 

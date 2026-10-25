@@ -158,11 +158,14 @@ describe("verifierCorrectionMessage", () => {
 		expect(message).toContain("Do not commit");
 	});
 
-	it("asks to commit the correction when the turn already committed", () => {
+	it("asks to commit the correction when the reviewed work is already committed", () => {
 		const parsed = parseVerifierReport(report());
 		if (!parsed.ok) throw new Error(parsed.error);
 		const message = verifierCorrectionMessage(parsed.report.defects, true);
-		expect(message).toContain("commit the correction on the same branch once your checks pass");
+		expect(message).toContain(
+			"The reviewed work is already committed: commit the correction on the same branch once your checks pass.",
+		);
+		expect(message).not.toContain("during this turn");
 		expect(message).not.toContain("Do not commit");
 	});
 });
