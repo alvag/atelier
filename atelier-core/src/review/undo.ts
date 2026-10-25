@@ -1,4 +1,4 @@
-import { chmod, mkdir, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readlink, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { describeError } from "../events.ts";
 import { freezeCandidate } from "./candidate.ts";
@@ -12,11 +12,16 @@ export type UndoResult =
 			message: string;
 	  };
 
-/** A file the correction changed, as it was in the candidate; `sha` absent when the correction created it. */
+/**
+ * A file the correction changed, as it was in the candidate (`sha` absent when the correction created it) and as
+ * the correction left it (`correctedSha` absent when it deleted it).
+ */
 interface Changed {
 	path: string;
 	mode?: string;
 	sha?: string;
+	correctedMode?: string;
+	correctedSha?: string;
 }
 
 const DIFF = ["diff-tree", "-r", "--no-renames", "-z"];
@@ -28,8 +33,9 @@ const EXECUTABLE = "100755";
  * Puts the files a correction changed back to what they held in the candidate tree: modified and deleted
  * files get the candidate's bytes and mode, created ones are removed. It fails closed before writing
  * anything: when HEAD moved since the review (`headAtReview`, its tree then) to the corrected version of one
- * of those files, or the worktree no longer holds the corrected version of one of them. Other files, the index
- * and the commits are never touched.
+ * of those files, or the worktree no longer holds the corrected version of one of them. When writing fails midway,
+ * the files it reached are put back as the correction left them. Other files, the index and the commits are never
+ * touched.
  */
 export async function undoCorrection(
 	root: string,
@@ -66,26 +72,39 @@ export async function undoCorrection(
 				message: `Changed since the correction: ${touched.join(", ")}; nothing was undone.`,
 			};
 		const blobs = new Map<string, Buffer>();
+		const correctedBlobs = new Map<string, Buffer>();
 		for (const file of changed) {
-			if (file.sha === undefined) continue;
-			if (file.mode !== SYMLINK && !file.mode?.startsWith("100"))
-				return { ok: false, code: "undo_failed", message: `${file.path} is not a file; nothing was undone.` };
-			blobs.set(file.path, (await runGitOk(["cat-file", "blob", file.sha], root)).stdout);
+			for (const [sha, mode, into] of [
+				[file.sha, file.mode, blobs],
+				[file.correctedSha, file.correctedMode, correctedBlobs],
+			] as const) {
+				if (sha === undefined) continue;
+				if (!isFileMode(mode))
+					return { ok: false, code: "undo_failed", message: `${file.path} is not a file; nothing was undone.` };
+				into.set(file.path, (await runGitOk(["cat-file", "blob", sha], root)).stdout);
+			}
 		}
-		return await restore(root, changed, blobs);
+		return await restore(root, changed, blobs, correctedBlobs);
 	} catch (error) {
 		return { ok: false, code: "undo_failed", message: `The correction could not be undone: ${describeError(error)}` };
 	}
 }
 
 /** Writes the candidate's files: removals first, so a path the correction turned into a directory is free again. */
-async function restore(root: string, changed: Changed[], blobs: Map<string, Buffer>): Promise<UndoResult> {
+async function restore(
+	root: string,
+	changed: Changed[],
+	blobs: Map<string, Buffer>,
+	correctedBlobs: Map<string, Buffer>,
+): Promise<UndoResult> {
 	const removed: string[] = [];
 	const restored: string[] = [];
+	const reached: Changed[] = [];
 	const top = await realpath(root);
 	try {
 		for (const file of changed) {
 			if (file.sha !== undefined) continue;
+			reached.push(file);
 			const path = await inside(top, file.path);
 			await rm(path, { force: true });
 			await pruneEmpty(top, dirname(path));
@@ -94,26 +113,86 @@ async function restore(root: string, changed: Changed[], blobs: Map<string, Buff
 		for (const file of changed) {
 			const bytes = blobs.get(file.path);
 			if (bytes === undefined) continue;
-			const path = await inside(top, file.path);
-			await mkdir(dirname(path), { recursive: true });
-			await rm(path, { force: true });
-			if (file.mode === SYMLINK) await symlink(bytes.toString("utf8"), path);
-			else {
-				const mode = file.mode === EXECUTABLE ? 0o755 : 0o644;
-				await writeFile(path, bytes, { mode, flag: "wx" });
-				await chmod(path, mode);
-			}
+			reached.push(file);
+			await put(await inside(top, file.path), file.mode, bytes);
 			restored.push(file.path);
 		}
 	} catch (error) {
-		const done = [...restored, ...removed];
+		return rollBack(top, reached, correctedBlobs, error);
+	}
+	return { ok: true, restored, removed };
+}
+
+/**
+ * Puts the files a failed restore reached back as the correction left them, which the worktree held before it
+ * began: the ones the correction deleted are removed first, so a folder it made is free again. Then reports the
+ * failure, and which files are in doubt when putting one back failed too.
+ */
+async function rollBack(
+	top: string,
+	reached: Changed[],
+	correctedBlobs: Map<string, Buffer>,
+	error: unknown,
+): Promise<UndoResult> {
+	const back: string[] = [];
+	const stuck: string[] = [];
+	let failure: unknown;
+	const deleted = reached.filter((file) => !correctedBlobs.has(file.path));
+	const written = reached.filter((file) => correctedBlobs.has(file.path));
+	for (const file of [...deleted, ...written]) {
+		try {
+			const path = await inside(top, file.path);
+			const bytes = correctedBlobs.get(file.path);
+			if (bytes === undefined) {
+				await rm(path, { force: true });
+				await pruneEmpty(top, dirname(path));
+			} else if (!(await holds(path, file.correctedMode, bytes))) await put(path, file.correctedMode, bytes);
+			back.push(file.path);
+		} catch (again) {
+			failure ??= again;
+			stuck.push(file.path);
+		}
+	}
+	const list = (paths: string[]) => (paths.length === 0 ? "nothing" : paths.join(", "));
+	if (stuck.length === 0)
 		return {
 			ok: false,
 			code: "undo_failed",
-			message: `The correction was only partly undone (${done.length === 0 ? "nothing" : done.join(", ")}): ${describeError(error)}`,
+			message: `The correction could not be undone (${describeError(error)}); the files it reached were put back as the correction left them: ${list(back)}.`,
 		};
+	return {
+		ok: false,
+		code: "undo_failed",
+		message: `The correction was only partly undone (${describeError(error)}), and putting it back failed too (${describeError(failure)}): put back as the correction left them: ${list(back)}; neither as the correction left them nor as the candidate had them, perhaps: ${list(stuck)}; every other file is as the correction left it.`,
+	};
+}
+
+/** Writes one file or symbolic link with a tree's bytes and mode, replacing what is at `path`. */
+async function put(path: string, treeMode: string | undefined, bytes: Buffer): Promise<void> {
+	await mkdir(dirname(path), { recursive: true });
+	await rm(path, { force: true });
+	if (treeMode === SYMLINK) await symlink(bytes.toString("utf8"), path);
+	else {
+		const mode = treeMode === EXECUTABLE ? 0o755 : 0o644;
+		await writeFile(path, bytes, { mode, flag: "wx" });
+		await chmod(path, mode);
 	}
-	return { ok: true, restored, removed };
+}
+
+/** Whether `path` already holds a tree entry's bytes and mode: a step that failed before writing left it alone. */
+async function holds(path: string, treeMode: string | undefined, bytes: Buffer): Promise<boolean> {
+	try {
+		const found = await lstat(path);
+		if (treeMode === SYMLINK) return found.isSymbolicLink() && (await readlink(path)) === bytes.toString("utf8");
+		const executable = (found.mode & 0o100) !== 0;
+		return found.isFile() && executable === (treeMode === EXECUTABLE) && (await readFile(path)).equals(bytes);
+	} catch {
+		return false;
+	}
+}
+
+function isFileMode(mode: string | undefined): boolean {
+	return mode === SYMLINK || mode?.startsWith("100") === true;
 }
 
 /** Removes the folders a removal left empty, up to the worktree's root: one may hide a file the candidate had there. */
@@ -150,14 +229,18 @@ async function existingAncestor(path: string): Promise<string> {
 	}
 }
 
-/** What the correction changed between the two trees, with each file's candidate mode and blob. */
+/** What the correction changed between the two trees, with each file's mode and blob in both. */
 async function changedFiles(root: string, candidate: string, corrected: string): Promise<Changed[]> {
 	const parts = (await gitText([...DIFF, "--raw", candidate, corrected], { cwd: root })).split("\0");
 	const files: Changed[] = [];
 	for (let i = 0; i + 1 < parts.length; i += 2) {
-		const [oldMode = "", , oldSha = ""] = (parts[i] as string).replace(/^:/, "").split(" ");
+		const [oldMode = "", newMode = "", oldSha = "", newSha = ""] = (parts[i] as string).replace(/^:/, "").split(" ");
 		const path = parts[i + 1] as string;
-		files.push(NO_FILE.test(oldSha) ? { path } : { path, mode: oldMode, sha: oldSha });
+		files.push({
+			path,
+			...(NO_FILE.test(oldSha) ? {} : { mode: oldMode, sha: oldSha }),
+			...(NO_FILE.test(newSha) ? {} : { correctedMode: newMode, correctedSha: newSha }),
+		});
 	}
 	return files;
 }

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { REFUSAL_CAUSES } from "../events.ts";
@@ -42,6 +42,8 @@ export const receiptSchema = z.object({
 	observed: z.string().optional(),
 	/** When the user undid the escalated correction, putting the candidate's files back. */
 	undoneAt: z.string().optional(),
+	/** The tree of HEAD when the review ended, which tells a later commit of the correction; absent in older receipts. */
+	headTree: z.string().optional(),
 	usage: usageSchema,
 	costUsd: z.number().optional(),
 });
@@ -99,4 +101,17 @@ export async function findReceipt(gitDir: string, candidateTree: string): Promis
 	} catch {
 		return undefined;
 	}
+}
+
+/** The latest escalated review of the repository that left a correction, by `createdAt`; unreadable receipts are skipped. */
+export async function latestCorrection(gitDir: string): Promise<Receipt | undefined> {
+	const names = await readdir(join(gitDir, "atelier", "reviews")).catch(() => [] as string[]);
+	let latest: Receipt | undefined;
+	for (const name of names) {
+		if (!name.endsWith(".json")) continue;
+		const receipt = await findReceipt(gitDir, name.slice(0, -".json".length));
+		if (receipt?.verdict !== "escalated" || receipt.corrected === null) continue;
+		if (latest === undefined || receipt.createdAt > latest.createdAt) latest = receipt;
+	}
+	return latest;
 }

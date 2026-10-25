@@ -758,7 +758,7 @@ describe("run: review", () => {
 		await repoWithChange("notes.ts");
 		const h = harness([], { input: ["/undo-correction"] });
 		expect(await run([], h.io, h.createBackend)).toBe(0);
-		expect(h.err()).toContain("No escalated review of this session left a correction to undo.");
+		expect(h.err()).toContain("No escalated review of this repository left a correction to undo.");
 		expect(h.backend.prompts).toEqual([]);
 		expect(h.out()).toContain("tokens: ");
 	});

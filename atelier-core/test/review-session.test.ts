@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -2247,4 +2247,91 @@ describe("undoing an escalated correction", () => {
 		expect(unknown).toMatchObject({ code: "no_correction", recoverable: true });
 		expect(await snapshot(s.cwd)).toEqual(before);
 	});
+
+	/** The receipt of the reviewed candidate, the one with a correction, and its file. */
+	const reviewedReceipt = async (cwd: string) => {
+		const found = (await receipts(cwd)).find(({ receipt }) => (receipt as Record<string, unknown>).corrected !== null);
+		return { file: join(cwd, ".git", "atelier", "reviews", found?.file as string), receipt: found?.receipt };
+	};
+
+	it("undoes in a new session the latest escalated correction an earlier session left, from its receipt", async () => {
+		const s = await escalated();
+		const { receipt } = await reviewedReceipt(s.cwd);
+		expect(receipt).toMatchObject({ headTree: gitIn(s.cwd, "rev-parse", "HEAD^{tree}").trim() });
+		const later = await start({ cwd: s.cwd });
+		const events = await collect(later.session.undoCorrection());
+		expect(ofType(events, "error")).toEqual([]);
+		expect(ofType(events, "correction_undone")).toMatchObject([
+			{ restored: ["a.ts", "src/auth.ts"], removed: ["src/extra.ts"] },
+		]);
+		expect((await snapshot(s.cwd)).files).toEqual({
+			"a.ts": "base\n",
+			"src/auth.ts": "export const a = 1;\n",
+			"src/extra.ts": undefined,
+			"src/keep.ts": "export const keep = 1;\n",
+		});
+		const [again] = ofType(await collect((await start({ cwd: s.cwd })).session.undoCorrection()), "error");
+		expect(again).toMatchObject({ code: "correction_already_undone", recoverable: true });
+	});
+
+	it("tells a commit of the correction in a new session too", async () => {
+		const s = await escalated();
+		gitIn(s.cwd, "add", "-A");
+		gitIn(s.cwd, "commit", "-qm", "keep the correction");
+		const before = await snapshot(s.cwd);
+		const later = await start({ cwd: s.cwd });
+		const [refused] = ofType(await collect(later.session.undoCorrection()), "error");
+		expect(refused).toMatchObject({ code: "correction_committed", recoverable: true });
+		expect(await snapshot(s.cwd)).toEqual(before);
+	});
+
+	it("refuses a receipt written before receipts kept HEAD's tree", async () => {
+		const s = await escalated();
+		const { file, receipt } = await reviewedReceipt(s.cwd);
+		const { headTree: _headTree, ...old } = receipt as Record<string, unknown>;
+		await writeFile(file, JSON.stringify(old));
+		const before = await snapshot(s.cwd);
+		const later = await start({ cwd: s.cwd });
+		const events = await collect(later.session.undoCorrection());
+		const [refused] = ofType(events, "error");
+		expect(refused).toMatchObject({ code: "undo_failed", recoverable: true });
+		expect(refused?.message).toContain("receipt has no tree of HEAD");
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
+		expect(await snapshot(s.cwd)).toEqual(before);
+	});
+
+	it.skipIf(process.getuid?.() === 0)(
+		"puts back what it wrote when the restore fails midway, and can undo once the failure is gone",
+		async () => {
+			const turn: FakeStep[] = [
+				DECLARED_NONE,
+				change("src/auth.ts", "export const a = 1;\n"),
+				change("a.ts", "base\nmore\n"),
+				{ event: finished },
+			];
+			const fix: FakeStep[] = [
+				change("src/auth.ts", "export const a = 2;\nexport const b = 3;\nexport const c = 4;\n"),
+				change("a.ts", "base\nfixed\n"),
+				{ event: finished },
+			];
+			const s = await escalated([turn, fix]);
+			const before = await snapshot(s.cwd);
+			// a.ts is written first; src/auth.ts cannot be replaced in a folder that does not let it go.
+			await chmod(join(s.cwd, "src"), 0o555);
+			let events: AtelierEvent[];
+			try {
+				events = await s.undo();
+			} finally {
+				await chmod(join(s.cwd, "src"), 0o755);
+			}
+			const [refused] = ofType(events, "error");
+			expect(refused).toMatchObject({ code: "undo_failed", recoverable: true });
+			expect(refused?.message).toContain("put back as the correction left them: a.ts");
+			expect(ofType(events, "correction_undone")).toEqual([]);
+			expect(await snapshot(s.cwd)).toEqual(before);
+			const retried = await s.undo();
+			expect(ofType(retried, "correction_undone")).toMatchObject([{ restored: ["a.ts", "src/auth.ts"] }]);
+			expect(await read(s.cwd, "a.ts")).toBe("base\nmore\n");
+		},
+	);
 });

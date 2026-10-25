@@ -28,7 +28,7 @@ export type ClientCommand =
 	/** Reviews the current uncommitted change at any risk; answers like session.send. */
 	| { command: "session.review"; sessionId: string }
 	| { command: "session.review_consent"; sessionId: string; reviewId: string; answer: "granted" | "declined" }
-	/** Undoes the correction an escalated review left in the worktree (that review, or the latest escalated one); answers like session.send. */
+	/** Undoes the correction an escalated review left in the worktree (that review of the session, or the repository's latest escalated one); answers like session.send. */
 	| { command: "session.undo_correction"; sessionId: string; reviewId?: string }
 	/** Summarizes the older history now; answers like session.send. `instructions`: at most 2000 bytes. */
 	| { command: "session.compact"; sessionId: string; instructions?: string }
