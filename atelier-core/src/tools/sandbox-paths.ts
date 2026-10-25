@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 /** Files that hold secrets in a project: no command may write them, wherever they sit under `dir`. */
@@ -58,8 +59,44 @@ export function packageCacheDirectories(home: string): string[] {
 	].map((path) => join(home, path));
 }
 
-/** The `core.hooksPath` and the include paths a git configuration file names, read without git so a broken file still answers. */
-export function configFilePaths(file: string): { hooksPath?: string; includes: string[] } {
+/** What one git configuration file names: its `core.hooksPath`, its include paths, and whether git could not read it. */
+export interface ConfigFile {
+	hooksPath?: string;
+	includes: string[];
+	malformed: boolean;
+}
+
+/** `git config --file <file> --no-includes <args>` with NUL-separated output: its records, or undefined when git fails (1 is only "no match"). */
+function gitConfigRecords(file: string, args: string[]): string[] | undefined {
+	const run = spawnSync("git", ["config", "--file", file, "--no-includes", "-z", ...args], {
+		encoding: "utf8",
+		timeout: 5000,
+	});
+	if (run.status === 1) return [];
+	if (run.status !== 0) return undefined;
+	return run.stdout.split("\0").filter((_, i, all) => i < all.length - 1);
+}
+
+/**
+ * The `core.hooksPath` and the include paths of one git configuration file,
+ * read by git itself, alone and without following includes, so a broken file
+ * elsewhere does not matter and git's whole syntax (quotes, escapes,
+ * continuation lines) is honored. A missing file names nothing. When git cannot
+ * read the file, its own parser answers instead and `malformed` is set.
+ */
+export function configFilePaths(file: string): ConfigFile {
+	if (!existsSync(file)) return { includes: [], malformed: false };
+	const plain = gitConfigRecords(file, ["--get-all", "include.path"]);
+	const conditional = gitConfigRecords(file, ["--get-regexp", "^includeif\\..*\\.path$"]);
+	const hooks = gitConfigRecords(file, ["--get", "core.hooksPath"]);
+	if (plain === undefined || conditional === undefined || hooks === undefined)
+		return { ...parseConfigFile(file), malformed: true };
+	const includes = [...plain, ...conditional.map((record) => record.slice(record.indexOf("\n") + 1))];
+	return { includes, malformed: false, ...(hooks[0] === undefined ? {} : { hooksPath: hooks[0] }) };
+}
+
+/** The same answer read with a simple parser, for a file git rejects. */
+function parseConfigFile(file: string): { hooksPath?: string; includes: string[] } {
 	const found: { hooksPath?: string; includes: string[] } = { includes: [] };
 	let text: string;
 	try {
@@ -104,7 +141,11 @@ export function includedConfigFiles(files: string[], home: string): string[] {
 	const found = new Set<string>();
 	const visit = (file: string, depth: number) => {
 		if (depth > MAX_INCLUDE_DEPTH) return;
-		for (const include of configFilePaths(file).includes) {
+		const config = configFilePaths(file);
+		// A file git cannot read may be hiding anything: its directory's conventional places are protected too.
+		if (config.malformed)
+			for (const name of ["hooks", "config", "config.worktree"]) found.add(join(dirname(file), name));
+		for (const include of config.includes) {
 			const path = configPath(include, dirname(file), home);
 			if (found.has(path)) continue;
 			found.add(path);
