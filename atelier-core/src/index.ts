@@ -71,6 +71,7 @@ export {
 } from "./odd/feature-doc.ts";
 export { FEATURE_TOOL, ODD_DIR, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
 export { costOfRequest, EFFORT_LEVELS, effortToSend, PRICES, type PriceTier } from "./pricing.ts";
+export * from "./profiles/index.ts";
 export { loadProjectInstructions, MAX_INSTRUCTIONS_BYTES, type ProjectInstructions } from "./project-instructions.ts";
 export { MEMORY_RULES, ODD_RULES, SYSTEM_PROMPT_APPEND } from "./prompt.ts";
 export * from "./protocol/index.ts";
