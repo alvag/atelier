@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmod, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { errorMessage, failure } from "./limits.ts";
 import {
@@ -12,6 +12,7 @@ import {
 	protectedWriteDirectories,
 	realpathAllowMissing,
 } from "./paths.ts";
+import { approvalMismatch, projectRefusal, rememberApproval } from "./protection.ts";
 import { loadSandboxAdditions } from "./sandbox-config.ts";
 import { defineTool, type ToolContext, type ToolDefinition } from "./types.ts";
 
@@ -32,29 +33,6 @@ export async function writeAtomic(path: string, content: string, mode: number): 
 		await unlink(temporary).catch(() => {});
 		throw error;
 	}
-}
-
-/**
- * True when the path, as written or as resolved, is under odd/tasks/, in any
- * letter case and also when odd/tasks itself is a symlink to somewhere else.
- */
-export async function isFeatureDocument(cwd: string, path: string, target: string): Promise<boolean> {
-	const under = (base: string, file: string) => {
-		const rel = relative(base, file);
-		return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-	};
-	const lexical = relative(cwd, resolve(cwd, path)).split(sep).join("/").toLowerCase();
-	if (lexical.startsWith("odd/tasks/")) return true;
-	if (
-		relative(await realpath(cwd), target)
-			.split(sep)
-			.join("/")
-			.toLowerCase()
-			.startsWith("odd/tasks/")
-	)
-		return true;
-	const protectedDir = await realpath(join(cwd, "odd", "tasks")).catch(() => undefined);
-	return protectedDir !== undefined && under(protectedDir, target);
 }
 
 export interface Location {
@@ -90,6 +68,10 @@ export async function locate(cwd: string, path: string, context: ToolContext, ho
 const notApproved = (real: string) =>
 	`Not edited: ${real} is outside the working directory and the user did not approve editing it.`;
 
+/** What the model is told when the path it named leads somewhere else than where the user was asked. */
+export const changedSinceAsked = (verb: string, path: string, asked: string, now: string) =>
+	`Not ${verb}: ${path} led to ${asked} when the user was asked, but now leads to ${now}.`;
+
 export interface EditOptions {
 	/** The home whose secret directories stay closed and whose configuration lists writable directories; defaults to the user's. */
 	home?: string;
@@ -116,11 +98,14 @@ export function createEditTool(options: EditOptions = {}): ToolDefinition {
 			let location: Location;
 			try {
 				location = await locate(context.cwd, path, context, home);
+				const message = await projectRefusal("edit", context.cwd, path, location.real, home);
+				if (message !== undefined) return { refusal: { output: message, summary: message } };
 			} catch (error) {
 				// Nobody is asked about what is never written; execute says why.
 				if (error instanceof PathProtectedError) return { refusal: { output: error.message, summary: error.message } };
 				return {};
 			}
+			rememberApproval(context.callId, undefined);
 			if (location.allowed) return {};
 			// A missing file or a directory is not worth a question: execute reports it.
 			if (
@@ -130,6 +115,7 @@ export function createEditTool(options: EditOptions = {}): ToolDefinition {
 				))
 			)
 				return {};
+			rememberApproval(context.callId, location.real);
 			return {
 				approval: {
 					command: `edit ${location.real}`,
@@ -145,10 +131,12 @@ export function createEditTool(options: EditOptions = {}): ToolDefinition {
 			const { cwd } = context;
 			try {
 				const { real, allowed } = await locate(cwd, path, context, home);
+				const refusal = await projectRefusal("edit", cwd, path, real, home);
+				if (refusal !== undefined) return failure(refusal);
 				const target = await realpath(real);
-				// Feature documents change only through the feature tool, which keeps them well formed.
-				if (await isFeatureDocument(cwd, path, target))
-					return failure(`${path} is a feature document: change it with the feature tool, not edit.`);
+				// The approval named one real path: a link retargeted during the question leads to a file nobody was asked about.
+				const asked = approvalMismatch(context.callId, target);
+				if (asked !== undefined) return failure(changedSinceAsked("edited", path, asked, target));
 				const info = await stat(target);
 				if (!info.isFile()) return failure(`Not a file: ${path}`);
 				// The approval covers one real path: a link swapped since the question leads to a file nobody approved.

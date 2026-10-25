@@ -125,7 +125,7 @@ export interface WorktreeGit {
  * `gitdir` (which point git elsewhere) and the objects' alternates. The secret
  * file patterns also hold in every directory added here.
  */
-function worktreeGitPaths(worktreeGit: WorktreeGit | undefined): { allowWrite: string[]; denyWrite: string[] } {
+export function worktreeGitPaths(worktreeGit: WorktreeGit | undefined): { allowWrite: string[]; denyWrite: string[] } {
 	if (worktreeGit === undefined) return { allowWrite: [], denyWrite: [] };
 	const { gitDir, commonDir, hooks } = worktreeGit;
 	const directories = [gitDir, join(commonDir, "objects"), join(commonDir, "refs"), join(commonDir, "logs")];
@@ -165,7 +165,7 @@ function worktreeGitPaths(worktreeGit: WorktreeGit | undefined): { allowWrite: s
  * directory; the shared one is not writable there, so `<common>/sequencer`
  * (the main checkout's) needs no entry.
  */
-function operationStatePaths(gitDir: string): string[] {
+export function operationStatePaths(gitDir: string): string[] {
 	return ["rebase-merge", "rebase-apply", "sequencer"].map((name) => join(gitDir, name));
 }
 

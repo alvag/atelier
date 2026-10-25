@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type ApprovalRequest,
@@ -289,4 +289,76 @@ describe("tools that do not change", () => {
 		expect(bashTool.approvalCommand({ command: "ls" })).toBe("ls");
 		expect(createReadTool({ outside: true, home }).name).toBe("read");
 	});
+});
+
+describe("edit shares the write tool's path protections", () => {
+	const unchanged = async (path: string) => expect(await text(path)).toBe("alpha\n");
+
+	it("refuses a symlinked project configuration under another name, without asking", async () => {
+		await mkdir(join(cwd, "settings"));
+		await writeFile(join(cwd, "settings", "sandbox.json"), "alpha\n");
+		await symlink(join(cwd, "settings"), join(cwd, ".atelier"));
+		const { questions, results } = await run(["settings/sandbox.json", ".atelier/sandbox.json"], { autoApprove: true });
+		expect(questions).toEqual([]);
+		expect(results).toEqual([
+			{ ok: false, output: "settings/sandbox.json is project configuration: the agent does not write .atelier/." },
+			{ ok: false, output: ".atelier/sandbox.json is project configuration: the agent does not write .atelier/." },
+		]);
+		await unchanged(join(cwd, "settings", "sandbox.json"));
+	});
+
+	it("refuses the project configuration by its plain name", async () => {
+		await mkdir(join(cwd, ".atelier"));
+		await writeFile(join(cwd, ".atelier", "notes.txt"), "alpha\n");
+		const { questions, results } = await run([".atelier/notes.txt"]);
+		expect(questions).toEqual([]);
+		expect(results[0]).toEqual({
+			ok: false,
+			output: ".atelier/notes.txt is project configuration: the agent does not write .atelier/.",
+		});
+		await unchanged(join(cwd, ".atelier", "notes.txt"));
+	});
+
+	it("does not redirect an approved outside edit into another allowed file", async () => {
+		await symlink(join(outside, "x.txt"), join(cwd, "swap"));
+		const { results } = await run(["swap"], {
+			approve: async () => {
+				await rm(join(cwd, "swap"));
+				await symlink(join(cwd, "inside.txt"), join(cwd, "swap"));
+				return true;
+			},
+		});
+		expect(results[0]?.ok).toBe(false);
+		await unchanged(join(cwd, "inside.txt"));
+		await unchanged(join(outside, "x.txt"));
+	});
+
+	it("refuses a feature document whose name begins with two dots through an alias, without asking", async () => {
+		const docs = join(outside, "docs");
+		await mkdir(join(cwd, "odd", "tasks"), { recursive: true });
+		await rename(join(cwd, "odd", "tasks"), docs);
+		await symlink(docs, join(cwd, "odd", "tasks"));
+		await symlink(docs, join(cwd, "docs"));
+		await writeFile(join(docs, "..draft.md"), "alpha\n");
+		const { questions, results } = await run(["docs/..draft.md"]);
+		expect(questions).toEqual([]);
+		expect(results).toEqual([
+			{ ok: false, output: "docs/..draft.md is a feature document: change it with the feature tool, not edit." },
+		]);
+		await unchanged(join(docs, "..draft.md"));
+	});
+
+	it.each([".git/config", ".git/hooks/pre-commit", ".git/rebase-merge/git-rebase-todo"])(
+		"refuses git state that runs code, %s, without asking",
+		async (path) => {
+			await mkdir(join(cwd, dirname(path)), { recursive: true });
+			await writeFile(join(cwd, path), "alpha\n");
+			const { questions, results } = await run([path], { autoApprove: true });
+			expect(questions).toEqual([]);
+			expect(results).toEqual([
+				{ ok: false, output: `${path} is git state that runs code: the agent does not write it.` },
+			]);
+			await unchanged(join(cwd, path));
+		},
+	);
 });

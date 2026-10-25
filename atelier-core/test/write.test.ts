@@ -330,6 +330,83 @@ describe("write limits", () => {
 	});
 });
 
+describe("write: independent security regressions", () => {
+	// Independent S2 security regressions.
+	it("refuses aliases of a symlinked project configuration", async () => {
+		const { rename } = await import("node:fs/promises");
+		await writeFile(join(cwd, ".atelier", "sandbox.json"), "{}");
+		await rename(join(cwd, ".atelier"), join(cwd, "settings"));
+		await symlink(join(cwd, "settings"), join(cwd, ".atelier"));
+		const { questions, results } = await run(
+			[
+				writeCall("settings/sandbox.json", "w1", JSON.stringify({ allowWrite: [outside] })),
+				writeCall(join(outside, "x.txt"), "w2"),
+			],
+			{ answer: false },
+		);
+		expect(results.map((r) => r.ok)).toEqual([false, false]);
+		expect(questions.map((q) => q.command)).toEqual([`write ${join(outside, "x.txt")}`]);
+		expect(await text(join(cwd, "settings", "sandbox.json"))).toBe("{}");
+		expect(await text(join(outside, "x.txt"))).toBe("old\n");
+	});
+
+	it("resolves a dangling target before approval, without replacing the link", async () => {
+		const { lstat } = await import("node:fs/promises");
+		const target = join(outside, "fresh.txt");
+		await symlink(target, join(cwd, "dangling"));
+		const { questions, results } = await run([writeCall("dangling", "w1")]);
+		expect(questions.map((q) => q.command)).toEqual([`write ${target}`]);
+		expect(results[0]?.ok).toBe(true);
+		expect((await lstat(join(cwd, "dangling"))).isSymbolicLink()).toBe(true);
+		expect(await text(target)).toBe("new\n");
+	});
+
+	it("does not redirect an approved outside write into another allowed file", async () => {
+		const { unlink } = await import("node:fs/promises");
+		await symlink(join(outside, "x.txt"), join(cwd, "swap"));
+		const { results } = await run([writeCall("swap", "w1")], {
+			approve: async () => {
+				await unlink(join(cwd, "swap"));
+				await symlink(join(cwd, "inside.txt"), join(cwd, "swap"));
+				return true;
+			},
+		});
+		expect(results[0]?.ok).toBe(false);
+		expect(await text(join(cwd, "inside.txt"))).toBe("old\n");
+		expect(await text(join(outside, "x.txt"))).toBe("old\n");
+	});
+
+	it("refuses a feature document whose basename begins with two dots through an alias", async () => {
+		const { rename } = await import("node:fs/promises");
+		const docs = join(outside, "docs");
+		await rename(join(cwd, "odd", "tasks"), docs);
+		await symlink(docs, join(cwd, "odd", "tasks"));
+		await symlink(docs, join(cwd, "docs"));
+		await writeFile(join(docs, "..draft.md"), "old\n");
+		const path = "docs/..draft.md";
+		const { questions, results } = await run([writeCall(path, "w1")]);
+		expect(questions).toEqual([]);
+		expect(results).toEqual([
+			{ ok: false, output: `${path} is a feature document: change it with the feature tool, not write.` },
+		]);
+		expect(await text(join(docs, "..draft.md"))).toBe("old\n");
+	});
+
+	it.each([".git/config", ".git/hooks/post-checkout"])("refuses creating the sandbox-protected %s", async (path) => {
+		const { questions, results } = await run([writeCall(path, "w1", "[core]\n fsmonitor = ./monitor\n")]);
+		expect(questions).toEqual([]);
+		expect(results[0]?.ok).toBe(false);
+		expect(await exists(join(cwd, ".git"))).toBe(false);
+	});
+
+	it("accepts exactly one MiB of multibyte UTF-8", async () => {
+		const content = "é".repeat(MAX_WRITE_BYTES / 2);
+		const { results } = await run([writeCall("utf8.txt", "w1", content)]);
+		expect(results).toEqual([{ ok: true, output: "Wrote utf8.txt (1048576 bytes)." }]);
+		expect(await text(join(cwd, "utf8.txt"))).toBe(content);
+	});
+});
+
 describe("who has write", () => {
 	it("is in the main agent's tools and the worker's, not the explorer's", () => {
 		expect(coreTools.map((tool) => tool.name)).toEqual(["read", "edit", "write", "bash", "grep"]);

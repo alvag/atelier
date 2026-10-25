@@ -1,10 +1,11 @@
-import { mkdir, realpath, stat } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { relative, resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { z } from "zod";
-import { isFeatureDocument, type Location, locate, writeAtomic } from "./edit.ts";
+import { changedSinceAsked, type Location, locate, writeAtomic } from "./edit.ts";
 import { errorMessage, failure, MAX_WRITE_BYTES } from "./limits.ts";
 import { PathProtectedError } from "./paths.ts";
+import { approvalMismatch, projectRefusal, rememberApproval } from "./protection.ts";
 import { defineTool, type ToolContext, type ToolDefinition } from "./types.ts";
 
 const NEW_FILE_MODE = 0o644;
@@ -14,26 +15,6 @@ const notApproved = (real: string) =>
 
 const tooLarge = (bytes: number) =>
 	`Not written: the content is ${bytes} bytes and write takes at most ${MAX_WRITE_BYTES} (${MAX_WRITE_BYTES / 1024 / 1024} MiB); write the file in parts or generate it with bash.`;
-
-/** True when the path, as written or as resolved, is the project's `.atelier` or inside it, in any letter case. */
-async function isProjectConfig(cwd: string, path: string, real: string): Promise<boolean> {
-	const root = await realpath(cwd);
-	const under = (from: string, file: string) => {
-		const rel = relative(from, file).split(sep).join("/").toLowerCase();
-		return rel === ".atelier" || rel.startsWith(".atelier/");
-	};
-	return under(cwd, resolve(cwd, path)) || under(root, real);
-}
-
-/** Why the file is never written, approved or not; undefined when it may be. */
-async function refusalFor(cwd: string, path: string, real: string): Promise<string | undefined> {
-	// Feature documents change only through the feature tool, which keeps them well formed.
-	if (await isFeatureDocument(cwd, path, real))
-		return `${path} is a feature document: change it with the feature tool, not write.`;
-	if (await isProjectConfig(cwd, path, real))
-		return `${path} is project configuration: the agent does not write .atelier/.`;
-	return undefined;
-}
 
 /** Whether the file is there and is not a regular file: a folder, a socket. */
 const existsAsOther = (real: string) =>
@@ -63,16 +44,18 @@ export function createWriteTool(options: WriteOptions = {}): ToolDefinition {
 			let location: Location;
 			try {
 				location = await locate(context.cwd, path, context, home);
-				const message = await refusalFor(context.cwd, path, location.real);
+				const message = await projectRefusal("write", context.cwd, path, location.real, home);
 				if (message !== undefined) return { refusal: { output: message, summary: message } };
 			} catch (error) {
 				// Nobody is asked about what is never written; execute says why.
 				if (error instanceof PathProtectedError) return { refusal: { output: error.message, summary: error.message } };
 				return {};
 			}
+			rememberApproval(context.callId, undefined);
 			if (location.allowed) return {};
 			// A folder is not worth a question: execute reports it.
 			if (await existsAsOther(location.real)) return {};
+			rememberApproval(context.callId, location.real);
 			return {
 				approval: {
 					command: `write ${location.real}`,
@@ -90,8 +73,11 @@ export function createWriteTool(options: WriteOptions = {}): ToolDefinition {
 				const bytes = Buffer.byteLength(content);
 				if (bytes > MAX_WRITE_BYTES) return failure(tooLarge(bytes));
 				const { real, allowed } = await locate(cwd, path, context, home);
-				const message = await refusalFor(cwd, path, real);
+				const message = await projectRefusal("write", cwd, path, real, home);
 				if (message !== undefined) return failure(message);
+				// The approval named one real path: a link retargeted during the question leads to a file nobody was asked about.
+				const asked = approvalMismatch(context.callId, real);
+				if (asked !== undefined) return failure(changedSinceAsked("written", path, asked, real));
 				if (await existsAsOther(real)) return failure(`Not a file: ${path}`);
 				// The approval covers one real path: a link swapped since the question leads to a file nobody approved.
 				if (!allowed) return failure(notApproved(real));

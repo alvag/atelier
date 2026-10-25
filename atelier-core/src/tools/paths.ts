@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { loadSandboxAdditions, protectedWritePaths } from "./sandbox-config.ts";
@@ -23,8 +23,15 @@ export function isInside(root: string, target: string): boolean {
 	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-/** Real path of `path`, following symlinks through its nearest existing ancestor. */
-export async function realpathAllowMissing(path: string): Promise<string> {
+const MAX_LINKS = 40;
+
+/**
+ * Real path of `path`, following symlinks through its nearest existing
+ * ancestor. A symlink whose target does not exist is followed too, to where
+ * the target would be, so a write through it lands on that path and not on
+ * the link.
+ */
+export async function realpathAllowMissing(path: string, links = 0): Promise<string> {
 	const missing: string[] = [];
 	let current = path;
 	while (true) {
@@ -32,6 +39,11 @@ export async function realpathAllowMissing(path: string): Promise<string> {
 			return join(await realpath(current), ...missing);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			const target = await readlink(current).catch(() => undefined);
+			if (target !== undefined) {
+				if (links >= MAX_LINKS) throw Object.assign(new Error(`Too many symbolic links: ${path}`), { code: "ELOOP" });
+				return join(await realpathAllowMissing(resolve(dirname(current), target), links + 1), ...missing);
+			}
 			const parent = dirname(current);
 			if (parent === current) throw error;
 			missing.unshift(basename(current));
