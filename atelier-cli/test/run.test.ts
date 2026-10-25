@@ -1144,6 +1144,32 @@ describe("agent profiles", () => {
 		expect(h.err()).not.toContain("profile");
 	});
 
+	it("names the orchestrator and backend when its API key is missing", async () => {
+		const home = await homeWith({ orchestrator: { model: "anthropic-api/claude-sonnet-5-5" } });
+		try {
+			const h = harness([], { home });
+			const names: string[] = [];
+			const code = await run(["x"], h.io, (name) => {
+				names.push(name);
+				throw new MissingApiKeyError("No test key.");
+			});
+			expect(code).toBe(1);
+			expect(names).toEqual(["anthropic-api"]);
+			expect(h.err()).toBe("error: orchestrator: anthropic-api has no API key (No test key.)\n");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the plain error when no profile names the backend", async () => {
+		const h = harness([]);
+		const code = await run(["x"], h.io, () => {
+			throw new MissingApiKeyError("No test key.");
+		});
+		expect(code).toBe(1);
+		expect(h.err()).toBe("error: No test key.\n");
+	});
+
 	it("gives the main agent the orchestrator's backend, model and thinking level", async () => {
 		const { h, names } = await start(["x"], {
 			orchestrator: { model: "anthropic-api/claude-opus-5-5", thinking: "high" },

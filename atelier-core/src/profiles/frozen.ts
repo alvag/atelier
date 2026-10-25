@@ -82,6 +82,38 @@ export function roleSettings(frozen: FrozenProfile | undefined, role: Role, mode
 	};
 }
 
+/** What the summary request of a session on `backend` takes from the compaction entry, and what to say about the entry. */
+export interface CompactionSettings {
+	compaction?: { model?: string; thinking?: ThinkingLevel };
+	notice?: string;
+}
+
+/**
+ * The compaction entry for a session on the backend `backendId`. The summary always runs in the session's own
+ * backend, so an entry naming another one is dropped whole; Claude Code compacts on its own, so nothing applies there.
+ */
+export function compactionSettings(frozen: FrozenProfile | undefined, backendId: string): CompactionSettings {
+	const entry = roleSettings(frozen, "compaction", undefined);
+	if (entry.model === undefined && entry.thinking === undefined) return {};
+	if (backendId === "claude-code")
+		return { notice: "compaction: claude-code compacts on its own, so the compaction entry does not apply" };
+	if (entry.backend !== undefined && entry.backend !== backendId)
+		return {
+			notice: `compaction: the summary runs in the session's own backend (${backendId}), so the "${entry.backend}" entry is not used`,
+		};
+	return {
+		compaction: {
+			...(entry.model === undefined ? {} : { model: entry.model }),
+			...(entry.thinking === undefined ? {} : { thinking: entry.thinking }),
+		},
+	};
+}
+
+/** The backend the orchestrator's entry names, when it does. */
+export function orchestratorBackend(frozen: FrozenProfile | undefined): ProfileBackend | undefined {
+	return frozen === undefined ? undefined : roleEntry(frozen.resolved, "orchestrator").backend;
+}
+
 /** The backend the main session runs on: the explicit choice, then the orchestrator's prefix, then `fallback`. */
 export function sessionBackend(
 	frozen: FrozenProfile | undefined,

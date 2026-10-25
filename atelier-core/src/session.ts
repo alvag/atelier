@@ -23,6 +23,7 @@ import {
 import type { CompletedFeature } from "./odd/tracker.ts";
 import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
 import {
+	compactionSettings,
 	type FrozenProfile,
 	profileChanges,
 	type RoleBackendFactory,
@@ -72,6 +73,8 @@ export interface SessionOptions {
 	 * main agent its model (unless `model` is given) and thinking level; the others reach the child roles.
 	 */
 	profile?: FrozenProfile;
+	/** The summary request's model and level, already settled for this session's backend (children of a profiled session). */
+	compaction?: { model?: string; thinking?: ThinkingLevel };
 	tools: readonly ToolDefinition[];
 	systemPromptAppend?: string;
 	/**
@@ -157,22 +160,13 @@ export class Session {
 		this.#thinking = options.thinking ?? orchestrator.thinking;
 		this.#profileFiles = { ...options.profile?.files };
 		this.#profileNotices = (options.profile?.resolved.reports ?? []).map(({ path, message }) => `${path}: ${message}`);
-		const compaction = roleSettings(options.profile, "compaction", undefined);
-		// Claude Code compacts on its own: there is no summary request to give a model or level to.
-		const compacts = options.backend.id !== "claude-code";
-		if (compaction.backend !== undefined)
-			this.#profileNotices.push(
-				`compaction: the summary runs in the session's own backend, so the "${compaction.backend}" prefix is ignored`,
-			);
-		if (!compacts && (compaction.model !== undefined || compaction.thinking !== undefined))
-			this.#profileNotices.push("compaction: claude-code compacts on its own, so the compaction entry does not apply");
-		this.#compaction =
-			compacts && (compaction.model !== undefined || compaction.thinking !== undefined)
-				? {
-						...(compaction.model === undefined ? {} : { model: compaction.model }),
-						...(compaction.thinking === undefined ? {} : { thinking: compaction.thinking }),
-					}
-				: undefined;
+		// A child gets the compaction already settled for its own backend; a session works it out from the profile.
+		const compaction =
+			options.compaction !== undefined
+				? { compaction: options.compaction }
+				: compactionSettings(options.profile, options.backend.id);
+		if (compaction.notice !== undefined) this.#profileNotices.push(compaction.notice);
+		this.#compaction = compaction.compaction;
 		const tools = subagents
 			? [
 					...options.tools,
@@ -475,6 +469,7 @@ export class Session {
 			cwd: this.#options.cwd,
 			model: this.#model,
 			settings: (role) => roleSettings(this.#options.profile, role, this.#model),
+			compaction: (backendId) => compactionSettings(this.#options.profile, backendId).compaction,
 			...(feature === undefined ? {} : { feature: resolve(this.#options.cwd, feature) }),
 			signal,
 			push: (event) => turn.push(event),
@@ -631,11 +626,13 @@ export class Session {
 		try {
 			const backend = await options.createBackend(settings.backend);
 			const model = settings.model ?? agent.models[backend.id] ?? this.#model;
+			const childCompaction = compactionSettings(this.#options.profile, backend.id).compaction;
 			child = await Session.start({
 				backend,
 				cwd: this.#options.cwd,
 				...(model === undefined ? {} : { model }),
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
+				...(childCompaction === undefined ? {} : { compaction: childCompaction }),
 				// In the definition's order; a tool the parent lacks is skipped, and task never: children do not delegate.
 				tools: agent.tools.flatMap((name) => {
 					const tool = PARENT_ONLY.has(name) ? undefined : this.#tools.get(name);

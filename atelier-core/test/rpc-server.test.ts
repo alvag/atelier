@@ -11,6 +11,7 @@ import {
 	defineTool,
 	FakeBackend,
 	type FakeStep,
+	MissingApiKeyError,
 	RpcServer,
 	type ServerMessage,
 } from "../src/index.ts";
@@ -570,6 +571,55 @@ describe("session.start profiles", () => {
 			expect(asked.map((a) => a.name)).toEqual(["anthropic-api", "claude-code"]);
 			expect(asked[0]?.backend.startOptions).toMatchObject({ model: "claude-opus-5-5", thinking: "high" });
 			expect(asked[1]?.backend.startOptions).toMatchObject({ model: "sonnet", thinking: "high" });
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	it("names the orchestrator and backend when its API key is missing, and keeps the plain error without a profile", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-rpc-home-"));
+		try {
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "profiles.json"),
+				JSON.stringify({
+					kind: "atelier.agent_model_profiles",
+					version: 1,
+					active: "p",
+					profiles: { p: { orchestrator: { model: "anthropic-api/claude-sonnet-5-5" } } },
+				}),
+			);
+			const input = new PassThrough();
+			const messages: ServerMessage[] = [];
+			const server = new RpcServer({
+				input,
+				write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
+				createBackend: () => {
+					throw new MissingApiKeyError("No test key.");
+				},
+				tools: [],
+				systemPromptAppend: "",
+				home,
+			});
+			void server.run();
+			const start = async (id: string, extra: object) => {
+				input.write(`${JSON.stringify({ type: "command", id, command: "session.start", cwd, ...extra })}\n`);
+				for (let i = 0; i < 200 && !messages.some((m) => m.type === "response" && m.id === id); i++)
+					await new Promise((resolve) => setTimeout(resolve, 5));
+				return messages.find((m) => m.type === "response" && m.id === id);
+			};
+			expect(await start("a", {})).toMatchObject({
+				ok: false,
+				error: {
+					code: "missing_api_key",
+					message: "orchestrator: anthropic-api has no API key (No test key.)",
+				},
+			});
+			// An explicit backend is the client's choice, not the profile's: the plain error.
+			expect(await start("b", { backend: "claude-code" })).toMatchObject({
+				ok: false,
+				error: { code: "missing_api_key", message: "No test key." },
+			});
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}

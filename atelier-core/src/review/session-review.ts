@@ -14,7 +14,7 @@ import {
 	type Usage,
 	ZERO_USAGE,
 } from "../events.ts";
-import type { ProfileBackend, Role, RoleBackendFactory, RoleSettings } from "../profiles/index.ts";
+import type { ProfileBackend, Role, RoleBackendFactory, RoleSettings, ThinkingLevel } from "../profiles/index.ts";
 import { roleStartMessage } from "../profiles/index.ts";
 import { DECLARE_RISK_REQUEST } from "../prompt.ts";
 import type { Session, SessionOptions } from "../session.ts";
@@ -75,6 +75,8 @@ export interface ReviewHost {
 	model: string | undefined;
 	/** What the session's frozen profile says for `role`; the model is the session's where the entry sets none. */
 	settings(role: Role): RoleSettings;
+	/** The compaction entry as it applies to a child on the backend `backendId`; undefined when it does not. */
+	compaction(backendId: string): { model?: string; thinking?: ThinkingLevel } | undefined;
 	/** The active ODD feature document, absolute. */
 	feature?: string;
 	signal: AbortSignal;
@@ -481,6 +483,7 @@ export class SessionReview {
 			} catch (error) {
 				return failedRole(startFailure("The verifier could not start", "verifier", settings, error));
 			}
+			const compaction = host.compaction(backend.id);
 			const sandboxStatus = await (this.#options.sandbox ?? sandbox).status();
 			// Without it the verifier marks the branch and commit requirements unverified, as it would anyway.
 			const git = await readTurnGit(candidate).catch(() => undefined);
@@ -503,6 +506,7 @@ export class SessionReview {
 					cwd: workspace.dir,
 					...(settings.model === undefined ? {} : { model: settings.model }),
 					...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
+					...(compaction === undefined ? {} : { compaction }),
 					// Without the sandbox the verifier has no way to stay in its copy or off the network: it gets no bash.
 					tools: sandboxStatus.available
 						? [
@@ -546,8 +550,11 @@ export class SessionReview {
 		const profileRole: Role = `review-${call.role}`;
 		const settings = host.settings(profileRole);
 		try {
+			const backend = await this.#options.createBackend(settings.backend);
+			const compaction = host.compaction(backend.id);
 			options = {
-				backend: await this.#options.createBackend(settings.backend),
+				backend,
+				...(compaction === undefined ? {} : { compaction }),
 				cwd: host.cwd,
 				...(settings.model === undefined ? {} : { model: settings.model }),
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),

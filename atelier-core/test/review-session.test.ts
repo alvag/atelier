@@ -2440,6 +2440,31 @@ describe("review roles and profiles", () => {
 		expect(asked("resilience")).toBeUndefined();
 	});
 
+	it("passes the frozen compaction entry to the verifier and to a lens", async () => {
+		const seen: Record<string, unknown> = {};
+		const roles = new RoleBackend(verifying(vreport()));
+		const s = await start({
+			roles,
+			turns: [VERIFY_TURN, [change("a.ts", "base\nfixed\n"), text("fixed"), { event: finished }]],
+			extra: {
+				profile: await freeze({ compaction: { model: "claude-haiku-5-5", thinking: "low" } }),
+				review: {
+					createBackend: () => ({
+						id: "fake",
+						start: (options) => {
+							seen[roleOf(options.systemPromptAppend)] = options.compaction;
+							return roles.start(options);
+						},
+					}),
+					consent: async () => "granted",
+				},
+			},
+		});
+		await s.send("make it need a keypress");
+		expect(seen.verifier).toEqual({ model: "claude-haiku-5-5", thinking: "low" });
+		expect(seen.reliability).toEqual({ model: "claude-haiku-5-5", thinking: "low" });
+	});
+
 	it("fails a lens whose backend has no credential, naming the role and the backend, and asks for no other backend", async () => {
 		const roles = new RoleBackend(clean);
 		const asked: (BackendName | undefined)[] = [];

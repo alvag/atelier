@@ -1,7 +1,10 @@
 export {
+	type CompactionSettings,
+	compactionSettings,
 	type FrozenProfile,
 	fingerprint,
 	freezeProfile,
+	orchestratorBackend,
 	profileChanges,
 	type RoleBackendFactory,
 	type RoleSettings,

@@ -229,6 +229,28 @@ describe("the subagents", () => {
 	});
 });
 
+describe("the compaction entry in child sessions", () => {
+	it.each(["worker", "explorer"] as const)("passes the frozen compaction entry to the %s", async (agent) => {
+		const profile = await freeze({ p: { compaction: { model: "claude-haiku-5-5", thinking: "minimal" } } });
+		const { created, result } = await delegate({ profile }, agent);
+		expect(result?.ok).toBe(true);
+		expect(created[0]?.backend.startOptions?.compaction).toEqual({ model: "claude-haiku-5-5", thinking: "minimal" });
+	});
+
+	it("does not pass it to a child on another backend, and says nothing more", async () => {
+		const profile = await freeze({
+			p: { compaction: { model: "anthropic-api/claude-haiku-5-5" }, worker: { model: "claude-code/haiku" } },
+		});
+		const { created, parent } = await delegate({ profile }, "worker", () => {
+			const backend = new FakeBackend([[text("report"), { event: finished }]]);
+			Object.defineProperty(backend, "id", { value: "claude-code" });
+			return backend;
+		});
+		expect(created[0]?.backend.startOptions).not.toHaveProperty("compaction");
+		expect(parent.startOptions).not.toHaveProperty("compaction");
+	});
+});
+
 describe("the compaction entry", () => {
 	const started = async (entries: Record<string, unknown>, backend = new FakeBackend([[{ event: finished }]])) => {
 		const session = await Session.start({ backend, cwd: base, tools, profile: await freeze(entries) });
@@ -248,12 +270,25 @@ describe("the compaction entry", () => {
 		expect(backend.startOptions).not.toHaveProperty("compaction");
 	});
 
-	it("ignores a backend prefix, because the summary runs in the session's own backend, and says so", async () => {
-		const { backend, warnings } = await started({ p: { compaction: { model: "claude-code/haiku" } } });
-		expect(backend.startOptions?.compaction).toEqual({ model: "haiku" });
+	it("drops a compaction entry that names another backend than the session's, whole, and says so", async () => {
+		const backend = new FakeBackend([[{ event: finished }]]);
+		Object.defineProperty(backend, "id", { value: "anthropic-api" });
+		const { warnings } = await started(
+			{ p: { compaction: { model: "claude-code/claude-haiku-5-5", thinking: "low" } } },
+			backend,
+		);
+		expect(backend.startOptions).not.toHaveProperty("compaction");
 		expect(warnings).toEqual([
-			`compaction: the summary runs in the session's own backend, so the "claude-code" prefix is ignored`,
+			`compaction: the summary runs in the session's own backend (anthropic-api), so the "claude-code" entry is not used`,
 		]);
+	});
+
+	it("applies a compaction entry whose prefix is the session's own backend", async () => {
+		const backend = new FakeBackend([[{ event: finished }]]);
+		Object.defineProperty(backend, "id", { value: "anthropic-api" });
+		const { warnings } = await started({ p: { compaction: { model: "anthropic-api/claude-haiku-5-5" } } }, backend);
+		expect(backend.startOptions?.compaction).toEqual({ model: "claude-haiku-5-5" });
+		expect(warnings).toEqual([]);
 	});
 
 	it("is reported as not applicable on claude-code, which compacts on its own, and is not passed on", async () => {

@@ -13,7 +13,9 @@ import {
 	freezeProfile,
 	loadSandboxAdditions,
 	type MemoryPort,
+	orchestratorBackend,
 	type ReviewConsentRequest,
+	roleStartMessage,
 	SandboxConfigError,
 	Session,
 	SYSTEM_PROMPT_APPEND,
@@ -131,7 +133,10 @@ export async function run(
 	try {
 		backend = await createBackend(kind);
 	} catch (error) {
-		io.stderr(`error: ${describeError(error)}\n`);
+		const named = args.explicitBackend === undefined ? orchestratorBackend(profile) : undefined;
+		io.stderr(
+			`error: ${named === undefined ? describeError(error) : roleStartMessage("orchestrator", named, error)}\n`,
+		);
 		return EXIT_FAILED;
 	}
 

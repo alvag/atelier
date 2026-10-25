@@ -5,7 +5,7 @@ import type { AgentBackend } from "../backend.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { MemoryPort } from "../memory/index.ts";
-import { freezeProfile, sessionBackend } from "../profiles/index.ts";
+import { freezeProfile, orchestratorBackend, roleStartMessage, sessionBackend } from "../profiles/index.ts";
 import { decodeClientMessage, encodeMessage, LineSplitter } from "../protocol/codec.ts";
 import {
 	type BackendName,
@@ -333,6 +333,12 @@ export class RpcServer {
 			});
 		} catch (error) {
 			await memory?.close().catch(() => {});
+			// A backend the profile chose for the orchestrator fails naming the role and the backend.
+			const named = requestedBackend === undefined ? orchestratorBackend(profile) : undefined;
+			if (named !== undefined && (error instanceof MissingApiKeyError || error instanceof KeychainError))
+				throw new CommandError(error.code, roleStartMessage("orchestrator", named, error));
+			if (named !== undefined)
+				throw new CommandError("session_start_failed", roleStartMessage("orchestrator", named, error));
 			if (error instanceof MissingApiKeyError || error instanceof KeychainError)
 				throw new CommandError(error.code, error.message);
 			throw new CommandError("session_start_failed", describeError(error));
