@@ -35,6 +35,8 @@ export type TurnItem =
 			command: string;
 			/** Why the agent asks to run the command outside the sandbox; absent for an ordinary command. */
 			reason?: string;
+			/** `edit` when the question is about changing a file outside the working directory; absent for `bash`. */
+			tool?: string;
 			state: "pending" | "approved" | "denied";
 	  }
 	| {
@@ -439,6 +441,7 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					callId: event.callId,
 					command: event.command,
 					...(event.reason === undefined ? {} : { reason: event.reason }),
+					...(event.tool === undefined ? {} : { tool: event.tool }),
 					state: "pending",
 				},
 			];

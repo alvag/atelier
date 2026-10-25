@@ -42,10 +42,17 @@ function ApprovalCard({
 	onAnswer: (callId: string, approved: boolean) => void;
 }) {
 	const command = visibleText(item.command);
-	const reason = item.reason === undefined ? undefined : visibleText(item.reason);
+	const editing = item.tool === "edit";
+	// An edit's reason is the legend itself; only bash's says why it leaves the sandbox.
+	const reason = item.reason === undefined || editing ? undefined : visibleText(item.reason);
+	const title = editing
+		? "Edit a file outside the working directory?"
+		: reason
+			? "Run this command outside the sandbox?"
+			: "Run this command?";
 	return (
 		<fieldset className="approval">
-			<legend>{reason ? "Run this command outside the sandbox?" : "Run this command?"}</legend>
+			<legend>{title}</legend>
 			{command.hadHidden || reason?.hadHidden ? (
 				<div className="warning">
 					This command contains invisible or control characters, shown below as markers. Check it carefully.

@@ -406,6 +406,42 @@ describe("App", () => {
 		expect(screen.queryByText(/outside the sandbox/)).toBeNull();
 	});
 
+	it("shows an edit approval in the same card, with the path, and answers it", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "edit", input: { path: "/tmp/other/a.txt" } });
+		fake.emit({
+			type: "approval_requested",
+			callId: "c1",
+			command: "edit /tmp/other/a.txt",
+			reason: "outside the working directory",
+			tool: "edit",
+		});
+		expect(await screen.findByText("Edit a file outside the working directory?")).toBeTruthy();
+		expect(screen.getByText("edit /tmp/other/a.txt")).toBeTruthy();
+		expect(screen.queryByText(/outside the sandbox/)).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Allow" }));
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({
+				command: "session.approve",
+				sessionId: "s1",
+				callId: "c1",
+				approved: true,
+			}),
+		);
+		expect(await screen.findByText("Allowed")).toBeTruthy();
+	});
+
+	it("denies an edit approval", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "edit", input: { path: "/tmp/other/a.txt" } });
+		fake.emit({ type: "approval_requested", callId: "c1", command: "edit /tmp/other/a.txt", tool: "edit" });
+		fireEvent.click(await screen.findByRole("button", { name: "Deny" }));
+		await waitFor(() => expect(fake.commands.at(-1)).toMatchObject({ command: "session.approve", approved: false }));
+		expect(await screen.findByText("Denied")).toBeTruthy();
+	});
+
 	it("shows a failed command and lets the user try again", async () => {
 		const fake = fakeBridge();
 		fake.answers["session.send"] = { ok: false, error: { code: "busy", message: "A turn is already running." } };

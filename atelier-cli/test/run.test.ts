@@ -881,6 +881,57 @@ describe("bash outside the sandbox", () => {
 		expect(h.out()).not.toContain("\x1b[2J");
 	});
 
+	describe("an edit outside the working directory", () => {
+		let elsewhere: string;
+		beforeEach(async () => {
+			elsewhere = await realpath(await mkdtemp(join(tmpdir(), "atelier-cli-elsewhere-")));
+			await writeFile(join(elsewhere, "note.txt"), "old\n");
+		});
+		afterEach(async () => {
+			await rm(elsewhere, { recursive: true, force: true });
+		});
+		const edit = (path: string): FakeStep => ({
+			toolCall: { tool: "edit", input: { path, edits: [{ oldText: "old", newText: "new" }] } },
+		});
+
+		it("asks with the absolute path, even with --yes, and edits on yes", async () => {
+			const h = harness([[edit(join(elsewhere, "note.txt")), { event: finished }]], { isTTY: true, answers: ["y"] });
+			await run(["--yes", "x"], h.io, h.createBackend);
+			expect(h.out()).toContain(`Edit a file outside the working directory?\n  ${join(elsewhere, "note.txt")}\n[y/N] `);
+			expect(h.out()).not.toContain("Run this command");
+			expect(h.backend.toolResults[0]?.ok).toBe(true);
+			expect(await readFile(join(elsewhere, "note.txt"), "utf8")).toBe("new\n");
+		});
+
+		it("leaves the file alone and shows the denial on no", async () => {
+			const h = harness([[edit(join(elsewhere, "note.txt")), { event: finished }]], { isTTY: true, answers: ["n"] });
+			await run(["x"], h.io, h.createBackend);
+			expect(h.backend.toolResults[0]).toEqual({
+				ok: false,
+				output: `Not edited: ${join(elsewhere, "note.txt")} is outside the working directory and the user did not approve editing it.`,
+			});
+			expect(h.out()).toContain("▸ edit Not edited: ");
+			expect(await readFile(join(elsewhere, "note.txt"), "utf8")).toBe("old\n");
+		});
+
+		it("says there is no terminal to ask, even with --yes, and leaves the file alone", async () => {
+			const h = harness([[edit(join(elsewhere, "note.txt")), { event: finished }]]);
+			await run(["--yes", "x"], h.io, h.createBackend);
+			expect(h.err()).toContain(
+				`edit asks to change a file outside the working directory and needs your approval, but there is no terminal to ask (--yes does not allow this): ${join(elsewhere, "note.txt")}\n`,
+			);
+			expect(await readFile(join(elsewhere, "note.txt"), "utf8")).toBe("old\n");
+		});
+
+		it("edits inside the working directory without asking", async () => {
+			await writeFile(join(cwd, "in.txt"), "old\n");
+			const h = harness([[edit("in.txt"), { event: finished }]], { isTTY: true });
+			await run(["x"], h.io, h.createBackend);
+			expect(h.out()).not.toContain("[y/N]");
+			expect(await readFile(join(cwd, "in.txt"), "utf8")).toBe("new\n");
+		});
+	});
+
 	it("refuses a destructive command without asking, with --yes", async () => {
 		const h = harness([[bash({ command: "sudo -n true" }), { event: finished }]], { isTTY: true });
 		await run(["--yes", "x"], h.io, h.createBackend);
