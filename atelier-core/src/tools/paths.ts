@@ -1,4 +1,4 @@
-import { readlink, realpath } from "node:fs/promises";
+import { lstat, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { loadSandboxAdditions, protectedWritePaths } from "./sandbox-config.ts";
@@ -23,15 +23,59 @@ export function isInside(root: string, target: string): boolean {
 	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-const MAX_LINKS = 40;
+/** A path as the write protections compare it: Unicode NFC and lower case, so letter case and accents cannot give a protected place another name (APFS folds both). */
+export function foldPath(path: string): string {
+	return path.normalize("NFC").toLowerCase();
+}
+
+/** `isInside` that folds case and Unicode on both sides; used only to refuse, never to allow. */
+export function isInsideFolded(root: string, target: string): boolean {
+	return isInside(foldPath(root), foldPath(target));
+}
+
+/** `isProtected` that folds case and Unicode on both sides. */
+export function isProtectedFolded(path: string, protectedPaths: readonly string[]): boolean {
+	return protectedPaths.some((protectedPath) => isInsideFolded(protectedPath, path));
+}
 
 /**
- * Real path of `path`, following symlinks through its nearest existing
- * ancestor. A symlink whose target does not exist is followed too, to where
- * the target would be, so a write through it lands on that path and not on
- * the link.
+ * The first symbolic link on the way to `path` (the path itself or a folder
+ * above it) whose target does not exist, or undefined. Names that do not
+ * exist yet are skipped: they are what a write creates.
  */
-export async function realpathAllowMissing(path: string, links = 0): Promise<string> {
+export async function danglingLink(path: string): Promise<string | undefined> {
+	let current = path;
+	while (true) {
+		const info = await lstat(current).catch(() => undefined);
+		if (
+			info?.isSymbolicLink() &&
+			(await realpath(current).then(
+				() => false,
+				() => true,
+			))
+		)
+			return current;
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+}
+
+/** Where a symbolic link at `place` points, and where that points in turn, as written; empty when it is not a link. */
+export async function linkTargets(place: string): Promise<string[]> {
+	const targets: string[] = [];
+	let current = place;
+	for (let i = 0; i < 40; i++) {
+		const target = await readlink(current).catch(() => undefined);
+		if (target === undefined) break;
+		current = resolve(dirname(current), target);
+		targets.push(current);
+	}
+	return targets;
+}
+
+/** Real path of `path`, following symlinks through its nearest existing ancestor. */
+export async function realpathAllowMissing(path: string): Promise<string> {
 	const missing: string[] = [];
 	let current = path;
 	while (true) {
@@ -39,11 +83,6 @@ export async function realpathAllowMissing(path: string, links = 0): Promise<str
 			return join(await realpath(current), ...missing);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			const target = await readlink(current).catch(() => undefined);
-			if (target !== undefined) {
-				if (links >= MAX_LINKS) throw Object.assign(new Error(`Too many symbolic links: ${path}`), { code: "ELOOP" });
-				return join(await realpathAllowMissing(resolve(dirname(current), target), links + 1), ...missing);
-			}
 			const parent = dirname(current);
 			if (parent === current) throw error;
 			missing.unshift(basename(current));
@@ -112,6 +151,11 @@ export async function resolveOutside(cwd: string, path: string, protectedPaths: 
 export function isSecretFile(path: string): boolean {
 	const name = basename(path);
 	return name === ".env" || name.startsWith(".env.") || name.endsWith(".pem") || name.endsWith(".key");
+}
+
+/** `isSecretFile` that ignores letter case and Unicode form. */
+export function isSecretFileFolded(path: string): boolean {
+	return isSecretFile(foldPath(path));
 }
 
 /** The places `edit` never writes, approved or not: the home's secret directories and the user's `.atelier`. Real paths. */

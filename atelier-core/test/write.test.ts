@@ -350,15 +350,20 @@ describe("write: independent security regressions", () => {
 		expect(await text(join(outside, "x.txt"))).toBe("old\n");
 	});
 
-	it("resolves a dangling target before approval, without replacing the link", async () => {
+	it("refuses a dangling link without asking, keeping the link", async () => {
 		const { lstat } = await import("node:fs/promises");
 		const target = join(outside, "fresh.txt");
 		await symlink(target, join(cwd, "dangling"));
-		const { questions, results } = await run([writeCall("dangling", "w1")]);
-		expect(questions.map((q) => q.command)).toEqual([`write ${target}`]);
-		expect(results[0]?.ok).toBe(true);
+		await symlink("missing-dir", join(cwd, "dir-link"));
+		const { questions, results } = await run([writeCall("dangling", "w1"), writeCall("dir-link/f.txt", "w2")]);
+		expect(questions).toEqual([]);
+		expect(results).toEqual([
+			{ ok: false, output: "Not written: dangling is a symbolic link to a missing file." },
+			{ ok: false, output: "Not written: dir-link/f.txt is a symbolic link to a missing file." },
+		]);
 		expect((await lstat(join(cwd, "dangling"))).isSymbolicLink()).toBe(true);
-		expect(await text(target)).toBe("new\n");
+		expect(await exists(target)).toBe(false);
+		expect(await exists(join(cwd, "missing-dir"))).toBe(false);
 	});
 
 	it("does not redirect an approved outside write into another allowed file", async () => {
@@ -404,6 +409,56 @@ describe("write: independent security regressions", () => {
 		const { results } = await run([writeCall("utf8.txt", "w1", content)]);
 		expect(results).toEqual([{ ok: true, output: "Wrote utf8.txt (1048576 bytes)." }]);
 		expect(await text(join(cwd, "utf8.txt"))).toBe(content);
+	});
+});
+
+// S2 / D1, D2, D5: independent round-two regressions.
+describe("write: APFS missing-path protections", () => {
+	it.each([
+		["Settings", "sETTINGS"],
+		["café", "cafe\u0301"],
+	])("refuses the missing real configuration through %s / %s", async (target, alias) => {
+		const { createHash } = await import("node:crypto");
+		const { rename } = await import("node:fs/promises");
+		await rename(join(cwd, ".atelier"), join(cwd, "saved-settings"));
+		await symlink(target, join(cwd, ".atelier"));
+		const path = `${alias}/sandbox.json`;
+		const hash = () => text(join(outside, "x.txt")).then((value) => createHash("sha256").update(value).digest("hex"));
+		const before = await hash();
+		const { questions, results } = await run(
+			[
+				writeCall(path, "r2-config", JSON.stringify({ allowWrite: [outside] })),
+				writeCall(join(outside, "x.txt"), "r2-outside"),
+			],
+			{ answer: false },
+		);
+		expect(results[0]).toEqual({
+			ok: false,
+			output: `${path} is project configuration: the agent does not write .atelier/.`,
+		});
+		expect(questions.map((q) => q.command)).toEqual([`write ${join(outside, "x.txt")}`]);
+		expect(await exists(join(cwd, target))).toBe(false);
+		expect(await hash()).toBe(before);
+	});
+
+	it("refuses a dangling link into a missing case alias of a secret directory (the dangling-link refusal fires first)", async () => {
+		const { lstat } = await import("node:fs/promises");
+		await symlink(join(home, ".AWS", "new"), join(cwd, "secret-link"));
+		const { questions, results } = await run([writeCall("secret-link", "r2-secret")]);
+		expect(questions).toEqual([]);
+		expect(results).toEqual([{ ok: false, output: "Not written: secret-link is a symbolic link to a missing file." }]);
+		expect(await exists(join(home, ".aws"))).toBe(false);
+		expect((await lstat(join(cwd, "secret-link"))).isSymbolicLink()).toBe(true);
+	});
+
+	it("refuses a missing git config through a case alias", async () => {
+		await mkdir(join(cwd, ".git"));
+		const { questions, results } = await run([writeCall(".git/CONFIG", "r2-git")]);
+		expect(questions).toEqual([]);
+		expect(results).toEqual([
+			{ ok: false, output: ".git/CONFIG is git state that runs code: the agent does not write it." },
+		]);
+		expect(await exists(join(cwd, ".git", "config"))).toBe(false);
 	});
 });
 

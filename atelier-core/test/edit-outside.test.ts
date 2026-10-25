@@ -362,3 +362,32 @@ describe("edit shares the write tool's path protections", () => {
 		},
 	);
 });
+
+describe("edit refuses what folds onto a protected place, and links to nothing", () => {
+	it("refuses a missing configuration folder reached by case through a dangling .atelier, without asking", async () => {
+		await symlink("Settings", join(cwd, ".atelier"));
+		const { questions, results } = await run(["sETTINGS/sandbox.json"], { autoApprove: true });
+		expect(questions).toEqual([]);
+		expect(results).toEqual([
+			{ ok: false, output: "sETTINGS/sandbox.json is project configuration: the agent does not write .atelier/." },
+		]);
+	});
+
+	it("refuses a git configuration named with other letter case", async () => {
+		await mkdir(join(cwd, ".git"));
+		await writeFile(join(cwd, ".git", "config"), "alpha\n");
+		const { questions, results } = await run([".git/CONFIG"], { autoApprove: true });
+		expect(questions).toEqual([]);
+		expect(results).toEqual([
+			{ ok: false, output: ".git/CONFIG is git state that runs code: the agent does not write it." },
+		]);
+		expect(await text(join(cwd, ".git", "config"))).toBe("alpha\n");
+	});
+
+	it("refuses a dangling link, with a clear message, without asking", async () => {
+		await symlink(join(outside, "nope.txt"), join(cwd, "dangling"));
+		const { questions, results } = await run(["dangling"]);
+		expect(questions).toEqual([]);
+		expect(results).toEqual([{ ok: false, output: "Not edited: dangling is a symbolic link to a missing file." }]);
+	});
+});

@@ -6,8 +6,8 @@ import { z } from "zod";
 import { errorMessage, failure } from "./limits.ts";
 import {
 	isInside,
-	isProtected,
-	isSecretFile,
+	isProtectedFolded,
+	isSecretFileFolded,
 	PathProtectedError,
 	protectedWriteDirectories,
 	realpathAllowMissing,
@@ -52,10 +52,10 @@ export async function locate(cwd: string, path: string, context: ToolContext, ho
 	const absolute = resolve(cwd, path);
 	const real = await realpathAllowMissing(absolute);
 	const secretDirectories = protectedWriteDirectories(home);
-	if (isProtected(absolute, secretDirectories) || isProtected(real, secretDirectories))
+	if (isProtectedFolded(absolute, secretDirectories) || isProtectedFolded(real, secretDirectories))
 		throw new PathProtectedError(path);
 	if (isInside(cwd, absolute) && isInside(await realpath(cwd), real)) return { real, allowed: true };
-	if (isSecretFile(absolute) || isSecretFile(real)) throw new PathProtectedError(path);
+	if (isSecretFileFolded(absolute) || isSecretFileFolded(real)) throw new PathProtectedError(path);
 	if (context.scratchDir !== undefined) {
 		const scratch = await realpath(context.scratchDir).catch(() => context.scratchDir as string);
 		if (isInside(scratch, real)) return { real, allowed: true };

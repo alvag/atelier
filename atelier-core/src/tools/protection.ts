@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { isInside, realpathAllowMissing } from "./paths.ts";
+import { danglingLink, foldPath, isInsideFolded, linkTargets, realpathAllowMissing } from "./paths.ts";
 import { linkedWorktreeGit, operationStatePaths, worktreeGitPaths } from "./sandbox.ts";
 import { loadSandboxAdditions } from "./sandbox-config.ts";
 import { libraryProtectedPaths } from "./sandbox-paths.ts";
@@ -10,13 +10,15 @@ const realOrSelf = (path: string) => realpathAllowMissing(path).catch(() => path
 
 /** Whether `path` is `place` or inside it, as named (`lexical`) or as it is on disk (`real`), however the name got there. */
 async function isUnder(place: string, lexical: string, real: string): Promise<boolean> {
-	return isInside(place, lexical) || isInside(await realOrSelf(place), real);
+	// A place that is a link to a folder that does not exist yet is still where that name will be created.
+	const places = [place, await realOrSelf(place), ...(await linkTargets(place))];
+	return places.some((candidate) => isInsideFolded(candidate, lexical) || isInsideFolded(candidate, real));
 }
 
-/** The first segment of `path` below `root`, lower case, or undefined when it is not below it. */
+/** The segments of `path` below `root`, folded, or undefined when it is not below it. */
 function firstSegments(root: string, path: string): string[] | undefined {
-	const segments = relative(root, path).split(sep);
-	return segments[0] === ".." || segments[0] === "" ? undefined : segments.map((segment) => segment.toLowerCase());
+	const segments = relative(foldPath(root), foldPath(path)).split(sep);
+	return segments[0] === ".." || segments[0] === "" ? undefined : segments;
 }
 
 /** Under odd/tasks/ in any letter case, as named or on disk, also when odd/tasks is a link to somewhere else. */
@@ -79,6 +81,9 @@ export async function projectRefusal(
 	home: string = homedir(),
 ): Promise<string | undefined> {
 	const lexical = resolve(cwd, path);
+	// A link to nothing is not followed: where a write would land cannot be told, so it is not written.
+	if ((await danglingLink(lexical)) !== undefined)
+		return `Not ${tool === "edit" ? "edited" : "written"}: ${path} is a symbolic link to a missing file.`;
 	// Feature documents change only through the feature tool, which keeps them well formed.
 	if (await isFeatureDocument(cwd, lexical, real))
 		return `${path} is a feature document: change it with the feature tool, not ${tool}.`;
