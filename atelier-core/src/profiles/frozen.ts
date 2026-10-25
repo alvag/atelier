@@ -45,8 +45,11 @@ export async function freezeProfile(input: ResolveProfileInput): Promise<FrozenP
 	return { resolved: await resolveProfile({ ...input, home, pins }), paths, files };
 }
 
-/** The files that differ from `seen`, as warnings about the frozen profile. */
-export async function profileChanges(frozen: FrozenProfile, seen: Record<string, string>): Promise<ProfileReport[]> {
+/** The files that differ from `seen` as warnings about the frozen profile, and what the files hold now. */
+export async function profileChanges(
+	frozen: FrozenProfile,
+	seen: Record<string, string>,
+): Promise<{ changes: ProfileReport[]; files: Record<string, string> }> {
 	const now = await fingerprint(frozen.paths);
 	const kept = frozen.resolved.name === undefined ? "the default profile" : `profile "${frozen.resolved.name}"`;
 	const changes: ProfileReport[] = [];
@@ -57,7 +60,7 @@ export async function profileChanges(frozen: FrozenProfile, seen: Record<string,
 		const what = before === "" ? "was created" : after === "" ? "was removed" : "changed";
 		changes.push({ path, message: `${what} after the session started; this session keeps ${kept}` });
 	}
-	return changes;
+	return { changes, files: now };
 }
 
 /** What a role runs with once the profile and the session's own choices are put together. */

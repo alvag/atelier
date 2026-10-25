@@ -264,3 +264,62 @@ describe("the compaction entry", () => {
 		expect(warnings).toEqual(["compaction: claude-code compacts on its own, so the compaction entry does not apply"]);
 	});
 });
+
+describe("a profile file that changes after the session started", () => {
+	const profilesFile = () => join(home, ".atelier", "profiles.json");
+	const body = (profiles: Record<string, unknown>) =>
+		JSON.stringify({ kind: "atelier.agent_model_profiles", version: 1, active: "p", profiles });
+	const warningsOf = (events: AtelierEvent[]) =>
+		events.flatMap((e) => (e.type === "error" ? [[e.code, e.recoverable, e.message] as const] : []));
+
+	it("is noticed once at the start of the next turn, and the session keeps the frozen profile", async () => {
+		const profile = await freeze({ p: { worker: { model: "claude-sonnet-5-5" } } });
+		const parent = new FakeBackend([[{ event: finished }], [{ event: finished }], [{ event: finished }]]);
+		const session = await Session.start({ backend: parent, cwd: base, tools, profile });
+		expect(warningsOf(await drain(session))).toEqual([]);
+		await writeFile(profilesFile(), body({ p: { worker: { model: "claude-opus-5-5" } } }));
+		expect(warningsOf(await drain(session))).toEqual([
+			["profile_changed", true, `${profilesFile()} changed after the session started; this session keeps profile "p"`],
+		]);
+		// The same change is not repeated.
+		expect(warningsOf(await drain(session))).toEqual([]);
+		await session.close();
+	});
+
+	it("keeps applying the frozen entries to the roles that start later", async () => {
+		const profile = await freeze({ p: { worker: { model: "claude-sonnet-5-5", thinking: "low" } } });
+		await writeFile(profilesFile(), body({ p: { worker: { model: "claude-opus-5-5", thinking: "max" } } }));
+		const { created } = await delegate({ profile }, "worker");
+		expect(created[0]?.backend.startOptions).toMatchObject({ model: "claude-sonnet-5-5", thinking: "low" });
+	});
+
+	it("says one thing per change: each edit, a removal, and a pin that appears", async () => {
+		const pin = join(base, "pin.json");
+		await writeFile(profilesFile(), body({ p: { worker: { model: "claude-sonnet-5-5" } }, q: {} }));
+		const profile = await freezeProfile({ cwd: base, home, pins: { local: pin } });
+		const parent = new FakeBackend([[{ event: finished }], [{ event: finished }], [{ event: finished }]]);
+		const session = await Session.start({ backend: parent, cwd: base, tools, profile });
+		await drain(session);
+		await writeFile(profilesFile(), body({ p: {} }));
+		await writeFile(pin, JSON.stringify({ kind: "atelier.profile_pin", version: 1, profile: "q" }));
+		const both = warningsOf(await drain(session)).map(([, , message]) => message);
+		expect(both).toEqual([
+			`${profilesFile()} changed after the session started; this session keeps profile "p"`,
+			`${pin} was created after the session started; this session keeps profile "p"`,
+		]);
+		await rm(pin);
+		expect(warningsOf(await drain(session)).map(([, , message]) => message)).toEqual([
+			`${pin} was removed after the session started; this session keeps profile "p"`,
+		]);
+		await session.close();
+	});
+
+	it("is not looked for when the session has no profile", async () => {
+		const parent = new FakeBackend([[{ event: finished }], [{ event: finished }]]);
+		const session = await Session.start({ backend: parent, cwd: base, tools });
+		await drain(session);
+		await writeFile(profilesFile(), body({ p: {} }));
+		expect(warningsOf(await drain(session))).toEqual([]);
+		await session.close();
+	});
+});

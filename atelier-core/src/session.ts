@@ -24,6 +24,7 @@ import type { CompletedFeature } from "./odd/tracker.ts";
 import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
 import {
 	type FrozenProfile,
+	profileChanges,
 	type RoleBackendFactory,
 	roleSettings,
 	roleStartMessage,
@@ -121,6 +122,8 @@ export class Session {
 	readonly #thinking: ThinkingLevel | undefined;
 	/** What the profile reported at start; said once, in the first turn. */
 	readonly #profileNotices: string[];
+	/** What the profile's files held when the last turn began, to tell what changed since. */
+	#profileFiles: Record<string, string>;
 	/** The summary request's model and level, from the compaction entry; none on a backend that compacts on its own. */
 	readonly #compaction: { model?: string; thinking?: ThinkingLevel } | undefined;
 	#backendSession: BackendSession | undefined;
@@ -152,6 +155,7 @@ export class Session {
 		const orchestrator = roleSettings(options.profile, "orchestrator", undefined);
 		this.#model = options.model ?? orchestrator.model;
 		this.#thinking = options.thinking ?? orchestrator.thinking;
+		this.#profileFiles = { ...options.profile?.files };
 		this.#profileNotices = (options.profile?.resolved.reports ?? []).map(({ path, message }) => `${path}: ${message}`);
 		const compaction = roleSettings(options.profile, "compaction", undefined);
 		// Claude Code compacts on its own: there is no summary request to give a model or level to.
@@ -432,6 +436,8 @@ export class Session {
 		const pump = (async () => {
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }>;
 			try {
+				// Not awaited without a profile: a session without one starts its turn on the same tick as always.
+				if (this.#options.profile) await this.#noticeProfileChanges(turn, this.#options.profile);
 				finish = await work(turn, abort.signal, backendSession);
 			} catch (error) {
 				turn.push(errorEvent("turn_failed", describeError(error)));
@@ -453,6 +459,13 @@ export class Session {
 			this.#turn = undefined;
 			this.#abort = undefined;
 		}
+	}
+
+	/** A profile file that changed since the last turn began is said once; the session keeps the profile it froze. */
+	async #noticeProfileChanges(turn: Channel<TurnEvent>, profile: FrozenProfile): Promise<void> {
+		const { changes, files } = await profileChanges(profile, this.#profileFiles);
+		this.#profileFiles = files;
+		for (const { path, message } of changes) turn.push(errorEvent("profile_changed", `${path} ${message}`, true));
 	}
 
 	/** What a review may use of this session: the turn's stream, its signal, one correction turn and child sessions. */
