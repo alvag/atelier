@@ -230,6 +230,8 @@ function repositoryPaths(
 		...hooks,
 		...[gitDir, commonDir].flatMap((dir) => [join(dir, "hooks"), join(dir, "info", "attributes")]),
 		join(commonDir, "modules"),
+		// The local profile pin: the user's choice of profile, not the agent's.
+		join(commonDir, "atelier"),
 		...configs,
 		...includedConfigFiles(configs, home),
 		...operationStatePaths(gitDir),

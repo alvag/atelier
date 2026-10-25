@@ -69,6 +69,13 @@ async function isGitState(cwd: string, home: string, lexical: string, real: stri
 	return false;
 }
 
+/** Under `<git common dir>/atelier`, where the local profile pin lives; a part of `gitExecutionPaths`. */
+async function isProfilePin(cwd: string, home: string, lexical: string, real: string): Promise<boolean> {
+	for (const place of gitProtectedPaths(cwd, home))
+		if (basename(place) === "atelier" && (await isUnder(place, lexical, real))) return true;
+	return false;
+}
+
 /**
  * Why `edit` and `write` never touch the file, approved or not; undefined when
  * they may. `real` is the file as it is on disk. Compares real paths as well
@@ -90,6 +97,8 @@ export async function projectRefusal(
 		return `${path} is a feature document: change it with the feature tool, not ${tool}.`;
 	if (await isProjectConfig(cwd, lexical, real))
 		return `${path} is project configuration: the agent does not write .atelier/.`;
+	if (await isProfilePin(cwd, home, lexical, real))
+		return `${path} is Atelier profile configuration: the agent does not write it.`;
 	if (await isGitState(cwd, home, lexical, real))
 		return `${path} is git state that runs code: the agent does not write it.`;
 	return undefined;
