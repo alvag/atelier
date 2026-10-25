@@ -11,7 +11,7 @@ export interface ToolContext {
 	callId?: string;
 	/** The session runs with the sandbox turned off (`--no-sandbox`): `bash` runs unsandboxed and every command asks. */
 	sandboxOff?: boolean;
-	/** Real paths outside the usual places that the user approved for the rest of the session; `edit` writes only those. */
+	/** Real paths outside the usual places that the user approved for the rest of the session; `edit` and `write` write only those. */
 	approvedPaths?: ReadonlySet<string>;
 }
 
@@ -24,7 +24,7 @@ export interface ToolGate {
 		command: string;
 		reason?: string;
 		always?: boolean;
-		/** The tool asking, when the client should word the question for it (`edit`); absent for `bash`. */
+		/** The tool asking, when the client should word the question for it (`edit`, `write`); absent for `bash`. */
 		tool?: string;
 		/** A real path that stays allowed for the rest of the session once the user approves. */
 		grant?: string;

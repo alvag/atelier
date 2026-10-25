@@ -35,7 +35,7 @@ export const BUILTIN_AGENTS: readonly SubagentDefinition[] = Object.freeze([
 		name: "worker",
 		description:
 			"Makes a well-specified, bounded change and checks it. Give it everything it needs: it does not see this conversation.",
-		tools: ["read", "edit", "grep", "bash"],
+		tools: ["read", "edit", "write", "grep", "bash"],
 		prompt: `You are a worker for another coding agent. Make exactly the change you are given, keep it as small as it allows, and check it. ${REPORT_FORMAT} Say what changed and how you checked it.`,
 		models: {},
 		maxRequests: 50,

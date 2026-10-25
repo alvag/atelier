@@ -151,6 +151,7 @@ describe("run", () => {
 		expect(h.backend.startOptions?.tools.map((t) => t.name)).toEqual([
 			"read",
 			"edit",
+			"write",
 			"bash",
 			"grep",
 			"task",

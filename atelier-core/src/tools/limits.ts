@@ -74,3 +74,6 @@ export function failure(
 export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
+
+/** The most `write` takes in one call, in bytes of UTF-8. */
+export const MAX_WRITE_BYTES = 1024 * 1024;

@@ -38,7 +38,7 @@ export async function writeAtomic(path: string, content: string, mode: number): 
  * True when the path, as written or as resolved, is under odd/tasks/, in any
  * letter case and also when odd/tasks itself is a symlink to somewhere else.
  */
-async function isFeatureDocument(cwd: string, path: string, target: string): Promise<boolean> {
+export async function isFeatureDocument(cwd: string, path: string, target: string): Promise<boolean> {
 	const under = (base: string, file: string) => {
 		const rel = relative(base, file);
 		return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
@@ -57,7 +57,7 @@ async function isFeatureDocument(cwd: string, path: string, target: string): Pro
 	return protectedDir !== undefined && under(protectedDir, target);
 }
 
-interface Location {
+export interface Location {
 	/** The file as it is on disk, symlinks resolved: the only path `edit` writes. */
 	real: string;
 	/** Whether `edit` may write it without asking. */
@@ -70,7 +70,7 @@ interface Location {
  * configuration's `allowWrite` directories, or a file the user approved.
  * Throws `PathProtectedError` for what is never written, approved or not.
  */
-async function locate(cwd: string, path: string, context: ToolContext, home: string): Promise<Location> {
+export async function locate(cwd: string, path: string, context: ToolContext, home: string): Promise<Location> {
 	const absolute = resolve(cwd, path);
 	const real = await realpathAllowMissing(absolute);
 	const secretDirectories = protectedWriteDirectories(home);
