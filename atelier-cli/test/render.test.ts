@@ -537,6 +537,32 @@ describe("Renderer", () => {
 			]);
 			expect(stdout).toBe("◇ review declined\n◇ review unavailable: lens_context_budget_exceeded\n");
 		});
+
+		it("shows the cause and the value observed instead of the reason", () => {
+			const { stdout } = render([
+				{
+					...finished,
+					verdict: "unavailable",
+					reason: "lens_context_budget_exceeded",
+					cause: "context_too_large",
+					observed: "215000 bytes, limit 204800",
+				},
+				{
+					...finished,
+					verdict: "escalated",
+					reason: "The correction changed 30 lines, over the budget of 12.",
+					cause: "over_budget",
+					observed: "30 lines, budget 12",
+				},
+			]);
+			expect(stdout).toBe(
+				[
+					"◇ review unavailable: context_too_large (215000 bytes, limit 204800)",
+					"✗ review escalated: over_budget (30 lines, budget 12)",
+					"",
+				].join("\n"),
+			);
+		});
 	});
 
 	describe("compaction", () => {
@@ -751,6 +777,44 @@ describe("Renderer", () => {
 					"  D1 blocker — A pasted y approves the command",
 					"    reproduce: printf 'ls\\ny' | node cli.ts",
 					"  D2 blocker — A pasted y approves the command",
+					"    reproduce: printf 'ls\\ny' | node cli.ts",
+					"",
+				].join("\n"),
+			);
+		});
+
+		it("shows the cause and the value observed instead of the message", () => {
+			const { stdout } = render([
+				round({
+					ok: false,
+					error: "The verifier returned an invalid report: no JSON",
+					cause: "invalid_report",
+					observed: "looks fine to me",
+				}),
+				done({ outcome: "failed", reason: "turn_limit: ...", cause: "request_cap", observed: "80 requests" }),
+				done({ outcome: "failed", reason: "interrupted", cause: "interrupted" }),
+				done({
+					outcome: "needs_decision",
+					reason: "1 unverified requirement: R1 the approval needs a keypress (bash was not available)",
+					cause: "sandbox_unavailable",
+					observed: "sandbox not available on this platform",
+				}),
+				done({
+					outcome: "needs_decision",
+					rounds: 2,
+					openDefects: [defect({ id: "D2", severity: "major" })],
+					cause: "open_defects",
+					observed: "D2",
+				}),
+			]);
+			expect(stdout).toBe(
+				[
+					"◇ verify · round 1 · failed: invalid_report (looks fine to me)",
+					"✗ verify failed: request_cap (80 requests) · needs your decision",
+					"✗ verify failed: interrupted · needs your decision",
+					"✗ verify: needs your decision · sandbox_unavailable (sandbox not available on this platform) · 1 unverified requirement: R1 the approval needs a keypress (bash was not available)",
+					"✗ verify: needs your decision · open_defects (D2)",
+					"  D2 major — A pasted y approves the command",
 					"    reproduce: printf 'ls\\ny' | node cli.ts",
 					"",
 				].join("\n"),

@@ -1,4 +1,4 @@
-import { cacheHitRate } from "@atelier/core/protocol";
+import { cacheHitRate, describeRefusal } from "@atelier/core/protocol";
 import { visibleText } from "@atelier/core/text";
 import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
@@ -119,13 +119,13 @@ function ConsentCard({
 function ReviewVerdict({ result }: { result: NonNullable<Extract<TurnItem, { kind: "review" }>["result"]> }) {
 	if (result.verdict === "declined") return <div className="review-verdict">Review declined</div>;
 	if (result.verdict === "unavailable")
-		return <div className="review-verdict">Review unavailable: {result.reason ?? "no reason given"}</div>;
+		return <div className="review-verdict">Review unavailable: {describeRefusal(result)}</div>;
 	const escalated = result.verdict === "escalated";
 	return (
 		<div className="review-verdict">
 			{escalated ? (
 				<div className="warning" role="alert">
-					Escalated: {result.reason ?? "no reason given"}
+					Escalated: {describeRefusal(result)}
 					{result.correction ? " The correction is left in your worktree. Review it before committing." : ""}
 				</div>
 			) : (
@@ -216,7 +216,11 @@ function VerificationBlock({
 							: " · failed"}
 						{round.correcting ? " · the agent is asked to fix them" : ""}
 					</div>
-					{round.ok ? null : <div className="warning">{round.error ?? "no reason given"}</div>}
+					{round.ok ? null : (
+						<div className="warning">
+							{describeRefusal({ ...round, ...(round.error === undefined ? {} : { reason: round.error }) })}
+						</div>
+					)}
 					<ul>
 						{round.requirements.map((req) => (
 							<li key={req.id} className={`requirement ${req.verdict}`}>
@@ -257,14 +261,16 @@ function VerificationBlock({
 					<div className="review-verdict">Verification passed after a correction</div>
 				) : result.outcome === "failed" ? (
 					<div className="warning" role="alert">
-						Verification failed: {result.reason ?? "no reason given"}. Needs your decision.
+						Verification failed: {describeRefusal(result)}. Needs your decision.
 					</div>
 				) : (
 					<div className="warning" role="alert">
 						Needs your decision:{" "}
-						{open === 0 && result.reason !== undefined
-							? result.reason
-							: `${open} open defect${open === 1 ? "" : "s"}${result.reason === undefined ? "" : ` · ${result.reason}`}`}
+						{result.cause !== undefined
+							? `${describeRefusal(result)}${result.reason === undefined ? "" : ` · ${result.reason}`}`
+							: open === 0 && result.reason !== undefined
+								? result.reason
+								: `${open} open defect${open === 1 ? "" : "s"}${result.reason === undefined ? "" : ` · ${result.reason}`}`}
 					</div>
 				)
 			) : (

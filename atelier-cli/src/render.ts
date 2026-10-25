@@ -1,6 +1,13 @@
 import { isAbsolute, relative } from "node:path";
 import { styleText } from "node:util";
-import { type AtelierEvent, cacheHitRate, type PhaseSpent, type ReviewStep, type TurnPhase } from "@atelier/core";
+import {
+	type AtelierEvent,
+	cacheHitRate,
+	describeRefusal,
+	type PhaseSpent,
+	type ReviewStep,
+	type TurnPhase,
+} from "@atelier/core";
 
 export interface RendererOptions {
 	stdout: (text: string) => void;
@@ -55,6 +62,17 @@ function phaseSpent({ usage, requests, costUsd }: PhaseSpent): string {
 const UNSANDBOXED_EFFECT = "every command asks for approval and --yes does not apply";
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+/** A round's `error` is its reason. */
+const withReason = (error: string | undefined) => (error === undefined ? {} : { reason: error });
+
+/** What is left to decide: the cause and its value, then the reason (it lists the unverified requirements); without a cause, as before. */
+function undecided(event: Extract<AtelierEvent, { type: "verification_finished" }>): string {
+	const reason = event.reason === undefined ? "" : ` · ${event.reason}`;
+	if (event.cause !== undefined) return `${describeRefusal(event)}${reason}`;
+	if (event.openDefects.length === 0 && event.reason !== undefined) return event.reason;
+	return `${plural(event.openDefects.length, "open defect")}${reason}`;
+}
 
 function stepText(step: ReviewStep): string {
 	switch (step.type) {
@@ -221,7 +239,7 @@ export class Renderer {
 			case "escalated": {
 				// The correction is only in the worktree when one was applied; it stays there even when it was too big.
 				const left = event.correction ? " — the correction is left in your worktree, review it before committing" : "";
-				this.#line(this.#style("red", `✗ review escalated: ${event.reason ?? "no reason given"}${left}`));
+				this.#line(this.#style("red", `✗ review escalated: ${describeRefusal(event)}${left}`));
 				for (const found of event.findings) {
 					const place = found.line === undefined ? found.path : `${found.path}:${found.line}`;
 					this.#line(`  ${found.id} ${found.severity} ${place} — ${found.claim}`);
@@ -233,7 +251,7 @@ export class Renderer {
 				this.#line(this.#style("dim", "◇ review declined"));
 				return;
 			case "unavailable":
-				this.#line(this.#style("dim", `◇ review unavailable: ${event.reason ?? "no reason given"}`));
+				this.#line(this.#style("dim", `◇ review unavailable: ${describeRefusal(event)}`));
 				return;
 		}
 	}
@@ -241,7 +259,9 @@ export class Renderer {
 	#renderVerificationRound(event: Extract<AtelierEvent, { type: "verification_round" }>): void {
 		const head = `verify · round ${event.round}`;
 		if (!event.ok) {
-			this.#line(this.#style("yellow", `◇ ${head} · failed: ${event.error ?? "no reason given"}`));
+			this.#line(
+				this.#style("yellow", `◇ ${head} · failed: ${describeRefusal({ ...event, ...withReason(event.error) })}`),
+			);
 			return;
 		}
 		const parts = [head];
@@ -275,21 +295,10 @@ export class Renderer {
 				);
 				return;
 			case "failed":
-				this.#line(
-					this.#style("red", `✗ verify failed: ${event.reason ?? "no reason given"} · needs your decision${cost}`),
-				);
+				this.#line(this.#style("red", `✗ verify failed: ${describeRefusal(event)} · needs your decision${cost}`));
 				return;
 			case "needs_decision":
-				this.#line(
-					this.#style(
-						"red",
-						`✗ verify: needs your decision · ${
-							event.openDefects.length === 0 && event.reason !== undefined
-								? event.reason
-								: `${plural(event.openDefects.length, "open defect")}${event.reason === undefined ? "" : ` · ${event.reason}`}`
-						}${cost}`,
-					),
-				);
+				this.#line(this.#style("red", `✗ verify: needs your decision · ${undecided(event)}${cost}`));
 				for (const defect of event.openDefects) {
 					this.#line(`  ${defect.id} ${defect.severity} — ${defect.summary}`);
 					this.#line(`    reproduce: ${defect.reproduction}`);

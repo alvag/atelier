@@ -558,6 +558,47 @@ describe("App", () => {
 			expect((await screen.findByTestId("verification")).textContent).toContain(text);
 		});
 
+		it("shows the cause and the value observed of a failed round and of the outcome", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit(started);
+			fake.emit(
+				round({
+					ok: false,
+					error: "The verifier returned an invalid report: no JSON",
+					cause: "invalid_report",
+					observed: "looks fine to me",
+					requirements: [],
+					defects: [],
+					blocking: [],
+					correcting: false,
+				}),
+			);
+			fake.emit(
+				finished({
+					outcome: "failed",
+					reason: "The verifier returned an invalid report: no JSON",
+					cause: "invalid_report",
+					observed: "looks fine to me",
+					openDefects: [],
+				}),
+			);
+			const block = await screen.findByTestId("verification");
+			expect(block.textContent).toContain("Round 1 · failed");
+			expect(within(block).getAllByText("invalid_report (looks fine to me)").length).toBeGreaterThan(0);
+			expect(within(block).getByRole("alert").textContent).toBe(
+				"Verification failed: invalid_report (looks fine to me). Needs your decision.",
+			);
+		});
+
+		it("puts the cause before what is left to decide", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit(started);
+			fake.emit(finished({ cause: "open_defects", observed: "D1" }));
+			expect((await screen.findByRole("alert")).textContent).toBe("Needs your decision: open_defects (D1)");
+		});
+
 		it("says what could not be verified when no defect is open", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");
@@ -787,6 +828,28 @@ describe("App", () => {
 			fake.emit({ ...finishedReview, reviewId: "r3", verdict: "unavailable", reason: "no HEAD" } as AtelierEventBody);
 			expect(await screen.findByText("Review declined")).toBeTruthy();
 			expect(await screen.findByText("Review unavailable: no HEAD")).toBeTruthy();
+		});
+
+		it("shows the cause and the value observed instead of the reason", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({
+				...finishedReview,
+				verdict: "escalated",
+				reason: "The correction changed 30 lines, over the budget of 12.",
+				cause: "over_budget",
+				observed: "30 lines, budget 12",
+			} as AtelierEventBody);
+			expect((await screen.findByRole("alert")).textContent).toContain("Escalated: over_budget (30 lines, budget 12)");
+			fake.emit({
+				...finishedReview,
+				reviewId: "r2",
+				verdict: "unavailable",
+				reason: "Lens reliability returned an invalid reply twice: ...",
+				cause: "invalid_reply",
+				observed: "looks fine to me",
+			} as AtelierEventBody);
+			expect(await screen.findByText("Review unavailable: invalid_reply (looks fine to me)")).toBeTruthy();
 		});
 
 		it("has a Review button that sends session.review, disabled without a session and while a turn runs", async () => {

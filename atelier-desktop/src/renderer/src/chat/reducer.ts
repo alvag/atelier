@@ -6,6 +6,7 @@ import type {
 	FeatureTask,
 	JsonValue,
 	Phase,
+	RefusalCause,
 	RiskDeclaration,
 	TurnPhases,
 	Usage,
@@ -104,17 +105,19 @@ type VerificationEvent = Extract<AtelierEvent, { type: "verification_round" }>;
 export type VerificationRound = Pick<
 	VerificationEvent,
 	"round" | "ok" | "requirements" | "defects" | "blocking" | "correcting"
-> & { error?: string };
+> & { error?: string; cause?: RefusalCause; observed?: string };
 export type VerificationResult = Pick<
 	Extract<AtelierEvent, { type: "verification_finished" }>,
 	"outcome" | "rounds" | "openDefects"
-> & { reason?: string; costUsd?: number };
+> & { reason?: string; cause?: RefusalCause; observed?: string; costUsd?: number };
 
 type ReviewFinding = Extract<AtelierEvent, { type: "review_finished" }>["findings"][number];
 
 export interface ReviewResult {
 	verdict: string;
 	reason?: string;
+	cause?: RefusalCause;
+	observed?: string;
 	findings: ReviewFinding[];
 	refuted: number;
 	followUps: number;
@@ -513,6 +516,7 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 						round: event.round,
 						ok: event.ok,
 						...(event.error === undefined ? {} : { error: event.error }),
+						...refusalOf(event),
 						requirements: event.requirements,
 						defects: event.defects,
 						blocking: event.blocking,
@@ -528,6 +532,7 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					rounds: event.rounds,
 					openDefects: event.openDefects,
 					...(event.reason === undefined ? {} : { reason: event.reason }),
+					...refusalOf(event),
 					...(event.costUsd === undefined ? {} : { costUsd: event.costUsd }),
 				},
 			}));
@@ -540,6 +545,7 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					result: {
 						verdict: event.verdict,
 						...(event.reason === undefined ? {} : { reason: event.reason }),
+						...refusalOf(event),
 						findings: event.findings,
 						refuted: event.refuted.length,
 						followUps: event.followUps.length,
@@ -555,6 +561,14 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 }
 
 type ReviewItem = Extract<TurnItem, { kind: "review" }>;
+
+/** The cause of a refusal and the value observed, when the event has them. */
+function refusalOf(event: { cause?: RefusalCause; observed?: string }): { cause?: RefusalCause; observed?: string } {
+	return {
+		...(event.cause === undefined ? {} : { cause: event.cause }),
+		...(event.observed === undefined ? {} : { observed: event.observed }),
+	};
+}
 
 /**
  * Applies `update` to the review block with this id. The assessment that opens a block carries no id, so the
