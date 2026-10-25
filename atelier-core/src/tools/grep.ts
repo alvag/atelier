@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { matchesGlob, relative, resolve } from "node:path";
@@ -28,9 +29,10 @@ interface SearchResult {
 }
 
 /**
- * Runs a search command that prints `path:line:text` lines. Both engines run
- * as subprocesses, so a pathological pattern can be killed instead of
- * blocking the event loop. Paths in the output are made relative to `root`.
+ * Runs a search command that prints `path NUL line:text` records (`--null`),
+ * so a file name with colons or newlines never blurs where the path ends. Both
+ * engines run as subprocesses, so a pathological pattern can be killed instead
+ * of blocking the event loop. Paths in the output are made relative to `root`.
  */
 function runSearch(
 	command: string,
@@ -57,19 +59,22 @@ function runSearch(
 		signal?.addEventListener("abort", onAbort, { once: true });
 		if (signal?.aborted) stop("aborted");
 
-		const toRelative = (line: string) =>
-			clip(line.startsWith(`${root}/`) ? line.slice(root.length + 1) : line.replace(/^\.\//, ""));
-		const add = (line: string) => {
-			const match = toRelative(line);
-			const path = /^(.*?):\d+:/.exec(match)?.[1] ?? match;
-			if (accept(path)) matches.push(match);
+		const toRelative = (path: string) =>
+			path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path.replace(/^\.\//, "");
+		const add = (record: string, nul: number) => {
+			const path = toRelative(record.slice(0, nul));
+			if (accept(path)) matches.push(clip(`${path}:${record.slice(nul + 1)}`));
 		};
 		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
 			if (stopped) return;
-			const lines = (pending + chunk).split("\n");
-			pending = lines.pop() ?? "";
-			for (const line of lines) {
-				add(line);
+			pending += chunk;
+			// A record is `path NUL rest NL`; the path may hold newlines, the rest never does.
+			while (true) {
+				const nul = pending.indexOf("\0");
+				const end = nul === -1 ? -1 : pending.indexOf("\n", nul);
+				if (end === -1) break;
+				add(pending.slice(0, end), nul);
+				pending = pending.slice(end + 1);
 				if (matches.length > MAX_GREP_MATCHES) return stop("limit");
 			}
 		});
@@ -85,7 +90,8 @@ function runSearch(
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", onAbort);
 			// A partial last line only counts when the command finished on its own.
-			if (!stopped && pending) add(pending);
+			const nul = pending.indexOf("\0");
+			if (!stopped && nul !== -1) add(pending, nul);
 			if (!stopped && code === 2 && matches.length === 0) {
 				reject(new Error(stderr.trim() || `${command} failed`));
 				return;
@@ -95,10 +101,23 @@ function runSearch(
 	});
 }
 
+/** `path` as a literal ripgrep glob. */
+const escapeGlob = (path: string) => path.replace(/[\\*?[\]{}!]/g, "\\$&");
+
 function ripgrepArgs(target: string, pattern: string, glob: string | undefined, skipped: string[]): string[] {
-	const args = ["--line-number", "--no-heading", "--with-filename", "--color", "never", "--glob", "!node_modules"];
-	for (const path of skipped) args.push("--glob", `!/${path}`);
+	const args = [
+		"--line-number",
+		"--no-heading",
+		"--with-filename",
+		"--null",
+		"--color",
+		"never",
+		"--glob",
+		"!node_modules",
+	];
 	if (glob !== undefined) args.push("--glob", glob);
+	// Last, so they win over the user's glob: a later ripgrep glob overrides an earlier one.
+	for (const path of skipped) args.push("--glob", `!**/${escapeGlob(path)}`);
 	args.push("--", pattern, target);
 	return args;
 }
@@ -109,11 +128,31 @@ function ripgrepArgs(target: string, pattern: string, glob: string | undefined, 
  * a directory is applied to the relative paths instead (see execute).
  */
 function grepArgs(target: string, pattern: string, glob: string | undefined, skipped: string[]): string[] {
-	const args = ["-rnHIE", "--exclude-dir=node_modules", "--exclude-dir=.*", "--exclude=.*"];
+	const args = ["-rnHIE", "--null", "--exclude-dir=node_modules", "--exclude-dir=.*", "--exclude=.*"];
 	for (const path of skipped) args.push(`--exclude-dir=${path}`);
-	if (glob !== undefined && !glob.includes("/")) args.push(`--include=${glob}`);
+	if (glob !== undefined && !glob.includes("/"))
+		args.push(glob.startsWith("!") ? `--exclude=${glob.slice(1)}` : `--include=${glob}`);
 	args.push("-e", pattern, "--", target);
 	return args;
+}
+
+/** Applies a glob that has a directory to a relative path; a leading `!` negates it. */
+function globFilter(glob: string): (path: string) => boolean {
+	return glob.startsWith("!") ? (path) => !matchesGlob(path, glob.slice(1)) : (path) => matchesGlob(path, glob);
+}
+
+/**
+ * Whether a match may be returned: its real path, and the path as written,
+ * are outside every protected place. A path that cannot be resolved is dropped.
+ */
+function isReadable(path: string, root: string, secrets: readonly string[]): boolean {
+	const absolute = resolve(root, path);
+	if (isProtected(absolute, secrets)) return false;
+	try {
+		return !isProtected(realpathSync(absolute), secrets);
+	} catch {
+		return false;
+	}
 }
 
 export interface GrepOptions {
@@ -150,11 +189,12 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 				const root = await realpath(cwd);
 				// The engines are told to skip the secrets inside the target; the filter below is what guarantees none is returned.
 				const skipped = secrets.filter((secret) => secret !== target && isInside(target, secret));
-				const notSecret = (match: string) => !isProtected(resolve(root, match), secrets);
-				const byGlob = glob?.includes("/") ? (match: string) => matchesGlob(match, glob) : undefined;
-				const accept = (match: string) => notSecret(match) && (byGlob?.(match) ?? true);
 				if (signal?.aborted) return failure("Search aborted.");
 				const useRipgrep = options.useRipgrep ?? hasRipgrep();
+				// Only the fallback applies a glob with a directory itself; ripgrep takes it as given.
+				const byGlob = glob?.includes("/") ? globFilter(glob) : undefined;
+				const accept = (match: string) =>
+					(options.outside ? isReadable(match, root, secrets) : true) && (useRipgrep || (byGlob?.(match) ?? true));
 				const result = useRipgrep
 					? await runSearch(
 							"rg",
