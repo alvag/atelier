@@ -63,6 +63,7 @@ describe("parseVerifierReport", () => {
 		expect(parseVerifierReport(report([], []))).toEqual({
 			ok: false,
 			error: "The report lists no requirements: a verdict per requirement is required.",
+			cause: "missing_requirements",
 		});
 	});
 

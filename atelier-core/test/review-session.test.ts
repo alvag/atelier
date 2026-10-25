@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { AgentBackend, BackendSession, BackendStartOptions, ToolCall } from "../src/backend.ts";
+import { errorEvent } from "../src/events.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -96,7 +97,9 @@ async function receipts(root: string): Promise<{ file: string; receipt: { verdic
 }
 
 const HOLD = Symbol("hold");
-type Reply = string | typeof HOLD;
+/** The role runs out of model requests, as the backend reports it. */
+const LIMIT = Symbol("limit");
+type Reply = string | typeof HOLD | typeof LIMIT;
 
 /** The review roles' backend: answers by role, recording what each one saw. */
 class RoleBackend implements AgentBackend {
@@ -145,6 +148,12 @@ class RoleBackend implements AgentBackend {
 						release = resolve;
 					});
 					yield { type: "turn_finished", stopReason: "interrupted", usage: { ...usage, input: 2, output: 2 } };
+					return;
+				}
+				if (answer === LIMIT) {
+					const limit = options.maxRequestsPerTurn ?? 40;
+					yield errorEvent("turn_limit", `The turn reached its limit of ${limit} model requests.`, true);
+					yield { type: "turn_finished", stopReason: "turn_limit", usage: { ...usage }, requests: limit };
 					return;
 				}
 				yield { type: "text_delta", text: answer };
@@ -1650,6 +1659,122 @@ describe("independent verification", () => {
 				reason: "The correction failed.",
 				openDefects: [{ id: "D1" }],
 			});
+		});
+	});
+
+	describe("refusal causes", () => {
+		const refusal = (event: { cause?: string; observed?: string } | undefined) => ({
+			cause: event?.cause,
+			observed: event?.observed,
+		});
+		const failedWith = async (reply: (role: string, prompt: string) => Reply) => {
+			const s = await start({
+				turns: [VERIFY_TURN, [text("never")]],
+				roles: new RoleBackend(reply),
+				consent: "declined",
+			});
+			const events = await s.send("edit");
+			return { round: ofType(events, "verification_round")[0], done: ofType(events, "verification_finished")[0] };
+		};
+
+		it("names a reply that is not a report invalid_report, with the start of the reply, on the round and the end", async () => {
+			const { round, done } = await failedWith(verifying("looks fine to me"));
+			expect(refusal(round)).toEqual({ cause: "invalid_report", observed: "looks fine to me" });
+			expect(refusal(done)).toEqual({ cause: "invalid_report", observed: "looks fine to me" });
+			expect(round?.error).toContain("invalid report");
+		});
+
+		it("names a report without requirements missing_requirements", async () => {
+			const { round, done } = await failedWith(verifying(vreport([], [])));
+			expect(refusal(round)).toEqual({ cause: "missing_requirements", observed: "0 requirements" });
+			expect(done).toMatchObject({ outcome: "failed", cause: "missing_requirements" });
+		});
+
+		it("names a verifier that fails role_failed with its error, and one out of requests request_cap", async () => {
+			const crashed = await failedWith((role, prompt) => {
+				if (role === "verifier") throw new Error("model down");
+				return defaultReply(role, prompt);
+			});
+			expect(crashed.done?.cause).toBe("role_failed");
+			expect(crashed.done?.observed).toContain("model down");
+
+			const capped = await failedWith((role, prompt) => (role === "verifier" ? LIMIT : defaultReply(role, prompt)));
+			expect(refusal(capped.round)).toEqual({ cause: "request_cap", observed: "80 requests" });
+			expect(refusal(capped.done)).toEqual({ cause: "request_cap", observed: "80 requests" });
+		});
+
+		it("names an interrupted verification interrupted", async () => {
+			const held = new RoleBackend(() => HOLD);
+			const h = await start({ turns: [VERIFY_TURN], roles: held, consent: "declined" });
+			const running = h.send("edit");
+			for (let i = 0; i < 200 && held.roles.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+			await h.session.interrupt();
+			const [done] = ofType(await running, "verification_finished");
+			expect(refusal(done)).toEqual({ cause: "interrupted", observed: undefined });
+		});
+
+		it("names a failed correction correction_failed", async () => {
+			const s = await start({
+				turns: [VERIFY_TURN, [{ throw: "boom" }]],
+				roles: new RoleBackend(verifying(vreport([vdefect()]))),
+				consent: "declined",
+			});
+			const [done] = ofType(await s.send("edit"), "verification_finished");
+			expect(refusal(done)).toEqual({ cause: "correction_failed", observed: undefined });
+		});
+
+		it("names the defects left after round 2 open_defects, by their ids", async () => {
+			const open = new RoleBackend(
+				verifying(vreport([vdefect()]), vreport([vdefect({ id: "D2", severity: "major" })])),
+			);
+			const a = await start({ turns: [VERIFY_TURN, FIX_TURN, [text("never")]], roles: open, consent: "declined" });
+			const [left] = ofType(await a.send("edit"), "verification_finished");
+			expect(refusal(left)).toEqual({ cause: "open_defects", observed: "D2" });
+		});
+
+		// With bash, so the sandbox has to work here.
+		it.skipIf(NESTED)("names unverified requirements unverified_requirements, by their ids", async () => {
+			const unverified = { ...vrequirement, id: "R2", verdict: "unverified", evidence: "no dependencies to run it" };
+			const roles = new RoleBackend(verifying(vreport([], [vrequirement, unverified])));
+			const b = await start({ turns: [VERIFY_TURN, [text("never")]], roles, consent: "declined" });
+			const [undecided] = ofType(await b.send("edit"), "verification_finished");
+			expect(refusal(undecided)).toEqual({ cause: "unverified_requirements", observed: "R2" });
+		});
+
+		it("names sandbox_unavailable with the sandbox's reason when a verifier without bash leaves requirements unverified", async () => {
+			const unverified = { ...vrequirement, verdict: "unverified", evidence: "bash was not available" };
+			const s = await start({
+				turns: [VERIFY_TURN, [text("never")]],
+				roles: new RoleBackend(verifying(vreport([], [unverified]))),
+				consent: "declined",
+				sandbox: new Sandbox({ platform: "linux" }),
+			});
+			const [done] = ofType(await s.send("edit"), "verification_finished");
+			expect(done).toMatchObject({ outcome: "needs_decision", reason: expect.stringContaining("R1") });
+			expect(refusal(done)).toEqual({
+				cause: "sandbox_unavailable",
+				observed: "sandbox not available on this platform",
+			});
+		});
+
+		it("has no cause when it passes", async () => {
+			const s = await start({
+				turns: [VERIFY_TURN],
+				roles: new RoleBackend(verifying(vreport())),
+				consent: "declined",
+			});
+			const events = await s.send("edit");
+			expect(refusal(ofType(events, "verification_round")[0])).toEqual({ cause: undefined, observed: undefined });
+			expect(refusal(ofType(events, "verification_finished")[0])).toEqual({ cause: undefined, observed: undefined });
+		});
+
+		it("carries the review's cause and observed value on review_finished", async () => {
+			const roles = new RoleBackend((role, prompt) => (role === "reliability" ? LIMIT : defaultReply(role, prompt)));
+			const s = await start({ roles });
+			await writeFile(join(s.cwd, "a.ts"), "base\nmore\n");
+			const [done] = ofType(await collect(s.session.review()), "review_finished");
+			expect(done).toMatchObject({ verdict: "unavailable", cause: "request_cap" });
+			expect(done?.reason).toContain("reliability");
 		});
 	});
 

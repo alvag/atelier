@@ -1,6 +1,8 @@
 import {
 	type AtelierEventBody,
 	describeError,
+	excerpt,
+	type Refusal,
 	type SubagentTag,
 	type Usage,
 	type VerifyDefect,
@@ -20,6 +22,9 @@ import {
 	verifierCorrectionMessage,
 } from "./verifier.ts";
 
+/** One verifier run; `bashUnavailable`: why it ran without bash, when it did. */
+export type VerifierRun = RoleResult & { bashUnavailable?: string };
+
 export interface VerificationDeps {
 	/** Runs the verifier once over `candidate` and returns its final message. */
 	runVerifier(call: {
@@ -27,7 +32,7 @@ export interface VerificationDeps {
 		candidate: Candidate;
 		round: number;
 		handedBack?: readonly VerifierDefect[];
-	}): Promise<RoleResult>;
+	}): Promise<VerifierRun>;
 	/** Asks the main agent to correct, in one turn. */
 	correct(message: string): Promise<{ ok: boolean; usage: Usage; costUsd?: number; requests?: number }>;
 	/** Freezes the worktree again, after the correction. */
@@ -79,12 +84,18 @@ export async function verify(
 	};
 	let current = input.candidate;
 	let rounds = 0;
-	const finish = (outcome: VerifyOutcome, reason?: string, openDefects: VerifyDefect[] = []): Verification => {
+	const finish = (
+		outcome: VerifyOutcome,
+		reason?: string,
+		refusal?: Refusal,
+		openDefects: VerifyDefect[] = [],
+	): Verification => {
 		deps.push({
 			type: "verification_finished",
 			verifyId,
 			outcome,
 			...(reason === undefined ? {} : { reason }),
+			...refusalFields(refusal),
 			rounds,
 			openDefects,
 			usage: { ...total },
@@ -106,7 +117,7 @@ export async function verify(
 	let handedBack: VerifierDefect[] | undefined;
 	for (let round = 1; round <= VERIFIER_ROUNDS; round++) {
 		rounds = round;
-		let reply: RoleResult;
+		let reply: VerifierRun;
 		try {
 			reply = await deps.runVerifier({ verifyId, candidate: current, round, ...(handedBack ? { handedBack } : {}) });
 		} catch (error) {
@@ -114,25 +125,36 @@ export async function verify(
 		}
 		charge(reply);
 		const spent = { usage: reply.usage, ...(reply.costUsd === undefined ? {} : { costUsd: reply.costUsd }) };
-		const failed = (error: string): Verification => {
+		const failed = (error: string, refusal: Refusal): Verification => {
 			deps.push({
 				type: "verification_round",
 				verifyId,
 				round,
 				ok: false,
 				error,
+				...refusalFields(refusal),
 				requirements: [],
 				defects: [],
 				blocking: [],
 				correcting: false,
 				...spent,
 			});
-			return finish("failed", error);
+			return finish("failed", error, refusal);
 		};
-		if (deps.aborted()) return failed("interrupted");
-		if (!reply.ok) return failed(reply.error);
+		if (deps.aborted()) return failed("interrupted", { cause: "interrupted" });
+		if (!reply.ok)
+			return failed(
+				reply.error,
+				reply.cause === undefined
+					? { cause: "role_failed", observed: excerpt(reply.error) }
+					: { cause: reply.cause, ...(reply.observed === undefined ? {} : { observed: reply.observed }) },
+			);
 		const parsed = parseVerifierReport(reply.text);
-		if (!parsed.ok) return failed(`The verifier returned an invalid report: ${parsed.error}`);
+		if (!parsed.ok)
+			return failed(`The verifier returned an invalid report: ${parsed.error}`, {
+				cause: parsed.cause,
+				observed: parsed.cause === "missing_requirements" ? "0 requirements" : excerpt(reply.text),
+			});
 		const blocking = blockingIssues(parsed.report);
 		const unverified = unverifiedRequirements(parsed.report);
 		const correcting = blocking.length > 0 && round < VERIFIER_ROUNDS;
@@ -148,12 +170,22 @@ export async function verify(
 			...spent,
 		});
 		// Proof that is partial or missing is a decision for the user, never a pass.
+		// Without bash, what is left unverified is the missing sandbox's doing, so that is the cause.
+		const undecided: Refusal =
+			reply.bashUnavailable === undefined
+				? { cause: "unverified_requirements", observed: unverified.map((r) => r.id).join(", ") }
+				: { cause: "sandbox_unavailable", observed: excerpt(reply.bashUnavailable) };
 		if (blocking.length === 0) {
-			if (unverified.length > 0) return finish("needs_decision", unverifiedReason(unverified));
+			if (unverified.length > 0) return finish("needs_decision", unverifiedReason(unverified), undecided);
 			return finish(round === 1 ? "passed" : "corrected");
 		}
 		if (!correcting)
-			return finish("needs_decision", unverified.length > 0 ? unverifiedReason(unverified) : undefined, blocking);
+			return finish(
+				"needs_decision",
+				unverified.length > 0 ? unverifiedReason(unverified) : undefined,
+				{ cause: "open_defects", observed: blocking.map((defect) => defect.id).join(", ") },
+				blocking,
+			);
 
 		let fixed: Awaited<ReturnType<VerificationDeps["correct"]>>;
 		try {
@@ -163,14 +195,24 @@ export async function verify(
 		}
 		charge(fixed);
 		input.count(fixed.requests);
-		if (deps.aborted()) return finish("failed", "interrupted", blocking);
-		if (!fixed.ok) return finish("needs_decision", "The correction failed.", blocking);
+		if (deps.aborted()) return finish("failed", "interrupted", { cause: "interrupted" }, blocking);
+		if (!fixed.ok) return finish("needs_decision", "The correction failed.", { cause: "correction_failed" }, blocking);
 		const frozen = await deps.freeze();
 		if (!frozen.ok)
-			return finish("needs_decision", `The corrected work could not be frozen: ${frozen.reason}`, blocking);
+			return finish(
+				"needs_decision",
+				`The corrected work could not be frozen: ${frozen.reason}`,
+				{ cause: "freeze_failed", observed: excerpt(frozen.reason) },
+				blocking,
+			);
 		current = frozen.candidate;
 		handedBack = blocking;
 	}
 	// The loop always returns: the last round never corrects.
-	return finish("failed", "The verification ended without a result.");
+	return finish("failed", "The verification ended without a result.", { cause: "role_failed" });
+}
+
+function refusalFields(refusal: Refusal | undefined): Partial<Refusal> {
+	if (refusal === undefined) return {};
+	return refusal.observed === undefined ? { cause: refusal.cause } : refusal;
 }

@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { REFUSAL_CAUSES } from "../events.ts";
 import { findingSchema } from "./findings.ts";
 import { LENSES } from "./risk.ts";
 
@@ -36,6 +37,9 @@ export const receiptSchema = z.object({
 	unavailableReason: z.string().optional(),
 	/** Why an escalated review was handed back to the human. */
 	escalatedReason: z.string().optional(),
+	/** Why an escalated or unavailable review ended so, from a closed set, and the value observed. */
+	cause: z.enum(REFUSAL_CAUSES).optional(),
+	observed: z.string().optional(),
 	usage: usageSchema,
 	costUsd: z.number().optional(),
 });

@@ -3,7 +3,9 @@ import {
 	type AtelierEventBody,
 	describeError,
 	errorEvent,
+	excerpt,
 	type PhaseSpent,
+	type Refusal,
 	type ReviewFinding,
 	type ReviewVerdict,
 	type SubagentTag,
@@ -26,7 +28,7 @@ import { type ReviewDeps, type RoleName, type RoleResult, runReview } from "./re
 import { type Assessment, assessRisk, type Escalation } from "./risk.ts";
 import { createRiskTool, RiskRequests } from "./tool.ts";
 import { createTreeTools } from "./tree-tools.ts";
-import { verify } from "./verification.ts";
+import { type VerifierRun, verify } from "./verification.ts";
 import {
 	buildVerifierPrompt,
 	VERIFIER_ENV,
@@ -321,6 +323,8 @@ export class SessionReview {
 			reviewId,
 			verdict: receipt.verdict as ReviewVerdict,
 			...(reason === undefined ? {} : { reason }),
+			...(receipt.cause === undefined ? {} : { cause: receipt.cause }),
+			...(receipt.observed === undefined ? {} : { observed: receipt.observed }),
 			findings: receipt.findings.map(compact),
 			refuted: receipt.refuted.map(({ id, reason }) => ({ id, reason })),
 			followUps: receipt.followUps.map(compact),
@@ -366,7 +370,7 @@ export class SessionReview {
 		declaration: readonly Escalation[],
 		call: { verifyId: string; candidate: Candidate; round: number; handedBack?: readonly VerifierDefect[] },
 		count: (requests: number | undefined) => void,
-	): Promise<RoleResult> {
+	): Promise<VerifierRun> {
 		const { candidate } = call;
 		let workspace: Awaited<ReturnType<typeof createWorkspace>>;
 		try {
@@ -377,7 +381,10 @@ export class SessionReview {
 				...(host.feature === undefined ? {} : { feature: host.feature }),
 			});
 		} catch (error) {
-			return { ok: false, error: `The verifier's copy could not be made: ${describeError(error)}`, usage: ZERO_USAGE };
+			return failedRole(`The verifier's copy could not be made: ${describeError(error)}`, {
+				cause: "copy_failed",
+				observed: excerpt(describeError(error)),
+			});
 		}
 		try {
 			const sandboxStatus = await (this.#options.sandbox ?? sandbox).status();
@@ -394,7 +401,7 @@ export class SessionReview {
 				...(sandboxStatus.available ? {} : { bashUnavailable: sandboxStatus.reason }),
 				...(git === undefined ? {} : { git }),
 			});
-			return await this.#runChild(
+			const result = await this.#runChild(
 				host,
 				{ parentCallId: call.verifyId, agent: "verify:verifier" },
 				{
@@ -422,8 +429,9 @@ export class SessionReview {
 				prompt,
 				count,
 			);
+			return sandboxStatus.available ? result : { ...result, bashUnavailable: sandboxStatus.reason };
 		} catch (error) {
-			return { ok: false, error: `The verifier could not start: ${describeError(error)}`, usage: ZERO_USAGE };
+			return failedRole(`The verifier could not start: ${describeError(error)}`);
 		} finally {
 			await workspace.remove();
 		}
@@ -481,7 +489,7 @@ export class SessionReview {
 		const stop = () => void child.interrupt();
 		signal?.addEventListener("abort", stop, { once: true });
 		try {
-			if (signal?.aborted) return failedRole("interrupted");
+			if (signal?.aborted) return failedRole("interrupted", { cause: "interrupted" });
 			// Only the text after the role's last tool call is its answer.
 			let report = "";
 			let failure: string | undefined;
@@ -503,9 +511,19 @@ export class SessionReview {
 					count(event.requests);
 				}
 			}
+			const spent = {
+				usage,
+				...(costUsd === undefined ? {} : { costUsd }),
+				...(requests === undefined ? {} : { requests }),
+			};
 			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined)
-				return failedRole(`${stopReason}: ${failure ?? "no details"}`, usage, costUsd, requests);
-			if (report.trim() === "") return failedRole("The role returned no reply.", usage, costUsd, requests);
+				return failedRole(
+					`${stopReason}: ${failure ?? "no details"}`,
+					childRefusal(stopReason, failure, requests ?? options.maxRequestsPerTurn),
+					spent,
+				);
+			if (report.trim() === "")
+				return failedRole("The role returned no reply.", { cause: "role_failed", observed: "no reply" }, spent);
 			return {
 				ok: true,
 				text: report,
@@ -521,14 +539,24 @@ export class SessionReview {
 	}
 }
 
-function failedRole(error: string, usage: Usage = ZERO_USAGE, costUsd?: number, requests?: number): RoleResult {
-	return {
-		ok: false,
-		error,
-		usage,
-		...(costUsd === undefined ? {} : { costUsd }),
-		...(requests === undefined ? {} : { requests }),
-	};
+/** A role that did not answer; without a cause it failed, with its error as the value observed. */
+function failedRole(
+	error: string,
+	refusal: Refusal = { cause: "role_failed", observed: excerpt(error) },
+	spent: { usage: Usage; costUsd?: number; requests?: number } = { usage: ZERO_USAGE },
+): RoleResult {
+	return { ok: false, error, ...refusal, ...spent };
+}
+
+/** Request limits by backend: Atelier's API backend stops with `turn_limit`, Claude Code with `error_max_turns`. */
+const REQUEST_CAP_STOPS = new Set(["turn_limit", "error_max_turns"]);
+
+/** Why a child turn ended without an answer: interrupted, out of model requests, or failed with its error. */
+function childRefusal(stopReason: string, failure: string | undefined, requests: number | undefined): Refusal {
+	if (stopReason === "interrupted") return { cause: "interrupted" };
+	if (REQUEST_CAP_STOPS.has(stopReason))
+		return { cause: "request_cap", ...(requests === undefined ? {} : { observed: `${requests} requests` }) };
+	return { cause: "role_failed", observed: excerpt(failure ?? stopReason) };
 }
 
 /** The four lenses are one part of the turn; the refuter and the validator are one each. */

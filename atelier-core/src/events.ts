@@ -113,6 +113,48 @@ export type VerifyOutcome = "passed" | "corrected" | "needs_decision" | "failed"
 
 export type ReviewVerdict = "approved" | "escalated" | "declined" | "unavailable";
 
+/** Why the verifier or a review ended without a pass: a closed set, so clients and logs never get only a generic message. */
+export const REFUSAL_CAUSES = [
+	"interrupted",
+	"role_failed",
+	"request_cap",
+	"invalid_report",
+	"missing_requirements",
+	"invalid_reply",
+	"context_too_large",
+	"patch_unreadable",
+	"copy_failed",
+	"sandbox_unavailable",
+	"correction_failed",
+	"freeze_failed",
+	"measure_failed",
+	"over_budget",
+	"unverified_requirements",
+	"open_defects",
+	"unresolved_findings",
+] as const;
+export type RefusalCause = (typeof REFUSAL_CAUSES)[number];
+
+/** A cause and, when there is one, the value observed: bytes, lines, requests, ids, or the start of an unreadable reply. */
+export interface Refusal {
+	cause: RefusalCause;
+	observed?: string;
+}
+
+const EXCERPT_CHARS = 200;
+
+/** The start of a reply or an error on one line, cut at 200 characters. */
+export function excerpt(text: string): string {
+	const line = text.replace(/\s+/g, " ").trim();
+	return line.length > EXCERPT_CHARS ? `${line.slice(0, EXCERPT_CHARS)}…` : line;
+}
+
+/** What clients show for a refusal: the cause and the value observed, else the reason, else that none was given. */
+export function describeRefusal(event: { cause?: RefusalCause; observed?: string; reason?: string }): string {
+	if (event.cause === undefined) return event.reason ?? "no reason given";
+	return event.observed === undefined ? event.cause : `${event.cause} (${event.observed})`;
+}
+
 export type AtelierEventBody =
 	| { type: "session_started"; backend: string; model: string; authSource: AuthSource }
 	| { type: "text_delta"; text: string }
@@ -208,6 +250,9 @@ export type AtelierEventBody =
 			reviewId: string;
 			verdict: ReviewVerdict;
 			reason?: string;
+			/** Why an `escalated` or `unavailable` review ended so, and the value observed. */
+			cause?: RefusalCause;
+			observed?: string;
 			/** Confirmed blocking findings. */
 			findings: ReviewFinding[];
 			refuted: { id: string; reason: string }[];
@@ -235,6 +280,9 @@ export type AtelierEventBody =
 			round: number;
 			ok: boolean;
 			error?: string;
+			/** With `ok: false`: why, and the value observed. */
+			cause?: RefusalCause;
+			observed?: string;
 			requirements: VerifyRequirement[];
 			defects: VerifyDefect[];
 			blocking: string[];
@@ -248,6 +296,9 @@ export type AtelierEventBody =
 			verifyId: string;
 			outcome: VerifyOutcome;
 			reason?: string;
+			/** Why it did not pass (`needs_decision` or `failed`), and the value observed. */
+			cause?: RefusalCause;
+			observed?: string;
 			rounds: number;
 			openDefects: VerifyDefect[];
 			usage: Usage;

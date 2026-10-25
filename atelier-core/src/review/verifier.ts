@@ -93,29 +93,36 @@ export interface VerifierReport {
 	requirements: VerifierRequirement[];
 	defects: VerifierDefect[];
 }
-export type ParsedReport = { ok: true; report: VerifierReport } | { ok: false; error: string };
+export type ParsedReport =
+	| { ok: true; report: VerifierReport }
+	| { ok: false; error: string; cause: "invalid_report" | "missing_requirements" };
 
 /** The verifier's reply. Anything but a complete report is a failure, never a pass. */
 export function parseVerifierReport(text: string): ParsedReport {
 	const json = extractJson(text);
-	if (json === undefined) return { ok: false, error: "The reply has no JSON object with requirements and defects." };
+	const invalid = (error: string): ParsedReport => ({ ok: false, error, cause: "invalid_report" });
+	if (json === undefined) return invalid("The reply has no JSON object with requirements and defects.");
 	let value: unknown;
 	try {
 		value = JSON.parse(json);
 	} catch (error) {
-		return { ok: false, error: `The reply is not valid JSON: ${describeError(error)}` };
+		return invalid(`The reply is not valid JSON: ${describeError(error)}`);
 	}
 	const parsed = reportSchema.safeParse(value);
-	if (!parsed.success) return { ok: false, error: z.prettifyError(parsed.error) };
+	if (!parsed.success) return invalid(z.prettifyError(parsed.error));
 	if (parsed.data.requirements.length === 0)
-		return { ok: false, error: "The report lists no requirements: a verdict per requirement is required." };
+		return {
+			ok: false,
+			error: "The report lists no requirements: a verdict per requirement is required.",
+			cause: "missing_requirements",
+		};
 	for (const [name, entries] of [
 		["requirement", parsed.data.requirements],
 		["defect", parsed.data.defects],
 	] as const) {
 		const seen = new Set<string>();
 		for (const { id } of entries) {
-			if (seen.has(id)) return { ok: false, error: `The reply uses the ${name} id ${id} more than once.` };
+			if (seen.has(id)) return invalid(`The reply uses the ${name} id ${id} more than once.`);
 			seen.add(id);
 		}
 	}

@@ -544,3 +544,116 @@ describe("runReview", () => {
 		);
 	});
 });
+
+describe("refusal causes", () => {
+	const refusal = (receipt: Receipt) => ({ cause: receipt.cause, observed: receipt.observed });
+
+	it("names an approved review with no cause", async () => {
+		const env = await setup(4);
+		const { receipt } = await drive(env, harness(env, {}).deps);
+		expect(refusal(receipt)).toEqual({ cause: undefined, observed: undefined });
+	});
+
+	it("refuses a context over 200 KiB as context_too_large with the bytes and the limit", async () => {
+		const env = await setup(4);
+		await writeFile(join(env.root, "big.txt"), "x".repeat(210 * 1024));
+		const frozen = await freezeCandidate(env.root);
+		if (!frozen.ok) throw new Error(frozen.reason);
+		env.candidate = frozen.candidate;
+		env.assessment = assessRisk(frozen.candidate);
+		const { receipt } = await drive(env, harness(env, {}).deps);
+		expect(receipt.cause).toBe("context_too_large");
+		expect(receipt.observed).toMatch(/^\d+ bytes, limit 204800$/);
+		expect(Number.parseInt(receipt.observed ?? "", 10)).toBeGreaterThan(204800);
+	});
+
+	it("names an unreadable lens reply invalid_reply with the start of the reply, cut at 200 characters", async () => {
+		const env = await setup(4);
+		const short = await drive(env, harness(env, { lens: () => ok("nope") }).deps);
+		expect(refusal(short.receipt)).toEqual({ cause: "invalid_reply", observed: "nope" });
+
+		const long = await drive(env, harness(env, { lens: () => ok(`${"a".repeat(300)}\n`) }).deps);
+		expect(long.receipt.cause).toBe("invalid_reply");
+		expect(long.receipt.observed).toBe(`${"a".repeat(200)}…`);
+	});
+
+	it("names a failed role role_failed with its error, and keeps a cause the role runner gave", async () => {
+		const env = await setup(4);
+		const failed = await drive(
+			env,
+			harness(env, { lens: () => ({ ok: false, error: "rate limited", usage: usage() }) }).deps,
+		);
+		expect(refusal(failed.receipt)).toEqual({ cause: "role_failed", observed: "rate limited" });
+
+		const capped = await drive(
+			env,
+			harness(env, {
+				lens: () => ({ ok: false, error: "turn_limit", cause: "request_cap", observed: "40 requests", usage: usage() }),
+			}).deps,
+		);
+		expect(refusal(capped.receipt)).toEqual({ cause: "request_cap", observed: "40 requests" });
+	});
+
+	it("names an unreadable refuter or validator reply invalid_reply", async () => {
+		const refuter = await setup(20);
+		const a = await drive(refuter, harness(refuter, { ...severeLens(), refuter: () => ok("who knows") }).deps);
+		expect(refusal(a.receipt)).toEqual({ cause: "invalid_reply", observed: "who knows" });
+
+		const validator = await setup(20);
+		const b = await drive(
+			validator,
+			harness(validator, {
+				...severeLens(),
+				refuter: () => ok(verdicts()),
+				correct: tweak(1),
+				validator: () => ok("all good"),
+			}).deps,
+		);
+		expect(refusal(b.receipt)).toEqual({ cause: "invalid_reply", observed: "all good" });
+	});
+
+	it("names a correction over the budget over_budget with the lines used and the budget", async () => {
+		const env = await setup(4);
+		const { receipt } = await drive(
+			env,
+			harness(env, { ...severeLens(), refuter: () => ok(verdicts()), correct: edit(30) }).deps,
+		);
+		expect(receipt.cause).toBe("over_budget");
+		expect(receipt.observed).toBe(`${receipt.correction?.used} lines, budget 2`);
+	});
+
+	it("names a failed correction, a failed re-freeze and unresolved findings", async () => {
+		const failed = await setup(20);
+		const a = await drive(
+			failed,
+			harness(failed, { ...severeLens(), refuter: () => ok(verdicts()), correct: async () => ({ ok: false }) }).deps,
+		);
+		expect(refusal(a.receipt)).toEqual({ cause: "correction_failed", observed: undefined });
+
+		const frozen = await setup(20);
+		const second = harness(frozen, { ...severeLens(), refuter: () => ok(verdicts()), correct: tweak(2) });
+		second.deps.freeze = async () => ({ ok: false, reason: "no git" });
+		const b = await drive(frozen, second.deps);
+		expect(refusal(b.receipt)).toEqual({ cause: "freeze_failed", observed: "no git" });
+
+		const open = await setup(20);
+		const c = await drive(
+			open,
+			harness(open, {
+				...severeLens(),
+				refuter: () => ok(verdicts()),
+				correct: tweak(2),
+				validator: () => ok(results({ id: "RL-001", resolved: false })),
+			}).deps,
+		);
+		expect(refusal(c.receipt)).toEqual({ cause: "unresolved_findings", observed: "RL-001" });
+	});
+
+	it("names an interrupted review interrupted", async () => {
+		const env = await setup(4);
+		const controller = new AbortController();
+		controller.abort();
+		const { receipt } = await drive(env, harness(env, {}).deps, controller.signal);
+		expect(refusal(receipt)).toEqual({ cause: "interrupted", observed: undefined });
+	});
+});

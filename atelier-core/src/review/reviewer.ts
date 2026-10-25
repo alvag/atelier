@@ -1,8 +1,8 @@
-import { describeError, type Usage, ZERO_USAGE } from "../events.ts";
+import { describeError, excerpt, type Refusal, type Usage, ZERO_USAGE } from "../events.ts";
 import { type Candidate, type FreezeResult, holdsCommits } from "./candidate.ts";
 import { type Finding, isBlocking, parseFindings } from "./findings.ts";
 import { runGit } from "./git.ts";
-import { buildLensPrompt, LENS_INSTRUCTIONS, readPatch } from "./lenses.ts";
+import { type BudgetExceeded, buildLensPrompt, LENS_INSTRUCTIONS, readPatch } from "./lenses.ts";
 import type { Receipt } from "./receipts.ts";
 import type { Assessment, Lens } from "./risk.ts";
 import { commitInstruction, parseResults, parseVerdicts, REFUTER_INSTRUCTION, VALIDATOR_INSTRUCTION } from "./roles.ts";
@@ -11,7 +11,7 @@ export type RoleName = Lens | "refuter" | "validator";
 
 export type RoleResult =
 	| { ok: true; text: string; usage: Usage; costUsd?: number; requests?: number }
-	| { ok: false; error: string; usage: Usage; costUsd?: number; requests?: number };
+	| ({ ok: false; error: string; usage: Usage; costUsd?: number; requests?: number } & Partial<Refusal>);
 
 export interface ReviewDeps {
 	/** Runs one read-only subagent over `tree` and returns its final message. */
@@ -83,7 +83,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		total.cacheWrite += result.usage.cacheWrite;
 		if (result.costUsd !== undefined) cost = (cost ?? 0) + result.costUsd;
 	};
-	const finish = (verdict: "approved" | "escalated" | "unavailable", reason?: string): Receipt => ({
+	const finish = (verdict: "approved" | "escalated" | "unavailable", reason?: string, refusal?: Refusal): Receipt => ({
 		schema: "atelier.review-receipt/v1",
 		id: deps.createId(),
 		createdAt: deps.now().toISOString(),
@@ -99,11 +99,13 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		verdict,
 		...(verdict === "unavailable" && reason !== undefined ? { unavailableReason: reason } : {}),
 		...(verdict === "escalated" && reason !== undefined ? { escalatedReason: reason } : {}),
+		...(refusal === undefined ? {} : { cause: refusal.cause }),
+		...(refusal?.observed === undefined ? {} : { observed: refusal.observed }),
 		usage: total,
 		...(cost !== undefined ? { costUsd: cost } : {}),
 	});
 	const interrupted = () => signal?.aborted === true;
-	const stopped = () => finish("unavailable", "interrupted");
+	const stopped = () => finish("unavailable", "interrupted", { cause: "interrupted" });
 	/** A role that throws is a role that failed. */
 	const callRole = async (role: RoleName, instruction: string, prompt: string, tree: string): Promise<RoleResult> => {
 		try {
@@ -114,6 +116,16 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 			return { ok: false, error: describeError(error), usage: ZERO_USAGE };
 		}
 	};
+	/** A failed role keeps the cause its runner found; otherwise it failed, with its error. */
+	const roleFailure = (reply: RoleResult & { ok: false }): Refusal =>
+		reply.cause === undefined
+			? { cause: "role_failed", observed: excerpt(reply.error) }
+			: { cause: reply.cause, ...(reply.observed === undefined ? {} : { observed: reply.observed }) };
+	const unreadable = (text: string): Refusal => ({ cause: "invalid_reply", observed: excerpt(text) });
+	const tooLarge = (refused: BudgetExceeded): Refusal => ({
+		cause: "context_too_large",
+		observed: `${refused.bytes} bytes, limit ${refused.limit}`,
+	});
 
 	if (interrupted()) return stopped();
 	if (assessment.lenses.length === 0) return finish("approved");
@@ -122,38 +134,45 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	let patch: string;
 	try {
 		const read = await readPatch(candidate);
-		if (!read.ok) return finish("unavailable", read.code);
+		if (!read.ok) return finish("unavailable", read.code, tooLarge(read));
 		patch = read.patch;
 	} catch (error) {
-		return finish("unavailable", `Could not read the patch: ${describeError(error)}`);
+		return finish("unavailable", `Could not read the patch: ${describeError(error)}`, {
+			cause: "patch_unreadable",
+			observed: excerpt(describeError(error)),
+		});
 	}
 	const prompts = new Map<Lens, string>();
 	for (const lens of assessment.lenses) {
 		const built = buildLensPrompt({ candidate, lens, patch, reasons: assessment.reasons });
-		if (!built.ok) return finish("unavailable", built.code);
+		if (!built.ok) return finish("unavailable", built.code, tooLarge(built));
 		prompts.set(lens, built.prompt);
 	}
 
-	const runLens = async (lens: Lens): Promise<{ findings: Finding[] } | { error: string }> => {
+	const runLens = async (lens: Lens): Promise<{ findings: Finding[] } | { error: string; refusal: Refusal }> => {
 		const prompt = prompts.get(lens) as string;
 		let attempt = prompt;
 		for (let tries = 0; tries < 2; tries++) {
 			const reply = await callRole(lens, LENS_INSTRUCTIONS[lens], attempt, candidate.tree);
-			if (!reply.ok) return { error: `Lens ${lens} failed: ${reply.error}` };
+			if (!reply.ok) return { error: `Lens ${lens} failed: ${reply.error}`, refusal: roleFailure(reply) };
 			const parsed = parseFindings(reply.text, lens);
 			if (parsed.ok) return { findings: parsed.findings };
-			if (tries === 1) return { error: `Lens ${lens} returned an invalid reply twice: ${parsed.error}` };
+			if (tries === 1)
+				return {
+					error: `Lens ${lens} returned an invalid reply twice: ${parsed.error}`,
+					refusal: unreadable(reply.text),
+				};
 			attempt = `${prompt}\n\nYour previous reply was rejected: ${parsed.error}\nReply again with only the JSON object.`;
 		}
-		return { error: `Lens ${lens} returned no reply.` };
+		return { error: `Lens ${lens} returned no reply.`, refusal: { cause: "role_failed" } };
 	};
 
 	for (const lens of assessment.lenses) yield { type: "lens_started", lens };
 	const outcomes = await Promise.all(assessment.lenses.map(runLens));
 	const reported: Finding[] = [];
-	let failure: string | undefined;
+	let failure: { error: string; refusal: Refusal } | undefined;
 	for (const outcome of outcomes) {
-		if ("error" in outcome) failure ??= outcome.error;
+		if ("error" in outcome) failure ??= outcome;
 		else reported.push(...outcome.findings);
 	}
 	for (const [index, outcome] of outcomes.entries()) {
@@ -165,7 +184,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	if (interrupted()) return stopped();
 	if (failure !== undefined) {
 		followUps = reported;
-		return finish("unavailable", failure);
+		return finish("unavailable", failure.error, failure.refusal);
 	}
 
 	// Blockers caused by the candidate, and severe findings of unknown cause, face the refuter.
@@ -179,9 +198,10 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	// Until the refuter decides, every severe finding stands, so a failed refuter keeps them on record.
 	confirmed = toRefute;
 	if (interrupted()) return stopped();
-	if (!reply.ok) return finish("unavailable", `The refuter failed: ${reply.error}`);
+	if (!reply.ok) return finish("unavailable", `The refuter failed: ${reply.error}`, roleFailure(reply));
 	const verdicts = parseVerdicts(reply.text);
-	if (!verdicts.ok) return finish("unavailable", `The refuter returned an invalid reply: ${verdicts.error}`);
+	if (!verdicts.ok)
+		return finish("unavailable", `The refuter returned an invalid reply: ${verdicts.error}`, unreadable(reply.text));
 	const reasons = new Map(verdicts.verdicts.filter((v) => v.verdict === "refuted").map((v) => [v.id, v.reason]));
 	confirmed = toRefute.filter((f) => !reasons.has(f.id));
 	refuted = toRefute.filter((f) => reasons.has(f.id)).map((f) => ({ ...f, reason: reasons.get(f.id) as string }));
@@ -202,13 +222,16 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	if (interrupted()) return stopped();
 	if (!fixed.ok) {
 		yield { type: "correction_finished", ok: false };
-		return finish("escalated", "The correction failed.");
+		return finish("escalated", "The correction failed.", { cause: "correction_failed" });
 	}
 	const frozen = await deps.freeze();
 	if (interrupted()) return stopped();
 	if (!frozen.ok) {
 		yield { type: "correction_finished", ok: false };
-		return finish("escalated", `The corrected change could not be frozen: ${frozen.reason}`);
+		return finish("escalated", `The corrected change could not be frozen: ${frozen.reason}`, {
+			cause: "freeze_failed",
+			observed: excerpt(frozen.reason),
+		});
 	}
 	corrected = frozen.candidate.tree;
 	let used: number;
@@ -216,11 +239,18 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		used = await changeSize(candidate.root, candidate.tree, corrected, budget);
 	} catch (error) {
 		yield { type: "correction_finished", ok: false };
-		return finish("escalated", `The correction could not be measured: ${describeError(error)}`);
+		return finish("escalated", `The correction could not be measured: ${describeError(error)}`, {
+			cause: "measure_failed",
+			observed: excerpt(describeError(error)),
+		});
 	}
 	correction = { budget, used };
 	yield { type: "correction_finished", ok: true, used };
-	if (used > budget) return finish("escalated", `The correction changed ${used} lines, over the budget of ${budget}.`);
+	if (used > budget)
+		return finish("escalated", `The correction changed ${used} lines, over the budget of ${budget}.`, {
+			cause: "over_budget",
+			observed: `${used} lines, budget ${budget}`,
+		});
 
 	if (interrupted()) return stopped();
 	yield { type: "validator_started", findings: confirmed.length };
@@ -231,15 +261,19 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		corrected,
 	);
 	if (interrupted()) return stopped();
-	if (!check.ok) return finish("escalated", `The validator failed: ${check.error}`);
+	if (!check.ok) return finish("escalated", `The validator failed: ${check.error}`, roleFailure(check));
 	const results = parseResults(check.text);
-	if (!results.ok) return finish("escalated", `The validator returned an invalid reply: ${results.error}`);
+	if (!results.ok)
+		return finish("escalated", `The validator returned an invalid reply: ${results.error}`, unreadable(check.text));
 	const resolved = new Set(results.results.filter((r) => r.resolved).map((r) => r.id));
 	const open = confirmed.filter((f) => !resolved.has(f.id));
 	yield { type: "validator_finished", resolved: confirmed.length - open.length, unresolved: open.length };
 	return open.length === 0
 		? finish("approved")
-		: finish("escalated", `Unresolved after the correction: ${open.map((f) => f.id).join(", ")}.`);
+		: finish("escalated", `Unresolved after the correction: ${open.map((f) => f.id).join(", ")}.`, {
+				cause: "unresolved_findings",
+				observed: open.map((f) => f.id).join(", "),
+			});
 }
 
 /** The message that asks the main agent for the single correction; `committed`: the turn already committed. */
