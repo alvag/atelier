@@ -324,22 +324,42 @@ function classEnd(pattern: string, from: number): number {
 	return at + 1;
 }
 
+/** Whether what follows `at` makes the item before it optional: `?`, `*` or an interval from 0, escaped or not. */
+function optionalAt(pattern: string, at: number): boolean {
+	const rest = pattern.slice(at);
+	return /^(?:[?*]|\\?\{0)/.test(rest);
+}
+
 /**
  * Whether a regex requires some literal character: one outside bracket classes,
- * intervals and operators, an escaped punctuation character included. It fails
- * closed, so `[^/]*` or `.{0,}` has none.
+ * intervals, operators and groups, not made optional, an escaped punctuation
+ * character included. Any alternative makes it require none, since the other
+ * branch may match everything. It fails closed, so `[^/]*`, `.{0,}`, `.*|x`,
+ * `.*x?` or `(x)?.*` has none.
  */
 function regexHasLiteral(pattern: string): boolean {
+	if (/\|/.test(pattern)) return false;
+	let depth = 0;
 	for (let at = 0; at < pattern.length; at++) {
 		const char = pattern[at] as string;
 		if (char === "\\") {
 			const escaped = pattern[++at];
-			if (escaped !== undefined && !REGEX_ESCAPED_OPERATOR.test(escaped)) return true;
-		} else if (char === "[") at = classEnd(pattern, at) - 1;
+			if (escaped === "(") depth++;
+			else if (escaped === ")") depth = Math.max(0, depth - 1);
+			else if (
+				escaped !== undefined &&
+				!REGEX_ESCAPED_OPERATOR.test(escaped) &&
+				depth === 0 &&
+				!optionalAt(pattern, at + 1)
+			)
+				return true;
+		} else if (char === "(") depth++;
+		else if (char === ")") depth = Math.max(0, depth - 1);
+		else if (char === "[") at = classEnd(pattern, at) - 1;
 		else if (char === "{") {
 			const close = pattern.indexOf("}", at);
 			at = close < 0 ? pattern.length : close;
-		} else if (!REGEX_OPERATORS.has(char)) return true;
+		} else if (!REGEX_OPERATORS.has(char) && depth === 0 && !optionalAt(pattern, at + 1)) return true;
 	}
 	return false;
 }

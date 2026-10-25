@@ -27,9 +27,21 @@ describe("a find regex without a literal character", () => {
 	}
 });
 
+// A literal that is optional, inside a group, or in an alternative does not narrow either: the rest may match everything.
+describe("a find regex whose literal can be skipped", () => {
+	for (const pattern of [".*|x", "x|.*", ".*\\|x", ".*x?", ".*x*", ".*x{0,3}", "(x)?.*", "(.*x)*", "\\(x\\)*.*"]) {
+		for (const { root, rule } of roots) {
+			const command = join(["find", root, "-regex", quote(pattern), "-delete"]);
+			it(`refuses ${command}`, () => {
+				expect(findDestructiveCommand(command, context)).toBe(rule);
+			});
+		}
+	}
+});
+
 describe("a find regex with a literal character", () => {
 	for (const flag of ["-regex", "-iregex"]) {
-		for (const pattern of [".*\\.log", ".*/build/.*", "^\\./tmp/.*", "[a-z]*x"]) {
+		for (const pattern of [".*\\.log", ".*/build/.*", "^\\./tmp/.*", "[a-z]*x", ".*x+", ".*x{1,}"]) {
 			for (const regextype of regextypes) {
 				for (const { root } of roots) {
 					const command = join(["find", root, ...regextype, flag, quote(pattern), "-delete"]);
