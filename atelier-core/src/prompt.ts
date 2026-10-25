@@ -1,6 +1,6 @@
 /** Byte-stable: Claude Code caches the prompt prefix across turns. Shared by every client. */
 export const SYSTEM_PROMPT_APPEND =
-	"You are running inside Atelier. Use only the Atelier tools. Paths are relative to the working directory. bash commands may need the user's approval; if one is denied, do not retry it.";
+	"You are running inside Atelier. Use only the Atelier tools. Paths are relative to the working directory; read and grep also take absolute and ../ paths outside it (except the user's secrets), and edit outside it asks for approval. bash commands may need the user's approval; if one is denied, do not retry it.";
 
 /** Added when ODD tracking is on. Byte-stable, and kept short: the code enforces the rules that matter. */
 export const ODD_RULES = `Work in ODD (Organic Driven Development):
