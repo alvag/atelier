@@ -152,6 +152,17 @@ describe("buildVerifierPrompt", () => {
 		expect(detached).toContain("- The worktree has uncommitted changes: candidate/ differs from HEAD.");
 	});
 
+	it("names the empty tree as the base of a turn that started without commits", () => {
+		const { baseCommit: _baseCommit, ...fromEmpty } = candidate;
+		const prompt = buildVerifierPrompt({
+			...input,
+			candidate: fromEmpty as Candidate,
+			git: { commits: ["1234567 first"], uncommitted: false },
+		});
+		expect(prompt).toContain("Change under verification (base the empty tree -> candidate):");
+		expect(prompt).toContain("- Commits since base the empty tree, oldest first:\n  - 1234567 first");
+	});
+
 	it("names the feature document copy, and what round 1 found when it is round 2", () => {
 		const parsed = parseVerifierReport(report());
 		if (!parsed.ok) throw new Error(parsed.error);

@@ -1,5 +1,5 @@
 import { describeError, type Usage, ZERO_USAGE } from "../events.ts";
-import type { Candidate, FreezeResult } from "./candidate.ts";
+import { type Candidate, type FreezeResult, holdsCommits } from "./candidate.ts";
 import { type Finding, isBlocking, parseFindings } from "./findings.ts";
 import { runGit } from "./git.ts";
 import { buildLensPrompt, LENS_INSTRUCTIONS, readPatch } from "./lenses.ts";
@@ -194,7 +194,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	if (interrupted()) return stopped();
 	let fixed: Awaited<ReturnType<ReviewDeps["correct"]>>;
 	try {
-		fixed = await deps.correct(correctionMessage(confirmed, budget, candidate.since !== undefined), signal);
+		fixed = await deps.correct(correctionMessage(confirmed, budget, holdsCommits(candidate)), signal);
 	} catch {
 		fixed = { ok: false, usage: ZERO_USAGE };
 	}

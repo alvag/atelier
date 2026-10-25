@@ -87,6 +87,8 @@ export class SessionReview {
 	readonly #children = new Set<Session>();
 	/** The commit HEAD pointed at when the current turn started; undefined without one. */
 	#turnStart: string | undefined;
+	/** HEAD had no commit when the current turn started: its first commit is part of its candidate. */
+	#startedEmpty = false;
 	/** What the user asked in the current turn, verbatim: the verifier's brief. */
 	#turnPrompt = "";
 	#starting: Promise<void> = Promise.resolve();
@@ -103,9 +105,12 @@ export class SessionReview {
 		this.#requests.clear();
 		this.#turnPrompt = prompt;
 		this.#turnStart = undefined;
+		this.#startedEmpty = false;
 		this.#starting = runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd }).then(
 			(head) => {
 				if (head.code === 0) this.#turnStart = head.stdout.toString("utf8").trim();
+				// No commit, or not yet a repository: whatever the turn commits is its own.
+				else this.#startedEmpty = true;
 			},
 			// Not a git repository, or no git: the review reports it when the turn ends.
 			() => {},
@@ -233,6 +238,7 @@ export class SessionReview {
 	}
 
 	#startOf(): FreezeOptions {
+		if (this.#startedEmpty) return { fromEmpty: true };
 		return this.#turnStart === undefined ? {} : { turnStart: this.#turnStart };
 	}
 
@@ -264,7 +270,11 @@ export class SessionReview {
 				charge("correction", result);
 				return result;
 			},
-			freeze: () => freezeCandidate(host.cwd, { ref: candidate.baseCommit }),
+			freeze: () =>
+				freezeCandidate(
+					host.cwd,
+					candidate.baseCommit === undefined ? { fromEmpty: true } : { ref: candidate.baseCommit },
+				),
 			now: () => new Date(),
 			createId: host.createId,
 		};

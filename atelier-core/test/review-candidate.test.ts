@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { freezeCandidate, readTreeFile } from "../src/review/candidate.ts";
+import { freezeCandidate, holdsCommits, readTreeFile, readTurnGit } from "../src/review/candidate.ts";
 import { assessRisk } from "../src/review/risk.ts";
 import { createRiskTool, RiskRequests } from "../src/review/tool.ts";
 
@@ -144,6 +144,33 @@ describe("freezeCandidate", () => {
 			reason: "The repository has no commits yet, so there is no HEAD to compare with.",
 		});
 		expect(execFileSync("git", ["status", "--porcelain"], { cwd: fresh, encoding: "utf8" })).toBe("?? a.txt\n");
+	});
+
+	it("measures a turn that started without commits from the empty tree, its first commit included", async () => {
+		const fresh = join(root, "fresh");
+		await mkdir(fresh);
+		const inFresh = (...args: string[]) =>
+			execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: fresh, encoding: "utf8" });
+		inFresh("init", "-q");
+		await writeFile(join(fresh, "a.txt"), "a\n");
+		inFresh("add", "-A");
+		inFresh("commit", "-qm", "first");
+		await writeFile(join(fresh, "b.txt"), "b\nc\n");
+		const result = await freezeCandidate(fresh, { fromEmpty: true });
+		if (!result.ok) throw new Error(result.reason);
+		const { candidate } = result;
+		expect(candidate.files.map((file) => [file.path, file.status, file.added])).toEqual([
+			["a.txt", "A", 1],
+			["b.txt", "A", 2],
+		]);
+		expect(candidate.baseCommit).toBeUndefined();
+		expect(candidate.since).toBeUndefined();
+		expect(candidate.baseNote).toContain("no commits when the turn started");
+		expect(holdsCommits(candidate)).toBe(true);
+		expect(await readTurnGit(candidate)).toMatchObject({ commits: [expect.stringMatching(/^[0-9a-f]{7,} first$/)] });
+		const usual = await freezeCandidate(repo);
+		if (!usual.ok) throw new Error(usual.reason);
+		expect(holdsCommits(usual.candidate)).toBe(false);
 	});
 
 	it("ignores GIT_INDEX_FILE and GIT_DIR from the environment", async () => {

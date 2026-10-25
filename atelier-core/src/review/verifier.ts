@@ -193,7 +193,8 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
 		lines.push(`Feature document (a copy; read it first, its specs are what the user asked for): ${input.feature}`, "");
 	lines.push("The agent's risk declaration:");
 	for (const { items, reason } of input.declaration) lines.push(`- item ${items.join(", ")}: ${reason}`);
-	lines.push("", `Change under verification (base ${candidate.baseCommit.slice(0, 7)} -> candidate):`);
+	const base = candidate.baseCommit?.slice(0, 7) ?? "the empty tree";
+	lines.push("", `Change under verification (base ${base} -> candidate):`);
 	const shown = candidate.files.slice(0, SUMMARY_FILES);
 	for (const file of shown)
 		lines.push(`- ${file.status} ${file.path}${file.binary ? " (binary)" : ` (+${file.added} -${file.deleted})`}`);
@@ -202,7 +203,7 @@ export function buildVerifierPrompt(input: VerifierPromptInput): string {
 	lines.push(
 		`${candidate.files.length} files, ${candidate.changedLines} changed lines.`,
 		...(candidate.baseNote === undefined ? [] : [candidate.baseNote]),
-		...(input.git === undefined ? [] : ["", ...gitLines(input.git, candidate.baseCommit.slice(0, 7))]),
+		...(input.git === undefined ? [] : ["", ...gitLines(input.git, base)]),
 		"",
 		`Dependencies: ${input.dependencies}`,
 		...(input.bashUnavailable === undefined

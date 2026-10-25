@@ -57,10 +57,10 @@ export interface Candidate {
 	root: string;
 	/** The repository's common git directory, absolute. */
 	gitDir: string;
-	/** The tree of the base commit: HEAD, the commit the turn started at, or the ref asked for. */
+	/** The tree of the base commit: HEAD, the commit the turn started at, or the ref asked for; the empty tree without one. */
 	base: string;
-	/** The base commit, in full. */
-	baseCommit: string;
+	/** The base commit, in full; absent when the turn started without commits and the base is the empty tree. */
+	baseCommit?: string;
 	/** The base commit's short id, present when the base is not the current HEAD. */
 	since?: string;
 	/** Why the base is the current HEAD when it was meant to be an earlier commit. */
@@ -87,6 +87,16 @@ export interface FreezeOptions {
 	ref?: string;
 	/** The commit a turn started at: the base while HEAD still descends from it, the current HEAD (with a note) otherwise. */
 	turnStart?: string;
+	/** The turn started without a commit: the base is the empty tree, so the turn's first commit is part of the candidate. */
+	fromEmpty?: boolean;
+}
+
+const EMPTY_BASE_NOTE =
+	"The repository had no commits when the turn started: the base is the empty tree, so the turn's commits are part of the candidate";
+
+/** The candidate's base is an earlier commit than HEAD, or the empty tree under a first commit: some of its work is committed. */
+export function holdsCommits(candidate: Candidate): boolean {
+	return candidate.since !== undefined || candidate.baseCommit === undefined;
 }
 
 /**
@@ -107,7 +117,11 @@ export async function freezeCandidate(cwd: string, options: FreezeOptions = {}):
 			return { ok: false, reason: "The repository has no commits yet, so there is no HEAD to compare with." };
 		const chosen = await chooseBase(root, head, options);
 		if (!chosen.ok) return chosen;
-		const base = (await gitText(["rev-parse", `${chosen.commit}^{tree}`], { cwd: root })).trim();
+		const base = (
+			chosen.commit === undefined
+				? await gitText(["hash-object", "-w", "-t", "tree", "--stdin"], { cwd: root })
+				: await gitText(["rev-parse", `${chosen.commit}^{tree}`], { cwd: root })
+		).trim();
 		const gitDir = withoutNewline(
 			await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root }),
 		);
@@ -123,7 +137,7 @@ export async function freezeCandidate(cwd: string, options: FreezeOptions = {}):
 			ok: true,
 			candidate: {
 				...candidate,
-				...(chosen.commit === head ? {} : { since: chosen.commit.slice(0, SHORT_ID) }),
+				...(chosen.commit === undefined || chosen.commit === head ? {} : { since: chosen.commit.slice(0, SHORT_ID) }),
 				...(chosen.note === undefined ? {} : { baseNote: chosen.note }),
 			},
 		};
@@ -153,7 +167,8 @@ export async function readTurnGit(candidate: Candidate): Promise<TurnGit> {
 	const cwd = candidate.root;
 	const symbolic = await runGit(["symbolic-ref", "--short", "--quiet", "HEAD"], { cwd });
 	const branch = symbolic.code === 0 ? withoutNewline(symbolic.stdout.toString("utf8")) : undefined;
-	const log = await gitText(["log", "--reverse", `--format=%h %s`, `${candidate.baseCommit}..HEAD`], { cwd });
+	const range = candidate.baseCommit === undefined ? "HEAD" : `${candidate.baseCommit}..HEAD`;
+	const log = await gitText(["log", "--reverse", `--format=%h %s`, range], { cwd });
 	const all = log.split("\n").filter((line) => line !== "");
 	const commits = all.slice(0, TURN_COMMITS);
 	if (all.length > commits.length) commits.push(`... and ${all.length - commits.length} more commits`);
@@ -168,7 +183,8 @@ async function commitOf(root: string, revision: string): Promise<string | undefi
 	return found.code === 0 ? found.stdout.toString("utf8").trim() : undefined;
 }
 
-type Base = { ok: true; commit: string; note?: string } | { ok: false; reason: string };
+/** `commit` is absent for the empty tree. */
+type Base = { ok: true; commit?: string; note?: string } | { ok: false; reason: string };
 
 async function chooseBase(root: string, head: string, options: FreezeOptions): Promise<Base> {
 	if (options.ref !== undefined) {
@@ -177,6 +193,7 @@ async function chooseBase(root: string, head: string, options: FreezeOptions): P
 			return { ok: false, reason: `Unknown git ref "${options.ref}": there is nothing to review against.` };
 		return { ok: true, commit };
 	}
+	if (options.fromEmpty) return { ok: true, note: EMPTY_BASE_NOTE };
 	const start = options.turnStart;
 	if (start === undefined || start === head) return { ok: true, commit: head };
 	const ancestor = await runGit(["merge-base", "--is-ancestor", start, head], { cwd: root });
@@ -224,7 +241,7 @@ const DIFF = ["diff-tree", "-r", "--no-renames", "--no-ext-diff", "--no-textconv
 async function describeCandidate(
 	root: string,
 	gitDir: string,
-	baseCommit: string,
+	baseCommit: string | undefined,
 	base: string,
 	tree: string,
 ): Promise<Candidate> {
@@ -265,7 +282,7 @@ async function describeCandidate(
 		root,
 		gitDir,
 		base,
-		baseCommit,
+		...(baseCommit === undefined ? {} : { baseCommit }),
 		tree,
 		files,
 		changedLines: files.reduce((sum, file) => sum + file.added + file.deleted, 0),

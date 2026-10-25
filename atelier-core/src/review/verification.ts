@@ -8,7 +8,7 @@ import {
 	type VerifyRequirement,
 	ZERO_USAGE,
 } from "../events.ts";
-import type { Candidate, FreezeResult } from "./candidate.ts";
+import { type Candidate, type FreezeResult, holdsCommits } from "./candidate.ts";
 import type { RoleResult } from "./reviewer.ts";
 import type { Escalation } from "./risk.ts";
 import {
@@ -157,7 +157,7 @@ export async function verify(
 
 		let fixed: Awaited<ReturnType<VerificationDeps["correct"]>>;
 		try {
-			fixed = await deps.correct(verifierCorrectionMessage(blocking, current.since !== undefined));
+			fixed = await deps.correct(verifierCorrectionMessage(blocking, holdsCommits(current)));
 		} catch {
 			fixed = { ok: false, usage: ZERO_USAGE };
 		}

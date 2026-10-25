@@ -1023,6 +1023,96 @@ describe("the turn's candidate", () => {
 	});
 });
 
+describe("a repository without commits", () => {
+	const EMPTY_REASON = "The repository has no commits yet, so there is no HEAD to compare with.";
+	const ROOT_NOTE =
+		"The repository had no commits when the turn started: the base is the empty tree, so the turn's commits are part of the candidate";
+
+	async function emptyRepo(): Promise<string> {
+		const root = await mkdtemp(join(tmpdir(), "atelier-review-empty-"));
+		dirs.push(root);
+		gitIn(root, "init", "-q");
+		return root;
+	}
+
+	it("says once why there is no review while the turn leaves nothing committed", async () => {
+		const cwd = await emptyRepo();
+		const s = await start({ cwd, turns: [MEDIUM_TURN, MEDIUM_TURN] });
+		const first = await s.send("edit");
+		expect(ofType(first, "review_status")).toEqual([
+			expect.objectContaining({ available: false, reason: EMPTY_REASON }),
+		]);
+		expect(ofType(first, "review_assessed")).toEqual([]);
+		expect(ofType(first, "error")).toEqual([]);
+		const second = await s.send("edit again");
+		expect(types(second).filter((type) => type.startsWith("review_") || type === "error")).toEqual([]);
+	});
+
+	it("reviews the turn's first commit and its uncommitted edits against the empty tree", async () => {
+		const cwd = await emptyRepo();
+		const turn = [
+			DECLARED_NONE,
+			change("src/one.ts", "export const one = 1;\n"),
+			...commit("first"),
+			change("src/two.ts", "export const two = 2;\nexport const three = 3;\n"),
+			text("done"),
+			{ event: finished },
+		];
+		const s = await start({ cwd, turns: [turn] });
+		const events = await s.send("start the project");
+		const [assessed] = ofType(events, "review_assessed");
+		expect(assessed).toMatchObject({ level: "medium", changedLines: 3, lenses: ["reliability"], baseNote: ROOT_NOTE });
+		expect([...(assessed?.files ?? [])].sort()).toEqual(["src/one.ts", "src/two.ts"]);
+		expect(assessed?.since).toBeUndefined();
+		expect(ofType(events, "review_status")).toEqual([]);
+		expect(ofType(events, "error")).toEqual([]);
+	});
+
+	it("assesses a first commit that leaves nothing uncommitted, and its risk from the content", async () => {
+		const cwd = await emptyRepo();
+		const turn = [
+			DECLARED_NONE,
+			change("src/auth.ts", "export const a = 1;\n"),
+			...commit("auth"),
+			{ event: finished },
+		];
+		const s = await start({ cwd, turns: [turn], consent: "declined" });
+		const [assessed] = ofType(await s.send("add auth"), "review_assessed");
+		expect(assessed).toMatchObject({ level: "high", files: ["src/auth.ts"], changedLines: 1, reviewDue: true });
+		expect(s.asked).toHaveLength(1);
+	});
+
+	it("measures the next turn from the first commit as usual", async () => {
+		const cwd = await emptyRepo();
+		const turns = [
+			[DECLARED_NONE, change("a.ts", "base\n"), ...commit("first"), { event: finished }],
+			[DECLARED_NONE, ...MEDIUM_TURN],
+		];
+		const s = await start({ cwd, turns });
+		await s.send("first");
+		const [assessed] = ofType(await s.send("second"), "review_assessed");
+		expect(assessed).toMatchObject({ files: ["a.ts"], changedLines: 1 });
+		expect(assessed?.baseNote).toBeUndefined();
+	});
+
+	it("refuses /review with the reason, and reviews against HEAD once there is a commit", async () => {
+		const cwd = await emptyRepo();
+		await writeFile(join(cwd, "a.ts"), "base\n");
+		const s = await start({ cwd, roles: new RoleBackend(clean) });
+		const refused = await collect(s.session.review());
+		expect(ofType(refused, "error")).toEqual([
+			expect.objectContaining({ code: "review_unavailable", message: EMPTY_REASON, recoverable: true }),
+		]);
+		expect(ofType(refused, "review_assessed")).toEqual([]);
+		gitIn(cwd, "add", "-A");
+		gitIn(cwd, "commit", "-qm", "first");
+		await writeFile(join(cwd, "a.ts"), "base\nmore\n");
+		const events = await collect(s.session.review());
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({ files: ["a.ts"], changedLines: 1 });
+		expect(ofType(events, "review_assessed")[0]?.baseNote).toBeUndefined();
+	});
+});
+
 describe("the declaration of a turn", () => {
 	const ASK =
 		"Declare the risk of this change now: call the risk tool with the high-risk items that apply and a reason, or with none and a reason.";

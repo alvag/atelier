@@ -189,7 +189,7 @@ export type AtelierEventBody =
 			declaration?: RiskDeclaration;
 			/** Short id of the commit the change is measured against, when it is not the current HEAD (the turn's commits are included). */
 			since?: string;
-			/** Why the base is the current HEAD although the turn started earlier (a reset or rebase). */
+			/** Why the base is the current HEAD although the turn started earlier (a reset or rebase), or the empty tree (the turn started without commits). */
 			baseNote?: string;
 	  }
 	/** The core waits for session.review_consent; the turn stays open until it is answered. */
