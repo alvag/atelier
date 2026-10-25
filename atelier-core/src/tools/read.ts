@@ -1,9 +1,10 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { z } from "zod";
 import { errorMessage, failure, MAX_BYTES, MAX_LINES, takeHead } from "./limits.ts";
-import { resolveReadable } from "./paths.ts";
-import { defineTool } from "./types.ts";
+import { protectedReadPaths, resolveOutside, resolveReadable } from "./paths.ts";
+import { defineTool, type ToolDefinition } from "./types.ts";
 
 const NEWLINE = 0x0a;
 
@@ -72,36 +73,60 @@ async function scan(path: string, start: number, end: number): Promise<Scan> {
 	return { lines, total, binary: false };
 }
 
-export const readTool = defineTool({
-	name: "read",
-	description:
-		"Read a text file inside the working directory. Lines are numbered. Long files are truncated; use offset and limit to page through them.",
-	inputShape: {
-		path: z.string().describe("File path, relative to the working directory"),
-		offset: z.number().int().min(1).optional().describe("First line to read, 1-based"),
-		limit: z.number().int().min(1).optional().describe("Maximum number of lines to read"),
-	},
-	async execute({ path, offset, limit }, { cwd, scratchDir }) {
-		try {
-			const absolute = await resolveReadable(cwd, path, scratchDir);
-			if ((await stat(absolute)).isDirectory()) return failure(`Not a file: ${path}`);
-			const start = offset ?? 1;
-			const end = limit === undefined ? Number.POSITIVE_INFINITY : start + limit - 1;
-			const { lines, total, binary } = await scan(absolute, start, end);
-			if (binary) return failure(`Binary file: ${path}`);
-			if (start > Math.max(total, 1)) return failure(`Offset ${start} is beyond the end of ${path} (${total} lines).`);
+export interface ReadOptions {
+	/** Reads any path except the protected secret locations; without it the tool stays inside the working directory. */
+	outside?: boolean;
+	/** The home whose secret directories stay closed; defaults to the user's. */
+	home?: string;
+}
 
-			const shown = takeHead(lines.map((line, i) => `${start + i}\t${line}`));
-			const last = start + shown.lines.length - 1;
-			let output = shown.lines.join("\n");
-			if (last < total)
-				output += `\n\n[Showing lines ${start}-${last} of ${total}. Use offset=${last + 1} to continue.]`;
-			else if (shown.clipped)
-				output += `\n\n[Line ${last} is too long and was clipped. Use grep or bash to inspect it.]`;
-			const truncated = last < total || shown.clipped;
-			return { ok: true, output, summary: `${path} (${total} lines)`, truncated };
-		} catch (error) {
-			return failure(errorMessage(error));
-		}
-	},
-});
+export function createReadTool(options: ReadOptions = {}): ToolDefinition {
+	return defineTool({
+		name: "read",
+		description: options.outside
+			? "Read a text file. Lines are numbered. Long files are truncated; use offset and limit to page through them. Absolute and ../ paths work; the user's secret directories are protected."
+			: "Read a text file inside the working directory. Lines are numbered. Long files are truncated; use offset and limit to page through them.",
+		inputShape: {
+			path: z
+				.string()
+				.describe(
+					options.outside
+						? "File path, absolute or relative to the working directory"
+						: "File path, relative to the working directory",
+				),
+			offset: z.number().int().min(1).optional().describe("First line to read, 1-based"),
+			limit: z.number().int().min(1).optional().describe("Maximum number of lines to read"),
+		},
+		async execute({ path, offset, limit }, { cwd, scratchDir }) {
+			try {
+				const absolute = options.outside
+					? await resolveOutside(cwd, path, await protectedReadPaths(cwd, options.home ?? homedir()))
+					: await resolveReadable(cwd, path, scratchDir);
+				if ((await stat(absolute)).isDirectory()) return failure(`Not a file: ${path}`);
+				const start = offset ?? 1;
+				const end = limit === undefined ? Number.POSITIVE_INFINITY : start + limit - 1;
+				const { lines, total, binary } = await scan(absolute, start, end);
+				if (binary) return failure(`Binary file: ${path}`);
+				if (start > Math.max(total, 1))
+					return failure(`Offset ${start} is beyond the end of ${path} (${total} lines).`);
+
+				const shown = takeHead(lines.map((line, i) => `${start + i}\t${line}`));
+				const last = start + shown.lines.length - 1;
+				let output = shown.lines.join("\n");
+				if (last < total)
+					output += `\n\n[Showing lines ${start}-${last} of ${total}. Use offset=${last + 1} to continue.]`;
+				else if (shown.clipped)
+					output += `\n\n[Line ${last} is too long and was clipped. Use grep or bash to inspect it.]`;
+				const truncated = last < total || shown.clipped;
+				return { ok: true, output, summary: `${path} (${total} lines)`, truncated };
+			} catch (error) {
+				return failure(errorMessage(error));
+			}
+		},
+	});
+}
+
+export const readTool = createReadTool();
+
+/** The `read` of the main agent and its workers: any path except the secrets. */
+export const openReadTool = createReadTool({ outside: true });

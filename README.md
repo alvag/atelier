@@ -61,7 +61,7 @@ The desktop starts the core with Electron's own Node (no system Node needed) and
 
 - The core emits plain-JSON `AtelierEvent`s; clients only render them. Every turn ends with exactly one `turn_finished`.
 - `turn_finished` carries `phases`, the turn's cost by part: `main` (the main agent), `declare` (the request to declare the risk), `verify` (the verifier and its correction), `lenses`, `refuter`, `correction` and `validator`, each with `usage` and, when its backends report them, `requests` and `costUsd`. A part that did not run is absent (an on-demand `/review` has no `main`), and the parts add up to the turn's `usage`, `requests` and `costUsd`.
-- The agent only has Atelier's tools: `read`, `edit`, `bash`, `grep`. The core executes them and owns approval. File tools are confined to the working directory; `bash` is not confined and is gated by approval instead.
+- The agent only has Atelier's tools: `read`, `edit`, `bash`, `grep`. The core executes them and owns approval. `read` and `grep` of the main agent and its workers open any path, absolute or `../`, except the protected secret locations (the home's secret directories and the `denyRead` entries of the sandbox configuration, the same list the sandbox hides from `bash`; a symbolic link into one is refused too, with `Path is a protected secret location: <path>`; `grep` skips them while walking). This holds with the sandbox off or unavailable. `edit` is confined to the working directory; `bash` is not confined and is gated by approval instead. The review roles and the verifier keep `read` and `grep` inside the frozen tree or their own directory.
 - `ClaudeCodeBackend` drives Claude Code through the Claude Agent SDK, isolated from your `~/.claude` setup (no settings, hooks, plugins, skills, CLAUDE.md or other MCP servers) and without `ANTHROPIC_API_KEY`, so it uses your subscription.
 - `AnthropicApiBackend` runs Atelier's own loop on the Messages API. It owns the prompt: tools and system prompt are fixed for the session, and three cache breakpoints (last tool, system, last message) keep the prefix cached. Each request asks the API to compare its prefix with the previous response, which is how cache misses are reported. See `../docs/m3-diseno.md`; a measured session is in `../docs/m3-medicion.md`.
 - Subagents: the agent can delegate with a `task` tool to `explorer` (read and grep only, on the cheapest model: `haiku` / `claude-haiku-5-5`) or `worker` (read, edit, grep, bash, on the session's model). A subagent runs in its own session with only the task prompt and its role's instructions, on a fresh backend of the same kind. Only its final report, cut in code at 8,000 characters, returns to the parent. Its work shows nested under the task call: indented under `↳ agent · model` in the CLI, in a foldable block in the desktop, each with its own token line. Its bash commands ask for approval like any other. See `../docs/m4-diseno.md` and `../docs/m4-medicion.md`.
@@ -92,7 +92,7 @@ In the working directory the agent never writes `.env`, `.env.*`, `*.pem`, `*.ke
 Not covered:
 - The agent's network is not restricted: a command can reach the network and anything it can read.
 - Other platforms: no Linux or Windows code exists.
-- The `read`, `edit` and `grep` tools are not run by the sandbox; they are confined to `--cwd` by code, which is a separate mechanism.
+- The `read`, `edit` and `grep` tools are not run by the sandbox; code decides what they open, which is a separate mechanism. `edit` is confined to `--cwd`. `read` and `grep` may leave it but refuse the same secret directories and `denyRead` entries the sandbox hides from `bash`, whether or not the sandbox is running.
 - `bash` also runs without `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`; that filters its environment and is not isolation.
 
 ### What you see
@@ -171,7 +171,7 @@ atelier-stable --cwd /path/to/atelier
 pnpm -C ../atelier-stable desktop   # the desktop starts the stable copy's own core
 ```
 
-- `read` and `edit` cannot leave `--cwd`, so they never touch the stable copy. `bash` is not isolated: keep approvals on (no `--yes`) when the workpiece is Atelier itself.
+- `edit` cannot leave `--cwd`, so it never touches the stable copy (`read` and `grep` can read it, but not change it). `bash` is not isolated: keep approvals on (no `--yes`) when the workpiece is Atelier itself.
 - To try a change for real, run the workpiece's CLI (`pnpm atelier` inside `atelier/`) in another terminal; the stable copy stays in charge of the work.
 - Memory (Engram resolves the project from the working directory), review receipts (in the workpiece's `.git`) and the API key are shared on purpose.
 

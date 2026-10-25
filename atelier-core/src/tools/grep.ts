@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { realpath } from "node:fs/promises";
-import { matchesGlob, relative } from "node:path";
+import { homedir } from "node:os";
+import { matchesGlob, relative, resolve } from "node:path";
 import { z } from "zod";
 import { errorMessage, failure, MAX_GREP_MATCHES, MAX_LINE_CHARS, takeHead } from "./limits.ts";
-import { resolveInside } from "./paths.ts";
+import { isInside, isProtected, protectedReadPaths, resolveInside, resolveOutside } from "./paths.ts";
 import { defineTool, type ToolDefinition } from "./types.ts";
 
 const SEARCH_TIMEOUT_MS = 30_000;
@@ -94,8 +95,9 @@ function runSearch(
 	});
 }
 
-function ripgrepArgs(target: string, pattern: string, glob: string | undefined): string[] {
+function ripgrepArgs(target: string, pattern: string, glob: string | undefined, skipped: string[]): string[] {
 	const args = ["--line-number", "--no-heading", "--with-filename", "--color", "never", "--glob", "!node_modules"];
+	for (const path of skipped) args.push("--glob", `!/${path}`);
 	if (glob !== undefined) args.push("--glob", glob);
 	args.push("--", pattern, target);
 	return args;
@@ -106,38 +108,67 @@ function ripgrepArgs(target: string, pattern: string, glob: string | undefined):
  * excludes "." itself otherwise). --include only sees file names, so a glob with
  * a directory is applied to the relative paths instead (see execute).
  */
-function grepArgs(target: string, pattern: string, glob: string | undefined): string[] {
+function grepArgs(target: string, pattern: string, glob: string | undefined, skipped: string[]): string[] {
 	const args = ["-rnHIE", "--exclude-dir=node_modules", "--exclude-dir=.*", "--exclude=.*"];
+	for (const path of skipped) args.push(`--exclude-dir=${path}`);
 	if (glob !== undefined && !glob.includes("/")) args.push(`--include=${glob}`);
 	args.push("-e", pattern, "--", target);
 	return args;
 }
 
-export function createGrepTool(options: { useRipgrep?: boolean } = {}): ToolDefinition {
+export interface GrepOptions {
+	useRipgrep?: boolean;
+	/** Searches any path except the protected secret locations; without it the tool stays inside the working directory. */
+	outside?: boolean;
+	/** The home whose secret directories stay closed; defaults to the user's. */
+	home?: string;
+}
+
+export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 	return defineTool({
 		name: "grep",
-		description: `Search file contents with a regular expression inside the working directory. Returns path:line:text, at most ${MAX_GREP_MATCHES} matches. Skips hidden files and node_modules.`,
+		description: `Search file contents with a regular expression${options.outside ? "" : " inside the working directory"}. Returns path:line:text, at most ${MAX_GREP_MATCHES} matches. Skips hidden files and node_modules.${options.outside ? " The path may be absolute or outside the working directory; the user's secret directories are protected." : ""}`,
 		inputShape: {
 			pattern: z.string().min(1).describe("Regular expression"),
-			path: z.string().optional().describe("File or directory to search, relative to the working directory"),
+			path: z
+				.string()
+				.optional()
+				.describe(
+					options.outside
+						? "File or directory to search, absolute or relative to the working directory"
+						: "File or directory to search, relative to the working directory",
+				),
 			glob: z.string().optional().describe('File name filter, e.g. "*.ts"'),
 		},
 		async execute({ pattern, path, glob }, { cwd, signal }) {
 			try {
 				if (signal?.aborted) return failure("Search aborted.");
-				const target = await resolveInside(cwd, path ?? ".");
+				const secrets = options.outside ? await protectedReadPaths(cwd, options.home ?? homedir()) : [];
+				const target = options.outside
+					? await resolveOutside(cwd, path ?? ".", secrets)
+					: await resolveInside(cwd, path ?? ".");
 				const root = await realpath(cwd);
+				// The engines are told to skip the secrets inside the target; the filter below is what guarantees none is returned.
+				const skipped = secrets.filter((secret) => secret !== target && isInside(target, secret));
+				const notSecret = (match: string) => !isProtected(resolve(root, match), secrets);
+				const byGlob = glob?.includes("/") ? (match: string) => matchesGlob(match, glob) : undefined;
+				const accept = (match: string) => notSecret(match) && (byGlob?.(match) ?? true);
 				if (signal?.aborted) return failure("Search aborted.");
 				const useRipgrep = options.useRipgrep ?? hasRipgrep();
 				const result = useRipgrep
-					? await runSearch("rg", ripgrepArgs(relative(root, target) || ".", pattern, glob), root, signal)
-					: await runSearch(
-							"grep",
-							grepArgs(target, pattern, glob),
+					? await runSearch(
+							"rg",
+							ripgrepArgs(
+								relative(root, target) || ".",
+								pattern,
+								glob,
+								skipped.map((secret) => relative(root, secret)),
+							),
 							root,
 							signal,
-							glob?.includes("/") ? (match) => matchesGlob(match, glob) : undefined,
-						);
+							accept,
+						)
+					: await runSearch("grep", grepArgs(target, pattern, glob, skipped), root, signal, accept);
 				if (result.stopped === "aborted") return failure("Search aborted.");
 
 				const limited = result.matches.slice(0, MAX_GREP_MATCHES);
@@ -164,3 +195,6 @@ export function createGrepTool(options: { useRipgrep?: boolean } = {}): ToolDefi
 }
 
 export const grepTool = createGrepTool();
+
+/** The `grep` of the main agent and its workers: any path except the secrets. */
+export const openGrepTool = createGrepTool({ outside: true });
