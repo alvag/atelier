@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -234,4 +234,134 @@ describe.skipIf(!onMac)("the agent's bash in the sandbox keeps those places, and
 				expect(result.ok, result.output).toBe(true);
 				expect(result.output).toContain("merged");
 			});
+});
+
+describe("when git cannot answer inside a repository, the protection holds anyway", () => {
+	/** A repository whose included configuration is broken from outside the agent, as a bad merge or a tool could leave it. */
+	async function broken() {
+		const cwd = await repo(join(base, "main"));
+		git(cwd, "config", "core.hooksPath", ".hooks");
+		git(cwd, "config", "include.path", join(cwd, "included"));
+		await mkdir(join(cwd, ".hooks"));
+		await writeFile(join(cwd, ".hooks", "pre-commit"), "old\n");
+		await writeFile(join(cwd, "included"), "[invalid\n");
+		expect(() => git(cwd, "rev-parse", "--git-dir")).toThrow();
+		return cwd;
+	}
+
+	it("edit and write refuse the hooks directory, without asking", async () => {
+		const cwd = await broken();
+		const { questions, results } = await turn(cwd, [
+			editCall(".hooks/pre-commit", "old"),
+			writeCall(".hooks/pre-commit", "w1"),
+			writeCall(".git/hooks/x", "w2"),
+		]);
+		expect(questions).toEqual([]);
+		expect(results).toEqual([refusal(".hooks/pre-commit"), refusal(".hooks/pre-commit"), refusal(".git/hooks/x")]);
+		expect(await readFile(join(cwd, ".hooks", "pre-commit"), "utf8")).toBe("old\n");
+	});
+
+	it.skipIf(!onMac)("bash cannot write the hooks directory", async () => {
+		const cwd = await broken();
+		const result = await createBashTool({ sandbox }).execute({ command: "echo x > .hooks/pre-commit" }, { cwd });
+		expect(result.ok).toBe(false);
+		expect(result.output).toContain("Operation not permitted");
+		expect(await readFile(join(cwd, ".hooks", "pre-commit"), "utf8")).toBe("old\n");
+	});
+});
+
+describe("files the repository configuration includes run code too", () => {
+	async function withIncludes() {
+		const cwd = await repo(join(base, "main"));
+		await writeFile(join(cwd, "extra.cfg"), "[user]\n\tname = x\n");
+		await writeFile(join(cwd, "cond.cfg"), "[user]\n\tname = y\n");
+		await writeFile(join(cwd, "deep.cfg"), "[user]\n\tname = z\n");
+		await writeFile(join(cwd, "extra.cfg"), "[include]\n\tpath = deep.cfg\n");
+		git(cwd, "config", "include.path", "../extra.cfg");
+		git(cwd, "config", "includeIf.gitdir:/nowhere/.path", join(cwd, "cond.cfg"));
+		return cwd;
+	}
+
+	it("edit and write refuse an included file, one named by includeIf and one included by an included file", async () => {
+		const cwd = await withIncludes();
+		const { questions, results } = await turn(cwd, [
+			editCall("extra.cfg", "deep"),
+			writeCall("cond.cfg", "w1"),
+			writeCall("deep.cfg", "w2"),
+		]);
+		expect(questions).toEqual([]);
+		expect(results).toEqual([refusal("extra.cfg"), refusal("cond.cfg"), refusal("deep.cfg")]);
+		expect(await readFile(join(cwd, "cond.cfg"), "utf8")).toBe("[user]\n\tname = y\n");
+	});
+
+	it.skipIf(!onMac)("bash cannot replace them", async () => {
+		const cwd = await withIncludes();
+		const result = await createBashTool({ sandbox }).execute(
+			{ command: "echo x > extra.cfg; echo x > cond.cfg; echo x > deep.cfg" },
+			{ cwd },
+		);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(3);
+		expect(await readFile(join(cwd, "cond.cfg"), "utf8")).toBe("[user]\n\tname = y\n");
+	});
+
+	it("outside the repository's own files, an unrelated file is still written without asking", async () => {
+		const cwd = await withIncludes();
+		const { questions, results } = await turn(cwd, [writeCall("other.cfg")]);
+		expect(questions).toEqual([]);
+		expect(results[0]?.ok).toBe(true);
+	});
+});
+
+describe("attributes and submodule git directories", () => {
+	it("edit and write refuse info/attributes and a submodule's config, without asking", async () => {
+		const cwd = await repo(join(base, "main"));
+		await mkdir(join(cwd, ".git", "info"), { recursive: true });
+		await mkdir(join(cwd, ".git", "modules", "x"), { recursive: true });
+		await writeFile(join(cwd, ".git", "modules", "x", "config"), "old\n");
+		const { questions, results } = await turn(cwd, [
+			writeCall(".git/info/attributes"),
+			editCall(".git/modules/x/config", "old"),
+			writeCall(".git/modules/x/hooks/pre-commit", "w2"),
+		]);
+		expect(questions).toEqual([]);
+		expect(results).toEqual([
+			refusal(".git/info/attributes"),
+			refusal(".git/modules/x/config"),
+			refusal(".git/modules/x/hooks/pre-commit"),
+		]);
+	});
+
+	it.skipIf(!onMac)("bash cannot write them", async () => {
+		const cwd = await repo(join(base, "main"));
+		await mkdir(join(cwd, ".git", "info"), { recursive: true });
+		await mkdir(join(cwd, ".git", "modules", "x"), { recursive: true });
+		const result = await createBashTool({ sandbox }).execute(
+			{ command: "echo x > .git/info/attributes; echo x > .git/modules/x/config" },
+			{ cwd },
+		);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(2);
+		expect(await exists(join(cwd, ".git", "info", "attributes"))).toBe(false);
+	});
+});
+
+describe("a .git that is a link to a directory", () => {
+	async function linked() {
+		const cwd = await repo(join(base, "main"));
+		const real = join(outside, "gitdir");
+		execFileSync("mv", [join(cwd, ".git"), real]);
+		await symlink(real, join(cwd, ".git"));
+		return { cwd, real };
+	}
+
+	it("edit and write protect the same subset as a plain .git: metadata is writable, config and hooks are not", async () => {
+		const { cwd } = await linked();
+		const { results } = await turn(cwd, [
+			writeCall(".git/metadata", "w1"),
+			writeCall(".git/description", "w2"),
+			writeCall(".git/config", "w3"),
+			writeCall(".git/hooks/x", "w4"),
+		]);
+		expect(results.map((r) => r.ok)).toEqual([true, true, false, false]);
+		expect(results[2]).toEqual(refusal(".git/config"));
+	});
 });

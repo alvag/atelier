@@ -1,11 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { describeViolations } from "./sandbox-blocks.ts";
 import { loadSandboxAdditions, type SandboxAdditions } from "./sandbox-config.ts";
 import {
+	configFilePaths,
+	configPath,
+	includedConfigFiles,
 	libraryProtectedPaths,
 	packageCacheDirectories,
 	secretDirectories,
@@ -177,13 +180,16 @@ export function operationStatePaths(gitDir: string): string[] {
  * directory is inside `cwd` or not (a subdirectory of a repository, a linked
  * worktree, a `.git` file): the hooks directory git runs (`core.hooksPath`
  * included), the `config` and `config.worktree` of the git directory and of
- * the shared one, the pending steps of a rebase or cherry-pick, the `.git`
- * file when it is one, and the linked worktree's own set. Asked at each call,
- * because the configuration can change. Empty outside a repository, and when
- * git's answer is unusable: the conventional `.git/hooks` and `.git/config`
- * of the working directory are protected anyway.
+ * the shared one, every file they include (read from the files, not from git),
+ * `info/attributes` (it selects filters), the submodules' git directories
+ * (`modules/`), the pending steps of a rebase or cherry-pick, the `.git` file
+ * when it is a file, and the linked worktree's own set. Asked at each call,
+ * because the configuration can change. Empty outside a repository. When git
+ * cannot answer inside one (a broken included file makes `rev-parse` fail), the
+ * same set is derived by reading the repository's files, so the agent cannot
+ * switch the protection off by breaking the configuration.
  */
-export function gitProtectedPaths(cwd: string): string[] {
+export function gitProtectedPaths(cwd: string, home: string = homedir()): string[] {
 	const found = spawnSync(
 		"git",
 		[
@@ -197,26 +203,72 @@ export function gitProtectedPaths(cwd: string): string[] {
 		],
 		{ cwd, encoding: "utf8", timeout: 5000 },
 	);
-	if (found.status !== 0) return [];
-	const [top, gitDir, commonDir, hooks] = found.stdout.trim().split("\n");
-	if (![top, gitDir, commonDir, hooks].every((path) => path?.startsWith("/"))) return [];
+	const [top, gitDir, commonDir, hooks] = found.status === 0 ? found.stdout.trim().split("\n") : [];
+	if (found.status === 0 && [top, gitDir, commonDir, hooks].every((path) => path?.startsWith("/")))
+		return repositoryPaths(top as string, gitDir as string, commonDir as string, [hooks as string], home, cwd);
+	const repository = repositoryFromFiles(cwd);
+	if (repository === undefined) return [];
+	const { top: root, gitDir: dir, commonDir: common } = repository;
+	const hooksPaths = [dir, common]
+		.flatMap((d) => [join(d, "config"), join(d, "config.worktree")])
+		.flatMap((file) => [file, ...includedConfigFiles([file], home)])
+		.map((file) => configFilePaths(file).hooksPath)
+		.flatMap((value) => (value === undefined ? [] : [configPath(value, root, home)]));
+	return repositoryPaths(root, dir, common, hooksPaths, home, cwd);
+}
+
+function repositoryPaths(
+	top: string,
+	gitDir: string,
+	commonDir: string,
+	hooks: string[],
+	home: string,
+	cwd: string,
+): string[] {
+	const configs = [gitDir, commonDir].flatMap((dir) => [join(dir, "config"), join(dir, "config.worktree")]);
 	return [
-		hooks as string,
-		...[gitDir as string, commonDir as string].flatMap((dir) => [
-			join(dir, "hooks"),
-			join(dir, "config"),
-			join(dir, "config.worktree"),
-		]),
-		...operationStatePaths(gitDir as string),
-		...(isFileOrLink(join(top as string, ".git")) ? [join(top as string, ".git")] : []),
+		...hooks,
+		...[gitDir, commonDir].flatMap((dir) => [join(dir, "hooks"), join(dir, "info", "attributes")]),
+		join(commonDir, "modules"),
+		...configs,
+		...includedConfigFiles(configs, home),
+		...operationStatePaths(gitDir),
+		// A link to the git directory is not the directory: protecting it whole would be more than a plain `.git` gets.
+		...(isRegularFile(join(top, ".git")) ? [join(top, ".git")] : []),
 		...worktreeGitPaths(linkedWorktreeGit(cwd)).denyWrite.filter((path) => !path.includes("*")),
 	];
 }
 
-/** Whether `path` is a file or a link, not a directory (and not missing). */
-function isFileOrLink(path: string): boolean {
+/** The repository `cwd` is in, found by looking for `.git` upward and reading it, for when git does not answer. */
+function repositoryFromFiles(cwd: string): { top: string; gitDir: string; commonDir: string } | undefined {
+	for (let top = cwd; ; top = dirname(top)) {
+		const dot = join(top, ".git");
+		if (existsSync(dot)) {
+			let gitDir = dot;
+			if (isRegularFile(dot)) {
+				const named = /^gitdir:\s*(.+)$/m.exec(readFileOr(dot));
+				if (named?.[1] === undefined) return { top, gitDir: dot, commonDir: dot };
+				gitDir = resolve(top, named[1].trim());
+			}
+			const common = readFileOr(join(gitDir, "commondir")).trim();
+			return { top, gitDir, commonDir: common === "" ? gitDir : resolve(gitDir, common) };
+		}
+		if (dirname(top) === top) return undefined;
+	}
+}
+
+function readFileOr(path: string): string {
 	try {
-		return !lstatSync(path).isDirectory();
+		return readFileSync(path, "utf8");
+	} catch {
+		return "";
+	}
+}
+
+/** Whether `path` is a regular file; not a directory, not a link, not missing. */
+function isRegularFile(path: string): boolean {
+	try {
+		return lstatSync(path).isFile();
 	} catch {
 		return false;
 	}
@@ -523,7 +575,7 @@ export class Sandbox {
 						// Read at each command, so a file that became invalid stops the command instead of being ignored.
 						additions: loadSandboxAdditions({ cwd, home }),
 						...(this.#options.manager ? {} : optional("worktreeGit", linkedWorktreeGit(cwd))),
-						...(this.#options.manager ? {} : { gitPaths: gitProtectedPaths(cwd) }),
+						...(this.#options.manager ? {} : { gitPaths: gitProtectedPaths(cwd, home) }),
 					})
 				: verifierPolicy({
 						dir: cwd,

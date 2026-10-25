@@ -60,7 +60,7 @@ function gitExecutionPaths(cwd: string, home: string): string[] {
 			.flatMap(libraryProtectedPaths)
 			.filter((path) => basename(path).startsWith(".git") || basename(dirname(path)) === ".git"),
 		...directories.flatMap((dir) => operationStatePaths(join(dir, ".git"))),
-		...gitProtectedPaths(cwd),
+		...gitProtectedPaths(cwd, home),
 	];
 }
 
