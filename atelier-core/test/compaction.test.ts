@@ -114,6 +114,11 @@ describe("context measurement and threshold", () => {
 		const message = user("x".repeat(4000));
 		expect(estimateTokens(message)).toBe(Math.ceil(JSON.stringify(message).length / 4));
 	});
+
+	it("sizes a message as the API takes it, without the effort Atelier keeps next to it", () => {
+		const answer = { role: "assistant" as const, content: "y".repeat(400) };
+		expect(estimateTokens({ ...answer, effort: "xhigh" } as Anthropic.MessageParam)).toBe(estimateTokens(answer));
+	});
 });
 
 describe("findCut", () => {

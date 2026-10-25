@@ -24,20 +24,43 @@ export const PRICES: Readonly<Record<string, readonly PriceTier[]>> = Object.fre
 	],
 });
 
-/** Models that take every effort level; any other model, known or not, gets none. */
-export const EFFORT_MODELS: ReadonlySet<string> = new Set(["claude-opus-5-5", "claude-sonnet-5-5"]);
+const ALL_EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
+const NO_XHIGH: readonly Effort[] = ["low", "medium", "high", "max"];
 
-/** Claude Code's model aliases, so a model named either way finds its effort support. */
+/**
+ * The effort levels each model takes, from https://platform.claude.com/docs/en/build-with-claude/effort
+ * (2026-10-25). Not every model that takes `max` takes `xhigh`. Any other model, known or not, gets none.
+ */
+export const EFFORT_LEVELS: Readonly<Record<string, readonly Effort[]>> = Object.freeze({
+	"claude-fable-5-1": ALL_EFFORTS,
+	"claude-mythos-5-1": ALL_EFFORTS,
+	"claude-fable-5": ALL_EFFORTS,
+	"claude-mythos-5": ALL_EFFORTS,
+	"claude-mythos-preview": NO_XHIGH,
+	"claude-opus-5-5": ALL_EFFORTS,
+	"claude-opus-5": ALL_EFFORTS,
+	"claude-opus-4-8": ALL_EFFORTS,
+	"claude-opus-4-7": ALL_EFFORTS,
+	"claude-opus-4-6": NO_XHIGH,
+	"claude-opus-4-5-20251101": ["low", "medium", "high"],
+	"claude-sonnet-5-5": ALL_EFFORTS,
+	"claude-sonnet-5": ALL_EFFORTS,
+	"claude-sonnet-4-6": NO_XHIGH,
+	"claude-haiku-5-5": ALL_EFFORTS,
+});
+
+/** Claude Code's model aliases and undated ids, so a model named either way finds its effort levels. */
 const ALIASES: Readonly<Record<string, string>> = Object.freeze({
 	opus: "claude-opus-5-5",
 	sonnet: "claude-sonnet-5-5",
 	haiku: "claude-haiku-5-5",
+	"claude-opus-4-5": "claude-opus-4-5-20251101",
 });
 
-/** The effort to send to `model`: none when none was asked, `unsupported` when the model does not take it. */
+/** The effort to send to `model`: none when none was asked, `unsupported` when the model does not take that level. */
 export function effortToSend(model: string, effort: Effort | undefined): Effort | "unsupported" | undefined {
 	if (effort === undefined) return undefined;
-	return EFFORT_MODELS.has(ALIASES[model] ?? model) ? effort : "unsupported";
+	return EFFORT_LEVELS[ALIASES[model] ?? model]?.includes(effort) ? effort : "unsupported";
 }
 
 /** Cost of one API request, or undefined when the model is not in the table. */

@@ -309,12 +309,12 @@ describe("AnthropicApiBackend", () => {
 		const { session, api } = await start(
 			[{ blocks: [{ type: "text", text: "ok" }] }],
 			undefined,
-			{ model: "claude-haiku-5-5" },
+			{ model: "claude-opus-4-6" },
 			undefined,
-			{ effort: "low" },
+			{ effort: "xhigh" },
 		);
 		const events = await collect(session.send("Hi"));
-		expect(events[0]).toMatchObject({ type: "session_started", model: "claude-haiku-5-5", effort: "unsupported" });
+		expect(events[0]).toMatchObject({ type: "session_started", model: "claude-opus-4-6", effort: "unsupported" });
 		expect(api.bodies[0]).not.toHaveProperty("output_config");
 	});
 

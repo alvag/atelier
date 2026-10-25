@@ -177,18 +177,18 @@ describe("ClaudeCodeBackend options", () => {
 	});
 
 	it("does not pass an effort the model does not support, and marks it unsupported", async () => {
-		const { query, calls } = fakeQuery([{ ...init, model: "claude-haiku-5-5" } as SDKMessage], [[result(0.01)]]);
+		const { query, calls } = fakeQuery([{ ...init, model: "claude-sonnet-4-6" } as SDKMessage], [[result(0.01)]]);
 		const session = await new ClaudeCodeBackend({ query, env: {} }).start({
 			cwd: "/w",
-			model: "haiku",
-			effort: "max",
+			model: "claude-sonnet-4-6",
+			effort: "xhigh",
 			systemPromptAppend: "",
 			tools: [],
 			executeTool: async () => ({ ok: true, output: "" }),
 		});
 		expect(calls.options).not.toHaveProperty("effort");
 		const [started] = await collectBodies(session.send("hi"));
-		expect(started).toMatchObject({ type: "session_started", model: "claude-haiku-5-5", effort: "unsupported" });
+		expect(started).toMatchObject({ type: "session_started", model: "claude-sonnet-4-6", effort: "unsupported" });
 	});
 
 	it("caps a turn's model requests with maxTurns when asked", async () => {

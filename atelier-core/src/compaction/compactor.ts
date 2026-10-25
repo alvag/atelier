@@ -71,9 +71,9 @@ export function parseCompactAt(value: string | undefined): number | undefined {
 	return Number(trimmed);
 }
 
-/** About four characters per token: only used to size the verbatim tail. */
+/** About four characters per token, of the message as the API takes it (no `effort`): only used to size the verbatim tail. */
 export function estimateTokens(message: Anthropic.MessageParam): number {
-	return Math.ceil(JSON.stringify(message).length / 4);
+	return Math.ceil(JSON.stringify({ role: message.role, content: message.content }).length / 4);
 }
 
 /** A cut is valid before an assistant message that follows a user message: both sides stay well formed. */

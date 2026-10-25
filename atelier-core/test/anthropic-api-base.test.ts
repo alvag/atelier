@@ -112,9 +112,19 @@ describe("effortToSend", () => {
 	it("sends the effort only to models that support it, by id or by Claude Code alias", () => {
 		expect(effortToSend("claude-opus-5-5", "max")).toBe("max");
 		expect(effortToSend("sonnet", "low")).toBe("low");
-		expect(effortToSend("claude-haiku-5-5", "low")).toBe("unsupported");
-		expect(effortToSend("haiku", "high")).toBe("unsupported");
+		expect(effortToSend("claude-haiku-5-5", "low")).toBe("low");
+		expect(effortToSend("haiku", "xhigh")).toBe("xhigh");
+		expect(effortToSend("claude-fable-5-1", "max")).toBe("max");
 		expect(effortToSend("a-model-atelier-does-not-know", "high")).toBe("unsupported");
 		expect(effortToSend("claude-opus-5-5", undefined)).toBeUndefined();
+	});
+
+	it("sends only the levels each model takes", () => {
+		expect(effortToSend("claude-opus-4-6", "max")).toBe("max");
+		expect(effortToSend("claude-opus-4-6", "xhigh")).toBe("unsupported");
+		expect(effortToSend("claude-sonnet-4-6", "xhigh")).toBe("unsupported");
+		expect(effortToSend("claude-opus-4-5", "high")).toBe("high");
+		expect(effortToSend("claude-opus-4-5-20251101", "max")).toBe("unsupported");
+		expect(effortToSend("claude-haiku-4-5", "low")).toBe("unsupported");
 	});
 });
