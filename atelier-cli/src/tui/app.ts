@@ -151,6 +151,21 @@ interface Opened {
 	configuration?: SessionConfiguration;
 }
 
+/** The mode requests of one session: how many were sent, the newest the core accepted, and whether the newest failed. */
+interface ModeRequests {
+	sessionId: string;
+	sent: number;
+	accepted: { order: number; mode: string | undefined };
+	newestFailed: boolean;
+}
+
+const modeRequestsOf = (sessionId: string, mode: string | undefined): ModeRequests => ({
+	sessionId,
+	sent: 0,
+	accepted: { order: 0, mode },
+	newestFailed: false,
+});
+
 /** What the user chose for the session, on the command line or with the lists, which `/new` keeps. */
 interface Chosen {
 	model?: string;
@@ -293,6 +308,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const footer = new Footer(paint);
 	// What the core answered, until the session's own events say more.
 	if (opened.configuration !== undefined) footer.state = footerWithConfiguration({}, opened.configuration);
+	let modeRequests = modeRequestsOf(sessionId, footer.state.mode);
 	// Each session gets a conversation of its own, after the ones before it.
 	const transcript = new Container();
 	transcript.addChild(conversation);
@@ -310,17 +326,19 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	tui.setFocus(editor);
 
 	let busy = false;
+	/** A slash command is still running (a list, a backend move, a new session starting): nothing else is sent. */
+	let commanding = false;
 	let interrupted = false;
 	let finish: (code: number) => void = () => {};
 	const done = new Promise<number>((resolve) => {
 		finish = resolve;
 	});
 	/** Questions waiting for an answer, the first one on screen. */
-	const questions: { dialog: Component; cancel: () => void }[] = [];
+	const questions: { dialog: Component; cancel: () => void; local: boolean }[] = [];
 
 	const setBusy = (on: boolean) => {
 		busy = on;
-		editor.disableSubmit = on;
+		editor.disableSubmit = busy || commanding;
 		status.clear();
 		if (on) {
 			status.addChild(loader);
@@ -339,25 +357,28 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const ask = <T extends string>(
 		question: { title: string; lines: string[]; choices: Choice<T>[]; initial: T; cancel: T; rows?: number },
 		answer: (value: T) => void,
+		local = false,
 	) => {
 		let answered = false;
 		const entry = {
 			dialog: new ChoiceDialog(question, paint, (value: T) => settle(value)),
 			cancel: () => settle(question.cancel),
+			local,
 		};
 		const settle = (value: T) => {
 			if (answered) return;
 			answered = true;
-			questions.splice(questions.indexOf(entry), 1);
+			const at = questions.indexOf(entry);
+			if (at !== -1) questions.splice(at, 1);
 			answer(value);
 			showQuestion();
 		};
 		questions.push(entry);
 		if (questions.length === 1) showQuestion();
 	};
-	/** Drops the questions on screen: the core denied or dropped them when the turn ended. */
+	/** Drops the questions on screen: the core denied or dropped its own; the TUI's own lists close as with Esc. */
 	const dropQuestions = () => {
-		questions.splice(0);
+		for (const dropped of questions.splice(0)) if (dropped.local) dropped.cancel();
 		showQuestion();
 	};
 	const request = (command: ClientCommand) =>
@@ -372,15 +393,20 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			const first = choices[0];
 			if (first === undefined) return resolve(undefined);
 			const initial = choices.some((choice) => choice.value === now) && now !== undefined ? now : first.value;
-			ask({ title, lines, choices, initial, cancel: CANCELLED, rows: LIST_ROWS }, (value) =>
-				resolve(value === CANCELLED ? undefined : value),
+			ask(
+				{ title, lines, choices, initial, cancel: CANCELLED, rows: LIST_ROWS },
+				(value) => resolve(value === CANCELLED ? undefined : value),
+				true,
 			);
 		});
 	const listOptions = async () => (await request({ command: "options.list", cwd: args.cwd })) as Options | undefined;
 	/** Sends a change of the session's configuration and shows in the footer what the core answered. */
 	const configure = async (command: ClientCommand) => {
+		const asked = sessionId;
 		const answer = (await request(command)) as SessionConfiguration | undefined;
-		if (answer !== undefined) footer.state = footerWithConfiguration(footer.state, answer);
+		// The answer of a session the TUI has left says nothing about the one running.
+		if (answer === undefined || asked !== sessionId) return undefined;
+		footer.state = footerWithConfiguration(footer.state, answer);
 		return answer;
 	};
 
@@ -450,14 +476,25 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		void request({ command: "session.interrupt", sessionId });
 	};
 
-	/** Changes the mode, shown in the footer at once; a mode the core refused goes back, unless another came since. */
+	/**
+	 * Changes the mode, shown in the footer at once. The core applies the requests in the order they were sent, so its
+	 * mode is the last one it accepted; when the newest request fails, the footer shows that one.
+	 */
 	const setMode = async (mode: PermissionMode) => {
-		const before = footer.state.mode;
+		const modes = modeRequests;
+		const order = ++modes.sent;
 		footer.state = footerWithMode(footer.state, mode);
 		tui.requestRender();
-		if ((await request({ command: "session.set_mode", sessionId, mode })) !== undefined) return true;
-		if (footer.state.mode === mode && before !== undefined) footer.state = footerWithMode(footer.state, before);
-		return false;
+		const ok = (await request({ command: "session.set_mode", sessionId: modes.sessionId, mode })) !== undefined;
+		// A request of a session the TUI has left says nothing about the one running.
+		if (modes !== modeRequests) return false;
+		if (ok && order > modes.accepted.order) modes.accepted = { order, mode };
+		if (!ok && order === modes.sent) modes.newestFailed = true;
+		if (ok && order === modes.sent) modes.newestFailed = false;
+		if (modes.newestFailed && modes.accepted.mode !== undefined)
+			footer.state = footerWithMode(footer.state, modes.accepted.mode);
+		tui.requestRender();
+		return ok;
 	};
 
 	const runMode = async (words: string[]) => {
@@ -587,6 +624,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		savedId = next.savedId;
 		conversation = shownIn;
 		footer.state = next.configuration === undefined ? {} : footerWithConfiguration({}, next.configuration);
+		modeRequests = modeRequestsOf(sessionId, footer.state.mode);
 		void request({ command: "session.close", sessionId: previous });
 	};
 	/** A conversation for the next session, after a rule that ends the one before. */
@@ -637,11 +675,22 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const submit = async (line: string) => {
 		const text = line.trim();
-		if (text === "" || busy) return;
+		if (text === "" || busy || commanding) return;
 		editor.addToHistory(line);
 		editor.setText("");
 		if (text === "/exit") return quit(EXIT_OK);
 		conversation.prompt(line);
+		commanding = true;
+		editor.disableSubmit = true;
+		try {
+			await dispatch(text, line);
+		} finally {
+			commanding = false;
+			editor.disableSubmit = busy;
+		}
+		tui.requestRender();
+	};
+	const dispatch = async (text: string, line: string) => {
 		const words = text.split(/\s+/);
 		const [command, argument] = words;
 		const single = words.length <= 2;
@@ -659,7 +708,6 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			const instructions = text.slice("/compact".length).trim();
 			await startTurn({ command: "session.compact", sessionId, ...(instructions === "" ? {} : { instructions }) });
 		} else await startTurn({ command: "session.send", sessionId, prompt: line });
-		tui.requestRender();
 	};
 	editor.onSubmit = (line) => void submit(line);
 

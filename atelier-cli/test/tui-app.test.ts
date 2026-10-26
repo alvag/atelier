@@ -533,8 +533,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				log.closed = true;
 			},
 		};
-		const emit = (event: Record<string, unknown>) => {
-			for (const listener of listeners) listener("s1", event as unknown as AtelierEvent);
+		const emit = (event: Record<string, unknown>, sessionId = "s1") => {
+			for (const listener of listeners) listener(sessionId, event as unknown as AtelierEvent);
 		};
 		return { link, log, emit };
 	}
@@ -636,6 +636,163 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			},
 		});
 	}
+
+	/**
+	 * A core whose `session.set_mode` answers wait for the test, and with `holdStart`, every `session.start` after the
+	 * first; the sessions are s1, s2, ... and start in `mode` unless asked for another.
+	 */
+	function heldCore(options: { mode: string; holdStart?: boolean }) {
+		const held: { command: ClientCommand; resolve: (value: unknown) => void; reject: (error: Error) => void }[] = [];
+		let starts = 0;
+		const hold = (command: ClientCommand) =>
+			new Promise((resolve, reject) => {
+				held.push({ command, resolve, reject });
+			});
+		const started = (command: Extract<ClientCommand, { command: "session.start" }>) => ({
+			sessionId: `s${starts}`,
+			configuration: {
+				backend: "claude-code",
+				model: "opus",
+				permissionMode: command.mode ?? options.mode,
+				profile: { name: "p", origin: "explicit" },
+				pending: false,
+			},
+		});
+		const stub = stubCore({
+			answer: (command) => {
+				if (command.command === "session.set_mode") return hold(command);
+				if (command.command !== "session.start") return {};
+				starts++;
+				if (starts > 1 && options.holdStart) return hold(command).then(() => started(command));
+				return started(command);
+			},
+		});
+		return { ...stub, held };
+	}
+
+	/** The mode the footer showed last. */
+	const footerMode = (screen: string) => [...screen.matchAll(/profile p · (normal|auto|yolo)/g)].at(-1)?.[1];
+	const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+	const outOfOrder: [string, [number, "fail" | "ok"][], string][] = [
+		[
+			"both fail, the older first",
+			[
+				[0, "fail"],
+				[1, "fail"],
+			],
+			"normal",
+		],
+		[
+			"both fail, the newer first",
+			[
+				[1, "fail"],
+				[0, "fail"],
+			],
+			"normal",
+		],
+		[
+			"the newer fails first, then the older is accepted",
+			[
+				[1, "fail"],
+				[0, "ok"],
+			],
+			"auto",
+		],
+		[
+			"the older is accepted, then the newer fails",
+			[
+				[0, "ok"],
+				[1, "fail"],
+			],
+			"auto",
+		],
+	];
+	it.each(outOfOrder)(
+		"shows the mode the core is in when two Shift+Tab requests end: %s",
+		async (_name, ends, mode) => {
+			const h = harness([]);
+			const stub = heldCore({ mode: "normal" });
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => footerMode(h.screen.screen()) === "normal");
+			h.screen.type("\x1b[Z");
+			h.screen.type("\x1b[Z");
+			await until(() => stub.held.length === 2);
+			expect(stub.held.map(({ command }) => command.command === "session.set_mode" && command.mode)).toEqual([
+				"auto",
+				"normal",
+			]);
+			for (const [index, end] of ends) {
+				const request = stub.held[index];
+				const asked = request?.command as Extract<ClientCommand, { command: "session.set_mode" }>;
+				if (end === "ok") request?.resolve({ mode: asked.mode });
+				else request?.reject(new Error("refused"));
+				await tick();
+			}
+			await until(() => footerMode(h.screen.screen()) === mode);
+			h.screen.type("\x04");
+			expect(await code).toBe(0);
+		},
+	);
+
+	it("sends nothing while /new starts a session, and then sends to the new one", async () => {
+		const h = harness([]);
+		const stub = heldCore({ mode: "normal", holdStart: true });
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		const sends = () => stub.log.commands.filter((command) => command.command === "session.send");
+		h.screen.type("/new");
+		h.screen.type("\r");
+		await until(() => stub.held.length === 1);
+		h.screen.type("hello");
+		h.screen.type("\r");
+		await tick();
+		expect(sends()).toEqual([]);
+		stub.held[0]?.resolve(undefined);
+		await until(() => stub.log.commands.some((command) => command.command === "session.close"));
+		expect(stub.log.commands).toContainEqual({ command: "session.close", sessionId: "s1" });
+		// What was typed is still in the editor, and goes to the new session once /new has ended.
+		await tick();
+		h.screen.type("\r");
+		await until(() => sends().length === 1);
+		await tick();
+		stub.emit({ type: "turn_finished", stopReason: "end_turn", usage }, "s2");
+		h.screen.type("again");
+		h.screen.type("\r");
+		await until(() => sends().length === 2);
+		expect(sends()).toEqual([
+			{ command: "session.send", sessionId: "s2", prompt: "hello" },
+			{ command: "session.send", sessionId: "s2", prompt: "again" },
+		]);
+		// The first Ctrl+C interrupts the turn, the second quits.
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("keeps the new session's mode when a mode request of the session before fails late", async () => {
+		const h = harness([]);
+		const stub = heldCore({ mode: "yolo" });
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(() => footerMode(h.screen.screen()) === "yolo");
+		h.screen.type("\x1b[Z");
+		await until(() => stub.held.length === 1);
+		h.screen.type("/new");
+		h.screen.type("\r");
+		await until(() => stub.log.commands.some((command) => command.command === "session.close"));
+		expect(stub.log.commands).toContainEqual({ command: "session.start", cwd, mode: "normal", noSession: true });
+		stub.held[0]?.reject(new Error("refused"));
+		await tick();
+		h.screen.type("x");
+		await tick();
+		expect(footerMode(h.screen.screen())).toBe("normal");
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
 
 	it("picks the model, the effort and the profile from lists that start on the ones in use", async () => {
 		const h = harness([]);
