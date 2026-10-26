@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { THINKING_LEVELS, type ThinkingLevel } from "../thinking.ts";
 
 export const PROFILES_KIND = "atelier.agent_model_profiles";
 export const PROFILES_VERSION = 1;
@@ -21,8 +22,7 @@ export const ROLES = [
 ] as const;
 export type Role = (typeof ROLES)[number];
 
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+export { THINKING_LEVELS, type ThinkingLevel };
 
 export const PROFILE_BACKENDS = ["anthropic-api", "claude-code"] as const;
 export type ProfileBackend = (typeof PROFILE_BACKENDS)[number];

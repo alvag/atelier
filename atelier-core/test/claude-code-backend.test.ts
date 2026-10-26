@@ -60,9 +60,18 @@ function fakeQuery(
 	replies: (SDKMessage | Error | StopHook)[][],
 	account: Record<string, unknown> = SUBSCRIPTION,
 ) {
-	const calls: { options: Options; prompts: string[]; interrupts: number; closed: boolean; hookOutputs: unknown[] } = {
+	const calls: {
+		options: Options;
+		prompts: string[];
+		/** The prompts and the control calls (`setModel:x`, `flags:{...}`), in the order the query got them. */
+		order: string[];
+		interrupts: number;
+		closed: boolean;
+		hookOutputs: unknown[];
+	} = {
 		options: {},
 		prompts: [],
+		order: [],
 		interrupts: 0,
 		closed: false,
 		hookOutputs: [],
@@ -73,6 +82,7 @@ function fakeQuery(
 			yield* boot;
 			for await (const message of prompt as AsyncIterable<SDKUserMessage>) {
 				calls.prompts.push(message.message.content as string);
+				calls.order.push(`prompt:${message.message.content as string}`);
 				for (const item of replies.shift() ?? []) {
 					if (item instanceof Error) throw item;
 					if ("stopEffort" in item) {
@@ -98,6 +108,12 @@ function fakeQuery(
 			},
 			async accountInfo() {
 				return account;
+			},
+			async setModel(model?: string) {
+				calls.order.push(`setModel:${model}`);
+			},
+			async applyFlagSettings(settings: unknown) {
+				calls.order.push(`flags:${JSON.stringify(settings)}`);
 			},
 			close() {
 				calls.closed = true;
@@ -281,6 +297,63 @@ describe("ClaudeCodeBackend options", () => {
 		const kept = fakeQuery([], []);
 		await new ClaudeCodeBackend({ query: kept.query, env, keepApiKey: true }).start(start);
 		expect(kept.calls.options.env).toHaveProperty("ANTHROPIC_API_KEY", "sk-secret");
+	});
+});
+
+describe("ClaudeCodeBackend configure", () => {
+	const start = (query: QueryFunction, extra: Partial<Parameters<ClaudeCodeBackend["start"]>[0]> = {}) =>
+		new ClaudeCodeBackend({ query, env: {} }).start({ ...plainStart, ...extra });
+
+	it("sets the model and the effort in the open query before the next prompt", async () => {
+		const { query, calls } = fakeQuery([init], [[result(0.01)], [result(0.02)]]);
+		const session = await start(query, { thinking: "low" });
+		await collectBodies(session.send("one"));
+		await session.configure?.({ model: "sonnet", thinking: "xhigh" });
+		await collectBodies(session.send("two"));
+		expect(calls.order).toEqual(["prompt:one", "setModel:sonnet", 'flags:{"effortLevel":"xhigh"}', "prompt:two"]);
+	});
+
+	it("sends only what changed", async () => {
+		const { query, calls } = fakeQuery([init], []);
+		const session = await start(query, { model: "opus", thinking: "low" });
+		await session.configure?.({ model: "haiku" });
+		await session.configure?.({ thinking: "max" });
+		expect(calls.order).toEqual(["setModel:haiku", 'flags:{"effortLevel":"max"}']);
+	});
+
+	it("sends minimal as low, like at start", async () => {
+		const { query, calls } = fakeQuery([init], []);
+		const session = await start(query);
+		await session.configure?.({ thinking: "minimal" });
+		expect(calls.order).toEqual(['flags:{"effortLevel":"low"}']);
+	});
+
+	it("clears the effort when the model does not take the level, and says it unsupported", async () => {
+		const { query, calls } = fakeQuery([init], [[result(0.01)]]);
+		const session = await start(query, { model: "opus", thinking: "xhigh" });
+		await session.configure?.({ model: "claude-sonnet-4-6" });
+		expect(calls.order).toEqual(["setModel:claude-sonnet-4-6", 'flags:{"effortLevel":null}']);
+	});
+
+	it("refuses to turn thinking off in an open query, where Claude Code has no way to do it", async () => {
+		const { query, calls } = fakeQuery([init], []);
+		const session = await start(query, { model: "claude-haiku-5-5" });
+		await expect(session.configure?.({ thinking: "off" })).rejects.toThrow(
+			"claude-code cannot turn thinking off in an open session.",
+		);
+		expect(calls.order).toEqual([]);
+	});
+
+	it("reports a query that rejects the change", async () => {
+		const { query } = fakeQuery([init], []);
+		const failing: QueryFunction = (params) =>
+			Object.assign(query(params), {
+				async setModel() {
+					throw new Error("unknown model");
+				},
+			}) as SdkQuery;
+		const session = await start(failing);
+		await expect(session.configure?.({ model: "nope" })).rejects.toThrow("unknown model");
 	});
 });
 

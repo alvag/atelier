@@ -306,6 +306,78 @@ describe("AnthropicApiBackend", () => {
 		expect(JSON.stringify(messagesOf(api.bodies[1]))).not.toContain("effort");
 	});
 
+	it("sends the new model and effort in the next request after configure, and prices the turn by the new model", async () => {
+		const { session, api } = await start(
+			[{ blocks: [{ type: "text", text: "one" }] }, { blocks: [{ type: "text", text: "two" }] }],
+			undefined,
+			{ contextWindow: 200_000 },
+			undefined,
+			{ model: "claude-sonnet-5-5", thinking: "low" },
+		);
+		await collect(session.send("a"));
+		await session.configure?.({ model: "claude-opus-5-5", thinking: "max" });
+		const second = await collect(session.send("b"));
+		expect(api.bodies.map((body) => body.model)).toEqual(["claude-sonnet-5-5", "claude-opus-5-5"]);
+		expect(api.bodies.map((body) => body.output_config)).toEqual([{ effort: "low" }, { effort: "max" }]);
+		// The history stays: the new model reads the conversation so far.
+		expect(JSON.stringify(messagesOf(api.bodies[1]))).toContain("one");
+		const done = second.at(-1);
+		expect(done).toMatchObject({
+			type: "turn_finished",
+			costUsd: costOfRequest("claude-opus-5-5", { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }),
+		});
+	});
+
+	it("drops the effort the new model does not take, and sends nothing about it", async () => {
+		const { session, api } = await start(
+			[{ blocks: [{ type: "text", text: "one" }] }, { blocks: [{ type: "text", text: "two" }] }],
+			undefined,
+			{ contextWindow: 200_000 },
+			undefined,
+			{ model: "claude-sonnet-5-5", thinking: "xhigh" },
+		);
+		await collect(session.send("a"));
+		await session.configure?.({ model: "claude-sonnet-4-6" });
+		await collect(session.send("b"));
+		expect(api.bodies[1]?.model).toBe("claude-sonnet-4-6");
+		expect(api.bodies[1]).not.toHaveProperty("output_config");
+	});
+
+	it("turns thinking off where the model says how, and back on", async () => {
+		const { session, api } = await start(
+			[{ blocks: [{ type: "text", text: "one" }] }, { blocks: [{ type: "text", text: "two" }] }],
+			undefined,
+			{ contextWindow: 200_000 },
+			undefined,
+			{ model: "claude-haiku-5-5", thinking: "high" },
+		);
+		await session.configure?.({ thinking: "off" });
+		await collect(session.send("a"));
+		await session.configure?.({ thinking: "medium" });
+		await collect(session.send("b"));
+		expect(api.bodies[0]?.thinking).toEqual({ type: "disabled" });
+		expect(api.bodies[0]).not.toHaveProperty("output_config");
+		expect(api.bodies[1]).not.toHaveProperty("thinking");
+		expect(api.bodies[1]?.output_config).toEqual({ effort: "medium" });
+	});
+
+	it("looks up the window of the new model, so the context says its size", async () => {
+		const { session, api } = await start(
+			[{ blocks: [{ type: "text", text: "one" }] }, { blocks: [{ type: "text", text: "two" }] }],
+			undefined,
+			{},
+			undefined,
+			{ model: "claude-sonnet-5-5" },
+		);
+		await collect(session.send("a"));
+		const before = api.lookups.length;
+		await session.configure?.({ model: "claude-opus-5-5" });
+		const events = await collect(session.send("b"));
+		expect(api.lookups.length).toBe(before + 1);
+		expect(api.lookups.at(-1)).toContain("claude-opus-5-5");
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", context: { window: expect.any(Number) } });
+	});
+
 	it("does not send an effort the model does not support, and marks it unsupported", async () => {
 		const { session, api } = await start(
 			[{ blocks: [{ type: "text", text: "ok" }] }],

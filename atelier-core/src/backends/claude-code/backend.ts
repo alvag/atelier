@@ -8,7 +8,7 @@ import {
 	query as sdkQuery,
 	tool,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentBackend, BackendSession, BackendStartOptions, ToolExecutor } from "../../backend.ts";
+import type { AgentBackend, BackendSession, BackendStartOptions, SessionChange, ToolExecutor } from "../../backend.ts";
 import { Channel } from "../../channel.ts";
 import {
 	type AtelierEventBody,
@@ -32,6 +32,10 @@ export interface SdkQuery extends AsyncIterable<SDKMessage> {
 	interrupt(): Promise<unknown>;
 	close(): void;
 	accountInfo?(): Promise<AccountInfo>;
+	/** Changes the model of the open query for the next turns. */
+	setModel?(model?: string): Promise<void>;
+	/** Merges settings into the open query; `effortLevel: null` goes back to the model's default effort. */
+	applyFlagSettings?(settings: { effortLevel?: Effort | null }): Promise<void>;
 }
 
 export type QueryFunction = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => SdkQuery;
@@ -167,6 +171,8 @@ export class ClaudeCodeBackend implements AgentBackend {
 			sent?.report,
 			applied,
 			start.compactionState,
+			model,
+			start.thinking,
 		);
 	}
 }
@@ -228,10 +234,13 @@ class ClaudeCodeSession implements BackendSession {
 	#failure: string | undefined;
 	readonly #compactionState: (() => string | undefined) | undefined;
 	/** What `session_started` says about the effort. */
-	readonly #effort: ThinkingSend["report"] | undefined;
+	#effort: ThinkingSend["report"] | undefined;
 	readonly #applied: AppliedEffort;
 	/** Claude Code compacted; the core's state goes with the next prompt. */
 	#stateDue = false;
+	/** The model and level the open query runs with, as `configure` last set them. */
+	#model: string;
+	#thinking: SessionChange["thinking"];
 
 	constructor(
 		query: SdkQuery,
@@ -240,8 +249,12 @@ class ClaudeCodeSession implements BackendSession {
 		interruptGraceMs: number,
 		effort: ThinkingSend["report"] | undefined,
 		applied: AppliedEffort,
-		compactionState?: () => string | undefined,
+		compactionState: (() => string | undefined) | undefined,
+		model: string,
+		thinking: SessionChange["thinking"],
 	) {
+		this.#model = model;
+		this.#thinking = thinking;
 		this.#query = query;
 		this.#input = input;
 		this.#interruptGraceMs = interruptGraceMs;
@@ -350,6 +363,26 @@ class ClaudeCodeSession implements BackendSession {
 
 	effectiveEffort(): Effort | undefined {
 		return this.#applied.level;
+	}
+
+	/** Sets the model and the effort in the open query: they hold from the next prompt, which has not been sent yet. */
+	async configure(change: SessionChange): Promise<void> {
+		const { setModel, applyFlagSettings } = this.#query;
+		if (!setModel || !applyFlagSettings) throw new Error("This Claude Code query cannot change an open session.");
+		const model = change.model ?? this.#model;
+		const thinking = change.thinking ?? this.#thinking;
+		const sent = thinkingToSend(model, thinking, "claude-code");
+		// The Agent SDK has no way to turn thinking off in an open query; refuse before changing anything.
+		if (change.thinking !== undefined && sent?.report === "off")
+			throw new Error("claude-code cannot turn thinking off in an open session.");
+		if (change.model !== undefined) await setModel.call(this.#query, change.model);
+		this.#model = model;
+		// A new model only needs the effort again when it takes the level differently from the old one.
+		if (sent !== undefined && (change.thinking !== undefined || sent.report !== this.#effort)) {
+			await applyFlagSettings.call(this.#query, { effortLevel: sent.effort ?? null });
+			this.#effort = sent.report;
+		}
+		this.#thinking = thinking;
 	}
 
 	async close(): Promise<void> {

@@ -1,5 +1,5 @@
 import Anthropic, { APIError } from "@anthropic-ai/sdk";
-import type { AgentBackend, BackendSession, BackendStartOptions, ToolExecutor } from "../../backend.ts";
+import type { AgentBackend, BackendSession, BackendStartOptions, SessionChange, ToolExecutor } from "../../backend.ts";
 import {
 	buildSummaryRequest,
 	compactThreshold,
@@ -223,24 +223,26 @@ export class AnthropicApiBackend implements AgentBackend {
 		const maxRequests = start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
 		// The window lookup runs while the session starts; the first request waits for it, never the start.
 		const { contextWindow, compactAt, keepRecentTokens } = this.#options;
-		const compaction: Promise<CompactionConfig> = (
-			contextWindow === undefined ? lookupWindow(client, state.model) : Promise.resolve(contextWindow)
-		).then((window) => ({
-			window,
-			compactAt: compactThreshold({ window, maxTokens: state.maxTokens, override: compactAt }),
-			keepRecent: keepRecentTokens ?? KEEP_RECENT_TOKENS,
-		}));
+		const compactionFor = (forModel: string): Promise<CompactionConfig> =>
+			(contextWindow === undefined ? lookupWindow(client, forModel) : Promise.resolve(contextWindow)).then(
+				(window) => ({
+					window,
+					compactAt: compactThreshold({ window, maxTokens: state.maxTokens, override: compactAt }),
+					keepRecent: keepRecentTokens ?? KEEP_RECENT_TOKENS,
+				}),
+			);
 		return new AnthropicApiSession(
 			client,
 			state,
 			start.executeTool,
 			maxRequests,
 			this.#options.apiKey,
-			compaction,
+			compactionFor,
 			sent?.report,
 			start.compactionState,
 			start.compacted,
 			summary,
+			start.thinking,
 		);
 	}
 }
@@ -268,9 +270,12 @@ class AnthropicApiSession implements BackendSession {
 	readonly #executeTool: ToolExecutor;
 	readonly #maxRequests: number;
 	readonly #apiKey: string;
-	readonly #compactionReady: Promise<CompactionConfig>;
-	/** What `session_started` says about the effort. */
-	readonly #effort: ThinkingSend["report"] | undefined;
+	readonly #compactionFor: (model: string) => Promise<CompactionConfig>;
+	#compactionReady: Promise<CompactionConfig>;
+	/** What `session_started` says about the effort, as the last `configure` left it. */
+	#effort: ThinkingSend["report"] | undefined;
+	/** The level the session asked for, so a new model can take it differently. */
+	#thinking: SessionChange["thinking"];
 	/** Set once the window lookup answered, before the first request. */
 	#config: CompactionConfig | undefined;
 	readonly #compactionState: (() => string | undefined) | undefined;
@@ -296,18 +301,21 @@ class AnthropicApiSession implements BackendSession {
 		executeTool: ToolExecutor,
 		maxRequests: number,
 		apiKey: string,
-		compaction: Promise<CompactionConfig>,
+		compactionFor: (model: string) => Promise<CompactionConfig>,
 		effort: ThinkingSend["report"] | undefined,
 		compactionState?: () => string | undefined,
 		compacted?: (summary: string) => void,
 		summary?: SummaryRequestState,
+		thinking?: SessionChange["thinking"],
 	) {
 		this.#client = client;
 		this.#state = state;
 		this.#executeTool = executeTool;
 		this.#maxRequests = maxRequests;
 		this.#apiKey = apiKey;
-		this.#compactionReady = compaction;
+		this.#compactionFor = compactionFor;
+		this.#compactionReady = compactionFor(state.model);
+		this.#thinking = thinking;
 		this.#effort = effort;
 		this.#compactionState = compactionState;
 		this.#compacted = compacted;
@@ -410,6 +418,26 @@ class AnthropicApiSession implements BackendSession {
 			this.#turnPrompt = undefined;
 		}
 		yield this.#finished(stopReason, meter);
+	}
+
+	/** The next request carries the new model and what its level gives there; the history stays as it is. */
+	async configure(change: SessionChange): Promise<void> {
+		const state = this.#state;
+		const model = change.model ?? state.model;
+		const thinking = change.thinking ?? this.#thinking;
+		const sent = thinkingToSend(model, thinking, BACKEND_ID);
+		delete state.effort;
+		delete state.thinking;
+		if (sent?.effort !== undefined) state.effort = sent.effort;
+		if (sent?.thinking !== undefined) state.thinking = sent.thinking;
+		this.#effort = sent?.report;
+		this.#thinking = thinking;
+		if (model !== state.model) {
+			state.model = model;
+			// The window belongs to the model: the next request waits for the new one.
+			this.#config = undefined;
+			this.#compactionReady = this.#compactionFor(model);
+		}
 	}
 
 	async *compact(instructions?: string): AsyncIterable<AtelierEventBody> {

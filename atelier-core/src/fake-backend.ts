@@ -1,4 +1,11 @@
-import type { AgentBackend, BackendSession, BackendStartOptions, ToolCall, ToolCallResult } from "./backend.ts";
+import type {
+	AgentBackend,
+	BackendSession,
+	BackendStartOptions,
+	SessionChange,
+	ToolCall,
+	ToolCallResult,
+} from "./backend.ts";
 import type { AtelierEventBody } from "./events.ts";
 
 /** One scripted step of a fake turn. */
@@ -17,6 +24,12 @@ export class FakeBackend implements AgentBackend {
 	readonly prompts: string[] = [];
 	readonly toolResults: ToolCallResult[] = [];
 	startOptions: BackendStartOptions | undefined;
+	/** Every `configure` the session received. */
+	readonly configured: SessionChange[] = [];
+	/** `configure` and `send` in the order the session made them. */
+	readonly calls: ("configure" | "send")[] = [];
+	/** Set to false to play a backend that cannot change a session in place. */
+	configurable = true;
 	interrupts = 0;
 	closed = false;
 	readonly #turns: FakeStep[][];
@@ -32,8 +45,17 @@ export class FakeBackend implements AgentBackend {
 		const closeWaiters: (() => void)[] = [];
 		const backend = this;
 		return {
+			...(backend.configurable
+				? {
+						async configure(change: SessionChange) {
+							backend.configured.push(change);
+							backend.calls.push("configure");
+						},
+					}
+				: {}),
 			async *send(prompt: string): AsyncIterable<AtelierEventBody> {
 				backend.prompts.push(prompt);
+				backend.calls.push("send");
 				interruptRequested = false;
 				const steps = backend.#turns.shift() ?? [];
 				for (const step of steps) {

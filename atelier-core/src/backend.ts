@@ -40,11 +40,23 @@ export interface BackendStartOptions {
 	maxRequestsPerTurn?: number;
 }
 
+/** What a session changes in its backend while it is open; an absent field stays as it is. */
+export interface SessionChange {
+	model?: string;
+	/** A level from the profiles' names (`off`, `minimal`, `low` ... `max`); the backend sends what its model takes. */
+	thinking?: ThinkingLevel;
+}
+
 export interface BackendSession {
 	/** Runs one turn. The core stamps `seq` and `turnId` on every yielded event. */
 	send(prompt: string): AsyncIterable<AtelierEventBody>;
 	/** Summarizes the older history now, like a turn ending in `turn_finished`; absent when the backend cannot. */
 	compact?(instructions?: string): AsyncIterable<AtelierEventBody>;
+	/**
+	 * Changes the model or the thinking level for the turns after this call. The session calls it between turns only;
+	 * absent when the backend cannot, and the session then refuses the change. A rejection leaves the backend as it was.
+	 */
+	configure?(change: SessionChange): Promise<void>;
 	interrupt(): Promise<void>;
 	close(): Promise<void>;
 	/** The effort the backend applied to the last turn when no level was asked, when it reports one. */
