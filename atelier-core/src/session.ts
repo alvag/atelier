@@ -72,6 +72,8 @@ export interface ApprovalRequest {
 	reason?: string;
 	/** Present when the question is not about a `bash` command: `edit` asks to change a file outside the usual places. */
 	tool?: string;
+	/** The guard's confirm rule the command matches (`recursive removal`, `git push`, ...); `bash` only. */
+	confirm?: string;
 }
 
 /** What `auto` decides with: a backend for the classifier's separate model call. Never given to children. */
@@ -101,10 +103,12 @@ export interface SessionOptions {
 	tools: readonly ToolDefinition[];
 	systemPromptAppend?: string;
 	/**
-	 * What the user is asked; `normal` by default. No mode asks about a command the sandbox contains.
-	 * `normal` and `auto` ask about what it does not contain (a command outside it, any command without it,
-	 * a file outside the working directory); `yolo` asks nothing. The guard and the protected paths refuse
-	 * in every mode, and subagents always run in `normal`.
+	 * What the user is asked; `normal` by default. No mode asks about a command the sandbox contains, except
+	 * one the guard's confirm category matches (recursive removal, `git push`, ...), which every mode asks.
+	 * `normal` and `auto` ask about what the sandbox does not contain (a command outside it, any command without
+	 * it, a file outside the working directory); `yolo` asks nothing there, and waives the confirm category only
+	 * for a plain `git push` or `git rebase`. The guard and the protected paths refuse in every mode, and
+	 * subagents always run in `normal`.
 	 */
 	permissionMode?: PermissionMode;
 	/** In `auto`, decides what would ask the user; without it `auto` asks like `normal`. Subagents never get one. */
@@ -644,25 +648,25 @@ export class Session {
 			}
 			const { approval } = gate;
 			const mode = this.#options.permissionMode;
-			const verdict = approval && mode === "auto" ? await this.#classify(callId, call.tool, approval, emit) : undefined;
+			// A guard confirmation asks in every mode and is never the classifier's to decide; `yolo` waives only the
+			// reversible delivery (a plain push or rebase) the gate marks.
+			const confirmed = approval?.confirm !== undefined;
+			const skipped = mode === "yolo" && (!confirmed || approval?.yoloWaived === true);
+			const verdict =
+				approval && mode === "auto" && !confirmed ? await this.#classify(callId, call.tool, approval, emit) : undefined;
 			if (verdict?.decision === "deny") return fail(denialMessage(verdict.reason));
-			if (approval && (mode === "yolo" || verdict?.decision === "allow")) {
+			if (approval && (skipped || verdict?.decision === "allow")) {
 				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
 			} else if (approval) {
-				const { command, reason, tool: asking } = approval;
-				emit({
-					type: "approval_requested",
-					callId,
+				const { command, reason, tool: asking, confirm } = approval;
+				const question = {
 					command,
 					...(reason === undefined ? {} : { reason }),
 					...(asking === undefined ? {} : { tool: asking }),
-				});
-				const request = {
-					callId,
-					command,
-					...(reason === undefined ? {} : { reason }),
-					...(asking === undefined ? {} : { tool: asking }),
+					...(confirm === undefined ? {} : { confirm }),
 				};
+				emit({ type: "approval_requested", callId, ...question });
+				const request = { callId, ...question };
 				// The client must have read everything before the question; a turn nobody reads anymore is not asked.
 				const delivered = (await this.#turn?.drained(signal)) ?? false;
 				const approved = delivered && ((await this.#options.approve?.(request)) ?? false);

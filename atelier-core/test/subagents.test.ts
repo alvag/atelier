@@ -2,14 +2,17 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { AgentBackend } from "../src/backend.ts";
 import {
+	type ApprovalRequest,
 	type AtelierEvent,
 	type AtelierEventBody,
+	createBashTool,
 	FakeBackend,
 	type FakeStep,
 	Session,
 	type SessionOptions,
 } from "../src/index.ts";
 import { BUILTIN_AGENTS, REPORT_LIMIT, type SubagentDefinition, TASK_TOOL } from "../src/subagents/definitions.ts";
+import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 import { defineTool, type ToolDefinition } from "../src/tools/types.ts";
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
@@ -308,6 +311,44 @@ describe("subagent events and control", () => {
 		await session.close();
 		expect(asked).toEqual(["b1"]);
 		expect(events.find((e) => e.type === "approval_requested")).toMatchObject({ callId: "b1", agent: "worker" });
+	});
+
+	it("asks for a worker's recursive removal even when the parent is in yolo, naming the rule", async () => {
+		const asked: ApprovalRequest[] = [];
+		const manager: SandboxManagerLike = {
+			isSupportedPlatform: () => true,
+			checkDependencies: () => ({ errors: [], warnings: [] }),
+			initialize: async () => {},
+			wrapWithSandbox: async (command) => command,
+			cleanupAfterCommand: () => {},
+			reset: async () => {},
+		};
+		const bash = createBashTool({ sandbox: new Sandbox({ platform: "darwin", manager }) });
+		const { session } = await start(
+			[
+				[
+					{ toolCall: { tool: "bash", input: { command: "rm -r build" }, callId: "b1" } },
+					text("Done."),
+					{ event: finished },
+				],
+			],
+			{
+				permissionMode: "yolo",
+				tools: [...tools.filter((item) => item.name !== "bash"), bash],
+				approve: async (request) => {
+					asked.push(request);
+					return false;
+				},
+			},
+		);
+		const events = await collectTurn(session);
+		await session.close();
+		expect(asked).toEqual([{ callId: "b1", command: "rm -r build", confirm: "recursive removal" }]);
+		expect(events.find((e) => e.type === "approval_requested")).toMatchObject({
+			callId: "b1",
+			confirm: "recursive removal",
+			agent: "worker",
+		});
 	});
 
 	it("interrupts the child when the parent's turn is interrupted", async () => {
