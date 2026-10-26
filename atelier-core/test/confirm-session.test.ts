@@ -142,7 +142,7 @@ describe("a command the guard asks about", () => {
 		"git branch -D old",
 		"psql -c 'DROP TABLE users'",
 		"find build -delete",
-		"git push --force",
+		"git push --delete origin feat",
 		"git rebase -i main",
 		"git push && rm -rf data",
 	])("asks for %j in yolo", async (command) => {

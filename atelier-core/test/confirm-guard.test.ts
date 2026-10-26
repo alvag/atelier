@@ -148,12 +148,8 @@ describe("what yolo waives", () => {
 	});
 
 	it.each([
-		"git push --force",
-		"git push -f",
-		"git push --force-with-lease",
 		"git push --delete origin feat",
 		"git push origin :feat",
-		"git push origin +feat",
 		"git push --mirror",
 		"git push --prune origin",
 		"git push --all",

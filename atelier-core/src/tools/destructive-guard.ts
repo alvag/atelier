@@ -26,12 +26,79 @@ interface Token {
 const SEPARATORS = new Set([";", "&&", "||", "|", "&", "\n", "(", ")"]);
 const MAX_DEPTH = 4;
 
-/** Literal, named heredocs are data, not commands; offsets are preserved. */
+interface Heredoc {
+	/** Where its `<<` is. */
+	header: number;
+	/** The body, from the line after the header to the terminator line, which ends at `end`. */
+	body: number;
+	terminator: number;
+	end: number;
+}
+
+const HEREDOC_HEADER = /^<<(-?)[ \t]*(['"]?)([A-Za-z_]\w*)\2/;
+
+/** The line of `command` that starts at `at`, and where it ends. */
+function lineAt(command: string, at: number): { line: string; end: number } {
+	const newline = command.indexOf("\n", at);
+	const end = newline < 0 ? command.length : newline;
+	return { line: command.slice(at, end), end };
+}
+
+/**
+ * The named heredocs of a command, as the shell reads them: a `<<` (not `<<<`) outside quotes, comments and
+ * `((...))`, whose bodies start on the line after the header, one after the other, and end at the first line that
+ * is the delimiter (with leading tabs for `<<-`). One with no terminator is not one: it fails closed.
+ */
+function heredocs(command: string): Heredoc[] {
+	const found: Heredoc[] = [];
+	const pending: { header: number; tabs: boolean; delimiter: string }[] = [];
+	let quote: "'" | '"' | undefined;
+	let arithmetic = 0;
+	for (let at = 0; at < command.length; at++) {
+		const char = command[at] as string;
+		if (quote === "'") {
+			if (char === "'") quote = undefined;
+		} else if (char === "\\") at++;
+		else if (char === '"') quote = quote === '"' ? undefined : '"';
+		else if (quote === '"') continue;
+		else if (char === "'") quote = "'";
+		else if (char === "#" && /^$|[\s;&|()]$/.test(command[at - 1] ?? "")) at = lineAt(command, at).end - 1;
+		else if (command.startsWith("((", at)) {
+			arithmetic++;
+			at++;
+		} else if (arithmetic > 0 && command.startsWith("))", at)) {
+			arithmetic--;
+			at++;
+		} else if (char === "<" && command[at + 1] === "<") {
+			const header = arithmetic === 0 ? HEREDOC_HEADER.exec(command.slice(at)) : null;
+			if (header) pending.push({ header: at, tabs: header[1] === "-", delimiter: header[3] as string });
+			at += command[at + 2] === "<" ? 2 : 1;
+		} else if (char === "\n" && pending.length > 0) {
+			let body = at + 1;
+			for (const { header, tabs, delimiter } of pending.splice(0)) {
+				let line = body;
+				for (;;) {
+					const { line: text, end } = lineAt(command, line);
+					if ((tabs ? text.replace(/^\t+/, "") : text) === delimiter) {
+						found.push({ header, body, terminator: line, end });
+						body = end + 1;
+						break;
+					}
+					if (end >= command.length) return found;
+					line = end + 1;
+				}
+			}
+			at = body - 1;
+		}
+	}
+	return found;
+}
+
+/** Literal, named heredocs are data, not commands: their bodies and terminators become blanks, offsets preserved. */
 function blankHeredocs(command: string): string {
-	return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g, (raw) => {
-		const headerLength = raw.indexOf("\n") + 1;
-		return raw.slice(0, headerLength) + " ".repeat(raw.length - headerLength);
-	});
+	let text = command;
+	for (const { body, end } of heredocs(command)) text = text.slice(0, body) + " ".repeat(end - body) + text.slice(end);
+	return text;
 }
 
 /** A redirection operator with its optional descriptor (`2>`, `{fd}>`, `>|`, `2>&1`, `&>`); the file is the next word. */
@@ -450,6 +517,37 @@ function commandRule(name: string, args: readonly string[], context: GuardContex
 	}
 	if ((name === "chmod" || name === "chown") && args.some((arg) => RECURSIVE_CH.test(arg)))
 		if (operands(args).some((operand) => pathKind(operand, context) === "root")) return "recursive chmod/chown on /";
+	if (name === "git") return gitRule(args);
+	return undefined;
+}
+
+/** Whether `arg` is `option` or a prefix of it git would take (`--ha` for `--hard`), with or without `=value`. */
+function abbreviates(arg: string, option: string): boolean {
+	const name = arg.split("=")[0] ?? "";
+	return name.length > 2 && option.startsWith(name);
+}
+
+/**
+ * A force spelling: `--force`, `--force-with-lease[=...]` or any prefix git accepts for them (`--fo`, `--force-w`),
+ * or a short cluster with `f` (`-f`, `-fd`, `-xdf`). An ambiguous prefix such as `--f` fails closed.
+ */
+const isForce = (arg: string) => abbreviates(arg, "--force-with-lease") || /^-[a-zA-Z]*f/.test(arg);
+/** `git push` options whose value is the next word, so a `+` there is not a refspec. */
+const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
+
+/** Whether a `git push` forces: a force option or a `+src[:dst]` refspec. */
+function pushForces(flags: readonly string[]): boolean {
+	return flags.some(
+		(arg, index) => isForce(arg) || (arg.startsWith("+") && !PUSH_VALUE_OPTIONS.has(flags[index - 1] ?? "")),
+	);
+}
+
+/** The git commands gentle-shell always denies: they throw away work or rewrite a remote, and no confirmation makes that safe. */
+function gitRule(args: readonly string[]): string | undefined {
+	const { action, flags } = gitAction(args);
+	if (action === "reset" && flags.some((arg) => abbreviates(arg, "--hard"))) return "git reset --hard";
+	if (action === "clean" && flags.some(isForce)) return "forced git clean";
+	if (action === "push" && pushForces(flags)) return "force push";
 	return undefined;
 }
 
@@ -475,9 +573,51 @@ function nestedCommands(name: string, args: readonly string[]): string[] {
 	return nested;
 }
 
-/** The rule a command breaks, or undefined when the guard does not recognize it as destructive. */
+/**
+ * The command as the shell reads it after line continuations: a `\` before a newline is removed, even inside a
+ * word or double quotes, but not inside single quotes or a comment.
+ */
+function joinContinuations(command: string): string {
+	let joined = "";
+	let quote: "'" | '"' | undefined;
+	for (let at = 0; at < command.length; at++) {
+		const char = command[at] as string;
+		if (quote === "'") {
+			if (char === "'") quote = undefined;
+		} else if (char === "\\") {
+			if (command[at + 1] !== "\n") joined += command.slice(at, at + 2);
+			at++;
+			continue;
+		} else if (char === '"') quote = quote === '"' ? undefined : '"';
+		else if (char === "'" && quote === undefined) quote = "'";
+		else if (char === "#" && quote === undefined && /^$|[\s;&|()]$/.test(joined.slice(-1))) {
+			const end = command.indexOf("\n", at);
+			const stop = end < 0 ? command.length : end;
+			joined += command.slice(at, stop);
+			at = stop - 1;
+			continue;
+		}
+		joined += char;
+	}
+	return joined;
+}
+
+/**
+ * The rule a command breaks, or undefined when the guard does not recognize it as destructive. A command with line
+ * continuations is judged both joined and as written, so a continuation can neither hide a command nor, in a quoted
+ * heredoc body where the shell keeps it, pull the next command into data.
+ */
 export function findDestructiveCommand(command: string, context: GuardContext, depth = 0): string | undefined {
 	if (depth > MAX_DEPTH) return undefined;
+	const joined = joinContinuations(command);
+	return (
+		destructiveRule(joined, context, depth) ??
+		(joined === command ? undefined : destructiveRule(command, context, depth))
+	);
+}
+
+/** The rule a command breaks as written. */
+function destructiveRule(command: string, context: GuardContext, depth: number): string | undefined {
 	const text = blankHeredocs(command);
 	if (hasForkBomb(text)) return "fork bomb";
 	const tokens = tokenize(text);
@@ -550,10 +690,9 @@ function sqlPayloads(
 	piped: readonly Token[] | undefined,
 ): string[] {
 	const payloads = args.map((arg) => arg.replace(/^(?:--command|--execute)=/, ""));
-	const heredoc = command
-		.slice(head.index)
-		.match(/^[^\n]*<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n([\s\S]*?)\n\2(?=\n|$)/);
-	if (heredoc?.[3] !== undefined) payloads.push(heredoc[3]);
+	const lineEnd = lineAt(command, head.index).end;
+	const heredoc = heredocs(command).find(({ header }) => header >= head.index && header < lineEnd);
+	if (heredoc) payloads.push(command.slice(heredoc.body, heredoc.terminator));
 	if (piped && ["echo", "printf"].includes(executable(piped[0]?.value ?? "")))
 		payloads.push(
 			piped
@@ -565,20 +704,22 @@ function sqlPayloads(
 	return payloads;
 }
 
+/** Git's global options whose value may be the next word. */
+const GIT_VALUE_OPTIONS = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source"];
+
 /** The git subcommand and what follows it, past the global options that take a value. */
 function gitAction(args: readonly string[]): { action: string | undefined; flags: string[]; at: number } {
 	let at = 0;
 	while (args[at]?.startsWith("-")) {
 		const flag = args[at++];
-		if (["-C", "-c", "--git-dir", "--work-tree", "--namespace"].includes(flag ?? "")) at++;
+		if (GIT_VALUE_OPTIONS.includes(flag ?? "")) at++;
 	}
 	return { action: args[at], flags: args.slice(at + 1), at };
 }
 
 function deletesBranchByForce(flags: readonly string[]): boolean {
 	if (flags.some((arg) => /^-[a-zA-Z]*D/.test(arg))) return true;
-	const force = flags.some((arg) => /^--force(?:-with-lease|=|$)/.test(arg) || /^-[a-zA-Z]*f/.test(arg));
-	return force && flags.some((arg) => arg === "--delete" || /^-[a-zA-Z]*d/.test(arg));
+	return flags.some(isForce) && flags.some((arg) => arg === "--delete" || /^-[a-zA-Z]*d/.test(arg));
 }
 
 // What `yolo` waives, following gentle-shell's list: a push or rebase is eligible only as a plain word list or
