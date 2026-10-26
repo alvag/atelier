@@ -75,6 +75,7 @@ export class SessionStore {
 		const id = randomUUID();
 		return new SessionRecorder({
 			path: this.path(cwd, id),
+			root: this.#root,
 			header: {
 				kind: SESSION_KIND,
 				version: SESSION_VERSION,
@@ -90,6 +91,7 @@ export class SessionStore {
 	continue(cwd: string, loaded: LoadedSession): SessionRecorder {
 		return new SessionRecorder({
 			path: this.path(cwd, loaded.header.id),
+			root: this.#root,
 			...(loaded.resume === undefined ? {} : { known: loaded.resume }),
 		});
 	}
@@ -127,6 +129,8 @@ export class SessionStore {
 			return undefined;
 		}
 		const parsed = parseSessionFile(text, id);
+		// The key can be shared by another folder; the header says whose the file is, and an unreadable one says nothing.
+		if (!parsed.ok && parsed.cwd !== resolve(cwd)) return undefined;
 		if (!parsed.ok)
 			return {
 				id,
@@ -136,7 +140,6 @@ export class SessionStore {
 				resumable: false,
 				problem: parsed.message,
 			};
-		// The key can be shared by another folder; the header says whose the file is.
 		if (parsed.header.cwd !== resolve(cwd)) return undefined;
 		const replayed = replay(parsed.header, parsed.entries);
 		return {
@@ -194,7 +197,7 @@ export class SessionStore {
 		if (trimmed === "" || trimmed.length > MAX_SESSION_NAME_CHARS)
 			throw new SessionFileError("invalid_name", `A name has 1 to ${MAX_SESSION_NAME_CHARS} characters.`);
 		await this.#read(cwd, id);
-		const recorder = new SessionRecorder({ path: this.path(cwd, id) });
+		const recorder = new SessionRecorder({ path: this.path(cwd, id), root: this.#root });
 		recorder.name(trimmed);
 		await recorder.flush();
 		const failure = recorder.takeFailure();
@@ -209,9 +212,9 @@ export class SessionStore {
 		} catch {
 			throw notFound(id, cwd);
 		}
-		// A file in another folder's key that only shares the name is not this folder's.
+		// A file in another folder's key that only shares the name is not this folder's, nor is one whose owner is unknown.
 		const parsed = parseSessionFile(await readFile(path, "utf8"), id);
-		if (parsed.ok && parsed.header.cwd !== resolve(cwd)) throw notFound(id, cwd);
+		if ((parsed.ok ? parsed.header.cwd : parsed.cwd) !== resolve(cwd)) throw notFound(id, cwd);
 		await rm(path, { force: true });
 	}
 }

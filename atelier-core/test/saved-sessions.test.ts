@@ -1,6 +1,20 @@
-import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import {
+	appendFile,
+	chmod,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	realpath,
+	rm,
+	stat,
+	utimes,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type AtelierEvent,
@@ -12,6 +26,7 @@ import {
 	type SessionOptions,
 	SessionStore,
 } from "../src/index.ts";
+import { SessionRecorder } from "../src/sessions/index.ts";
 
 const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 };
 const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage };
@@ -499,5 +514,211 @@ describe("resuming into a session", () => {
 		const loaded = await new SessionStore(home).load(cwd, record.id);
 		expect(loaded.entries.map((entry) => entry.type)).toEqual(["config", "prompt", "text", "event"]);
 		expect(loaded.entries.at(-1)).toMatchObject({ type: "event", event: { type: "turn_finished" } });
+	});
+});
+
+describe("who can read a session file", () => {
+	const modeOf = async (path: string) => (await stat(path)).mode & 0o777;
+	const root = () => join(home, ".atelier", "sessions");
+
+	it("creates the folders for their owner alone and the file with 0600", async () => {
+		const { record, session } = await started([[{ event: finished }]]);
+		await drain(session);
+		await session.close();
+		expect(await modeOf(record.path)).toBe(0o600);
+		expect(await modeOf(dirname(record.path))).toBe(0o700);
+		expect(await modeOf(root())).toBe(0o700);
+	});
+
+	it("tightens a folder and a file that are looser when it opens them", async () => {
+		const id = "loose";
+		const path = await writeSession(id, [header(id), config]);
+		await chmod(path, 0o644);
+		await chmod(dirname(path), 0o755);
+		await chmod(root(), 0o755);
+		await new SessionStore(home).rename(cwd, id, "private");
+		expect(await modeOf(path)).toBe(0o600);
+		expect(await modeOf(dirname(path))).toBe(0o700);
+		expect(await modeOf(root())).toBe(0o700);
+	});
+});
+
+describe("a write that fails", () => {
+	const user = (value: string) => ({ role: "user", content: value });
+
+	it("leaves the history to be written in full at the next turn", async () => {
+		const store = new SessionStore(home);
+		const record = store.create(cwd);
+		record.config({ backend: "anthropic-api", mode: "normal" });
+		record.state("anthropic-api", { messages: [user("a")] });
+		await record.flush();
+		await chmod(record.path, 0o400);
+		record.state("anthropic-api", { messages: [user("a"), user("b")] });
+		await record.flush();
+		expect(record.takeFailure()).toEqual(expect.any(String));
+		await chmod(record.path, 0o600);
+		record.state("anthropic-api", { messages: [user("a"), user("b"), user("c")] });
+		await record.flush();
+		expect(record.takeFailure()).toBeUndefined();
+		const states = (await linesOf(record.path)).filter((line) => line.type === "state");
+		expect(states.map((line) => line.messages)).toEqual([[user("a")], [user("b"), user("c")]]);
+	});
+
+	it("leaves the Claude Code session id to be written at the next turn", async () => {
+		const record = new SessionStore(home).create(cwd);
+		record.config({ backend: "claude-code", mode: "normal" });
+		record.state("claude-code", { sessionId: "cc-1" });
+		await record.flush();
+		await chmod(record.path, 0o400);
+		record.state("claude-code", { sessionId: "cc-2" });
+		await record.flush();
+		expect(record.takeFailure()).toEqual(expect.any(String));
+		await chmod(record.path, 0o600);
+		record.state("claude-code", { sessionId: "cc-2" });
+		await record.flush();
+		const states = (await linesOf(record.path)).filter((line) => line.type === "state");
+		expect(states.map((line) => line.sessionId)).toEqual(["cc-1", "cc-2"]);
+	});
+});
+
+describe("the state of a session after a backend change", () => {
+	it("is labeled with the backend that produced it, and a resume picks that backend", async () => {
+		const { store, record, backend, session } = await started([[text("one"), { event: finished }]]);
+		backend.resumeState = { sessionId: "cc-1" };
+		await drain(session, "first");
+		const next = new FakeBackend([[text("two"), { event: finished }]], "anthropic-api");
+		await session.setBackend(next);
+		next.resumeState = { messages: [{ role: "user", content: "second" }] };
+		await drain(session, "second");
+		await session.close();
+		const states = (await linesOf(record.path)).filter((line) => line.type === "state");
+		expect(states.map((line) => line.backend)).toEqual(["claude-code", "anthropic-api"]);
+		const loaded = await store.load(cwd, record.id);
+		expect(loaded.config.backend).toBe("anthropic-api");
+		expect(loaded.resume).toEqual({ messages: [{ role: "user", content: "second" }] });
+	});
+
+	it("is labeled with the backend that ran the turn when the change was asked during it", async () => {
+		const { store, record, backend, session } = await started([[{ waitForInterrupt: true }]]);
+		backend.resumeState = { sessionId: "cc-1" };
+		const next = new FakeBackend([[{ event: finished }]], "anthropic-api");
+		const turn = drain(session, "first");
+		for (let i = 0; i < 400 && !session.busy; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+		await session.setBackend(next);
+		await session.interrupt();
+		await turn;
+		await session.close();
+		const states = (await linesOf(record.path)).filter((line) => line.type === "state");
+		expect(states.map((line) => line.backend)).toEqual(["claude-code"]);
+		expect((await store.load(cwd, record.id)).resume).toEqual({ sessionId: "cc-1" });
+	});
+});
+
+describe("whose file it is", () => {
+	const dashed = () => join(cwd, "a-b");
+	const nested = () => join(cwd, "a", "b");
+
+	it("does not delete the unsupported-version file of another folder that shares the key", async () => {
+		const id = "future";
+		const path = await writeSession(id, [header(id, { version: 2, cwd: dashed() })], dashed());
+		const store = new SessionStore(home);
+		expect(folderKey(dashed())).toBe(folderKey(nested()));
+		await expect(store.delete(nested(), id)).rejects.toMatchObject({ code: "not_found" });
+		await expect(stat(path)).resolves.toBeDefined();
+		expect(await store.list(nested())).toEqual([]);
+		await store.delete(dashed(), id);
+		await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("neither deletes nor lists a file whose header cannot be read", async () => {
+		const id = "headless";
+		const path = await writeSession(id, ["{not json", header(id)]);
+		const store = new SessionStore(home);
+		await expect(store.delete(cwd, id)).rejects.toMatchObject({ code: "not_found" });
+		await expect(stat(path)).resolves.toBeDefined();
+		expect(await store.list(cwd)).toEqual([]);
+	});
+});
+
+describe("folder keys in bytes", () => {
+	it("keeps a folder name of multibyte characters within a file name", () => {
+		for (const unit of ["é", "日", "😀"]) {
+			const long = join("/", unit.repeat(150));
+			const key = folderKey(long);
+			expect(Buffer.byteLength(key)).toBeLessThanOrEqual(255);
+			expect(folderKey(long)).toBe(key);
+			expect(folderKey(`${long}x`)).not.toBe(key);
+			expect(key).not.toContain("\ufffd");
+		}
+	});
+
+	it("keeps the hashed key of a long multibyte name within a file name", () => {
+		const long = join("/", ...Array.from({ length: 12 }, () => "日".repeat(40)));
+		expect(Buffer.byteLength(folderKey(long))).toBeLessThanOrEqual(255);
+	});
+});
+
+describe("one writer per file", () => {
+	const lockOf = (recorder: SessionRecorder) => `${recorder.path}.lock`;
+	const deadPid = () => {
+		const child = spawnSync(process.execPath, ["-e", ""]);
+		return child.pid;
+	};
+
+	it("refuses a second writer of the same file, and lets one in once the first closes", async () => {
+		const store = new SessionStore(home);
+		const first = store.create(cwd);
+		first.config({ backend: "claude-code", mode: "normal" });
+		await first.flush();
+		const loaded = await store.load(cwd, first.id);
+		await first.lock();
+		expect((await readFile(lockOf(first), "utf8")).trim()).toBe(String(process.pid));
+		expect((await stat(lockOf(first))).mode & 0o777).toBe(0o600);
+		const second = store.continue(cwd, loaded);
+		await expect(second.lock()).rejects.toMatchObject({
+			code: "session_in_use",
+			message: expect.stringContaining(`pid ${process.pid}`),
+		});
+		await first.release();
+		await expect(stat(lockOf(first))).rejects.toMatchObject({ code: "ENOENT" });
+		await second.lock();
+		await second.release();
+	});
+
+	it("takes over the lock of a process that is gone", async () => {
+		const store = new SessionStore(home);
+		const first = store.create(cwd);
+		first.config({ backend: "claude-code", mode: "normal" });
+		await first.flush();
+		await writeFile(lockOf(first), `${deadPid()}\n`);
+		await first.lock();
+		expect((await readFile(lockOf(first), "utf8")).trim()).toBe(String(process.pid));
+		await first.release();
+	});
+
+	it("is released when the session closes, and does not show as a session", async () => {
+		const { store, record, session } = await started([[{ event: finished }]]);
+		await record.lock();
+		await drain(session);
+		expect((await store.list(cwd)).map((info) => info.id)).toEqual([record.id]);
+		await session.close();
+		await expect(stat(lockOf(record))).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("is released when the process exits", async () => {
+		const store = new SessionStore(home);
+		const recorder = store.create(cwd);
+		const source = fileURLToPath(new URL("../src/sessions/index.ts", import.meta.url));
+		const script = `import { SessionStore } from ${JSON.stringify(source)};
+const recorder = new SessionStore(${JSON.stringify(home)}).create(${JSON.stringify(cwd)});
+await recorder.lock();
+console.log(recorder.path);
+process.exit(0);`;
+		const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" });
+		expect(child.status).toBe(0);
+		const path = child.stdout.trim();
+		expect(path).not.toBe("");
+		await expect(stat(`${path}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
+		expect(recorder.path).not.toBe(path);
 	});
 });

@@ -45,6 +45,8 @@ export class FakeBackend implements AgentBackend {
 	resumeState: ResumeState | undefined;
 	/** Makes `start` fail with this message. */
 	startError: string | undefined;
+	/** Makes `close()` fail with this message, after the backend is closed. */
+	closeError: string | undefined;
 	interrupts = 0;
 	closed = false;
 	readonly #turns: FakeStep[][];
@@ -115,6 +117,7 @@ export class FakeBackend implements AgentBackend {
 			async close() {
 				backend.closed = true;
 				for (const resolve of closeWaiters.splice(0)) resolve();
+				if (backend.closeError !== undefined) throw new Error(backend.closeError);
 			},
 		};
 	}

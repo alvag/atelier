@@ -1706,6 +1706,27 @@ describe("saved sessions", () => {
 		expect((await resumeWith(["--continue"])).h.err()).toBe(`error: No saved session to continue in ${cwd}.\n`);
 	});
 
+	it("refuses a session another process is writing, takes over the lock of one that is gone, and lets go when it ends", async () => {
+		const id = await save("q", "a", 1_700_000_000);
+		const store = new SessionStore(home);
+		const lockPath = join(store.folder(cwd), `${id}.jsonl.lock`);
+		const other = store.continue(cwd, await store.load(cwd, id));
+		await other.lock();
+		const busy = await resumeWith(["--resume", id, "go"]);
+		expect(busy.code).toBe(1);
+		expect(busy.h.err()).toBe(
+			`error: Session ${id} is already in use by another Atelier process (pid ${process.pid}).\n`,
+		);
+		expect(busy.h.out()).toBe("");
+		expect(busy.h.backend.startOptions).toBeUndefined();
+		await other.release();
+
+		await writeFile(lockPath, `${execFileSync(process.execPath, ["-p", "process.pid"]).toString().trim()}\n`);
+		const taken = await resumeWith(["--resume", id, "go"]);
+		expect(taken.code).toBe(0);
+		await expect(stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
 	it("starts nothing when the backend cannot resume, and leaves the file as it was", async () => {
 		const id = await save("q", "a", 1_700_000_000);
 		const path = join(new SessionStore(home).folder(cwd), `${id}.jsonl`);

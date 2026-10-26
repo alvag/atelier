@@ -1,14 +1,33 @@
-import { appendFile, mkdir, readFile, truncate, writeFile } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
+import { appendFile, chmod, mkdir, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ResumeState } from "../backend.ts";
 import { type AtelierEvent, describeError } from "../events.ts";
 import type { ThinkingLevel } from "../thinking.ts";
-import { digest, type SavedConfig, type SavedEntry, type SessionHeader } from "./format.ts";
+import { digest, type SavedConfig, type SavedEntry, SessionFileError, type SessionHeader } from "./format.ts";
+
+/** Sessions hold prompts, tool outputs and histories: their folders and files are for their owner alone. */
+const DIRECTORY_MODE = 0o700;
+const FILE_MODE = 0o600;
+/** A lock file nobody wrote a pid into is taken over once it is this old. */
+const EMPTY_LOCK_MS = 10_000;
+
+/** The lock files this process holds, so that a process that exits without closing its sessions lets them go. */
+const held = new Set<string>();
+process.on("exit", () => {
+	for (const path of held) {
+		try {
+			unlinkSync(path);
+		} catch {}
+	}
+});
 
 export interface RecorderOptions {
 	path: string;
 	/** A session that has no file yet: its header is written with the first entry, never over an existing file. */
 	header?: SessionHeader;
+	/** The folder all sessions live under, made private along with the session's own folder. */
+	root?: string;
 	/** What the file already holds of the backend's state, so the next one is written as what follows it. */
 	known?: ResumeState;
 }
@@ -21,6 +40,8 @@ export interface RecorderOptions {
 export class SessionRecorder {
 	readonly path: string;
 	#header: SessionHeader | undefined;
+	readonly #root: string | undefined;
+	#locked = false;
 	#queue: Promise<void> = Promise.resolve();
 	#prepared = false;
 	#failure: string | undefined;
@@ -33,6 +54,7 @@ export class SessionRecorder {
 	constructor(options: RecorderOptions) {
 		this.path = options.path;
 		this.#header = options.header;
+		this.#root = options.root;
 		const known = options.known;
 		this.#messages = known !== undefined && "messages" in known ? known.messages.map(digest) : [];
 		this.#sessionId = known !== undefined && "sessionId" in known ? known.sessionId : undefined;
@@ -98,22 +120,26 @@ export class SessionRecorder {
 	 */
 	state(backend: string, state: ResumeState | undefined): void {
 		if (state === undefined) return;
-		if ("sessionId" in state) {
-			if (state.sessionId === this.#sessionId) return;
-			this.#sessionId = state.sessionId;
-			this.#append({ type: "state", backend, sessionId: state.sessionId });
-			return;
-		}
-		const digests = state.messages.map(digest);
-		const kept = this.#messages;
-		const appended = digests.length >= kept.length && kept.every((one, index) => one === digests[index]);
-		if (appended && digests.length === kept.length) return;
-		this.#messages = digests;
-		this.#append({
-			type: "state",
-			backend,
-			messages: appended ? state.messages.slice(kept.length) : state.messages,
-			replace: !appended,
+		this.#endSegment();
+		// What the file holds moves forward only once the write succeeded, so a failed one is written again, in full.
+		this.#enqueue(async () => {
+			if ("sessionId" in state) {
+				if (state.sessionId === this.#sessionId) return;
+				await this.#write({ type: "state", backend, sessionId: state.sessionId });
+				this.#sessionId = state.sessionId;
+				return;
+			}
+			const digests = state.messages.map(digest);
+			const kept = this.#messages;
+			const appended = digests.length >= kept.length && kept.every((one, index) => one === digests[index]);
+			if (appended && digests.length === kept.length) return;
+			await this.#write({
+				type: "state",
+				backend,
+				messages: appended ? state.messages.slice(kept.length) : state.messages,
+				replace: !appended,
+			});
+			this.#messages = digests;
 		});
 	}
 
@@ -125,6 +151,54 @@ export class SessionRecorder {
 	async flush(): Promise<void> {
 		this.#endSegment();
 		await this.#queue;
+	}
+
+	/**
+	 * Takes the file for this process: `<file>.lock` is created exclusively with the pid in it, so a second process
+	 * (or recorder) that wants the file is refused with `session_in_use`. The lock of a process that is gone is taken
+	 * over. It is let go by `release` and when the process exits. Failing to make the lock for any other reason does
+	 * not stop the session: it runs, and the failure waits in `takeFailure` like any write that failed.
+	 */
+	async lock(): Promise<void> {
+		if (this.#locked) return;
+		const lockPath = `${this.path}.lock`;
+		try {
+			await this.#secure();
+			for (let attempt = 0; ; attempt++) {
+				try {
+					await writeFile(lockPath, `${process.pid}\n`, { flag: "wx", mode: FILE_MODE });
+					break;
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+					const holder = await liveHolder(lockPath);
+					// Taking over is tried once: a second EEXIST means another process won the race.
+					if (holder !== undefined || attempt > 0) {
+						const pid = holder?.pid === undefined ? "" : ` (pid ${holder.pid})`;
+						throw new SessionFileError(
+							"session_in_use",
+							`Session ${this.id} is already in use by another Atelier process${pid}.`,
+						);
+					}
+					await rm(lockPath, { force: true });
+				}
+			}
+		} catch (error) {
+			if (error instanceof SessionFileError) throw error;
+			this.#failure ??= describeError(error);
+			return;
+		}
+		this.#locked = true;
+		held.add(lockPath);
+	}
+
+	/** Waits for what was recorded to be in the file, then lets the file go to the next writer. */
+	async release(): Promise<void> {
+		await this.flush();
+		if (!this.#locked) return;
+		this.#locked = false;
+		const lockPath = `${this.path}.lock`;
+		held.delete(lockPath);
+		await rm(lockPath, { force: true });
 	}
 
 	/** The reason a write failed, once; the entries after it still try to be written. */
@@ -143,26 +217,70 @@ export class SessionRecorder {
 	#append(entry: SavedEntry): void {
 		// A text segment ends where the next entry begins.
 		if (entry.type !== "text") this.#endSegment();
-		const line = `${JSON.stringify(entry)}\n`;
+		this.#enqueue(() => this.#write(entry));
+	}
+
+	/** Runs a write after the ones before it; its failure is kept, and never stops the ones after it. */
+	#enqueue(task: () => Promise<void>): void {
 		this.#queue = this.#queue.then(async () => {
 			try {
-				await this.#prepare();
-				await appendFile(this.path, line);
+				await task();
 			} catch (error) {
 				this.#failure ??= describeError(error);
 			}
 		});
 	}
 
+	async #write(entry: SavedEntry): Promise<void> {
+		await this.#prepare();
+		await appendFile(this.path, `${JSON.stringify(entry)}\n`, { mode: FILE_MODE });
+	}
+
 	/** Creates the file with its header, or makes an existing file end at a line boundary. */
 	async #prepare(): Promise<void> {
 		if (this.#prepared) return;
-		await mkdir(dirname(this.path), { recursive: true });
-		if (this.#header) await writeFile(this.path, `${JSON.stringify(this.#header)}\n`, { flag: "wx" });
-		else await endAtLine(this.path);
+		await this.#secure();
+		if (this.#header) await writeFile(this.path, `${JSON.stringify(this.#header)}\n`, { flag: "wx", mode: FILE_MODE });
+		else {
+			await endAtLine(this.path);
+			await tighten(this.path, FILE_MODE);
+		}
 
 		this.#prepared = true;
 		this.#header = undefined;
+	}
+
+	/** Makes the session's folder, and the root above it, private: a looser one that exists is tightened. */
+	async #secure(): Promise<void> {
+		const folder = dirname(this.path);
+		await mkdir(folder, { recursive: true, mode: DIRECTORY_MODE });
+		if (this.#root !== undefined) await tighten(this.#root, DIRECTORY_MODE);
+		await tighten(folder, DIRECTORY_MODE);
+	}
+}
+
+/** Takes away the access of group and others to a folder or file that has any. */
+async function tighten(path: string, mode: number): Promise<void> {
+	if (((await stat(path)).mode & 0o077) !== 0) await chmod(path, mode);
+}
+
+/** Who holds a lock file: undefined when nobody does (its process is gone, or it was never filled in and is old). */
+async function liveHolder(path: string): Promise<{ pid?: number } | undefined> {
+	let text: string;
+	let modified: number;
+	try {
+		[text, modified] = await Promise.all([readFile(path, "utf8"), stat(path).then((s) => s.mtimeMs)]);
+	} catch {
+		return undefined;
+	}
+	const pid = Number.parseInt(text, 10);
+	if (Number.isNaN(pid)) return Date.now() - modified > EMPTY_LOCK_MS ? undefined : {};
+	try {
+		process.kill(pid, 0);
+		return { pid };
+	} catch (error) {
+		// Not allowed to signal it means it exists.
+		return (error as NodeJS.ErrnoException).code === "EPERM" ? { pid } : undefined;
 	}
 }
 

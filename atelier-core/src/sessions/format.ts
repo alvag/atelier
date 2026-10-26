@@ -52,7 +52,8 @@ export class SessionFileError extends Error {
 	}
 }
 
-const MAX_KEY_LENGTH = 200;
+/** The longest folder name kept in a key, in UTF-8 bytes: file names are limited in bytes (255), not characters. */
+const MAX_KEY_BYTES = 200;
 /**
  * The folder name of a working directory, as pi encodes it: the path without its leading separator, separators and
  * colons as `-`, between `--`. Two folders can share a key (`/a-b` and `/a/b`); each file says its own `cwd`, and
@@ -61,9 +62,21 @@ const MAX_KEY_LENGTH = 200;
 export function folderKey(cwd: string): string {
 	const path = resolve(cwd);
 	const flat = path.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
-	if (flat.length <= MAX_KEY_LENGTH) return `--${flat}--`;
+	if (Buffer.byteLength(flat) <= MAX_KEY_BYTES) return `--${flat}--`;
 	const hash = createHash("sha1").update(path).digest("hex").slice(0, 12);
-	return `--${flat.slice(0, MAX_KEY_LENGTH)}-${hash}--`;
+	return `--${cutAtBytes(flat, MAX_KEY_BYTES)}-${hash}--`;
+}
+
+/** The longest start of `text` within `limit` bytes that ends on a whole character. */
+function cutAtBytes(text: string, limit: number): string {
+	let bytes = 0;
+	let cut = "";
+	for (const character of text) {
+		bytes += Buffer.byteLength(character);
+		if (bytes > limit) break;
+		cut += character;
+	}
+	return cut;
 }
 
 export type ParsedFile =
@@ -74,6 +87,8 @@ export type ParsedFile =
 			message: string;
 			/** What the header still says when it could be read. */
 			createdAt?: string;
+			/** The working directory the header names, whatever else is wrong with the file. */
+			cwd?: string;
 	  };
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -88,6 +103,7 @@ export function parseSessionFile(text: string, id: string): ParsedFile {
 	const last = lines.pop() ?? "";
 	// A last line that ends the text is whole; an unterminated one counts only when it parses.
 	if (last !== "") lines.push(last);
+	const owner = headerOwner(lines[0]);
 	const values: unknown[] = [];
 	for (const [index, line] of lines.entries()) {
 		if (line.trim() === "") continue;
@@ -96,7 +112,7 @@ export function parseSessionFile(text: string, id: string): ParsedFile {
 		} catch {
 			const torn = index === lines.length - 1 && last !== "";
 			if (torn) break;
-			return { ok: false, code: "corrupt", message: `line ${index + 1} is not valid JSON` };
+			return { ok: false, code: "corrupt", message: `line ${index + 1} is not valid JSON`, ...owner };
 		}
 	}
 	const [header, ...rest] = values;
@@ -109,15 +125,22 @@ export function parseSessionFile(text: string, id: string): ParsedFile {
 			code: "unsupported_version",
 			message: `it was saved with session format version ${String(header.version)}, and this Atelier reads version ${SESSION_VERSION}`,
 			...(createdAt === undefined ? {} : { createdAt }),
+			...owner,
 		};
 	if (header.id !== id)
-		return { ok: false, code: "corrupt", message: `the header names session ${String(header.id)}, not ${id}` };
+		return {
+			ok: false,
+			code: "corrupt",
+			message: `the header names session ${String(header.id)}, not ${id}`,
+			...owner,
+		};
 	if (typeof header.cwd !== "string" || createdAt === undefined || Number.isNaN(Date.parse(createdAt)))
-		return { ok: false, code: "corrupt", message: "the header lacks a working directory or a creation time" };
+		return { ok: false, code: "corrupt", message: "the header lacks a working directory or a creation time", ...owner };
 	const entries: SavedEntry[] = [];
 	for (const [index, value] of rest.entries()) {
 		const problem = entryProblem(value);
-		if (problem !== undefined) return { ok: false, code: "corrupt", message: `entry ${index + 2}: ${problem}` };
+		if (problem !== undefined)
+			return { ok: false, code: "corrupt", message: `entry ${index + 2}: ${problem}`, ...owner };
 		// Types a later Atelier adds inside this version are skipped, not fatal.
 		if (KNOWN_ENTRIES.has((value as { type: string }).type)) entries.push(value as SavedEntry);
 	}
@@ -133,6 +156,15 @@ export function parseSessionFile(text: string, id: string): ParsedFile {
 		},
 		entries,
 	};
+}
+
+/** The working directory a file's first line names, when that line is a readable header of ours of any version. */
+function headerOwner(line: string | undefined): { cwd?: string } {
+	try {
+		const header: unknown = JSON.parse(line ?? "");
+		if (isObject(header) && header.kind === SESSION_KIND && typeof header.cwd === "string") return { cwd: header.cwd };
+	} catch {}
+	return {};
 }
 
 const KNOWN_ENTRIES: ReadonlySet<string> = new Set(["config", "prompt", "text", "event", "name", "state"]);

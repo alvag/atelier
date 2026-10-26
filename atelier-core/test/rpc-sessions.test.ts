@@ -36,6 +36,8 @@ interface ServeOptions {
 	sessions?: boolean;
 	/** Makes the backends created from now on fail to start with this message. */
 	startError?: () => string | undefined;
+	/** Makes the backends created fail when they are closed. */
+	closeError?: string;
 }
 
 function serve(options: ServeOptions = {}) {
@@ -55,6 +57,7 @@ function serve(options: ServeOptions = {}) {
 			);
 			const error = options.startError?.();
 			if (error !== undefined) backend.startError = error;
+			if (options.closeError !== undefined) backend.closeError = options.closeError;
 			backends.push(backend);
 			return backend;
 		},
@@ -100,11 +103,13 @@ function serve(options: ServeOptions = {}) {
 	return { ask, result, open, turn, eventsOf, backends, close, messages };
 }
 
-const files = async () => {
+const everything = async () => {
 	const root = join(home, ".atelier", "sessions");
 	const folders = await readdir(root).catch(() => []);
 	return (await Promise.all(folders.map((folder) => readdir(join(root, folder))))).flat();
 };
+/** The session files; a running session also has a `.lock` next to its file. */
+const files = async () => (await everything()).filter((name) => name.endsWith(".jsonl"));
 
 describe("saving the sessions a server starts", () => {
 	it("saves a session: its file appears with the first turn, named by the id start answers", async () => {
@@ -125,7 +130,9 @@ describe("saving the sessions a server starts", () => {
 			},
 		]);
 		expect(await files()).toEqual([`${savedId}.jsonl`]);
+		expect(await everything()).toContain(`${savedId}.jsonl.lock`);
 		await h.close();
+		expect(await everything()).toEqual([`${savedId}.jsonl`]);
 	});
 
 	it("saves nothing for a session started with noSession", async () => {
@@ -279,6 +286,37 @@ describe("session.resume", () => {
 		expect(again.sessionId).toEqual(expect.any(String));
 		expect(again.name).toBe("live");
 		await h.close();
+	});
+
+	it("lets the saved session go when closing it fails", async () => {
+		const h = serve({ closeError: "the backend would not close" });
+		const live = await h.open();
+		await h.turn(live.sessionId);
+		expect(await h.ask({ command: "session.close", sessionId: live.sessionId })).toMatchObject({ ok: false });
+		const again = await h.result({ command: "session.resume", sessionId: live.savedId, cwd });
+		expect(again.sessionId).toEqual(expect.any(String));
+		await h.close();
+	});
+
+	it("refuses a session another process is writing, and takes it once that process lets go", async () => {
+		const first = serve();
+		const live = await first.open();
+		await first.turn(live.sessionId);
+		await first.result({ command: "session.close", sessionId: live.sessionId });
+		const store = new SessionStore(home);
+		const other = store.continue(cwd, await store.load(cwd, live.savedId as string));
+		await other.lock();
+		const second = serve();
+		expect(await second.ask({ command: "session.resume", sessionId: live.savedId, cwd })).toMatchObject({
+			ok: false,
+			error: { code: "session_in_use", message: expect.stringContaining(`pid ${process.pid}`) },
+		});
+		expect(second.backends.every((backend) => backend.startOptions === undefined)).toBe(true);
+		await other.release();
+		const again = await second.result({ command: "session.resume", sessionId: live.savedId, cwd });
+		expect(again.sessionId).toEqual(expect.any(String));
+		await second.close();
+		await first.close();
 	});
 
 	it("starts nothing and says so when the backend cannot resume, and the session stays resumable", async () => {

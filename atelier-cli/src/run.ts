@@ -300,6 +300,17 @@ export async function run(
 		: args.noSession || io.home === undefined
 			? undefined
 			: new SessionStore(io.home).create(args.cwd);
+	// One writer per saved session, across processes: a second one would interleave its entries with ours.
+	try {
+		await recorder?.lock();
+	} catch (error) {
+		removeStartupTerminate?.();
+		lines.close();
+		restoreTerminal();
+		await memory?.close().catch(() => {});
+		io.stderr(`error: ${describeError(error)}\n`);
+		return EXIT_FAILED;
+	}
 	const model = args.model ?? resumed?.config.model;
 	const session = await Session.start({
 		backend,
@@ -374,6 +385,7 @@ export async function run(
 		.catch(async (error: unknown) => {
 			lines.close();
 			restoreTerminal();
+			await recorder?.release();
 			if (resumed === undefined) throw error;
 			// Nothing was started: say why and leave the saved session as it was.
 			await memory?.close().catch(() => {});

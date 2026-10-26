@@ -230,6 +230,8 @@ export class Session {
 	/** The summary request's model and level, from the compaction entry; none on a backend that compacts on its own. */
 	#compaction: { model?: string; thinking?: ThinkingLevel } | undefined;
 	#backendSession: BackendSession | undefined;
+	/** The id of the backend that started `#backendSession`: the label of the state it produces. */
+	#backendSessionId = "";
 	/** The system prompt every backend of this session starts with. */
 	#systemPrompt = "";
 	/** A turn ran: there is a conversation for another backend to take over. */
@@ -371,6 +373,7 @@ export class Session {
 				...session.#startOptions(session.#model, session.#thinking, session.#compaction),
 				...(options.resume === undefined ? {} : { resume: options.resume }),
 			});
+			session.#backendSessionId = options.backend.id;
 		} catch (error) {
 			await rm(scratchDir, { recursive: true, force: true });
 			throw error;
@@ -621,7 +624,7 @@ export class Session {
 			await Promise.all(this.#archiving);
 			// The state of the backend that ran the turn, before a change made at its end can replace the backend.
 			if (this.#options.record) this.#endState = this.#backendSession?.resumeState?.();
-			this.#endBackend = this.#options.backend.id;
+			this.#endBackend = this.#backendSessionId;
 			// A change asked during the turn lands now, between this turn and the next.
 			await this.#applyPending(turn);
 			finish = this.#withHandoff(this.#withClassifier(finish));
@@ -858,6 +861,7 @@ export class Session {
 			);
 		}
 		this.#backendSession = started;
+		this.#backendSessionId = next.id;
 		this.#options.backend = next;
 		this.#model = model;
 		this.#explicitModel = requested !== undefined;
@@ -1089,7 +1093,11 @@ export class Session {
 				.then(() => this.#options.record?.flush())
 				.then(() => this.#options.memory?.close().catch(() => {}))
 				.then(() => this.#backendSession?.close())
-				.finally(() => (scratchDir === undefined ? undefined : rm(scratchDir, { recursive: true, force: true })));
+				.finally(async () => {
+					// Whatever failed above, the saved session is let go once its entries are written.
+					await this.#options.record?.release();
+					if (scratchDir !== undefined) await rm(scratchDir, { recursive: true, force: true });
+				});
 		}
 		return this.#closing;
 	}

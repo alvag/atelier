@@ -337,8 +337,11 @@ export class RpcServer {
 				this.#sessions.delete(message.sessionId);
 				denyAll(entry);
 				declineAll(entry);
-				await entry.session.close();
-				this.#release(entry);
+				try {
+					await entry.session.close();
+				} finally {
+					this.#release(entry);
+				}
 				return {};
 			}
 			case "shutdown":
@@ -532,7 +535,19 @@ export class RpcServer {
 		else if (this.#store && !request.noSession) recorder = this.#store.create(cwd);
 		if (recorder && this.#writing.has(recorder.path))
 			throw new CommandError("session_in_use", `Session ${recorder.id} is already running in this server.`);
-		if (recorder) this.#writing.add(recorder.path);
+		if (recorder) {
+			this.#writing.add(recorder.path);
+			// Another process may hold the file: the lock says so.
+			try {
+				await recorder.lock();
+			} catch (error) {
+				this.#writing.delete(recorder.path);
+				throw new CommandError(
+					error instanceof SessionFileError ? error.code : "session_start_failed",
+					describeError(error),
+				);
+			}
+		}
 		const approvals = new Map<string, (approved: boolean) => void>();
 		const consents = new Map<string, (answer: "granted" | "declined") => void>();
 		// Memory is optional: a session that cannot connect it starts anyway and says why.
@@ -585,6 +600,7 @@ export class RpcServer {
 			});
 		} catch (error) {
 			if (recorder) this.#writing.delete(recorder.path);
+			await recorder?.release();
 			await memory?.close().catch(() => {});
 			// A backend the profile chose for the orchestrator fails naming the role and the backend.
 			const named = requestedBackend === undefined ? orchestratorBackend(profile) : undefined;
