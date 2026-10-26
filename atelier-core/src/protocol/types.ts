@@ -51,6 +51,14 @@ export type ClientCommand =
 	/** Changes the thinking level of the main agent (`effort`, in the profiles' level names) like `session.set_model`. */
 	| { command: "session.set_effort"; sessionId: string; effort: ThinkingLevel }
 	/**
+	 * Re-resolves and freezes the profile `profile` for the session; the verifier, lenses, subagents, classifier and
+	 * compaction use it from the next turn, and the main agent takes the orchestrator's entry unless the model or the
+	 * level was chosen explicitly. Held while a turn runs, like `session.set_model`, and answers the same configuration.
+	 * Fails with `unknown_profile` (nothing named so), `profile_unavailable` (the server reads no profiles) or
+	 * `profile_backend_change` (the orchestrator's entry names another backend than the session's); nothing changes then.
+	 */
+	| { command: "session.set_profile"; sessionId: string; profile: string }
+	/**
 	 * What a client can offer: `backends` (`name`, `models`), `efforts`, `modes`, and what `profiles.list` answers
 	 * (`profiles`, `active`, and with `cwd`, `effective`).
 	 */

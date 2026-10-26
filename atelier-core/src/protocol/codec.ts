@@ -74,6 +74,7 @@ const commandSchema = z.discriminatedUnion("command", [
 	z.object({ command: z.literal("session.set_mode"), sessionId, mode: z.enum(PERMISSION_MODES) }),
 	z.object({ command: z.literal("session.set_model"), sessionId, model: z.string().min(1) }),
 	z.object({ command: z.literal("session.set_effort"), sessionId, effort: z.enum(THINKING_LEVELS) }),
+	z.object({ command: z.literal("session.set_profile"), sessionId, profile: z.string().min(1) }),
 	z.object({ command: z.literal("options.list"), cwd: z.string().min(1).optional() }),
 	z.object({ command: z.literal("session.close"), sessionId }),
 	z.object({ command: z.literal("shutdown") }),

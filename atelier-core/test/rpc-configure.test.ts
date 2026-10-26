@@ -225,3 +225,158 @@ describe("options.list", () => {
 		expect(BACKEND_MODELS["anthropic-api"][0]).toBe(DEFAULT_API_MODEL);
 	});
 });
+
+describe("session.set_profile", () => {
+	async function profiles(entries: Record<string, Record<string, unknown>>, active?: string) {
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		await writeFile(
+			join(home, ".atelier", "profiles.json"),
+			JSON.stringify({
+				kind: "atelier.agent_model_profiles",
+				version: 1,
+				...(active === undefined ? {} : { active }),
+				profiles: entries,
+			}),
+		);
+	}
+
+	it("freezes the named profile and answers the resulting configuration; the next turn runs with it", async () => {
+		await profiles({
+			cheap: { orchestrator: { model: "haiku", thinking: "low" }, verifier: { thinking: "low" } },
+			deep: { orchestrator: { model: "opus", thinking: "high" } },
+		});
+		const h = serve();
+		const sessionId = await h.open({ profile: "cheap" });
+		const response = await h.ask({ command: "session.set_profile", sessionId, profile: "deep" });
+		expect(response).toMatchObject({
+			ok: true,
+			result: {
+				backend: "fake",
+				model: "opus",
+				thinking: "high",
+				permissionMode: "normal",
+				profile: { name: "deep", origin: "explicit", roles: {} },
+				pending: false,
+			},
+		});
+		const events = await h.turn(sessionId);
+		expect(h.backends[0]?.configured).toEqual([{ model: "opus", thinking: "high" }]);
+		expect(events.find((e) => e.type === "session_configured")).toMatchObject({
+			model: "opus",
+			thinking: "high",
+			profile: { name: "deep", origin: "explicit", roles: {} },
+		});
+		await h.close();
+	});
+
+	it("keeps a model given to session.start and one set with session.set_model", async () => {
+		await profiles({ deep: { orchestrator: { model: "opus", thinking: "high" } } });
+		const h = serve();
+		const started = await h.open({ model: "sonnet" });
+		expect(await h.ask({ command: "session.set_profile", sessionId: started, profile: "deep" })).toMatchObject({
+			ok: true,
+			result: { model: "sonnet", thinking: "high" },
+		});
+		const chosen = await h.open();
+		await h.ask({ command: "session.set_effort", sessionId: chosen, effort: "low" });
+		expect(await h.ask({ command: "session.set_profile", sessionId: chosen, profile: "deep" })).toMatchObject({
+			ok: true,
+			result: { model: "opus", thinking: "low" },
+		});
+		await h.close();
+	});
+
+	it("answers a change asked during a turn as pending and applies it when the turn ends", async () => {
+		await profiles({ deep: { orchestrator: { model: "opus" } } });
+		const h = serve([[{ waitForInterrupt: true }]]);
+		const sessionId = await h.open();
+		await h.ask({ command: "session.send", sessionId, prompt: "go" });
+		const response = await h.ask({ command: "session.set_profile", sessionId, profile: "deep" });
+		expect(response).toMatchObject({ ok: true, result: { model: "opus", profile: { name: "deep" }, pending: true } });
+		expect(h.backends[0]?.configured).toEqual([]);
+		await h.ask({ command: "session.interrupt", sessionId });
+		for (let i = 0; i < 400 && !h.eventsOf(sessionId).some((e) => e.type === "turn_finished"); i++)
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(h.backends[0]?.configured).toEqual([{ model: "opus" }]);
+		expect(
+			h
+				.eventsOf(sessionId)
+				.map((e) => e.type)
+				.slice(-2),
+		).toEqual(["session_configured", "turn_finished"]);
+		await h.close();
+	});
+
+	it("refuses a profile it cannot find, suggesting the nearest name, and changes nothing", async () => {
+		await profiles({ cheap: { orchestrator: { model: "haiku" } } }, "cheap");
+		const h = serve();
+		const sessionId = await h.open();
+		expect(await h.ask({ command: "session.set_profile", sessionId, profile: "chaep" })).toMatchObject({
+			ok: false,
+			error: {
+				code: "unknown_profile",
+				message: 'No profile "chaep" in ~/.atelier/profiles.json; did you mean "cheap"?',
+			},
+		});
+		expect(await h.ask({ command: "session.set_profile", sessionId, profile: "gone" })).toMatchObject({
+			ok: false,
+			error: { code: "unknown_profile", message: 'No profile "gone" in ~/.atelier/profiles.json.' },
+		});
+		expect(await h.turn(sessionId)).not.toContainEqual(expect.objectContaining({ type: "session_configured" }));
+		expect(h.backends[0]?.configured).toEqual([]);
+		await h.close();
+	});
+
+	it("refuses a profile that moves the orchestrator to another backend, and changes nothing", async () => {
+		await profiles({ api: { orchestrator: { model: "anthropic-api/claude-opus-5-5" } } });
+		const h = serve();
+		const sessionId = await h.open();
+		expect(await h.ask({ command: "session.set_profile", sessionId, profile: "api" })).toMatchObject({
+			ok: false,
+			error: { code: "profile_backend_change" },
+		});
+		expect(await h.turn(sessionId)).not.toContainEqual(expect.objectContaining({ type: "session_configured" }));
+		expect(h.backends[0]?.configured).toEqual([]);
+		await h.close();
+	});
+
+	it("answers an unknown session, and invalid input by id", async () => {
+		const h = serve();
+		expect(await h.ask({ command: "session.set_profile", sessionId: "nope", profile: "deep" })).toMatchObject({
+			ok: false,
+			error: { code: "unknown_session", message: "No session nope." },
+		});
+		expect(await h.ask({ command: "session.set_profile", sessionId: "nope", profile: "" })).toMatchObject({
+			ok: false,
+			error: { code: "invalid_command" },
+		});
+		await h.close();
+	});
+
+	it("refuses with profile_unavailable on a server that reads no profiles", async () => {
+		const input = new PassThrough();
+		const messages: ServerMessage[] = [];
+		const server = new RpcServer({
+			input,
+			write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
+			createBackend: () => new FakeBackend([[{ event: finished }]]),
+			tools: [],
+			systemPromptAppend: "",
+		});
+		const done = server.run();
+		const send = async (id: string, command: Record<string, unknown>) => {
+			input.write(`${JSON.stringify({ type: "command", id, ...command })}\n`);
+			for (let i = 0; i < 400 && !messages.some((m) => m.type === "response" && m.id === id); i++)
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			return messages.find((m) => m.type === "response" && m.id === id);
+		};
+		const started = (await send("a", { command: "session.start", cwd: home })) as unknown as {
+			result: { sessionId: string };
+		};
+		expect(
+			await send("b", { command: "session.set_profile", sessionId: started.result.sessionId, profile: "deep" }),
+		).toMatchObject({ ok: false, error: { code: "profile_unavailable" } });
+		input.end();
+		await done;
+	});
+});

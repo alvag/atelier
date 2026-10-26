@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Readable } from "node:stream";
-import type { AgentBackend, SessionChange } from "../backend.ts";
+import type { AgentBackend } from "../backend.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { MemoryPort } from "../memory/index.ts";
@@ -10,6 +10,7 @@ import { PERMISSION_MODES } from "../modes.ts";
 import { BACKEND_MODELS } from "../options.ts";
 import { type DefaultPermissionMode, readDefaultPermissionMode } from "../permission-mode.ts";
 import {
+	closestName,
 	freezeProfile,
 	orchestratorBackend,
 	type PinPlaces,
@@ -28,7 +29,13 @@ import {
 	PROTOCOL_VERSION,
 	type ServerMessage,
 } from "../protocol/types.ts";
-import { ConfigureError, type PermissionMode, Session, type SessionConfiguration } from "../session.ts";
+import {
+	ConfigureError,
+	type MainChange,
+	type PermissionMode,
+	Session,
+	type SessionConfiguration,
+} from "../session.ts";
 import { BUILTIN_AGENTS, type SubagentDefinition } from "../subagents/definitions.ts";
 import { THINKING_LEVELS } from "../thinking.ts";
 import { loadSandboxAdditions, SandboxConfigError } from "../tools/sandbox-config.ts";
@@ -75,6 +82,8 @@ class CommandError extends Error {
 
 interface ServerSession {
 	session: Session;
+	/** The folder the session works in: where its profile pins are. */
+	cwd: string;
 	/** Approval questions waiting for session.approve, by callId. */
 	approvals: Map<string, (approved: boolean) => void>;
 	/** Review questions waiting for session.review_consent, by reviewId. */
@@ -264,6 +273,8 @@ export class RpcServer {
 				return this.#configure(message.sessionId, { model: message.model });
 			case "session.set_effort":
 				return this.#configure(message.sessionId, { thinking: message.effort });
+			case "session.set_profile":
+				return this.#setProfile(message.sessionId, message.profile);
 			case "options.list":
 				return this.#optionsList(message.cwd);
 			case "session.close": {
@@ -282,9 +293,38 @@ export class RpcServer {
 	}
 
 	/** Changes the main agent's model or level and answers the configuration the next turn runs with. */
-	async #configure(sessionId: string, change: SessionChange): Promise<Result> {
+	async #configure(sessionId: string, change: MainChange): Promise<Result> {
+		const session = this.#session(sessionId).session;
+		return this.#changing(() => session.configure(change));
+	}
+
+	/**
+	 * Freezes the profile `name` again, as `session.start` does, and gives it to the session. A name the server cannot
+	 * find is refused, never dropped for another layer's profile.
+	 */
+	async #setProfile(sessionId: string, name: string): Promise<Result> {
+		const { session, cwd } = this.#session(sessionId);
+		const home = this.#options.home;
+		if (home === undefined)
+			throw new CommandError("profile_unavailable", "This server reads no profiles: it has no home directory.");
+		const read = await readProfiles(home);
+		const known = read.valid ? [...read.file.profiles.keys()] : [];
+		if (!known.includes(name)) {
+			const near = closestName(name, known);
+			const missing = `No profile "${name}" in ~/.atelier/profiles.json`;
+			throw new CommandError(
+				"unknown_profile",
+				near === undefined ? `${missing}.` : `${missing}; did you mean "${near}"?`,
+			);
+		}
+		const profile = await freezeProfile({ cwd, home, pins: await this.#pinPlaces(cwd), choice: name });
+		return this.#changing(() => session.setProfile(profile));
+	}
+
+	/** Answers the configuration a change leaves, or the error code the session refused it with. */
+	async #changing(change: () => Promise<SessionConfiguration>): Promise<Result> {
 		try {
-			return configurationResult(await this.#session(sessionId).session.configure(change));
+			return configurationResult(await change());
 		} catch (error) {
 			if (error instanceof ConfigureError) throw new CommandError(error.code, error.message);
 			throw error;
@@ -448,7 +488,7 @@ export class RpcServer {
 			throw new CommandError("shutting_down", "The server is shutting down.");
 		}
 		const sessionId = this.#createId();
-		this.#sessions.set(sessionId, { session, approvals, consents });
+		this.#sessions.set(sessionId, { session, cwd, approvals, consents });
 		return sessionId;
 	}
 

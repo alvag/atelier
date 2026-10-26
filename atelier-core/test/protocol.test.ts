@@ -62,6 +62,7 @@ describe("decodeClientMessage", () => {
 		[{ type: "command", id: "h1", command: "session.set_model", sessionId: "s1", model: "sonnet" }],
 		[{ type: "command", id: "h2", command: "session.set_effort", sessionId: "s1", effort: "xhigh" }],
 		[{ type: "command", id: "h3", command: "session.set_effort", sessionId: "s1", effort: "off" }],
+		[{ type: "command", id: "h6", command: "session.set_profile", sessionId: "s1", profile: "cheap" }],
 		[{ type: "command", id: "h4", command: "options.list" }],
 		[{ type: "command", id: "h5", command: "options.list", cwd: "/w" }],
 		[
@@ -97,6 +98,9 @@ describe("decodeClientMessage", () => {
 		[{ command: "session.set_model", model: "sonnet" }],
 		[{ command: "session.set_effort", sessionId: "s1", effort: "turbo" }],
 		[{ command: "session.set_effort", sessionId: "s1" }],
+		[{ command: "session.set_profile", sessionId: "s1" }],
+		[{ command: "session.set_profile", sessionId: "s1", profile: "" }],
+		[{ command: "session.set_profile", profile: "cheap" }],
 		[{ command: "options.list", cwd: "" }],
 	])("rejects %j, keeping its id", (command) => {
 		const result = decodeClientMessage(JSON.stringify({ type: "command", id: "m3", ...command }));
