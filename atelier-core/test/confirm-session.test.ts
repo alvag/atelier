@@ -1,5 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type ApprovalRequest,
 	type AtelierEvent,
@@ -11,8 +13,14 @@ import {
 } from "../src/index.ts";
 import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 
-/** The system temporary directory: commands need a working directory they can read, also inside a sandbox. */
-const cwd = tmpdir();
+/** An empty folder of its own for each test: approved commands really run there. */
+let cwd: string;
+beforeEach(async () => {
+	cwd = await mkdtemp(join(tmpdir(), "atelier-confirm-"));
+});
+afterEach(async () => {
+	await rm(cwd, { recursive: true, force: true });
+});
 
 /** A sandbox that is there and wraps nothing, counting the commands it wrapped. */
 function sandboxed() {
@@ -122,7 +130,7 @@ describe("a command the guard asks about", () => {
 	it("asks in yolo when it also runs outside the sandbox, with the reason", async () => {
 		const { questions } = await ask(
 			{ command: "npm publish", unsandboxed: true, reason: "needs the registry" },
-			{ permissionMode: "yolo" },
+			{ permissionMode: "yolo", answer: false },
 		);
 		expect(questions).toEqual([
 			{ callId: "c1", command: "npm publish", reason: "needs the registry", confirm: "npm publish" },
@@ -153,7 +161,7 @@ describe("a command the guard asks about", () => {
 	);
 
 	it.each(["normal", "auto"] as const)("asks for a plain push in %s", async (permissionMode) => {
-		const { questions } = await ask({ command: "git push -u origin feat" }, { permissionMode });
+		const { questions } = await ask({ command: "git push -u origin feat" }, { permissionMode, answer: false });
 		expect(questions).toEqual([{ callId: "c1", command: "git push -u origin feat", confirm: "git push" }]);
 	});
 
@@ -170,10 +178,10 @@ describe("a command the guard asks about", () => {
 	it.each(["normal", "auto", "yolo"] as const)(
 		"does not ask for an ordinary sandboxed command in %s",
 		async (permissionMode) => {
-			const { questions, requested, wrapped } = await ask({ command: "pnpm test" }, { permissionMode });
+			const { questions, requested, wrapped } = await ask({ command: "ls" }, { permissionMode });
 			expect(questions).toEqual([]);
 			expect(requested).toEqual([]);
-			expect(wrapped).toEqual(["pnpm test"]);
+			expect(wrapped).toEqual(["ls"]);
 		},
 	);
 
