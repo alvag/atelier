@@ -70,6 +70,7 @@ function harness(turnsPerSession: FakeStep[][][]) {
 		},
 		tools: [shell],
 		systemPromptAppend: "",
+		home: cwd,
 		onShutdown: () => {
 			shutdowns++;
 		},
@@ -195,6 +196,7 @@ describe("RpcServer", () => {
 			}),
 			tools: [],
 			systemPromptAppend: "",
+			home: cwd,
 		});
 		void server.run();
 		input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd })}\n`);
@@ -420,6 +422,7 @@ describe("RpcServer", () => {
 			}),
 			tools: [],
 			systemPromptAppend: "",
+			home: cwd,
 		});
 		const done = server.run();
 		input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd })}\n`);
@@ -459,6 +462,7 @@ describe("RpcServer", () => {
 			createBackend: () => new FakeBackend([[{ event: { type: "text_delta", text: "x" } }, { event: finished }]]),
 			tools: [],
 			systemPromptAppend: "",
+			home: cwd,
 		});
 		const done = server.run();
 		input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd })}\n`);
@@ -718,5 +722,125 @@ describe("session.start profiles", () => {
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("RpcServer permission modes", () => {
+	let home: string;
+	beforeEach(async () => {
+		home = await mkdtemp(join(tmpdir(), "atelier-rpc-mode-home-"));
+	});
+	afterEach(async () => {
+		await rm(home, { recursive: true, force: true });
+	});
+
+	const started: FakeStep = { event: { type: "session_started", backend: "fake", model: "m", authSource: "none" } };
+
+	function serve() {
+		const input = new PassThrough();
+		const messages: ServerMessage[] = [];
+		const server = new RpcServer({
+			input,
+			write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
+			createBackend: () => new FakeBackend([[started, { event: finished }]]),
+			tools: [],
+			systemPromptAppend: "",
+			home,
+		});
+		const done = server.run();
+		let next = 0;
+		const ask = async (command: Record<string, unknown>) => {
+			const id = `m${++next}`;
+			input.write(`${JSON.stringify({ type: "command", id, ...command })}\n`);
+			for (let i = 0; i < 200; i++) {
+				const found = messages.find((m) => m.type === "response" && m.id === id);
+				if (found) return found as Extract<ServerMessage, { type: "response" }>;
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+			throw new Error(`No response to ${id}`);
+		};
+		const eventsOf = (sessionId: string) =>
+			messages.flatMap((m) => (m.type === "event" && m.sessionId === sessionId ? [m.event] : []));
+		/** Runs one turn and returns the modes its session_started events said. */
+		const turnModes = async (sessionId: string) => {
+			expect((await ask({ command: "session.send", sessionId, prompt: "hi" })).ok).toBe(true);
+			for (let i = 0; i < 200 && !eventsOf(sessionId).some((e) => e.type === "turn_finished"); i++)
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			return eventsOf(sessionId).flatMap((e) => (e.type === "session_started" ? [e.permissionMode] : []));
+		};
+		const open = async (extra: Record<string, unknown> = {}) => {
+			const response = await ask({ command: "session.start", cwd, ...extra });
+			return (response as unknown as { result: { sessionId: string } }).result.sessionId;
+		};
+		const errors = (sessionId: string) => eventsOf(sessionId).filter((e) => e.type === "error");
+		const close = () => {
+			input.end();
+			return done;
+		};
+		return { ask, open, turnModes, errors, close };
+	}
+
+	const writeDefault = async (text: string) => {
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		await writeFile(join(home, ".atelier", "permission-mode.json"), text);
+	};
+
+	it("starts a session in the mode the command asks for, over the default file", async () => {
+		await writeDefault(JSON.stringify({ kind: "atelier.permission_mode", version: 1, default: "auto" }));
+		const h = serve();
+		const sessionId = await h.open({ mode: "yolo" });
+		expect(await h.turnModes(sessionId)).toEqual(["yolo"]);
+		await h.close();
+	});
+
+	it("reads the default from the server's home when the command gives no mode", async () => {
+		await writeDefault(JSON.stringify({ kind: "atelier.permission_mode", version: 1, default: "auto" }));
+		const h = serve();
+		const sessionId = await h.open({ autoApprove: true });
+		expect(await h.turnModes(sessionId)).toEqual(["auto"]);
+		expect(h.errors(sessionId)).toEqual([]);
+		await h.close();
+	});
+
+	it("starts in normal and warns once when the default file is invalid", async () => {
+		await writeDefault("{nope");
+		const h = serve();
+		const sessionId = await h.open();
+		expect(await h.turnModes(sessionId)).toEqual(["normal"]);
+		expect(h.errors(sessionId)).toMatchObject([
+			{
+				code: "permission_mode_invalid",
+				message: `${join(home, ".atelier", "permission-mode.json")}: not valid JSON; using normal`,
+				recoverable: true,
+			},
+		]);
+		await h.close();
+	});
+
+	it("does not warn about an invalid default file when the command gives the mode", async () => {
+		await writeDefault("{nope");
+		const h = serve();
+		const sessionId = await h.open({ mode: "auto" });
+		expect(await h.turnModes(sessionId)).toEqual(["auto"]);
+		expect(h.errors(sessionId)).toEqual([]);
+		await h.close();
+	});
+
+	it("session.set_mode answers the mode and the next turn runs in it", async () => {
+		const h = serve();
+		const sessionId = await h.open();
+		const response = await h.ask({ command: "session.set_mode", sessionId, mode: "yolo" });
+		expect(response).toMatchObject({ ok: true, result: { mode: "yolo" } });
+		expect(await h.turnModes(sessionId)).toEqual(["yolo"]);
+		await h.close();
+	});
+
+	it("session.set_mode on an unknown session is answered like the other session commands", async () => {
+		const h = serve();
+		expect(await h.ask({ command: "session.set_mode", sessionId: "nope", mode: "auto" })).toMatchObject({
+			ok: false,
+			error: { code: "unknown_session", message: "No session nope." },
+		});
+		await h.close();
 	});
 });

@@ -852,6 +852,7 @@ describe("RpcServer review", () => {
 			createBackend: () => (created++ === 0 ? new FakeBackend(turns) : roles),
 			tools: [changeTool],
 			systemPromptAppend: "",
+			home: cwd,
 			...wire,
 		});
 		const done = server.run();

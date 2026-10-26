@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PERMISSION_MODES } from "../permission-mode.ts";
 import { BACKEND_NAMES, type ClientMessage, MAX_COMPACT_INSTRUCTIONS_BYTES, type ServerMessage } from "./types.ts";
 
 /**
@@ -41,6 +42,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		cwd: z.string().min(1),
 		model: z.string().min(1).optional(),
 		autoApprove: z.boolean().optional(),
+		mode: z.enum(PERMISSION_MODES).optional(),
 		backend: z.enum(BACKEND_NAMES).optional(),
 		review: z.boolean().optional(),
 		noSandbox: z.boolean().optional(),
@@ -68,6 +70,7 @@ const commandSchema = z.discriminatedUnion("command", [
 			})
 			.optional(),
 	}),
+	z.object({ command: z.literal("session.set_mode"), sessionId, mode: z.enum(PERMISSION_MODES) }),
 	z.object({ command: z.literal("session.close"), sessionId }),
 	z.object({ command: z.literal("shutdown") }),
 ]);

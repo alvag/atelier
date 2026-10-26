@@ -57,6 +57,8 @@ describe("decodeClientMessage", () => {
 		[{ type: "command", id: "c7", command: "shutdown" }],
 		[{ type: "command", id: "c8", command: "session.start", cwd: "/w", review: false }],
 		[{ type: "command", id: "c9", command: "session.review", sessionId: "s1" }],
+		[{ type: "command", id: "m1", command: "session.start", cwd: "/w", mode: "auto" }],
+		[{ type: "command", id: "m2", command: "session.set_mode", sessionId: "s1", mode: "yolo" }],
 		[
 			{
 				type: "command",
@@ -79,6 +81,15 @@ describe("decodeClientMessage", () => {
 		],
 	])("accepts %j", (message) => {
 		expect(decodeClientMessage(JSON.stringify(message))).toEqual({ ok: true, message });
+	});
+
+	it.each([
+		[{ command: "session.start", cwd: "/w", mode: "strict" }],
+		[{ command: "session.set_mode", sessionId: "s1", mode: "strict" }],
+		[{ command: "session.set_mode", sessionId: "s1" }],
+	])("rejects %j, keeping its id", (command) => {
+		const result = decodeClientMessage(JSON.stringify({ type: "command", id: "m3", ...command }));
+		expect(result).toMatchObject({ ok: false, id: "m3" });
 	});
 
 	it("rejects invalid JSON without an id", () => {

@@ -278,3 +278,73 @@ describe("without a sandbox", () => {
 		expect(ofType(events, "sandbox_warning")).toHaveLength(1);
 	});
 });
+
+describe("Session.setPermissionMode", () => {
+	const outside = (callId: string): FakeStep[] => [
+		bashCall({ command: "echo hi", unsandboxed: true, reason: "needs the network" }, callId),
+		finished,
+	];
+
+	async function start(turns: FakeStep[][], options: Partial<SessionOptions> = {}) {
+		const questions: ApprovalRequest[] = [];
+		const session = await Session.start({
+			backend: new FakeBackend(turns),
+			cwd,
+			tools: [createBashTool({ sandbox: sandboxed().sandbox })],
+			approve: async (request) => {
+				questions.push(request);
+				return true;
+			},
+			...options,
+		});
+		return { session, questions };
+	}
+
+	it("changes whether a command outside the sandbox asks, from the next tool call on", async () => {
+		const { session, questions } = await start([outside("a"), outside("b"), outside("c")]);
+		await collect(session.send("one"));
+		expect(questions.map((q) => q.callId)).toEqual(["a"]);
+		session.setPermissionMode("yolo");
+		await collect(session.send("two"));
+		expect(questions.map((q) => q.callId)).toEqual(["a"]);
+		session.setPermissionMode("normal");
+		await collect(session.send("three"));
+		expect(questions.map((q) => q.callId)).toEqual(["a", "c"]);
+	});
+
+	it("is said by the next session_started", async () => {
+		const started: FakeStep = {
+			event: { type: "session_started", backend: "fake", model: "m", authSource: "none" },
+		};
+		const { session } = await start([
+			[started, finished],
+			[started, finished],
+		]);
+		const first = await collect(session.send("one"));
+		session.setPermissionMode("yolo");
+		const second = await collect(session.send("two"));
+		expect(ofType(first, "session_started").map((e) => e.permissionMode)).toEqual(["normal"]);
+		expect(ofType(second, "session_started").map((e) => e.permissionMode)).toEqual(["yolo"]);
+	});
+});
+
+describe("permissionModeProblem", () => {
+	it("is said once, in the first turn, as a recoverable permission_mode_invalid error", async () => {
+		const session = await Session.start({
+			backend: new FakeBackend([[finished], [finished]]),
+			cwd,
+			tools: [],
+			permissionModeProblem: "/h/.atelier/permission-mode.json: not valid JSON; using normal",
+		});
+		const first = await collect(session.send("one"));
+		const second = await collect(session.send("two"));
+		expect(ofType(first, "error")).toMatchObject([
+			{
+				code: "permission_mode_invalid",
+				message: "/h/.atelier/permission-mode.json: not valid JSON; using normal",
+				recoverable: true,
+			},
+		]);
+		expect(ofType(second, "error")).toEqual([]);
+	});
+});

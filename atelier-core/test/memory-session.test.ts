@@ -520,6 +520,7 @@ describe("RpcServer memory", () => {
 			},
 			tools,
 			systemPromptAppend: "",
+			home: cwd,
 			connectMemory,
 		}).run();
 		const waitFor = async (predicate: (m: ServerMessage) => boolean) => {

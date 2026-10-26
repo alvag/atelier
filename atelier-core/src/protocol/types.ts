@@ -1,4 +1,5 @@
 import type { AtelierEvent, JsonValue } from "../events.ts";
+import type { PermissionMode } from "../session.ts";
 
 /** Bumped on any incompatible change; sent first by the server in `hello`. */
 export const PROTOCOL_VERSION = 6;
@@ -16,8 +17,10 @@ export type ClientCommand =
 			command: "session.start";
 			cwd: string;
 			model?: string;
-			/** Ignored: the session runs in `normal` mode, which never asks about a command the sandbox contains. */
+			/** Ignored: use `mode`. */
 			autoApprove?: boolean;
+			/** The permission mode of the session; without it, the default in `~/.atelier/permission-mode.json`, then `normal`. */
+			mode?: PermissionMode;
 			backend?: BackendName;
 			review?: boolean;
 			/** Runs `bash` without the sandbox (every command asks); the server's own ATELIER_SANDBOX=off applies to all sessions. */
@@ -37,6 +40,8 @@ export type ClientCommand =
 	| { command: "session.undo_correction"; sessionId: string; reviewId?: string }
 	/** Summarizes the older history now; answers like session.send. `instructions`: at most 2000 bytes. */
 	| { command: "session.compact"; sessionId: string; instructions?: string }
+	/** Changes the session's permission mode for its next tool calls; answers `{ mode }`. */
+	| { command: "session.set_mode"; sessionId: string; mode: PermissionMode }
 	| { command: "session.close"; sessionId: string }
 	| { command: "shutdown" };
 

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import type { Readable } from "node:stream";
 import type { AgentBackend } from "../backend.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { MemoryPort } from "../memory/index.ts";
+import { type DefaultPermissionMode, readDefaultPermissionMode } from "../permission-mode.ts";
 import {
 	freezeProfile,
 	orchestratorBackend,
@@ -23,7 +25,7 @@ import {
 	PROTOCOL_VERSION,
 	type ServerMessage,
 } from "../protocol/types.ts";
-import { Session } from "../session.ts";
+import { type PermissionMode, Session } from "../session.ts";
 import { BUILTIN_AGENTS, type SubagentDefinition } from "../subagents/definitions.ts";
 import { loadSandboxAdditions, SandboxConfigError } from "../tools/sandbox-config.ts";
 import type { ToolDefinition } from "../tools/types.ts";
@@ -180,6 +182,7 @@ export class RpcServer {
 						message.review,
 						message.noSandbox === true || this.#options.noSandbox === true,
 						message.profile,
+						message.mode,
 					),
 				};
 			case "profiles.list":
@@ -249,6 +252,10 @@ export class RpcServer {
 				answer(message.approved);
 				return {};
 			}
+			case "session.set_mode": {
+				this.#session(message.sessionId).session.setPermissionMode(message.mode);
+				return { mode: message.mode };
+			}
 			case "session.close": {
 				const entry = this.#session(message.sessionId);
 				this.#sessions.delete(message.sessionId);
@@ -304,6 +311,8 @@ export class RpcServer {
 		noSandbox: boolean,
 		/** The client's profile: the first layer of the resolution. */
 		choice: string | undefined,
+		/** Absent: the default in `~/.atelier/permission-mode.json`. */
+		requestedMode: PermissionMode | undefined,
 	): Promise<string> {
 		if (this.#stopping) throw new CommandError("shutting_down", "The server is shutting down.");
 		// A chosen profile the server cannot read is refused, never dropped.
@@ -340,6 +349,11 @@ export class RpcServer {
 						...(choice === undefined ? {} : { choice }),
 					});
 		const backend = sessionBackend(profile, requestedBackend, DEFAULT_BACKEND);
+		// An explicit mode skips the file, so a broken default is not reported when it does not matter.
+		const modeRead: DefaultPermissionMode =
+			requestedMode === undefined
+				? await readDefaultPermissionMode(this.#options.home ?? homedir())
+				: { mode: requestedMode };
 		const approvals = new Map<string, (approved: boolean) => void>();
 		const consents = new Map<string, (answer: "granted" | "declined") => void>();
 		// Memory is optional: a session that cannot connect it starts anyway and says why.
@@ -360,6 +374,8 @@ export class RpcServer {
 				backend: await this.#options.createBackend(backend),
 				...(profile === undefined ? {} : { profile }),
 				cwd,
+				permissionMode: modeRead.mode,
+				...(modeRead.problem === undefined ? {} : { permissionModeProblem: modeRead.problem }),
 				...(model === undefined ? {} : { model }),
 				tools: this.#options.tools,
 				systemPromptAppend: this.#options.systemPromptAppend,

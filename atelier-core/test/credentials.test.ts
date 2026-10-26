@@ -186,6 +186,7 @@ describe("session.start backend selection", () => {
 			createBackend: createBackendFor,
 			tools: [],
 			systemPromptAppend: "",
+			home: cwd,
 		}).run();
 		const response = async (command: Record<string, unknown>) => {
 			input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd, ...command })}\n`);

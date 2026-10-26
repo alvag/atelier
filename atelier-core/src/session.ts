@@ -105,6 +105,8 @@ export interface SessionOptions {
 	memory?: MemoryPort;
 	/** Why there is no memory, when the caller tried and failed; reported in memory_status. */
 	memoryUnavailable?: string;
+	/** Why the saved default mode was not used (an invalid file); said once, in the first turn, as a recoverable error. */
+	permissionModeProblem?: string;
 	/** Why there is no review in this session (it is off); said once, in the first turn. */
 	reviewUnavailable?: string;
 	/** Adds `home`/.agents/AGENTS.md and the AGENTS.md / CLAUDE.md files from `cwd` up to `home` (excluded) to the system prompt, read once at start. Never given to subagents. */
@@ -319,6 +321,8 @@ export class Session {
 				if (!this.#options.review && this.#options.reviewUnavailable !== undefined)
 					turn.push({ type: "review_status", available: false, reason: this.#options.reviewUnavailable });
 				for (const notice of this.#profileNotices) turn.push(errorEvent("profile_warning", notice, true));
+				if (this.#options.permissionModeProblem !== undefined)
+					turn.push(errorEvent("permission_mode_invalid", this.#options.permissionModeProblem, true));
 				if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
 			}
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }> | undefined;
@@ -472,6 +476,11 @@ export class Session {
 		const { changes, files } = await profileChanges(profile, this.#profileFiles);
 		this.#profileFiles = files;
 		for (const { path, message } of changes) turn.push(errorEvent("profile_changed", `${path} ${message}`, true));
+	}
+
+	/** Changes the mode for the next tool calls of this session; children keep running in `normal`. */
+	setPermissionMode(mode: PermissionMode): void {
+		this.#options.permissionMode = mode;
 	}
 
 	/** `session_started` says the session's permission mode. */

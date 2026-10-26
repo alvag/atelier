@@ -71,6 +71,12 @@ export {
 } from "./odd/feature-doc.ts";
 export { FEATURE_TOOL, ODD_DIR, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
 export {
+	type DefaultPermissionMode,
+	PERMISSION_MODES,
+	readDefaultPermissionMode,
+	writeDefaultPermissionMode,
+} from "./permission-mode.ts";
+export {
 	costOfRequest,
 	EFFORT_LEVELS,
 	PRICES,
