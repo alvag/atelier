@@ -492,7 +492,7 @@ export class Session {
 		return {
 			cwd: this.#options.cwd,
 			model: this.#model,
-			settings: (role) => roleSettings(this.#options.profile, role, this.#model),
+			settings: (role) => roleSettings(this.#options.profile, role, this.#model, this.#thinking),
 			compaction: (backendId) => compactionSettings(this.#options.profile, backendId).compaction,
 			...(feature === undefined ? {} : { feature: resolve(this.#options.cwd, feature) }),
 			signal,
@@ -649,7 +649,12 @@ export class Session {
 		let child: Session;
 		// Only the worker and the explorer have an entry in the profile.
 		const role = agent.name === "worker" || agent.name === "explorer" ? agent.name : undefined;
-		const settings = roleSettings(role === undefined ? undefined : this.#options.profile, role ?? "worker", undefined);
+		const settings = roleSettings(
+			role === undefined ? undefined : this.#options.profile,
+			role ?? "worker",
+			undefined,
+			this.#thinking,
+		);
 		try {
 			const backend = await options.createBackend(settings.backend);
 			const model = settings.model ?? agent.models[backend.id] ?? this.#model;

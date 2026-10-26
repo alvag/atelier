@@ -231,7 +231,19 @@ describe("the subagents", () => {
 		expect(created[0]?.backend.startOptions).not.toHaveProperty("thinking");
 	});
 
-	it("start the explorer on its haiku default unless the profile sets a model", async () => {
+	it("give a worker and an explorer the session's thinking unless the profile sets theirs", async () => {
+		for (const agent of ["worker", "explorer"] as const) {
+			const inherited = await delegate({ profile: await freeze({ p: { orchestrator: { thinking: "high" } } }) }, agent);
+			expect(inherited.created[0]?.backend.startOptions).toMatchObject({ model: "session-model", thinking: "high" });
+			const own = await delegate(
+				{ profile: await freeze({ p: { orchestrator: { thinking: "high" }, [agent]: { thinking: "low" } } }) },
+				agent,
+			);
+			expect(own.created[0]?.backend.startOptions?.thinking).toBe("low");
+		}
+	});
+
+	it("start the explorer on the session's model unless the profile sets one", async () => {
 		const plain = await delegate(
 			{ profile: await freeze({ p: { explorer: { thinking: "low" } } }) },
 			"explorer",
@@ -241,7 +253,7 @@ describe("the subagents", () => {
 				return backend;
 			},
 		);
-		expect(plain.created[0]?.backend.startOptions).toMatchObject({ model: "haiku", thinking: "low" });
+		expect(plain.created[0]?.backend.startOptions).toMatchObject({ model: "session-model", thinking: "low" });
 		const own = await delegate(
 			{ profile: await freeze({ p: { explorer: { model: "claude-sonnet-5-5" } } }) },
 			"explorer",

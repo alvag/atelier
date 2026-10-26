@@ -2501,6 +2501,18 @@ describe("review roles and profiles", () => {
 		expect(asked("resilience")).toBeUndefined();
 	});
 
+	it("gives every review role the session's thinking unless its entry sets one", async () => {
+		const h = await profiled(
+			{ orchestrator: { thinking: "high" }, "review-refuter": { thinking: "low" } },
+			new RoleBackend(verifying(vreport())),
+			[VERIFY_TURN, [change("a.ts", "base\nfixed\n"), text("fixed"), { event: finished }]],
+		);
+		await h.send("make it need a keypress");
+		expect(byRole(h, "verifier")).toMatchObject({ model: "session-model", thinking: "high" });
+		expect(byRole(h, "resilience")).toMatchObject({ model: "session-model", thinking: "high" });
+		expect(byRole(h, "refuter")).toMatchObject({ thinking: "low" });
+	});
+
 	it("passes the frozen compaction entry to the verifier and to a lens", async () => {
 		const seen: Record<string, unknown> = {};
 		const roles = new RoleBackend(verifying(vreport()));

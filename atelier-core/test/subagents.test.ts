@@ -191,12 +191,12 @@ describe("task", () => {
 });
 
 describe("builtin agents", () => {
-	it("are explorer (read-only, cheapest model) and worker (parent's model)", () => {
+	it("are explorer (read-only) and worker, both on the parent's model", () => {
 		expect(BUILTIN_AGENTS.map((a) => [a.name, a.tools, a.maxRequests])).toEqual([
 			["explorer", ["read", "grep"], 30],
 			["worker", ["read", "edit", "write", "grep", "bash"], 50],
 		]);
-		expect(BUILTIN_AGENTS[0]?.models).toEqual({ "claude-code": "haiku", "anthropic-api": "claude-haiku-5-5" });
+		expect(BUILTIN_AGENTS[0]?.models).toEqual({});
 		expect(BUILTIN_AGENTS[1]?.models).toEqual({});
 		for (const agent of BUILTIN_AGENTS) expect(agent.prompt).toContain("path:line");
 	});

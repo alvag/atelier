@@ -28,7 +28,7 @@ export const BUILTIN_AGENTS: readonly SubagentDefinition[] = Object.freeze([
 			"Reads and searches the code to answer a specific question, without changing anything. Use it when answering needs many reads.",
 		tools: ["read", "grep"],
 		prompt: `You are an explorer working for another coding agent. Answer the question you are given by reading and searching the code; you cannot change anything. ${REPORT_FORMAT}`,
-		models: { "claude-code": "haiku", "anthropic-api": "claude-haiku-5-5" },
+		models: {},
 		maxRequests: 30,
 	},
 	{

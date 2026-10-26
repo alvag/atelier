@@ -95,14 +95,20 @@ export interface RoleSettings {
 	thinking?: ThinkingLevel;
 }
 
-/** The settings of `role`: its entry, and `model` (the session's) where the entry sets none. */
-export function roleSettings(frozen: FrozenProfile | undefined, role: Role, model: string | undefined): RoleSettings {
+/** The settings of `role`: its entry, and the session's `model` and `thinking` where the entry sets none. */
+export function roleSettings(
+	frozen: FrozenProfile | undefined,
+	role: Role,
+	model: string | undefined,
+	thinking?: ThinkingLevel,
+): RoleSettings {
 	const entry = frozen === undefined ? {} : roleEntry(frozen.resolved, role);
 	const chosen = entry.model ?? model;
+	const level = entry.thinking ?? thinking;
 	return {
 		...(entry.backend === undefined ? {} : { backend: entry.backend }),
 		...(chosen === undefined ? {} : { model: chosen }),
-		...(entry.thinking === undefined ? {} : { thinking: entry.thinking }),
+		...(level === undefined ? {} : { thinking: level }),
 	};
 }
 
