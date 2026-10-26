@@ -22,6 +22,7 @@ import {
 	type MemoryPort,
 	SESSION_SUMMARY_TYPE,
 } from "./memory/index.ts";
+import type { PermissionMode } from "./modes.ts";
 import type { CompletedFeature } from "./odd/tracker.ts";
 import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
 import {
@@ -87,7 +88,7 @@ export interface PermissionClassifierOptions {
 }
 
 /** How much the session asks the user before a tool call. */
-export type PermissionMode = "normal" | "auto" | "yolo";
+export type { PermissionMode };
 
 export interface SessionOptions {
 	backend: AgentBackend;

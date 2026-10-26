@@ -1,8 +1,8 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { PermissionMode } from "./session.ts";
+import { PERMISSION_MODES, type PermissionMode } from "./modes.ts";
 
-export const PERMISSION_MODES = ["normal", "auto", "yolo"] as const satisfies readonly PermissionMode[];
+export { PERMISSION_MODES };
 
 const KIND = "atelier.permission_mode";
 const VERSION = 1;

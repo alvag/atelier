@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PERMISSION_MODES } from "../permission-mode.ts";
+import { PERMISSION_MODES } from "../modes.ts";
 import { BACKEND_NAMES, type ClientMessage, MAX_COMPACT_INSTRUCTIONS_BYTES, type ServerMessage } from "./types.ts";
 
 /**
