@@ -4,6 +4,7 @@ import {
 	type Profile,
 	type ProfileReport,
 	type ProfilesFile,
+	type ProfilesRead,
 	type Role,
 	type RoleEntry,
 	readProfiles,
@@ -20,6 +21,8 @@ export interface ResolveProfileInput {
 	choice?: string;
 	/** Where the pins are; defaults to what git says for `cwd`. */
 	pins?: PinPlaces;
+	/** `profiles.json` as the caller already read it; defaults to reading it here. */
+	profiles?: ProfilesRead;
 }
 
 export interface ResolvedProfile {
@@ -48,13 +51,14 @@ export async function resolveProfile({
 	home = homedir(),
 	choice,
 	pins,
+	profiles,
 }: ResolveProfileInput): Promise<ResolvedProfile> {
-	const read = await readProfiles(home);
+	const read = profiles ?? (await readProfiles(home));
 	const reports = [...read.reports];
 	const path = `${home}/.atelier/profiles.json`;
 	if (!read.valid) reports.push({ path, message: `${read.reason}: the file is ignored` });
 	const file: ProfilesFile = read.valid ? read.file : { profiles: new Map() };
-	const places = pins ?? pinPlaces(cwd);
+	const places = pins ?? (await pinPlaces(cwd));
 	const [local, repo] = await Promise.all([
 		places.local === undefined ? undefined : readPin(places.local),
 		places.repo === undefined ? undefined : readPin(places.repo),

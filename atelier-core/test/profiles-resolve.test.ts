@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { profilesPath, resolveProfile, roleEntry } from "../src/index.ts";
+import { profilesPath, readProfiles, resolveProfile, roleEntry } from "../src/index.ts";
 
 let base: string;
 let home: string;
@@ -46,6 +46,14 @@ describe("resolveProfile", () => {
 		const resolved = await resolveProfile({ cwd: repo, home });
 		expect(resolved).toEqual({ origin: "default", profile: {}, reports: [] });
 		expect(roleEntry(resolved, "worker")).toEqual({});
+	});
+
+	it("resolves from the profiles it is given instead of reading the file again", async () => {
+		await setProfiles(profiles);
+		const read = await readProfiles(home);
+		await setProfiles({ active: "other", profiles: { other: { worker: { model: "o" } } } });
+		const resolved = await resolveProfile({ cwd: repo, home, profiles: read });
+		expect([resolved.origin, resolved.name, roleEntry(resolved, "worker").model]).toEqual(["active", "global", "g"]);
 	});
 
 	it("goes explicit, then local pin, then repo declaration, then active, then default", async () => {

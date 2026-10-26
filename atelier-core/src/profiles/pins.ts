@@ -1,7 +1,10 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { ProfileReport } from "./profiles.ts";
+
+const run = promisify(execFile);
 
 export const PIN_KIND = "atelier.profile_pin";
 export const PIN_VERSION = 1;
@@ -16,14 +19,17 @@ export interface PinPlaces {
 
 export type PinRead = { profile?: string; reports: ProfileReport[] };
 
-/** Finds the pin files for `cwd` by asking git; none outside a repository. */
-export function pinPlaces(cwd: string): PinPlaces {
-	const found = spawnSync("git", ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"], {
+/** Finds the pin files for `cwd` by asking git, without blocking the event loop; none outside a repository. */
+export async function pinPlaces(cwd: string): Promise<PinPlaces> {
+	const found = await run("git", ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"], {
 		cwd,
 		encoding: "utf8",
 		timeout: 5000,
-	});
-	const [top, common] = found.status === 0 ? found.stdout.trim().split("\n") : [];
+	}).then(
+		({ stdout }) => stdout,
+		() => "",
+	);
+	const [top, common] = found.trim().split("\n");
 	if (!top?.startsWith("/") || !common?.startsWith("/")) return {};
 	return { local: join(common, "atelier", "profile-pin.json"), repo: join(top, ".atelier", "profile.json") };
 }

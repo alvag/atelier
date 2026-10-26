@@ -41,7 +41,7 @@ export async function fingerprint(paths: readonly string[]): Promise<Record<stri
 /** Resolves the session's profile by layers and fixes it, remembering what its files held. */
 export async function freezeProfile(input: ResolveProfileInput): Promise<FrozenProfile> {
 	const home = input.home ?? homedir();
-	const pins = input.pins ?? pinPlaces(input.cwd);
+	const pins = input.pins ?? (await pinPlaces(input.cwd));
 	const paths = [
 		profilesPath(home),
 		...(pins.local === undefined ? [] : [pins.local]),

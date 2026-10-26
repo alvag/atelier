@@ -8,6 +8,8 @@ import type { MemoryPort } from "../memory/index.ts";
 import {
 	freezeProfile,
 	orchestratorBackend,
+	type PinPlaces,
+	pinPlaces,
 	readProfiles,
 	resolveProfile,
 	roleStartMessage,
@@ -45,6 +47,8 @@ export interface RpcServerOptions {
 	review?: boolean;
 	/** Every session runs `bash` without the sandbox (`serve` passes `!sandboxEnabled(process.env)`). */
 	noSandbox?: boolean;
+	/** Where a folder's profile pins are; defaults to asking git. Tests make it slow. */
+	pinPlaces?: (cwd: string) => Promise<PinPlaces>;
 	onShutdown?: () => void;
 	createId?: () => string;
 }
@@ -268,7 +272,11 @@ export class RpcServer {
 		const read = await readProfiles(home);
 		const names = read.valid ? [...read.file.profiles.keys()] : [];
 		const active = read.valid ? read.file.active : undefined;
-		const resolved = cwd === undefined ? undefined : await resolveProfile({ cwd, home });
+		// One read of the file serves the names, `active` and the resolution.
+		const resolved =
+			cwd === undefined
+				? undefined
+				: await resolveProfile({ cwd, home, profiles: read, pins: await this.#pinPlaces(cwd) });
 		return {
 			profiles: names,
 			...(active === undefined ? {} : { active }),
@@ -281,6 +289,10 @@ export class RpcServer {
 						},
 					}),
 		};
+	}
+
+	#pinPlaces(cwd: string): Promise<PinPlaces> {
+		return (this.#options.pinPlaces ?? pinPlaces)(cwd);
 	}
 
 	async #start(
@@ -323,7 +335,12 @@ export class RpcServer {
 		const profile =
 			this.#options.home === undefined
 				? undefined
-				: await freezeProfile({ cwd, home: this.#options.home, ...(choice === undefined ? {} : { choice }) });
+				: await freezeProfile({
+						cwd,
+						home: this.#options.home,
+						pins: await this.#pinPlaces(cwd),
+						...(choice === undefined ? {} : { choice }),
+					});
 		const backend = sessionBackend(profile, requestedBackend, DEFAULT_BACKEND);
 		const approvals = new Map<string, (approved: boolean) => void>();
 		const consents = new Map<string, (answer: "granted" | "declined") => void>();

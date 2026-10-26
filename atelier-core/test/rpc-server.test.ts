@@ -12,6 +12,7 @@ import {
 	FakeBackend,
 	type FakeStep,
 	MissingApiKeyError,
+	type PinPlaces,
 	RpcServer,
 	type ServerMessage,
 } from "../src/index.ts";
@@ -638,6 +639,36 @@ describe("session.start profiles", () => {
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
+	});
+
+	it("answers other commands while profiles.list waits for git", async () => {
+		let release: (places: PinPlaces) => void = () => {};
+		const lookup = new Promise<PinPlaces>((resolve) => {
+			release = resolve;
+		});
+		const input = new PassThrough();
+		const messages: ServerMessage[] = [];
+		const server = new RpcServer({
+			input,
+			write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
+			createBackend: () => new FakeBackend([]),
+			tools: [],
+			systemPromptAppend: "",
+			home: cwd,
+			pinPlaces: () => lookup,
+		});
+		void server.run();
+		const answered = (id: string) => messages.some((m) => m.type === "response" && m.id === id);
+		const until = async (condition: () => boolean) => {
+			for (let i = 0; i < 400 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+			expect(condition()).toBe(true);
+		};
+		input.write(`${JSON.stringify({ type: "command", id: "slow", command: "profiles.list", cwd })}\n`);
+		input.write(`${JSON.stringify({ type: "command", id: "fast", command: "profiles.list" })}\n`);
+		await until(() => answered("fast"));
+		expect(answered("slow")).toBe(false);
+		release({});
+		await until(() => answered("slow"));
 	});
 
 	it("names the orchestrator and backend when its API key is missing, and keeps the plain error without a profile", async () => {
