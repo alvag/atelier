@@ -133,6 +133,64 @@ describe("the orchestrator", () => {
 	});
 });
 
+describe("the profile the session says it froze", () => {
+	const started: FakeStep = {
+		event: { type: "session_started", backend: "fake", model: "m", authSource: "none" },
+	};
+	const startedOf = (events: AtelierEvent[]) => events.find((e) => e.type === "session_started");
+
+	it("rides on the main agent's session_started: name, origin and what it sets for each role but the orchestrator", async () => {
+		const profile = await freeze({
+			p: {
+				orchestrator: { model: "claude-opus-5-5" },
+				verifier: { model: "anthropic-api/claude-sonnet-5-5", thinking: "medium" },
+				explorer: { thinking: "low" },
+			},
+		});
+		const session = await Session.start({
+			backend: new FakeBackend([[started, { event: finished }]]),
+			cwd: base,
+			tools,
+			profile,
+		});
+		const events = await drain(session);
+		await session.close();
+		expect(startedOf(events)).toMatchObject({
+			backend: "fake",
+			profile: {
+				name: "p",
+				origin: "active",
+				roles: {
+					verifier: { backend: "anthropic-api", model: "claude-sonnet-5-5", thinking: "medium" },
+					explorer: { thinking: "low" },
+				},
+			},
+		});
+		const said = startedOf(events);
+		expect(said?.type === "session_started" && Object.keys(said.profile?.roles ?? {})).toEqual([
+			"explorer",
+			"verifier",
+		]);
+	});
+
+	it("says the default profile without a name, and nothing without a profile", async () => {
+		const profile = await freezeProfile({ cwd: base, home, pins: {} });
+		const session = await Session.start({
+			backend: new FakeBackend([[started, { event: finished }]]),
+			cwd: base,
+			tools,
+			profile,
+		});
+		const events = await drain(session);
+		await session.close();
+		expect(startedOf(events)).toMatchObject({ profile: { origin: "default", roles: {} } });
+		const plain = await Session.start({ backend: new FakeBackend([[started, { event: finished }]]), cwd: base, tools });
+		const none = await drain(plain);
+		await plain.close();
+		expect(startedOf(none)).not.toHaveProperty("profile");
+	});
+});
+
 describe("the warnings at session start", () => {
 	it("reports what resolution dropped as recoverable errors in the first turn only", async () => {
 		const profile = await freeze({ p: { verifer: { model: "x" }, worker: { thinking: "huge" } } });

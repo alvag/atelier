@@ -77,7 +77,9 @@ Design and decisions: `../docs/m1-diseno.md`, `../docs/m2-diseno.md`, `../docs/m
 
 ## Agent profiles
 
-A profile says which model, backend and thinking level each agent role uses. A session resolves its profile once, when it starts (the CLI and the server do; with no profile file nothing changes), and keeps it for its whole life: the roles that start later read that frozen profile, they never resolve it again. `--profile`, the desktop selector and `session.start.profile` do not exist yet, so the explicit layer below is not reachable from a client.
+A profile says which model, backend and thinking level each agent role uses. A session resolves its profile once, when it starts (the CLI and the server do; with no profile file nothing changes), and keeps it for its whole life: the roles that start later read that frozen profile, they never resolve it again. The explicit layer below is `profile` in `session.start` (`{ "command": "session.start", "cwd": "...", "profile": "cheap" }`); a server without a home directory reads no profiles and refuses it with `profile_unavailable` instead of dropping it. `profiles.list` (optional `cwd`) answers with the names in `profiles.json` in file order, its `active`, and with `cwd`, `effective`: the profile a session there would take without a choice (`{ "name": "cheap", "origin": "active" }`; no `name` for the default profile); without a home, or with an invalid file, `profiles` is empty.
+
+The main agent's `session_started` says the profile the session froze, as `profile`: its `name` (absent for the default profile), its `origin` (`explicit`, `local-pin`, `repo`, `active` or `default`) and `roles`, what it sets for each role but the orchestrator, in the order of the roles below (`{ "verifier": { "backend": "anthropic-api", "model": "claude-sonnet-5-5", "thinking": "medium" } }`, each field absent when inherited). The orchestrator is the event's own `backend`, `model` and `effort`, so `--model` shows there. A session started without profiles (the core used as a library) has no `profile`.
 
 `~/.atelier/profiles.json`:
 

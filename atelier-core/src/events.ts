@@ -171,10 +171,29 @@ export function describeRefusal(event: { cause?: RefusalCause; observed?: string
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = (typeof EFFORTS)[number];
 
+/** What a profile entry sets for a role; an absent field is inherited. */
+export interface ProfileRoleEntry {
+	backend?: string;
+	model?: string;
+	thinking?: string;
+}
+
+/**
+ * The profile a session froze at start: its name (absent for the default profile), the layer it came from
+ * (`explicit`, `local-pin`, `repo`, `active`, `default`) and what it sets for each role but the orchestrator,
+ * in the order of the roles; the orchestrator is the event's own `backend`, `model` and `effort`.
+ */
+export interface SessionProfile {
+	name?: string;
+	origin: "explicit" | "local-pin" | "repo" | "active" | "default";
+	roles: { [role: string]: ProfileRoleEntry };
+}
+
 export type AtelierEventBody =
 	/**
 	 * `effort`: the thinking level asked for, as sent with every request: the reasoning effort, `off` when thinking
 	 * was turned off, or `unsupported` when the model cannot take that level. Absent when no level was asked.
+	 * `profile`: the main session's frozen profile, when it resolved one; set by the session.
 	 */
 	| {
 			type: "session_started";
@@ -182,6 +201,7 @@ export type AtelierEventBody =
 			model: string;
 			authSource: AuthSource;
 			effort?: Effort | "off" | "unsupported";
+			profile?: SessionProfile;
 	  }
 	| { type: "text_delta"; text: string }
 	| { type: "thinking_delta"; text: string }

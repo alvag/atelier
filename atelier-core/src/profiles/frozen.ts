@@ -3,10 +3,17 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { AgentBackend } from "../backend.ts";
 import { MissingApiKeyError } from "../credentials.ts";
-import { describeError } from "../events.ts";
+import { describeError, type ProfileRoleEntry, type SessionProfile } from "../events.ts";
 import type { BackendName } from "../protocol/types.ts";
 import { pinPlaces } from "./pins.ts";
-import { type ProfileBackend, type ProfileReport, profilesPath, type Role, type ThinkingLevel } from "./profiles.ts";
+import {
+	type ProfileBackend,
+	type ProfileReport,
+	profilesPath,
+	ROLES,
+	type Role,
+	type ThinkingLevel,
+} from "./profiles.ts";
 import { type ResolvedProfile, type ResolveProfileInput, resolveProfile, roleEntry } from "./resolve.ts";
 
 /** What a session uses of its profile: resolved once at start and never again, with what its files held then. */
@@ -61,6 +68,23 @@ export async function profileChanges(
 		changes.push({ path, message: `${what} after the session started; this session keeps ${kept}` });
 	}
 	return { changes, files: now };
+}
+
+/** What clients are told of the frozen profile: its name, its layer and what it sets for each role but the orchestrator. */
+export function profileSummary(frozen: FrozenProfile): SessionProfile {
+	const { name, origin } = frozen.resolved;
+	const roles: Record<string, ProfileRoleEntry> = {};
+	for (const role of ROLES) {
+		if (role === "orchestrator") continue;
+		const { backend, model, thinking } = roleEntry(frozen.resolved, role);
+		if (backend === undefined && model === undefined && thinking === undefined) continue;
+		roles[role] = {
+			...(backend === undefined ? {} : { backend }),
+			...(model === undefined ? {} : { model }),
+			...(thinking === undefined ? {} : { thinking }),
+		};
+	}
+	return { ...(name === undefined ? {} : { name }), origin, roles };
 }
 
 /** What a role runs with once the profile and the session's own choices are put together. */

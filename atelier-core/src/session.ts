@@ -28,6 +28,7 @@ import {
 	type FrozenProfile,
 	orchestratorBackend,
 	profileChanges,
+	profileSummary,
 	type RoleBackendFactory,
 	roleSettings,
 	roleStartMessage,
@@ -325,7 +326,7 @@ export class Session {
 					else {
 						if (event.type === "error") failed = true;
 						if (event.type === "session_started") this.#mainAgent = phaseAgent("orchestrator", event);
-						turn.push(this.#withOrchestrator(event));
+						turn.push(this.#withOrchestrator(this.#withProfile(event)));
 					}
 				}
 			} catch (error) {
@@ -468,6 +469,13 @@ export class Session {
 		const { changes, files } = await profileChanges(profile, this.#profileFiles);
 		this.#profileFiles = files;
 		for (const { path, message } of changes) turn.push(errorEvent("profile_changed", `${path} ${message}`, true));
+	}
+
+	/** The main agent's `session_started` says the profile this session froze. */
+	#withProfile(event: AtelierEventBody): AtelierEventBody {
+		const profile = this.#options.profile;
+		if (event.type !== "session_started" || profile === undefined) return event;
+		return { ...event, profile: profileSummary(profile) };
 	}
 
 	/** A credential error of the backend the profile chose for the orchestrator (not an explicit one) names that role and backend. */

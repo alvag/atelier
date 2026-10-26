@@ -5,7 +5,14 @@ import type { AgentBackend } from "../backend.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { MemoryPort } from "../memory/index.ts";
-import { freezeProfile, orchestratorBackend, roleStartMessage, sessionBackend } from "../profiles/index.ts";
+import {
+	freezeProfile,
+	orchestratorBackend,
+	readProfiles,
+	resolveProfile,
+	roleStartMessage,
+	sessionBackend,
+} from "../profiles/index.ts";
 import { decodeClientMessage, encodeMessage, LineSplitter } from "../protocol/codec.ts";
 import {
 	type BackendName,
@@ -169,8 +176,11 @@ export class RpcServer {
 						message.backend,
 						message.review,
 						message.noSandbox === true || this.#options.noSandbox === true,
+						message.profile,
 					),
 				};
+			case "profiles.list":
+				return this.#profiles(message.cwd);
 			case "session.send": {
 				const entry = this.#session(message.sessionId);
 				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
@@ -251,6 +261,28 @@ export class RpcServer {
 		}
 	}
 
+	/** The profile names for a selector, the global `active`, and the profile a session in `cwd` would take without a choice. */
+	async #profiles(cwd: string | undefined): Promise<Result> {
+		const home = this.#options.home;
+		if (home === undefined) return { profiles: [] };
+		const read = await readProfiles(home);
+		const names = read.valid ? [...read.file.profiles.keys()] : [];
+		const active = read.valid ? read.file.active : undefined;
+		const resolved = cwd === undefined ? undefined : await resolveProfile({ cwd, home });
+		return {
+			profiles: names,
+			...(active === undefined ? {} : { active }),
+			...(resolved === undefined
+				? {}
+				: {
+						effective: {
+							...(resolved.name === undefined ? {} : { name: resolved.name }),
+							origin: resolved.origin,
+						},
+					}),
+		};
+	}
+
 	async #start(
 		cwd: string,
 		model: string | undefined,
@@ -260,8 +292,13 @@ export class RpcServer {
 		/** Absent means the server's default; an explicit true the server cannot honor is refused, never dropped. */
 		requested: boolean | undefined,
 		noSandbox: boolean,
+		/** The client's profile: the first layer of the resolution. */
+		choice: string | undefined,
 	): Promise<string> {
 		if (this.#stopping) throw new CommandError("shutting_down", "The server is shutting down.");
+		// A chosen profile the server cannot read is refused, never dropped.
+		if (choice !== undefined && this.#options.home === undefined)
+			throw new CommandError("profile_unavailable", "This server reads no profiles: it has no home directory.");
 		if (requested === true && !this.#options.review)
 			throw new CommandError("review_unavailable", "Review is off on this server (ATELIER_REVIEW=off).");
 		const review = (requested ?? true) && this.#options.review === true;
@@ -284,7 +321,9 @@ export class RpcServer {
 		}
 		// The profile is resolved once, here, and the session keeps it. Without a home there are no profile files to read.
 		const profile =
-			this.#options.home === undefined ? undefined : await freezeProfile({ cwd, home: this.#options.home });
+			this.#options.home === undefined
+				? undefined
+				: await freezeProfile({ cwd, home: this.#options.home, ...(choice === undefined ? {} : { choice }) });
 		const backend = sessionBackend(profile, requestedBackend, DEFAULT_BACKEND);
 		const approvals = new Map<string, (approved: boolean) => void>();
 		const consents = new Map<string, (answer: "granted" | "declined") => void>();

@@ -6,6 +6,7 @@ export {
 	freezeProfile,
 	orchestratorBackend,
 	profileChanges,
+	profileSummary,
 	type RoleBackendFactory,
 	type RoleSettings,
 	roleSettings,

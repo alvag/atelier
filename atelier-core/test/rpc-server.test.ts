@@ -576,6 +576,70 @@ describe("session.start profiles", () => {
 		}
 	});
 
+	it("takes the client's profile over the active one, lists the profiles, and refuses a choice it cannot read", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-rpc-home-"));
+		try {
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "profiles.json"),
+				JSON.stringify({
+					kind: "atelier.agent_model_profiles",
+					version: 1,
+					active: "p",
+					profiles: {
+						p: { orchestrator: { model: "anthropic-api/claude-opus-5-5" } },
+						q: { orchestrator: { model: "claude-code/claude-sonnet-5-5", thinking: "low" } },
+					},
+				}),
+			);
+			const serve = (withHome: boolean) => {
+				const input = new PassThrough();
+				const messages: ServerMessage[] = [];
+				const asked: { name: string; backend: FakeBackend }[] = [];
+				const server = new RpcServer({
+					input,
+					write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
+					createBackend: (name) => {
+						const backend = new FakeBackend([]);
+						asked.push({ name, backend });
+						return backend;
+					},
+					tools: [],
+					systemPromptAppend: "",
+					...(withHome ? { home } : {}),
+				});
+				void server.run();
+				const command = async (id: string, body: object) => {
+					input.write(`${JSON.stringify({ type: "command", id, ...body })}\n`);
+					for (let i = 0; i < 200 && !messages.some((m) => m.type === "response" && m.id === id); i++)
+						await new Promise((resolve) => setTimeout(resolve, 5));
+					return messages.find((m) => m.type === "response" && m.id === id);
+				};
+				return { command, asked };
+			};
+			const h = serve(true);
+			await h.command("a", { command: "session.start", cwd, profile: "q" });
+			expect(h.asked.map((a) => a.name)).toEqual(["claude-code"]);
+			expect(h.asked[0]?.backend.startOptions).toMatchObject({ model: "claude-sonnet-5-5", thinking: "low" });
+			expect(await h.command("l", { command: "profiles.list", cwd })).toMatchObject({
+				ok: true,
+				result: { profiles: ["p", "q"], active: "p", effective: { name: "p", origin: "active" } },
+			});
+			const bare = serve(false);
+			expect(await bare.command("b", { command: "session.start", cwd, profile: "q" })).toMatchObject({
+				ok: false,
+				error: { code: "profile_unavailable" },
+			});
+			expect(await bare.command("m", { command: "profiles.list", cwd })).toMatchObject({
+				ok: true,
+				result: { profiles: [] },
+			});
+			expect(bare.asked).toEqual([]);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
 	it("names the orchestrator and backend when its API key is missing, and keeps the plain error without a profile", async () => {
 		const home = await mkdtemp(join(tmpdir(), "atelier-rpc-home-"));
 		try {

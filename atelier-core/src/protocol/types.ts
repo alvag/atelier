@@ -21,7 +21,11 @@ export type ClientCommand =
 			review?: boolean;
 			/** Runs `bash` without the sandbox (every command asks); the server's own ATELIER_SANDBOX=off applies to all sessions. */
 			noSandbox?: boolean;
+			/** The profile chosen for this session: the first layer of the resolution. */
+			profile?: string;
 	  }
+	/** The profiles in `~/.atelier/profiles.json`, its `active`, and with `cwd`, the profile a session there would take without a choice. */
+	| { command: "profiles.list"; cwd?: string }
 	| { command: "session.send"; sessionId: string; prompt: string }
 	| { command: "session.interrupt"; sessionId: string }
 	| { command: "session.approve"; sessionId: string; callId: string; approved: boolean }
