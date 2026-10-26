@@ -448,7 +448,9 @@ export function verifierEnvironment(dir: string, git: string | undefined = devel
  *   /Library/Frameworks (third-party frameworks such as Python.framework).
  * The library lets an allowed read win over a denied one, so /Library as a whole
  * cannot be allowed and then narrowed: its Keychains and the rest are left out.
- * The user's home directory is not readable, nor is /Users, /tmp or /private/var.
+ * The user's home directory is not readable, nor is /Users, /tmp or /private/var,
+ * except for the time zone: /private/var/db/timezone, /private/var/select and
+ * the /var link itself, through which /etc/localtime leads.
  * Of the folders above its directory it reads only each one's package.json:
  * Node looks for the nearest one to resolve a module and stops with an error
  * when the read is denied, instead of going on as it does for a missing file.
@@ -499,6 +501,11 @@ const SYSTEM_READ_PATHS = [
 	"/opt/homebrew",
 	// The system's choice of shell and developer directory (`sh`, `developer_dir`): /bin/sh reads it on every start.
 	"/private/var/select",
+	// The time zone: /etc/localtime leads through the /var link and the links of the time zone database, which
+	// tools such as diff resolve one by one. Only the link itself is allowed of /var: the sandbox checks the
+	// resolved path of what is opened, so this does not open /private/var.
+	"/var",
+	"/private/var/db/timezone",
 ];
 
 export interface SandboxOptions {

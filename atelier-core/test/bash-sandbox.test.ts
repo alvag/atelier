@@ -643,6 +643,37 @@ describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 		expect(result.output).toContain(`home=${verifierDir}/`);
 	});
 
+	it("compares its two copies with diff -u, which looks up the time zone through the /var link, without a block", async () => {
+		const linked = await mkdtemp(join(tmpdir(), "atelier-verify-"));
+		try {
+			for (const copy of ["base", "candidate"]) {
+				await mkdir(join(linked, copy));
+				await writeFile(join(linked, copy, "a.txt"), `${copy}\n`);
+			}
+			const result = await verifier().execute(
+				{ command: "cd candidate && cat ../base/a.txt && ls .. && diff -u ../base/a.txt a.txt" },
+				{ cwd: linked },
+			);
+			// diff exits with 1 when the files differ, so the sandbox's denials for the run are reported.
+			expect(result.ok).toBe(false);
+			expect(result.output).not.toContain("Operation not permitted");
+			expect(result.output).not.toContain("sandbox blocked");
+			expect(result.output).toContain("+candidate");
+			expect(result.output).toContain("base\nbase\ncandidate\n");
+
+			// The link is readable, not what it leads to: the rest of /private/var stays out, named either way.
+			const beyond = await verifier().execute(
+				{ command: `readlink /var; ls /var/; cat /var${outside.replace(/^\/private\/var/, "")}/secret.txt` },
+				{ cwd: linked },
+			);
+			expect(beyond.output).toMatch(/^private\/var$/m);
+			expect(beyond.output).not.toContain("OUTSIDE-SECRET");
+			expect(beyond.output.match(/Operation not permitted/g)).toHaveLength(2);
+		} finally {
+			await rm(linked, { recursive: true, force: true });
+		}
+	});
+
 	it("writes only inside its own directory", async () => {
 		expect((await run("echo ok > candidate/out.txt && echo ok > scratch.txt")).ok).toBe(true);
 		expect(await exists(join(verifierDir, "scratch.txt"))).toBe(true);

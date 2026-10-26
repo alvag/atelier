@@ -240,6 +240,8 @@ describe("verifierPolicy", () => {
 			"/dev",
 			"/opt/homebrew",
 			"/private/var/select",
+			"/var",
+			"/private/var/db/timezone",
 			"/tmp/package.json",
 			"/package.json",
 		]);
@@ -255,7 +257,8 @@ describe("verifierPolicy", () => {
 			"/package.json",
 		]);
 		expect(reads).not.toContain("/var/folders/x/T");
-		expect(reads).not.toContain("/var");
+		expect(reads).not.toContain("/var/folders");
+		expect(reads).not.toContain("/private/var/folders");
 	});
 
 	it("adds the developer directory's usr/ when there is a real git to run", () => {
