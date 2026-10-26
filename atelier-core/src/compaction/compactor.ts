@@ -133,6 +133,22 @@ export function buildSummaryRequest(
 	};
 }
 
+/**
+ * The summary request over the whole history, to hand the conversation to another backend: nothing stays verbatim,
+ * so there is no cut. The instruction follows the history as a user message of its own when the history ends with
+ * the assistant, and joins the last user message otherwise.
+ */
+export function buildHandoffRequest(state: RequestState): Anthropic.MessageCreateParamsNonStreaming {
+	const { diagnostics: _none, ...request } = buildRequest(state);
+	const last = request.messages.at(-1) as Anthropic.MessageParam;
+	const instruction: Anthropic.TextBlockParam = { type: "text", text: SUMMARY_INSTRUCTION };
+	const messages =
+		last.role === "user"
+			? [...request.messages.slice(0, -1), { role: "user" as const, content: [...blocksOf(last), instruction] }]
+			: [...request.messages, { role: "user" as const, content: [instruction] }];
+	return { ...request, messages, tool_choice: { type: "none" } };
+}
+
 export type SummaryCheck = { ok: true; text: string } | { ok: false; reason: string };
 
 /** Only a complete summary replaces history: one cut by max_tokens, empty, or missing a section is rejected. */
@@ -187,6 +203,12 @@ export function turnPromptBefore(
 	return text === "" ? undefined : text;
 }
 
+/** The files read and edited, as the summary message lists them. */
+export function filesSection(files: FileActivity): string {
+	const list = (paths: string[]) => (paths.length === 0 ? "(none)" : paths.join(", "));
+	return `## Files\nRead: ${list(files.read)}\nEdited: ${list(files.edited)}`;
+}
+
 /** A new history: one user message with the summary, then the tail unchanged. The input is not modified. */
 export function replaceHistory(
 	messages: readonly Anthropic.MessageParam[],
@@ -194,11 +216,7 @@ export function replaceHistory(
 	options: { summary: string; files: FileActivity; turnPrompt?: string | undefined; state?: string | undefined },
 ): Anthropic.MessageParam[] {
 	assertCut(messages, cut);
-	const list = (paths: string[]) => (paths.length === 0 ? "(none)" : paths.join(", "));
-	const parts = [
-		`${COMPACTED_HEADER}\n\n<summary>\n${options.summary}\n</summary>`,
-		`## Files\nRead: ${list(options.files.read)}\nEdited: ${list(options.files.edited)}`,
-	];
+	const parts = [`${COMPACTED_HEADER}\n\n<summary>\n${options.summary}\n</summary>`, filesSection(options.files)];
 	if (options.turnPrompt !== undefined)
 		parts.push(`The user's request for the current turn, verbatim:\n<request>\n${options.turnPrompt}\n</request>`);
 	if (options.state !== undefined) parts.push(options.state);

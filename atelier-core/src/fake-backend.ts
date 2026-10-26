@@ -2,6 +2,7 @@ import type {
 	AgentBackend,
 	BackendSession,
 	BackendStartOptions,
+	BackendSummary,
 	SessionChange,
 	ToolCall,
 	ToolCallResult,
@@ -20,25 +21,38 @@ export type FakeStep =
 
 /** Scripted backend for tests: each `send` plays the next turn of the script. */
 export class FakeBackend implements AgentBackend {
-	readonly id = "fake";
+	readonly id: string;
 	readonly prompts: string[] = [];
 	readonly toolResults: ToolCallResult[] = [];
 	startOptions: BackendStartOptions | undefined;
 	/** Every `configure` the session received. */
 	readonly configured: SessionChange[] = [];
-	/** `configure` and `send` in the order the session made them. */
-	readonly calls: ("configure" | "send")[] = [];
+	/** `configure`, `send` and `summarize` in the order the session made them. */
+	readonly calls: ("configure" | "send" | "summarize")[] = [];
 	/** Set to false to play a backend that cannot change a session in place. */
 	configurable = true;
+	/** Set to false to play a backend that cannot summarize its conversation. */
+	summarizable = true;
+	/** What `summarize` answers; a string makes it fail with that message instead. */
+	summary: BackendSummary | string = {
+		text: "## Goal\n- carried",
+		usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0 },
+		costUsd: 0.01,
+		requests: 1,
+	};
+	/** Makes `start` fail with this message. */
+	startError: string | undefined;
 	interrupts = 0;
 	closed = false;
 	readonly #turns: FakeStep[][];
 
-	constructor(turns: FakeStep[][]) {
+	constructor(turns: FakeStep[][], id = "fake") {
+		this.id = id;
 		this.#turns = [...turns];
 	}
 
 	async start(options: BackendStartOptions): Promise<BackendSession> {
+		if (this.startError !== undefined) throw new Error(this.startError);
 		this.startOptions = options;
 		let release: (() => void) | undefined;
 		let interruptRequested = false;
@@ -50,6 +64,15 @@ export class FakeBackend implements AgentBackend {
 						async configure(change: SessionChange) {
 							backend.configured.push(change);
 							backend.calls.push("configure");
+						},
+					}
+				: {}),
+			...(backend.summarizable
+				? {
+						async summarize() {
+							backend.calls.push("summarize");
+							if (typeof backend.summary === "string") throw new Error(backend.summary);
+							return backend.summary;
 						},
 					}
 				: {}),

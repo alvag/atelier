@@ -8,7 +8,14 @@ import {
 	query as sdkQuery,
 	tool,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentBackend, BackendSession, BackendStartOptions, SessionChange, ToolExecutor } from "../../backend.ts";
+import type {
+	AgentBackend,
+	BackendSession,
+	BackendStartOptions,
+	BackendSummary,
+	SessionChange,
+	ToolExecutor,
+} from "../../backend.ts";
 import { Channel } from "../../channel.ts";
 import {
 	type AtelierEventBody,
@@ -17,6 +24,7 @@ import {
 	type Effort,
 	errorEvent,
 	type JsonValue,
+	ZERO_USAGE,
 } from "../../events.ts";
 import { type ThinkingSend, thinkingToSend } from "../../pricing.ts";
 import type { ToolDefinition } from "../../tools/types.ts";
@@ -128,8 +136,10 @@ export class ClaudeCodeBackend implements AgentBackend {
 		const sent = thinkingToSend(model, start.thinking, "claude-code");
 		// Claude Code tells the effort it applied only to hooks inside a turn; read it when Atelier asked none.
 		const applied: AppliedEffort = {};
+		// A summary asked for by `summarize` goes to it; the others go to the core when it wants them.
+		const tap: SummaryTap = {};
 		const hooks: Options["hooks"] = {
-			...(start.compacted === undefined ? {} : { PostCompact: [{ hooks: [summaryHook(start.compacted)] }] }),
+			PostCompact: [{ hooks: [summaryHook(start.compacted, tap)] }],
 			...(sent === undefined ? { Stop: [{ hooks: [effortHook(applied)] }] } : {}),
 		};
 		const query = run({
@@ -173,15 +183,21 @@ export class ClaudeCodeBackend implements AgentBackend {
 			start.compactionState,
 			model,
 			start.thinking,
+			tap,
 		);
 	}
 }
 
+/** Where the next compaction summary goes while `summarize` waits for it, instead of to the core's `compacted`. */
+interface SummaryTap {
+	take?: ((summary: string) => void) | undefined;
+}
+
 /** Claude Code reports its compaction summary only to a PostCompact hook; the hook changes nothing. */
-function summaryHook(compacted: (summary: string) => void): HookCallback {
+function summaryHook(compacted: ((summary: string) => void) | undefined, tap: SummaryTap): HookCallback {
 	return async (input) => {
 		if (input.hook_event_name === "PostCompact" && input.compact_summary.trim() !== "")
-			compacted(input.compact_summary);
+			(tap.take ?? compacted)?.(input.compact_summary);
 		return {};
 	};
 }
@@ -241,6 +257,7 @@ class ClaudeCodeSession implements BackendSession {
 	/** The model and level the open query runs with, as `configure` last set them. */
 	#model: string;
 	#thinking: SessionChange["thinking"];
+	readonly #tap: SummaryTap;
 
 	constructor(
 		query: SdkQuery,
@@ -252,7 +269,9 @@ class ClaudeCodeSession implements BackendSession {
 		compactionState: (() => string | undefined) | undefined,
 		model: string,
 		thinking: SessionChange["thinking"],
+		tap: SummaryTap,
 	) {
+		this.#tap = tap;
 		this.#model = model;
 		this.#thinking = thinking;
 		this.#query = query;
@@ -324,6 +343,33 @@ class ClaudeCodeSession implements BackendSession {
 	async *compact(instructions?: string): AsyncIterable<AtelierEventBody> {
 		const extra = instructions?.trim();
 		yield* this.#turnFor(extra ? `/compact ${extra}` : "/compact");
+	}
+
+	/** Claude Code's own /compact over the whole conversation; its summary comes from the PostCompact hook. */
+	async summarize(): Promise<BackendSummary> {
+		let text: string | undefined;
+		let finish: Extract<AtelierEventBody, { type: "turn_finished" }> | undefined;
+		let failure: string | undefined;
+		this.#tap.take = (summary) => {
+			text = summary;
+		};
+		try {
+			for await (const event of this.compact()) {
+				if (event.type === "turn_finished") finish ??= event;
+				else if (event.type === "error") failure ??= event.message;
+				else if (event.type === "compaction_finished" && !event.ok) failure ??= event.error ?? "compaction failed";
+			}
+		} finally {
+			this.#tap.take = undefined;
+		}
+		if (failure !== undefined) throw new Error(failure);
+		if (text === undefined) throw new Error("Claude Code did not report a summary of the conversation.");
+		return {
+			text,
+			usage: finish?.usage ?? { ...ZERO_USAGE },
+			...(finish?.requests === undefined ? {} : { requests: finish.requests }),
+			...(finish?.costUsd === undefined ? {} : { costUsd: finish.costUsd }),
+		};
 	}
 
 	async *#turnFor(prompt: string): AsyncIterable<AtelierEventBody> {

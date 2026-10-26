@@ -869,6 +869,50 @@ describe("AnthropicApiBackend compaction", () => {
 		expect(summaries).toEqual([SUMMARY]);
 	});
 
+	it("summarizes the whole conversation for another backend, leaving the history and the core's callback alone", async () => {
+		const summaries: string[] = [];
+		const { session, api } = await compacting(
+			[
+				{
+					blocks: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "a" } }],
+					stopReason: "tool_use",
+				},
+				{ blocks: [{ type: "text", text: "done" }] },
+				summaryReply(),
+				{ blocks: [{ type: "text", text: "again" }] },
+			],
+			{ compactAt: 1_000_000 },
+			summaries,
+		);
+		await collect(session.send("Refactor the parser"));
+		const summary = await session.summarize?.();
+		expect(summary).toMatchObject({
+			usage: { input: 100, output: 300, cacheRead: 2000, cacheWrite: 0 },
+			requests: 1,
+		});
+		expect(summary?.text.startsWith(SUMMARY)).toBe(true);
+		expect(summary?.text).toContain("## Files\nRead: (none)\nEdited: (none)");
+		// Every message of the history, then the instruction as a user message of its own; no tool use allowed.
+		const request = api.bodies[2];
+		expect(request?.tool_choice).toEqual({ type: "none" });
+		expect(messagesOf(request).map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant", "user"]);
+		expect(textOfBody(request)).toContain("Refactor the parser");
+		expect(JSON.stringify(messagesOf(request).at(-1))).toContain("Summarize the conversation above");
+		expect(summaries).toEqual([]);
+		// The history is as it was: the next turn does not carry the instruction.
+		await collect(session.send("more"));
+		expect(textOfBody(api.bodies[3])).not.toContain("Summarize the conversation above");
+		expect(messagesOf(api.bodies[3])).toHaveLength(5);
+	});
+
+	it("refuses to summarize when the summary is cut short, or there is no conversation", async () => {
+		const empty = await compacting([]);
+		await expect(empty.session.summarize?.()).rejects.toThrow("There is no conversation to summarize.");
+		const { session } = await compacting([{ blocks: [{ type: "text", text: "done" }] }, summaryReply("max_tokens")]);
+		await collect(session.send("hi"));
+		await expect(session.summarize?.()).rejects.toThrow(/max_tokens/);
+	});
+
 	it("compacts between requests of a turn and goes on with the summary and the verbatim tail", async () => {
 		const { session, api } = await compacting([
 			{

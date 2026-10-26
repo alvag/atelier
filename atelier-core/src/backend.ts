@@ -1,4 +1,4 @@
-import type { AtelierEventBody, Effort, JsonValue } from "./events.ts";
+import type { AtelierEventBody, Effort, JsonValue, Usage } from "./events.ts";
 import type { ThinkingLevel } from "./profiles/index.ts";
 import type { ToolDefinition } from "./tools/types.ts";
 
@@ -52,11 +52,24 @@ export interface SessionChange {
 	compaction?: { model?: string; thinking?: ThinkingLevel } | null;
 }
 
+/** The whole conversation in words, with what asking for it cost. */
+export interface BackendSummary {
+	text: string;
+	usage: Usage;
+	requests?: number;
+	costUsd?: number;
+}
+
 export interface BackendSession {
 	/** Runs one turn. The core stamps `seq` and `turnId` on every yielded event. */
 	send(prompt: string): AsyncIterable<AtelierEventBody>;
 	/** Summarizes the older history now, like a turn ending in `turn_finished`; absent when the backend cannot. */
 	compact?(instructions?: string): AsyncIterable<AtelierEventBody>;
+	/**
+	 * Summarizes the whole conversation so far, to hand it to another backend; the history stays as it is. Rejects when
+	 * the summary cannot be had. Absent when the backend cannot, and the session then refuses to leave it.
+	 */
+	summarize?(): Promise<BackendSummary>;
 	/**
 	 * Changes the model or the thinking level for the turns after this call. The session calls it between turns only;
 	 * absent when the backend cannot, and the session then refuses the change. A rejection leaves the backend as it was.

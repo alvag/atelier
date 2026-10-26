@@ -1,12 +1,21 @@
 import Anthropic, { APIError } from "@anthropic-ai/sdk";
-import type { AgentBackend, BackendSession, BackendStartOptions, SessionChange, ToolExecutor } from "../../backend.ts";
+import type {
+	AgentBackend,
+	BackendSession,
+	BackendStartOptions,
+	BackendSummary,
+	SessionChange,
+	ToolExecutor,
+} from "../../backend.ts";
 import {
+	buildHandoffRequest,
 	buildSummaryRequest,
 	compactThreshold,
 	contextTokens,
 	estimateTokens,
 	type FileActivity,
 	fileActivity,
+	filesSection,
 	findCut,
 	KEEP_RECENT_TOKENS,
 	replaceHistory,
@@ -465,6 +474,33 @@ class AnthropicApiSession implements BackendSession {
 			if (this.#abort === abort) this.#abort = undefined;
 		}
 		yield this.#finished(abort.signal.aborted ? "interrupted" : ok ? "end_turn" : "error", meter);
+	}
+
+	/**
+	 * One summary request over the whole history, for a session that leaves this backend. The history and the files
+	 * counted stay as they are; the request is the compaction's, with the compaction entry's model and level.
+	 */
+	async summarize(): Promise<BackendSummary> {
+		if (this.#closed) throw new Error("The anthropic-api session is closed.");
+		const messages = this.#state.messages;
+		if (messages.length === 0) throw new Error("There is no conversation to summarize.");
+		const state = this.#summaryState();
+		let response: Anthropic.Message;
+		try {
+			response = await this.#client.messages.stream(buildHandoffRequest(state)).finalMessage();
+		} catch (error) {
+			throw new Error(this.#redact(describeError(error)));
+		}
+		const usage = toUsage(response.usage);
+		const summary = validateSummary(response);
+		if (!summary.ok) throw new Error(summary.reason);
+		const costUsd = costOfRequest(state.model, usage);
+		return {
+			text: `${summary.text}\n\n${filesSection(fileActivity(messages, this.#files))}`,
+			usage,
+			requests: 1,
+			...(costUsd === undefined ? {} : { costUsd }),
+		};
 	}
 
 	#finished(stopReason: string, meter: TurnMeter): AtelierEventBody {

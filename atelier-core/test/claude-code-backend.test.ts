@@ -54,10 +54,15 @@ interface StopHook {
 }
 const stop = (level?: string): StopHook => ({ stopEffort: level });
 
+/** In a scripted reply: Claude Code runs its PostCompact hooks with this summary. */
+interface PostCompactHook {
+	postCompact: string;
+}
+
 /** Fake SDK query: emits `boot` at start, then plays one scripted reply per user message. */
 function fakeQuery(
 	boot: SDKMessage[],
-	replies: (SDKMessage | Error | StopHook)[][],
+	replies: (SDKMessage | Error | StopHook | PostCompactHook)[][],
 	account: Record<string, unknown> = SUBSCRIPTION,
 ) {
 	const calls: {
@@ -85,6 +90,13 @@ function fakeQuery(
 				calls.order.push(`prompt:${message.message.content as string}`);
 				for (const item of replies.shift() ?? []) {
 					if (item instanceof Error) throw item;
+					if ("postCompact" in item) {
+						const input = { hook_event_name: "PostCompact", trigger: "manual", compact_summary: item.postCompact };
+						for (const matcher of options.hooks?.PostCompact ?? [])
+							for (const hook of matcher.hooks)
+								await hook(input as never, undefined, { signal: new AbortController().signal });
+						continue;
+					}
 					if ("stopEffort" in item) {
 						const input = {
 							hook_event_name: "Stop",
@@ -699,7 +711,7 @@ describe("ClaudeCodeBackend compaction", () => {
 		expect(events).toEqual(["session_started", "compaction_started", "compaction_finished", "turn_finished"]);
 	});
 
-	it("hands Claude Code's summary to the core from its PostCompact hook, only when the core asks for it", async () => {
+	it("hands Claude Code's summary to the core from its PostCompact hook when the core asks for it", async () => {
 		const { query, calls } = fakeQuery([init], []);
 		const summaries: string[] = [];
 		await new ClaudeCodeBackend({ query, env: {} }).start({
@@ -723,7 +735,44 @@ describe("ClaudeCodeBackend compaction", () => {
 			tools: [],
 			executeTool: async () => ({ ok: true, output: "" }),
 		});
-		expect(without.calls.options.hooks?.PostCompact).toBeUndefined();
+		// The hook is there for `summarize` too; without a callback it has nobody to tell.
+		const [quiet] = without.calls.options.hooks?.PostCompact?.[0]?.hooks ?? [];
+		if (!quiet) throw new Error("No PostCompact hook.");
+		expect(await quiet(input as never, undefined, { signal: new AbortController().signal })).toEqual({});
+	});
+
+	it("summarizes through /compact and keeps the summary for the caller, not for the core's callback", async () => {
+		const reply: (SDKMessage | PostCompactHook)[] = [boundary, { postCompact: "## Goal\n- carried" }, result(0.01)];
+		const { query, calls } = fakeQuery([init], [[result(0.005)], reply]);
+		const summaries: string[] = [];
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start({
+			cwd: "/w",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+			compacted: (summary) => summaries.push(summary),
+		});
+		for await (const _ of session.send("work")) void _;
+		const summary = await session.summarize?.();
+		expect(summary).toEqual({
+			text: "## Goal\n- carried",
+			usage: { input: 10, output: 2, cacheRead: 7, cacheWrite: 1 },
+			costUsd: 0.005,
+		});
+		expect(calls.prompts).toEqual(["work", "/compact"]);
+		expect(summaries).toEqual([]);
+	});
+
+	it("fails to summarize when Claude Code reports no summary", async () => {
+		const { query } = fakeQuery([init], [[result(0.005)], [boundary, result(0.01)]]);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start({
+			cwd: "/w",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+		});
+		for await (const _ of session.send("work")) void _;
+		await expect(session.summarize?.()).rejects.toThrow("Claude Code did not report a summary of the conversation.");
 	});
 
 	it("sends a bare /compact without instructions and no state when the core has none", async () => {
@@ -892,8 +941,10 @@ describe("ClaudeCodeBackend subagent compaction", () => {
 		]);
 		expect(child.find((e) => e.type === "compaction_started")).toMatchObject({ reason: "threshold" });
 		expect(outcome).toMatchObject({ ok: true, output: "the report" });
-		// No PostCompact hook: Claude Code never hands the child's summary to the core.
-		expect(calls.options.hooks?.PostCompact).toBeUndefined();
+		// The hook is there for `summarize`, but the child has no callback: its summary goes nowhere.
+		const [hook] = calls.options.hooks?.PostCompact?.[0]?.hooks ?? [];
+		const input = { hook_event_name: "PostCompact", trigger: "auto", compact_summary: "## Goal\n- child" };
+		await hook?.(input as never, undefined, { signal: new AbortController().signal });
 		expect(memory.saved).toEqual([]);
 	});
 
