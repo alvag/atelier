@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { AgentBackend, BackendSession, BackendStartOptions, ToolCall } from "../src/backend.ts";
-import { errorEvent } from "../src/events.ts";
+import { type Effort, errorEvent } from "../src/events.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -207,6 +207,26 @@ class RoleBackend implements AgentBackend {
 			async close() {},
 		};
 	}
+}
+
+/** The main backend `inner` plays, saying after each turn, as Claude Code does, the effort it applied: the next of `efforts`. */
+function applying(inner: FakeBackend, efforts: Effort[]): AgentBackend {
+	return {
+		id: inner.id,
+		async start(options) {
+			const session = await inner.start(options);
+			let applied: Effort | undefined;
+			return {
+				...session,
+				async *send(prompt) {
+					applied = undefined;
+					yield* session.send(prompt);
+					applied = efforts.shift();
+				},
+				effectiveEffort: () => applied,
+			};
+		},
+	};
 }
 
 function roleOf(instruction: string): string {
@@ -2144,6 +2164,39 @@ describe("the turn's cost by phase", () => {
 		// Each lens is one run, said once.
 		const lenses = last?.phases?.lenses?.agents ?? [];
 		expect(new Set(lenses.map((agent) => agent.role)).size).toBe(lenses.length);
+	});
+
+	it("names in each part the effort the main backend applied in that turn, when no level was asked", async () => {
+		const started: FakeStep = {
+			event: { type: "session_started", backend: "fake", model: "main-model", authSource: "none" },
+		};
+		const turns = [
+			[started, change("src/auth.ts", "export const a = 1;\n"), text("done"), spent(100, 3, 0.03)],
+			[call("risk", { items: [2], reason: "guards the approval" }), spent(10, 1, 0.01)],
+			[change("a.ts", "base\nfixed\n"), spent(20, 2, 0.02)],
+			[change("src/auth.ts", "export const a = 2;\n"), spent(30, 1, 0.005)],
+		];
+		// Like Claude Code, the backend says after each turn the effort it applied: one per turn, in order.
+		const main = applying(new FakeBackend(turns), ["high", "medium", "low", "max"]);
+		const roles = new RoleBackend(verifying(vreport([vdefect()]), vreport()));
+		roles.announce = true;
+		const s = await start({ roles, sandbox, extra: { backend: main, model: "main-model" } });
+		const last = closing(await s.send("make the approval need a keypress"));
+
+		const orchestrator = (effectiveEffort: Effort) => ({
+			role: "orchestrator",
+			backend: "fake",
+			model: "main-model",
+			effectiveEffort,
+		});
+		const phases = last?.phases ?? {};
+		expect(phases.main?.agents).toEqual([orchestrator("high")]);
+		expect(phases.declare?.agents).toEqual([orchestrator("medium")]);
+		expect(phases.verify?.agents).toEqual([
+			{ role: "verifier", backend: "fake", model: "main-model" },
+			orchestrator("low"),
+		]);
+		expect(phases.correction?.agents).toEqual([orchestrator("max")]);
 	});
 
 	it("has only the main part when nothing follows the agent's turn", async () => {
