@@ -16,6 +16,7 @@ export type ClientCommand =
 			command: "session.start";
 			cwd: string;
 			model?: string;
+			/** Ignored: the session runs in `normal` mode, which never asks about a command the sandbox contains. */
 			autoApprove?: boolean;
 			backend?: BackendName;
 			review?: boolean;

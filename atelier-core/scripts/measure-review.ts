@@ -199,7 +199,6 @@ async function startSession(cwd: string, consent?: () => Promise<"granted" | "de
 		cwd,
 		tools: coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
-		autoApprove: true,
 		subagents: { agents: BUILTIN_AGENTS, createBackend: backend },
 		review: { createBackend: backend, ...(consent ? { consent } : {}) },
 		...(values.model === undefined ? {} : { model: values.model }),

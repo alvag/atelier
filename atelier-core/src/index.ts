@@ -89,7 +89,13 @@ export type { ReviewConsentRequest, ReviewOptions } from "./review/session-revie
 export { ALLOW_ROOT_VALUE, checkRoot, type RootCheck } from "./root.ts";
 export { EchoBackend } from "./server/echo-backend.ts";
 export { RpcServer, type RpcServerOptions, reviewEnabled } from "./server/rpc-server.ts";
-export { type ApprovalRequest, Session, type SessionOptions, type SubagentOptions } from "./session.ts";
+export {
+	type ApprovalRequest,
+	type PermissionMode,
+	Session,
+	type SessionOptions,
+	type SubagentOptions,
+} from "./session.ts";
 export {
 	BUILTIN_AGENTS,
 	boundReport,

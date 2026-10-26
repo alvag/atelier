@@ -92,7 +92,8 @@ describe("atelier-core serve", () => {
 
 	it("asks for approval over the protocol for bash", async () => {
 		const s = serve();
-		const startId = s.send({ command: "session.start", cwd });
+		// Without the sandbox, normal mode asks about every command.
+		const startId = s.send({ command: "session.start", cwd, noSandbox: true });
 		const started = await s.waitFor((m) => m.type === "response" && m.id === startId);
 		const sessionId = (started as unknown as { result: { sessionId: string } }).result.sessionId;
 

@@ -1992,17 +1992,21 @@ describe("independent M9 dependency-write isolation", () => {
 });
 
 describe("independent M9 approval regression", () => {
-	it("S5 keeps main and worker commands behind approval", async () => {
+	it("S5 keeps main and worker commands outside the sandbox behind approval", async () => {
 		const { bashTool, BUILTIN_AGENTS } = await import("../src/index.ts");
 		const child = new FakeBackend([
-			[call("bash", { command: "echo forbidden > marker" }), text("worker report"), { event: finished }],
+			[
+				call("bash", { command: "echo forbidden > marker", unsandboxed: true, reason: "regression" }),
+				text("worker report"),
+				{ event: finished },
+			],
 		]);
 		const approvals: string[] = [];
 		const s = await start({
 			review: false,
 			turns: [
 				[
-					call("bash", { command: "echo forbidden > marker" }),
+					call("bash", { command: "echo forbidden > marker", unsandboxed: true, reason: "regression" }),
 					call("task", { agent: "worker", prompt: "check" }),
 					{ event: finished },
 				],

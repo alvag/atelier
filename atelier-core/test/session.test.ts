@@ -193,12 +193,45 @@ describe("Session", () => {
 			expect(executed).toEqual([]);
 		});
 
-		it("skips the question with autoApprove", async () => {
+		it("asks in auto too", async () => {
 			const executed: string[] = [];
-			const { session } = await start(turn, { tools: [shellTool(executed)], autoApprove: true });
+			const requests: unknown[] = [];
+			const { session } = await start(turn, {
+				tools: [shellTool(executed)],
+				permissionMode: "auto",
+				approve: async (request) => {
+					requests.push(request);
+					return true;
+				},
+			});
+			await collect(session.send("x"));
+			expect(requests).toEqual([{ callId: "c1", command: "rm x" }]);
+			expect(executed).toEqual(["rm x"]);
+		});
+
+		it("skips the question in yolo", async () => {
+			const executed: string[] = [];
+			const { session } = await start(turn, { tools: [shellTool(executed)], permissionMode: "yolo" });
 			const events = await collect(session.send("x"));
 			expect(executed).toEqual(["rm x"]);
 			expect(events.some((e) => e.type === "approval_requested")).toBe(false);
+		});
+	});
+
+	describe("permission mode", () => {
+		const started: FakeStep = {
+			event: { type: "session_started", backend: "fake", model: "m", authSource: "none" },
+		};
+
+		it.each([
+			["normal by default", {}, "normal"],
+			["normal", { permissionMode: "normal" }, "normal"],
+			["auto", { permissionMode: "auto" }, "auto"],
+			["yolo", { permissionMode: "yolo" }, "yolo"],
+		] as const)("session_started says %s", async (_name, options, mode) => {
+			const { session } = await start([[started, { event: finished }]], options);
+			const events = await collect(session.send("x"));
+			expect(events.find((e) => e.type === "session_started")).toMatchObject({ permissionMode: mode });
 		});
 	});
 

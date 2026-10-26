@@ -265,9 +265,8 @@ export async function run(
 		...(args.model === undefined ? {} : { model: args.model }),
 		tools: io.tools ?? coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
-		autoApprove: args.yes,
 		...(args.noSandbox ? { noSandbox: true } : {}),
-		approve: async ({ command, reason, always, tool }) => {
+		approve: async ({ command, reason, tool }) => {
 			// The command and the reason come from the model: show escape sequences and bidi controls instead of letting the terminal run them.
 			const shown = visibleText(command);
 			const why = reason === undefined ? undefined : visibleText(reason);
@@ -293,9 +292,7 @@ export async function run(
 				io.stderr(
 					why
 						? `bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask (--yes does not allow this): ${shown.text}\n  reason: ${why.text}\n`
-						: always
-							? `bash command needs approval and there is no terminal to ask; --yes does not apply because the sandbox is off or unavailable: ${shown.text}\n`
-							: `bash command needs approval; run with --yes to allow commands: ${shown.text}\n`,
+						: `bash command needs approval and there is no terminal to ask; --yes does not apply because the sandbox is off or unavailable: ${shown.text}\n`,
 				);
 				return false;
 			}

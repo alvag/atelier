@@ -176,7 +176,6 @@ export class RpcServer {
 					sessionId: await this.#start(
 						message.cwd,
 						message.model,
-						message.autoApprove ?? false,
 						message.backend,
 						message.review,
 						message.noSandbox === true || this.#options.noSandbox === true,
@@ -298,7 +297,6 @@ export class RpcServer {
 	async #start(
 		cwd: string,
 		model: string | undefined,
-		autoApprove: boolean,
 		/** Absent: the orchestrator's backend in the profile, then the default. */
 		requestedBackend: BackendName | undefined,
 		/** Absent means the server's default; an explicit true the server cannot honor is refused, never dropped. */
@@ -365,7 +363,6 @@ export class RpcServer {
 				...(model === undefined ? {} : { model }),
 				tools: this.#options.tools,
 				systemPromptAppend: this.#options.systemPromptAppend,
-				autoApprove,
 				...(noSandbox ? { noSandbox: true } : {}),
 				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
 				odd: true,

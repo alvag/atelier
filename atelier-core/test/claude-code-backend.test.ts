@@ -273,7 +273,13 @@ describe("ClaudeCodeBackend turns", () => {
 
 		expect(calls.prompts).toEqual(["hello"]);
 		expect(events).toEqual([
-			{ type: "session_started", backend: "claude-code", model: "claude-opus-5-5", authSource: "subscription" },
+			{
+				type: "session_started",
+				backend: "claude-code",
+				model: "claude-opus-5-5",
+				authSource: "subscription",
+				permissionMode: "normal",
+			},
 			{ type: "text_delta", text: "Hi " },
 			{ type: "text_delta", text: "there" },
 			{

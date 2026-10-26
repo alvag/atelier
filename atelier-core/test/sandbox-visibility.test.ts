@@ -245,7 +245,6 @@ async function turns(sandbox: Sandbox, steps: FakeStep[][], options: Partial<Ses
 		backend: new FakeBackend(steps),
 		cwd,
 		tools: [createBashTool({ sandbox })],
-		autoApprove: true,
 		approve: async () => true,
 		...options,
 	});

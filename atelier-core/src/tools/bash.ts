@@ -197,7 +197,7 @@ export function createBashTool({
 				.boolean()
 				.optional()
 				.describe(
-					"Run this one command outside the sandbox, only when it cannot work inside it (for example to install dependencies). The user is always asked, even with --yes; give the reason.",
+					"Run this one command outside the sandbox, only when it cannot work inside it (for example to install dependencies). The user is asked unless the session runs in yolo mode; give the reason.",
 				),
 			reason: z.string().optional().describe("Required with unsandboxed: why this command must leave the sandbox"),
 		},
@@ -209,13 +209,13 @@ export function createBashTool({
 				if (policy === "verifier") return { refusal: refusal(VERIFIER_UNSANDBOXED, command) };
 				if (reason === undefined || reason.trim() === "")
 					throw new ToolInputError("reason is required with unsandboxed: say why this command must leave the sandbox.");
-				return { approval: { command, reason: reason.trim(), always: true } };
+				return { approval: { command, reason: reason.trim() } };
 			}
 			if (withoutApproval) return {};
+			// The sandbox contains the command: no mode asks about it.
 			const status = await statusFor(sandbox, sandboxOff);
-			if (status.available) return { approval: { command } };
-			// Without the sandbox the approval is the only protection left: --yes cannot stand in for it.
-			return { approval: { command, always: true }, warning: status.reason };
+			if (status.available) return {};
+			return { approval: { command }, warning: status.reason };
 		},
 		async execute({ command, timeoutSec, unsandboxed }, { cwd, signal, scratchDir, sandboxOff }) {
 			// The session asks the gate first; this keeps a direct call from running what the guard refuses.

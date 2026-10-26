@@ -61,11 +61,12 @@ export interface ApprovalRequest {
 	command: string;
 	/** Why the agent asks to run the command outside the sandbox; present only for that request. */
 	reason?: string;
-	/** `--yes` does not answer this one: the user must. */
-	always?: boolean;
 	/** Present when the question is not about a `bash` command: `edit` asks to change a file outside the usual places. */
 	tool?: string;
 }
+
+/** How much the session asks the user before a tool call. */
+export type PermissionMode = "normal" | "auto" | "yolo";
 
 export interface SessionOptions {
 	backend: AgentBackend;
@@ -83,10 +84,12 @@ export interface SessionOptions {
 	tools: readonly ToolDefinition[];
 	systemPromptAppend?: string;
 	/**
-	 * Skips approval for the tool calls that run sandboxed (`--yes`). Never for what a tool says
-	 * must always be asked: a command outside the sandbox, or any command when there is no sandbox.
+	 * What the user is asked; `normal` by default. No mode asks about a command the sandbox contains.
+	 * `normal` and `auto` ask about what it does not contain (a command outside it, any command without it,
+	 * a file outside the working directory); `yolo` asks nothing. The guard and the protected paths refuse
+	 * in every mode, and subagents always run in `normal`.
 	 */
-	autoApprove?: boolean;
+	permissionMode?: PermissionMode;
 	/** Turns the sandbox off for this session (`--no-sandbox`): `bash` runs unsandboxed, every command asks, and the verifier gets no `bash`. */
 	noSandbox?: boolean;
 	/** Asks the user; without it, calls that need approval are denied. */
@@ -326,7 +329,7 @@ export class Session {
 					else {
 						if (event.type === "error") failed = true;
 						if (event.type === "session_started") this.#mainAgent = phaseAgent("orchestrator", event);
-						turn.push(this.#withOrchestrator(this.#withProfile(event)));
+						turn.push(this.#withOrchestrator(this.#withProfile(this.#withMode(event))));
 					}
 				}
 			} catch (error) {
@@ -471,6 +474,12 @@ export class Session {
 		for (const { path, message } of changes) turn.push(errorEvent("profile_changed", `${path} ${message}`, true));
 	}
 
+	/** `session_started` says the session's permission mode. */
+	#withMode(event: AtelierEventBody): AtelierEventBody {
+		if (event.type !== "session_started") return event;
+		return { ...event, permissionMode: this.#options.permissionMode ?? "normal" };
+	}
+
 	/** The main agent's `session_started` says the profile this session froze. */
 	#withProfile(event: AtelierEventBody): AtelierEventBody {
 		const profile = this.#options.profile;
@@ -513,7 +522,7 @@ export class Session {
 						} else {
 							if (event.type === "error") failed = true;
 							if (event.type === "session_started") this.#mainAgent = phaseAgent("orchestrator", event);
-							turn.push(this.#withOrchestrator(this.#withProfile(event)));
+							turn.push(this.#withOrchestrator(this.#withProfile(this.#withMode(event))));
 						}
 					}
 				} catch (error) {
@@ -594,7 +603,9 @@ export class Session {
 				emit({ type: "sandbox_warning", reason: gate.warning });
 			}
 			const { approval } = gate;
-			if (approval && (approval.always || !this.#options.autoApprove)) {
+			if (approval && this.#options.permissionMode === "yolo") {
+				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
+			} else if (approval) {
 				const { command, reason, tool: asking } = approval;
 				emit({
 					type: "approval_requested",
@@ -607,7 +618,6 @@ export class Session {
 					callId,
 					command,
 					...(reason === undefined ? {} : { reason }),
-					...(approval.always ? { always: true } : {}),
 					...(asking === undefined ? {} : { tool: asking }),
 				};
 				const approved = (await this.#options.approve?.(request)) ?? false;
@@ -672,7 +682,7 @@ export class Session {
 				}),
 				systemPromptAppend: agent.prompt,
 				maxRequestsPerTurn: agent.maxRequests,
-				...(this.#options.autoApprove === undefined ? {} : { autoApprove: this.#options.autoApprove }),
+				// The mode is not passed on: the child runs in normal.
 				...(this.#options.noSandbox ? { noSandbox: true } : {}),
 				...(this.#options.approve === undefined ? {} : { approve: this.#options.approve }),
 				createId: this.#createId,

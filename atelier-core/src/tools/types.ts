@@ -19,11 +19,13 @@ export interface ToolContext {
 export interface ToolGate {
 	/** The call never runs and nobody is asked: `output` is what the model is told, `summary` the line for the user. */
 	refusal?: { output: string; summary: string };
-	/** The user must approve the call; `always` asks even when approvals are skipped (`--yes`), and `reason` is the model's own. */
+	/**
+	 * The call reaches what the sandbox does not contain (a command outside it, any command without it, a file
+	 * outside the usual places): `normal` and `auto` ask the user, `yolo` does not. `reason` is the model's own.
+	 */
 	approval?: {
 		command: string;
 		reason?: string;
-		always?: boolean;
 		/** The tool asking, when the client should word the question for it (`edit`, `write`); absent for `bash`. */
 		tool?: string;
 		/** A real path that stays allowed for the rest of the session once the user approves. */

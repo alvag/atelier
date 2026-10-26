@@ -136,11 +136,11 @@ describe("write where the agent could always write", () => {
 describe("write outside the working directory", () => {
 	const command = (path: string) => `write ${path}`;
 
-	it("asks once with the real path, always, and creates the file and its folders after approval", async () => {
+	it("asks once with the real path in normal, and creates the file and its folders after approval", async () => {
 		const target = join(outside, "deep", "n.txt");
 		const { questions, events, results } = await run([writeCall("../outside/deep/n.txt", "w1")]);
 		expect(questions).toEqual([
-			{ callId: "w1", command: command(target), reason: "outside the working directory", always: true, tool: "write" },
+			{ callId: "w1", command: command(target), reason: "outside the working directory", tool: "write" },
 		]);
 		expect(events.find((e) => e.type === "approval_requested")).toMatchObject({
 			command: command(target),
@@ -151,9 +151,20 @@ describe("write outside the working directory", () => {
 		expect(await text(target)).toBe("new\n");
 	});
 
-	it("asks to replace an existing file, even with autoApprove (--yes)", async () => {
-		const { questions } = await run([writeCall(join(outside, "x.txt"), "w1")], { autoApprove: true });
+	it("asks to replace an existing file in auto too", async () => {
+		const { questions } = await run([writeCall(join(outside, "x.txt"), "w1")], { permissionMode: "auto" });
 		expect(questions.map((q) => q.command)).toEqual([command(join(outside, "x.txt"))]);
+		expect(await text(join(outside, "x.txt"))).toBe("new\n");
+	});
+
+	it("replaces an existing file without asking in yolo", async () => {
+		const { questions, events, results } = await run([writeCall(join(outside, "x.txt"), "w1")], {
+			permissionMode: "yolo",
+			answer: false,
+		});
+		expect(questions).toEqual([]);
+		expect(events.some((e) => e.type === "approval_requested")).toBe(false);
+		expect(results[0]).toMatchObject({ ok: true });
 		expect(await text(join(outside, "x.txt"))).toBe("new\n");
 	});
 
@@ -246,7 +257,7 @@ describe("write outside the working directory", () => {
 
 describe("write never writes what is protected", () => {
 	const refused = async (path: string, output: string, check: () => Promise<void>) => {
-		const { questions, results } = await run([writeCall(path, "w1")], { autoApprove: true });
+		const { questions, results } = await run([writeCall(path, "w1")], { permissionMode: "yolo" });
 		expect(questions).toEqual([]);
 		expect(results[0]).toEqual({ ok: false, output });
 		await check();

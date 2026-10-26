@@ -97,7 +97,6 @@ try {
 		cwd,
 		tools: coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
-		autoApprove: true,
 	});
 	try {
 		for (const [index, prompt] of [...PROMPTS, FORCED_MISS_PROMPT].entries()) {

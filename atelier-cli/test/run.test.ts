@@ -44,6 +44,12 @@ const tools = (() => {
 	return coreTools.map((tool) => (tool.name === "bash" ? bash : tool));
 })();
 
+/** The core's tools with a `bash` that has no sandbox: in normal mode every command asks. */
+const unsandboxedTools = (() => {
+	const bash = createBashTool({ sandbox: new Sandbox({ platform: "linux" }) });
+	return coreTools.map((tool) => (tool.name === "bash" ? bash : tool));
+})();
+
 function harness(
 	turns: FakeStep[][],
 	options: {
@@ -58,6 +64,8 @@ function harness(
 		raw?: boolean;
 		/** The user id the process runs as; unknown when absent. */
 		uid?: number;
+		/** false: `bash` has no sandbox, so every command asks. */
+		sandbox?: boolean;
 	} = {},
 ) {
 	const backend = new FakeBackend(turns);
@@ -90,7 +98,7 @@ function harness(
 			stderr += s;
 		},
 		cwd,
-		tools,
+		tools: options.sandbox === false ? unsandboxedTools : tools,
 		...(options.uid === undefined ? {} : { uid: options.uid }),
 		...(options.home === undefined ? {} : { home: options.home }),
 		color: false,
@@ -179,29 +187,26 @@ describe("run", () => {
 		expect(h.err()).toBe("error: network down\n");
 	});
 
-	it("denies commands without a terminal to ask, and runs them with --yes", async () => {
-		await writeFile(join(cwd, "marker"), "");
-		const step: FakeStep = { toolCall: { tool: "bash", input: { command: "rm marker" } } };
-
-		const denied = harness([[step, { event: finished }]]);
-		await run(["x"], denied.io, denied.createBackend);
-		expect(denied.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
-		expect(denied.err()).toContain("needs approval; run with --yes to allow commands");
-
-		const allowed = harness([[step, { event: finished }]]);
-		await run(["--yes", "x"], allowed.io, allowed.createBackend);
-		expect(allowed.backend.toolResults[0]?.ok).toBe(true);
+	it("runs a sandboxed command without asking, with or without a terminal", async () => {
+		const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo hi" } } };
+		for (const isTTY of [false, true]) {
+			const h = harness([[step, { event: finished }]], { isTTY, input: [] });
+			expect(await run(["x"], h.io, h.createBackend)).toBe(0);
+			expect(h.backend.toolResults[0]?.ok).toBe(true);
+			expect(h.out()).not.toContain("[y/N]");
+			expect(h.err()).not.toContain("approval");
+		}
 	});
 
 	it("asks on a terminal and runs the command only when the answer is yes", async () => {
 		const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo hi" } } };
 
-		const yes = harness([[step, { event: finished }]], { isTTY: true, answers: ["y"] });
+		const yes = harness([[step, { event: finished }]], { isTTY: true, answers: ["y"], sandbox: false });
 		await run(["x"], yes.io, yes.createBackend);
 		expect(yes.out()).toContain("Run this command?\n  echo hi\n[y/N] ");
 		expect(yes.backend.toolResults[0]?.ok).toBe(true);
 
-		const no = harness([[step, { event: finished }]], { isTTY: true, input: [""] });
+		const no = harness([[step, { event: finished }]], { isTTY: true, input: [""], sandbox: false });
 		await run(["x"], no.io, no.createBackend);
 		expect(no.backend.toolResults[0]?.ok).toBe(false);
 	});
@@ -213,6 +218,7 @@ describe("run", () => {
 			input: ["y"],
 			answers: ["n"],
 			keepStdinOpen: true,
+			sandbox: false,
 		});
 		await run(["x"], h.io, h.createBackend);
 		expect(h.out()).toContain("ignored 1 line typed before this question\nRun this command?\n  echo hi\n[y/N] ");
@@ -226,6 +232,7 @@ describe("run", () => {
 			input: ["Run pnpm check and fix", " | what Biome reports"],
 			answers: ["y"],
 			keepStdinOpen: true,
+			sandbox: false,
 		});
 		const pending = run([], h.io, h.createBackend);
 		await vi.waitFor(() => expect(h.backend.toolResults).toHaveLength(1), { timeout: 5000 });
@@ -251,7 +258,7 @@ describe("run", () => {
 
 	it("shows hidden characters in the command it asks about", async () => {
 		const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo \u001b[2Khi \u202Ex" } } };
-		const h = harness([[step, { event: finished }]], { isTTY: true, input: ["n"] });
+		const h = harness([[step, { event: finished }]], { isTTY: true, input: ["n"], sandbox: false });
 		await run(["x"], h.io, h.createBackend);
 		expect(h.out()).toContain("Run this command?\n  echo ␛[2Khi ⟨U+202E⟩x\n");
 		expect(h.out()).toContain("warning: the command contains invisible or control characters, shown as markers.");
@@ -301,6 +308,7 @@ describe("run", () => {
 				isTTY: true,
 				input: [],
 				keepStdinOpen: true,
+				sandbox: false,
 			});
 			const pending = run(["x"], h.io, h.createBackend);
 			await until(() => h.out().includes("[y/N] "));
@@ -315,7 +323,7 @@ describe("run", () => {
 					[{ toolCall: { tool: "bash", input: { command: "echo hi" } } }, { waitForInterrupt: true }],
 					[{ event: { type: "text_delta", text: "second turn" } }, { event: finished }],
 				],
-				{ isTTY: true, input: [], keepStdinOpen: true },
+				{ isTTY: true, input: [], keepStdinOpen: true, sandbox: false },
 			);
 			const stdin = h.io.stdin as PassThrough;
 			const pending = run([], h.io, h.createBackend);
@@ -398,6 +406,7 @@ describe("run", () => {
 				input: [paste("check\rthis"), "y"],
 				answers: ["n"],
 				keepStdinOpen: true,
+				sandbox: false,
 			});
 			const pending = run([], h.io, h.createBackend);
 			await vi.waitFor(() => expect(h.backend.toolResults).toHaveLength(1), { timeout: 5000 });
@@ -410,7 +419,12 @@ describe("run", () => {
 
 		it("does not let a line typed before the session started answer the question", async () => {
 			const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo hi" } } };
-			const h = harness([[step, { event: finished }]], { raw: true, answers: ["n\r"], keepStdinOpen: true });
+			const h = harness([[step, { event: finished }]], {
+				raw: true,
+				answers: ["n\r"],
+				keepStdinOpen: true,
+				sandbox: false,
+			});
 			(h.io.stdin as PassThrough).write("y\r");
 			expect(await run(["--no-review", "x"], h.io, h.createBackend)).toBe(0);
 			expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
@@ -427,7 +441,12 @@ describe("run", () => {
 			["a typed yes", "", "y\r", true],
 		])("answers a bash approval from %s", async (_name, before, after, approved) => {
 			const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo hi" } } };
-			const h = harness([[step, { event: finished }]], { raw: true, answers: [after], keepStdinOpen: true });
+			const h = harness([[step, { event: finished }]], {
+				raw: true,
+				answers: [after],
+				keepStdinOpen: true,
+				sandbox: false,
+			});
 			(h.io.stdin as PassThrough).write(before);
 			expect(await run(["--no-review", "x"], h.io, h.createBackend)).toBe(0);
 			expect(h.backend.toolResults[0]?.ok).toBe(approved);

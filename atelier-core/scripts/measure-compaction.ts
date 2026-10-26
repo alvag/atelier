@@ -117,7 +117,6 @@ const session = await Session.start({
 	cwd: root,
 	tools: coreTools,
 	systemPromptAppend: SYSTEM_PROMPT_APPEND,
-	autoApprove: true,
 	...(values.model === undefined ? {} : { model: values.model }),
 });
 try {

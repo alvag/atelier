@@ -60,7 +60,6 @@ export function createWriteTool(options: WriteOptions = {}): ToolDefinition {
 				approval: {
 					command: `write ${location.real}`,
 					reason: "outside the working directory",
-					always: true,
 					tool: "write",
 					grant: location.real,
 					denial: notApproved(location.real),

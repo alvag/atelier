@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { type AtelierEvent, createBashTool, FakeBackend, Session } from "../src/index.ts";
+import { type AtelierEvent, createBashTool, FakeBackend, Session, type SessionOptions } from "../src/index.ts";
 import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 
 const cwd = "/work/project";
@@ -204,7 +204,7 @@ describe("the destructive command guard", () => {
 });
 
 describe("the guard in a session", () => {
-	async function ask(command: string, options: { autoApprove?: boolean } = {}) {
+	async function ask(command: string, options: Partial<SessionOptions> = {}) {
 		const questions: unknown[] = [];
 		const backend = new FakeBackend([[{ toolCall: { tool: "bash", input: { command }, callId: "c1" } }]]);
 		const session = await Session.start({
@@ -224,8 +224,9 @@ describe("the guard in a session", () => {
 
 	it.each([
 		["asks nothing", {}],
-		["ignores --yes", { autoApprove: true }],
-	])("refuses a destructive command and %s", async (_name, options) => {
+		["asks nothing in auto", { permissionMode: "auto" }],
+		["asks nothing in yolo", { permissionMode: "yolo" }],
+	] as const)("refuses a destructive command and %s", async (_name, options) => {
 		const { events, questions, results } = await ask("sudo -n true", options);
 		expect(results).toEqual([{ ok: false, output: "Refused: sudo — sudo -n true" }]);
 		expect(questions).toEqual([]);
@@ -236,9 +237,10 @@ describe("the guard in a session", () => {
 		});
 	});
 
-	it("still asks about an ordinary command", async () => {
-		const { events, questions } = await ask("echo hi");
-		expect(questions).toEqual([{ callId: "c1", command: "echo hi" }]);
-		expect(events.some((event) => event.type === "approval_requested")).toBe(true);
+	it("does not refuse or ask about an ordinary command", async () => {
+		const { events, questions, results } = await ask("echo hi");
+		expect(questions).toEqual([]);
+		expect(events.some((event) => event.type === "approval_requested")).toBe(false);
+		expect(results[0]?.output).not.toMatch(/^Refused/);
 	});
 });

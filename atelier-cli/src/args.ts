@@ -32,8 +32,8 @@ Runs a coding agent in the working directory. With a prompt, runs one turn
 and exits; without one, starts an interactive session (/exit or Ctrl+D to quit).
 
 Options:
-  -y, --yes              Run bash commands without asking, but only those that run in
-                         the sandbox (macOS): a command outside it is always asked
+  -y, --yes              No effect: bash commands that run in the sandbox (macOS)
+                         never ask; a command outside it is always asked
       --backend <name>   claude-code (default): Claude Code on your Claude subscription
                          anthropic-api: Atelier's own loop, billed to an API key read
                          from the macOS Keychain (service atelier-anthropic) or from

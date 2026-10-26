@@ -120,7 +120,6 @@ export function createEditTool(options: EditOptions = {}): ToolDefinition {
 				approval: {
 					command: `edit ${location.real}`,
 					reason: "outside the working directory",
-					always: true,
 					tool: "edit",
 					grant: location.real,
 					denial: notApproved(location.real),

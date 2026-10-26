@@ -292,12 +292,12 @@ describe("subagent events and control", () => {
 		});
 	});
 
-	it("passes autoApprove to the child", async () => {
+	it("does not pass the mode to the child: it runs in normal", async () => {
 		const asked: string[] = [];
 		const { session } = await start(
 			[[{ toolCall: { tool: "bash", input: {}, callId: "b1" } }, text("Done."), { event: finished }]],
 			{
-				autoApprove: true,
+				permissionMode: "yolo",
 				approve: async ({ callId }) => {
 					asked.push(callId);
 					return false;
@@ -306,8 +306,8 @@ describe("subagent events and control", () => {
 		);
 		const events = await collectTurn(session);
 		await session.close();
-		expect(asked).toEqual([]);
-		expect(events.some((e) => e.type === "approval_requested")).toBe(false);
+		expect(asked).toEqual(["b1"]);
+		expect(events.find((e) => e.type === "approval_requested")).toMatchObject({ callId: "b1", agent: "worker" });
 	});
 
 	it("interrupts the child when the parent's turn is interrupted", async () => {

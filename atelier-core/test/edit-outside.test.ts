@@ -102,14 +102,13 @@ describe("edit where the agent could always write", () => {
 });
 
 describe("edit outside the working directory", () => {
-	it("asks with the real absolute path, always, and writes after approval", async () => {
+	it("asks with the real absolute path in normal, and writes after approval", async () => {
 		const { questions, events, results } = await run(["../outside/x.txt"]);
 		expect(questions).toEqual([
 			{
 				callId: "e1",
 				command: `edit ${join(outside, "x.txt")}`,
 				reason: "outside the working directory",
-				always: true,
 				tool: "edit",
 			},
 		]);
@@ -122,9 +121,20 @@ describe("edit outside the working directory", () => {
 		expect(await text(join(outside, "x.txt"))).toBe("beta\n");
 	});
 
-	it("asks even with autoApprove (--yes)", async () => {
-		const { questions } = await run([join(outside, "x.txt")], { autoApprove: true });
+	it("asks in auto too", async () => {
+		const { questions } = await run([join(outside, "x.txt")], { permissionMode: "auto" });
 		expect(questions).toHaveLength(1);
+	});
+
+	it("writes without asking in yolo", async () => {
+		const { questions, events, results } = await run([join(outside, "x.txt")], {
+			permissionMode: "yolo",
+			answer: false,
+		});
+		expect(questions).toEqual([]);
+		expect(events.some((e) => e.type === "approval_requested")).toBe(false);
+		expect(results[0]).toMatchObject({ ok: true });
+		expect(await text(join(outside, "x.txt"))).toBe("beta\n");
 	});
 
 	it("keeps an approved file allowed for the session, and asks again for another file", async () => {
@@ -202,7 +212,7 @@ describe("edit never writes secrets", () => {
 	])("refuses %s without asking, even with approvals granted", async (_name, target) => {
 		await writeFile(join(home, ".atelier", "sandbox.json"), "alpha\n");
 		const path = target();
-		const { questions, results } = await run([path], { autoApprove: true });
+		const { questions, results } = await run([path], { permissionMode: "yolo" });
 		expect(questions).toEqual([]);
 		expect(results[0]).toEqual({ ok: false, output: `Path is a protected secret location: ${path}` });
 		expect(await text(path)).toBe("alpha\n");
@@ -269,7 +279,7 @@ describe("a worker subagent editing outside", () => {
 						[editCall(join(outside, "x.txt"), "w1"), { event: { type: "text_delta", text: "Done." } }, finished],
 					]),
 			},
-			autoApprove: true,
+			permissionMode: "yolo",
 			approve: async (request) => {
 				asked.push(request);
 				return true;
@@ -278,7 +288,7 @@ describe("a worker subagent editing outside", () => {
 		const events: AtelierEvent[] = [];
 		for await (const event of session.send("go")) events.push(event);
 		await session.close();
-		expect(asked.map((q) => [q.callId, q.command, q.always])).toEqual([["w1", `edit ${join(outside, "x.txt")}`, true]]);
+		expect(asked.map((q) => [q.callId, q.command])).toEqual([["w1", `edit ${join(outside, "x.txt")}`]]);
 		expect(events.find((e) => e.type === "approval_requested")).toMatchObject({ parentCallId: "t1", agent: "worker" });
 		expect(await text(join(outside, "x.txt"))).toBe("beta\n");
 	});
@@ -298,7 +308,9 @@ describe("edit shares the write tool's path protections", () => {
 		await mkdir(join(cwd, "settings"));
 		await writeFile(join(cwd, "settings", "sandbox.json"), "alpha\n");
 		await symlink(join(cwd, "settings"), join(cwd, ".atelier"));
-		const { questions, results } = await run(["settings/sandbox.json", ".atelier/sandbox.json"], { autoApprove: true });
+		const { questions, results } = await run(["settings/sandbox.json", ".atelier/sandbox.json"], {
+			permissionMode: "yolo",
+		});
 		expect(questions).toEqual([]);
 		expect(results).toEqual([
 			{ ok: false, output: "settings/sandbox.json is project configuration: the agent does not write .atelier/." },
@@ -353,7 +365,7 @@ describe("edit shares the write tool's path protections", () => {
 		async (path) => {
 			await mkdir(join(cwd, dirname(path)), { recursive: true });
 			await writeFile(join(cwd, path), "alpha\n");
-			const { questions, results } = await run([path], { autoApprove: true });
+			const { questions, results } = await run([path], { permissionMode: "yolo" });
 			expect(questions).toEqual([]);
 			expect(results).toEqual([
 				{ ok: false, output: `${path} is git state that runs code: the agent does not write it.` },
@@ -366,7 +378,7 @@ describe("edit shares the write tool's path protections", () => {
 describe("edit refuses what folds onto a protected place, and links to nothing", () => {
 	it("refuses a missing configuration folder reached by case through a dangling .atelier, without asking", async () => {
 		await symlink("Settings", join(cwd, ".atelier"));
-		const { questions, results } = await run(["sETTINGS/sandbox.json"], { autoApprove: true });
+		const { questions, results } = await run(["sETTINGS/sandbox.json"], { permissionMode: "yolo" });
 		expect(questions).toEqual([]);
 		expect(results).toEqual([
 			{ ok: false, output: "sETTINGS/sandbox.json is project configuration: the agent does not write .atelier/." },
@@ -376,7 +388,7 @@ describe("edit refuses what folds onto a protected place, and links to nothing",
 	it("refuses a git configuration named with other letter case", async () => {
 		await mkdir(join(cwd, ".git"));
 		await writeFile(join(cwd, ".git", "config"), "alpha\n");
-		const { questions, results } = await run([".git/CONFIG"], { autoApprove: true });
+		const { questions, results } = await run([".git/CONFIG"], { permissionMode: "yolo" });
 		expect(questions).toEqual([]);
 		expect(results).toEqual([
 			{ ok: false, output: ".git/CONFIG is git state that runs code: the agent does not write it." },

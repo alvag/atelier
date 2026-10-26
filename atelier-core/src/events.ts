@@ -202,6 +202,8 @@ export type AtelierEventBody =
 			authSource: AuthSource;
 			effort?: Effort | "off" | "unsupported";
 			profile?: SessionProfile;
+			/** Set by the session: how much it asks before a tool call. */
+			permissionMode?: "normal" | "auto" | "yolo";
 	  }
 	| { type: "text_delta"; text: string }
 	| { type: "thinking_delta"; text: string }
