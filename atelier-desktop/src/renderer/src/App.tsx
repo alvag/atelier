@@ -1,5 +1,5 @@
 import { type BackendName, DEFAULT_BACKEND, type SessionProfile } from "@atelier/core/protocol";
-import { type FormEvent, useCallback, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import type { AtelierBridge } from "../../shared/bridge.ts";
 import { FeaturePanel } from "./chat/FeaturePanel.tsx";
 import { Transcript, UNSANDBOXED_EFFECT } from "./chat/Transcript.tsx";
@@ -51,7 +51,12 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 	const [model, setModel] = useState(MODELS[DEFAULT_BACKEND][0] as string);
 	const [noSandbox, setNoSandbox] = useState(false);
 	/** Empty: the core resolves the profile by layers. */
-	const [profile, setProfile] = useState("");
+	const [chosen, setProfile] = useState("");
+	// What the selector shows is what is sent: a name the listed profiles lack counts as "by layers".
+	const profile = chat.profiles.profiles.includes(chosen) ? chosen : "";
+	useEffect(() => {
+		if (chosen !== profile) setProfile("");
+	}, [chosen, profile]);
 	const [draft, setDraft] = useState("");
 	const onAnswer = useCallback(
 		(callId: string, approved: boolean) => void chat.answerApproval(callId, approved),

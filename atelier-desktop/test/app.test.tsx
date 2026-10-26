@@ -91,6 +91,48 @@ describe("App", () => {
 		);
 	});
 
+	it("sends no profile once the chosen one is gone from the list the restarted core answers", async () => {
+		const fake = fakeBridge();
+		fake.answers["profiles.list"] = { ok: true, result: { profiles: ["cheap", "deep"] } };
+		render(<App bridge={fake.bridge} />);
+		await screen.findByText("core 0.0.0");
+		const select = (await screen.findByLabelText("profile")) as HTMLSelectElement;
+		await waitFor(() => expect(select.options).toHaveLength(3));
+		fireEvent.change(select, { target: { value: "cheap" } });
+		fake.answers["profiles.list"] = { ok: true, result: { profiles: ["deep"] } };
+		await fake.push({ type: "core_exited", message: "exit 1" });
+		await fake.push({ type: "core_ready", version: "0.0.1" });
+		await waitFor(() => expect(fake.listed).toHaveLength(2));
+		await waitFor(() => expect((screen.getByLabelText("profile") as HTMLSelectElement).value).toBe(""));
+		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
+		await waitFor(() =>
+			expect(fake.commands).toEqual([
+				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
+			]),
+		);
+	});
+
+	it("sends no profile when the list the core answers fails", async () => {
+		const fake = fakeBridge();
+		fake.answers["profiles.list"] = { ok: true, result: { profiles: ["cheap"] } };
+		render(<App bridge={fake.bridge} />);
+		await screen.findByText("core 0.0.0");
+		const select = (await screen.findByLabelText("profile")) as HTMLSelectElement;
+		await waitFor(() => expect(select.options).toHaveLength(2));
+		fireEvent.change(select, { target: { value: "cheap" } });
+		fake.answers["profiles.list"] = { ok: false, error: { code: "boom", message: "x" } };
+		await fake.push({ type: "core_exited", message: "exit 1" });
+		await fake.push({ type: "core_ready", version: "0.0.1" });
+		await waitFor(() => expect(fake.listed).toHaveLength(2));
+		await waitFor(() => expect(screen.queryByLabelText("profile")).toBeNull());
+		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
+		await waitFor(() =>
+			expect(fake.commands).toEqual([
+				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
+			]),
+		);
+	});
+
 	it("has no profile selector without profiles", async () => {
 		const fake = fakeBridge();
 		render(<App bridge={fake.bridge} />);
