@@ -170,6 +170,85 @@ describe("App", () => {
 		expect(await within(status).findByText("profile: default")).toBeTruthy();
 	});
 
+	it("sends the chosen mode with session.start, and none for the default", async () => {
+		const fake = fakeBridge();
+		render(<App bridge={fake.bridge} />);
+		await screen.findByText("core 0.0.0");
+		const select = screen.getByLabelText("mode") as HTMLSelectElement;
+		expect(select.value).toBe("");
+		expect(
+			within(select)
+				.getAllByRole("option")
+				.map((option) => option.textContent),
+		).toEqual(["default", "normal", "auto", "yolo"]);
+		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
+		await waitFor(() => expect(fake.commands).toHaveLength(1));
+		expect(fake.commands[0]).toEqual({ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" });
+
+		fireEvent.change(select, { target: { value: "auto" } });
+		fireEvent.click(screen.getByRole("button", { name: "New session…" }));
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({
+				command: "session.start",
+				cwd: "/work",
+				model: "opus",
+				backend: "claude-code",
+				mode: "auto",
+			}),
+		);
+	});
+
+	it("shows the session's mode in the status bar and changes it with session.set_mode", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({
+			type: "session_started",
+			backend: "claude-code",
+			model: "opus",
+			authSource: "subscription",
+			permissionMode: "normal",
+		});
+		const status = screen.getByRole("status");
+		const select = (await within(status).findByLabelText("session mode")) as HTMLSelectElement;
+		expect(select.value).toBe("normal");
+		expect(select.className).not.toContain("warning");
+
+		fake.answers["session.set_mode"] = { ok: true, result: { mode: "yolo" } };
+		fireEvent.change(select, { target: { value: "yolo" } });
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({ command: "session.set_mode", sessionId: "s1", mode: "yolo" }),
+		);
+		await waitFor(() =>
+			expect((within(status).getByLabelText("session mode") as HTMLSelectElement).value).toBe("yolo"),
+		);
+		expect(within(status).getByLabelText("session mode").className).toContain("warning");
+	});
+
+	it("keeps the previous mode and shows the error when session.set_mode fails", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({
+			type: "session_started",
+			backend: "claude-code",
+			model: "opus",
+			authSource: "subscription",
+			permissionMode: "auto",
+		});
+		const status = screen.getByRole("status");
+		const select = (await within(status).findByLabelText("session mode")) as HTMLSelectElement;
+		fake.answers["session.set_mode"] = { ok: false, error: { code: "unknown_session", message: "No such session" } };
+		fireEvent.change(select, { target: { value: "yolo" } });
+		expect(await within(status).findByText("unknown_session: No such session")).toBeTruthy();
+		expect((within(status).getByLabelText("session mode") as HTMLSelectElement).value).toBe("auto");
+	});
+
+	it("shows a permission_mode_invalid error like any recoverable error", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "error", code: "permission_mode_invalid", message: "default file is broken", recoverable: true });
+		expect(await screen.findByText("permission_mode_invalid: default file is broken")).toBeTruthy();
+	});
+
 	it("streams text, shows tool rows and the turn's tokens", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");
@@ -435,7 +514,7 @@ describe("App", () => {
 		const unsandboxed = await screen.findByText("bash: not sandboxed");
 		expect(unsandboxed.className).toContain("warning");
 		expect(unsandboxed.getAttribute("title")).toBe(
-			"sandbox not available on this platform: every command asks for approval and --yes does not apply",
+			"sandbox not available on this platform: every command asks for approval in normal and auto mode",
 		);
 	});
 
@@ -467,7 +546,7 @@ describe("App", () => {
 		const off = await screen.findByText("bash: NOT SANDBOXED (turned off)");
 		expect(off.className).toContain("warning");
 		expect(off.getAttribute("title")).toBe(
-			"sandbox turned off for this session: every command asks for approval and --yes does not apply",
+			"sandbox turned off for this session: every command asks for approval in normal and auto mode",
 		);
 		fake.emit({ type: "sandbox_status", sandboxed: false, reason: "sandbox turned off for this session" });
 		expect(screen.getAllByText(/^bash:/)).toHaveLength(1);
@@ -479,7 +558,7 @@ describe("App", () => {
 		fake.emit({ type: "sandbox_warning", reason: "sandbox turned off for this session" });
 		expect(
 			await screen.findByText(
-				"bash runs without a sandbox (sandbox turned off for this session): every command asks for approval and --yes does not apply",
+				"bash runs without a sandbox (sandbox turned off for this session): every command asks for approval in normal and auto mode",
 			),
 		).toBeTruthy();
 

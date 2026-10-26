@@ -4,7 +4,7 @@ import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
 import type { Subagent, Turn, TurnItem } from "./reducer.ts";
 
-export const UNSANDBOXED_EFFECT = "every command asks for approval and --yes does not apply";
+export const UNSANDBOXED_EFFECT = "every command asks for approval in normal and auto mode";
 
 const numbers = new Intl.NumberFormat("en-US");
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });

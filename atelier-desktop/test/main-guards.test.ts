@@ -9,6 +9,14 @@ describe("parseCommand", () => {
 		});
 	});
 
+	it("passes the mode of session.start and session.set_mode, and rejects an unknown one", () => {
+		const start = { command: "session.start", cwd: "/w", mode: "yolo" };
+		expect(parseCommand(start)).toEqual({ ok: true, command: start });
+		const set = { command: "session.set_mode", sessionId: "s1", mode: "auto" };
+		expect(parseCommand(set)).toEqual({ ok: true, command: set });
+		expect(parseCommand({ ...set, mode: "strict" })).toMatchObject({ ok: false, error: { code: "invalid_command" } });
+	});
+
 	it.each([
 		["not an object", "session.start"],
 		["null", null],

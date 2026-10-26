@@ -14,6 +14,9 @@ import type {
 } from "@atelier/core/protocol";
 import type { HostMessage } from "../../../shared/bridge.ts";
 
+/** What the user is asked before a tool call; the core's own `PermissionMode`. */
+export type PermissionMode = "normal" | "auto" | "yolo";
+
 const DENIED_SUMMARY = "The user denied this command.";
 
 export type TurnItem =
@@ -166,6 +169,8 @@ export interface ChatState {
 	effort?: string;
 	/** The profile the session froze, when the core resolved one. */
 	profile?: SessionProfile;
+	/** The main agent's permission mode, as its latest `session_started` or `set_mode` answer said. */
+	permissionMode?: PermissionMode;
 	/** The ODD phase the agent is in. */
 	phase?: Phase;
 	/** Whether `bash` runs in the sandbox, with what, or why not; absent until the first turn says. */
@@ -200,6 +205,8 @@ export type ChatAction =
 	| { type: "approval_answered"; callId: string; approved: boolean }
 	| { type: "review_consent_answered"; reviewId: string; answer: "granted" | "declined" }
 	| { type: "command_failed"; code: string; message: string }
+	/** The core answered `session.set_mode` with this mode. */
+	| { type: "mode_changed"; mode: PermissionMode }
 	| { type: "batch"; actions: ChatAction[] };
 
 export const initialChatState: ChatState = { core: { status: "starting" }, turns: [], busy: false };
@@ -237,6 +244,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 				expectedMissTurns: _expected,
 				effort: _effort,
 				profile: _profile,
+				permissionMode: _permissionMode,
 				...rest
 			} = state;
 			return {
@@ -270,6 +278,8 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 			const withError = updateLast(state, (turn) => ({ ...turn, items: [...turn.items, { kind: "error", ...error }] }));
 			return { ...withError, busy: false, lastError: error };
 		}
+		case "mode_changed":
+			return { ...state, permissionMode: action.mode };
 		case "event":
 			if (action.sessionId !== state.session?.id) return state;
 			return applyEvent(state, action.event);
@@ -294,6 +304,7 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 				authSource: event.authSource,
 				...(event.effort === undefined ? {} : { effort: event.effort }),
 				...(event.profile === undefined ? {} : { profile: event.profile }),
+				...(event.permissionMode === undefined ? {} : { permissionMode: event.permissionMode }),
 			};
 		}
 		case "rate_limit": {

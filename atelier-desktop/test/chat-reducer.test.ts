@@ -97,6 +97,22 @@ describe("reduceChat", () => {
 		expect(state.profile).toEqual(profile);
 	});
 
+	it("takes the permission mode from the main agent's session_started, never a subagent's", () => {
+		const started = (permissionMode: "normal" | "auto" | "yolo", parentCallId?: string) =>
+			event({
+				type: "session_started",
+				backend: "claude-code",
+				model: "opus",
+				authSource: "subscription",
+				permissionMode,
+				...(parentCallId === undefined ? {} : { parentCallId }),
+			} as AtelierEventBody);
+		const state = run([...ready, started("auto"), started("normal", "c1")]);
+		expect(state.permissionMode).toBe("auto");
+		expect(run([{ type: "mode_changed", mode: "yolo" }], state).permissionMode).toBe("yolo");
+		expect(run([{ type: "session_opened", sessionId: "s2", cwd: "/w" }], state).permissionMode).toBeUndefined();
+	});
+
 	it("keeps each finished turn's model when a later session_started reports another", () => {
 		const state = run([
 			...ready,

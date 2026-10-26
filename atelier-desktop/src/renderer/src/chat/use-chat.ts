@@ -1,21 +1,27 @@
 import type { BackendName, ClientCommand } from "@atelier/core/protocol";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { AtelierBridge, CommandResult, HostMessage } from "../../../shared/bridge.ts";
-import { type ChatAction, type ChatState, initialChatState, reduceChat } from "./reducer.ts";
+import { type ChatAction, type ChatState, initialChatState, type PermissionMode, reduceChat } from "./reducer.ts";
 
 const nextFrame = (callback: () => void) =>
 	typeof requestAnimationFrame === "function" ? requestAnimationFrame(callback) : setTimeout(callback, 16);
 
 export interface Chat {
 	state: ChatState;
-	/** With `noSandbox`, the session's `bash` runs without the sandbox; `profile` is the chosen profile, absent to resolve it by layers. */
+	/**
+	 * With `noSandbox`, the session's `bash` runs without the sandbox; `profile` is the chosen profile, absent to resolve it by layers;
+	 * `mode` is the chosen permission mode, absent to use the default the core has saved.
+	 */
 	openSession(
 		cwd: string,
 		model: string | undefined,
 		backend: BackendName,
 		noSandbox?: boolean,
 		profile?: string,
+		mode?: PermissionMode,
 	): Promise<void>;
+	/** Changes the open session's mode; the state shows the mode the core answers, and keeps the previous one if it fails. */
+	setMode(mode: PermissionMode): Promise<void>;
 	/** The profile names in `~/.atelier/profiles.json` and its `active`, asked each time the core is ready; none when it cannot say. */
 	profiles: ProfileList;
 	send(prompt: string): Promise<void>;
@@ -100,7 +106,7 @@ export function useChat(bridge: AtelierBridge): Chat {
 	return {
 		state,
 		profiles,
-		openSession: async (cwd, model, backend, noSandbox = false, profile) => {
+		openSession: async (cwd, model, backend, noSandbox = false, profile, mode) => {
 			const previous = stateRef.current.session;
 			if (previous) await request({ command: "session.close", sessionId: previous.id });
 			const result = await request({
@@ -110,9 +116,18 @@ export function useChat(bridge: AtelierBridge): Chat {
 				backend,
 				...(noSandbox ? { noSandbox: true } : {}),
 				...(profile ? { profile } : {}),
+				...(mode ? { mode } : {}),
 			});
 			if (result.ok && typeof result.result.sessionId === "string")
 				dispatch({ type: "session_opened", sessionId: result.result.sessionId, cwd, noSandbox });
+		},
+		setMode: async (mode) => {
+			const session = stateRef.current.session;
+			if (!session) return;
+			const result = await request({ command: "session.set_mode", sessionId: session.id, mode });
+			const answered = result.ok ? result.result.mode : undefined;
+			if (answered === "normal" || answered === "auto" || answered === "yolo")
+				dispatch({ type: "mode_changed", mode: answered });
 		},
 		send: async (prompt) => {
 			const session = stateRef.current.session;

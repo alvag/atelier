@@ -2,8 +2,11 @@ import { type BackendName, DEFAULT_BACKEND, type SessionProfile } from "@atelier
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import type { AtelierBridge } from "../../shared/bridge.ts";
 import { FeaturePanel } from "./chat/FeaturePanel.tsx";
+import type { PermissionMode } from "./chat/reducer.ts";
 import { Transcript, UNSANDBOXED_EFFECT } from "./chat/Transcript.tsx";
 import { useChat } from "./chat/use-chat.ts";
+
+const MODES: readonly PermissionMode[] = ["normal", "auto", "yolo"];
 
 /** The first model of each backend is its default. */
 const MODELS: Record<BackendName, readonly string[]> = {
@@ -57,6 +60,8 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 	useEffect(() => {
 		if (chosen !== profile) setProfile("");
 	}, [chosen, profile]);
+	/** Empty: no `mode` is sent, so the core uses the default it has saved. */
+	const [mode, setMode] = useState<PermissionMode | "">("");
 	const [draft, setDraft] = useState("");
 	const onAnswer = useCallback(
 		(callId: string, approved: boolean) => void chat.answerApproval(callId, approved),
@@ -72,7 +77,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 
 	const openFolder = async () => {
 		const cwd = await chat.pickFolder();
-		if (cwd) await chat.openSession(cwd, model, backend, noSandbox, profile || undefined);
+		if (cwd) await chat.openSession(cwd, model, backend, noSandbox, profile || undefined, mode || undefined);
 	};
 	const submit = (event?: FormEvent) => {
 		event?.preventDefault();
@@ -127,6 +132,19 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 						</select>
 					</label>
 				) : null}
+				<label>
+					mode{" "}
+					<select
+						value={mode}
+						onChange={(event) => setMode(event.target.value as PermissionMode | "")}
+						disabled={state.busy}
+					>
+						<option value="">default</option>
+						{MODES.map((name) => (
+							<option key={name}>{name}</option>
+						))}
+					</select>
+				</label>
 				<label className={noSandbox ? "warning" : undefined}>
 					<input
 						type="checkbox"
@@ -183,6 +201,18 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 					<span>{state.effort === undefined ? state.model : `${state.model} · effort ${state.effort}`}</span>
 				) : null}
 				{state.profile ? <span title={profileRoles(state.profile)}>{profileLabel(state.profile)}</span> : null}
+				{state.session && state.permissionMode ? (
+					<select
+						aria-label="session mode"
+						className={state.permissionMode === "yolo" ? "warning" : undefined}
+						value={state.permissionMode}
+						onChange={(event) => void chat.setMode(event.target.value as PermissionMode)}
+					>
+						{MODES.map((name) => (
+							<option key={name}>{name}</option>
+						))}
+					</select>
+				) : null}
 				{state.phase ? <span className="phase">{state.phase}</span> : null}
 				{state.context ? (
 					<span title={`compacts at ${numbers.format(state.context.compactAt)} tokens`}>
