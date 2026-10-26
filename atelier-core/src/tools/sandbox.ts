@@ -449,6 +449,9 @@ export function verifierEnvironment(dir: string, git: string | undefined = devel
  * The library lets an allowed read win over a denied one, so /Library as a whole
  * cannot be allowed and then narrowed: its Keychains and the rest are left out.
  * The user's home directory is not readable, nor is /Users, /tmp or /private/var.
+ * Of the folders above its directory it reads only each one's package.json:
+ * Node looks for the nearest one to resolve a module and stops with an error
+ * when the read is denied, instead of going on as it does for a missing file.
  * The configuration files add nothing here.
  * The `/usr/bin/git` shim does not work here (it reads /var/select and writes a
  * cache in the per-user /var/folders directory), so the verifier runs the real
@@ -461,11 +464,26 @@ export function verifierPolicy({ dir, nodePrefix, toolchain }: VerifierPolicyInp
 		network: { allowedDomains: [], deniedDomains: ["*"] },
 		filesystem: {
 			denyRead: ["/"],
-			allowRead: [dir, nodePrefix, ...(toolchain === undefined ? [] : [toolchain]), ...SYSTEM_READ_PATHS],
+			allowRead: [
+				dir,
+				nodePrefix,
+				...(toolchain === undefined ? [] : [toolchain]),
+				...SYSTEM_READ_PATHS,
+				...parentPackageFiles(dir),
+			],
 			allowWrite: [dir],
 			denyWrite: [],
 		},
 	};
+}
+
+/** The package.json of every folder above `dir`, nearest first, up to the root. */
+function parentPackageFiles(dir: string): string[] {
+	const files: string[] = [];
+	for (let folder = dirname(dir); ; folder = dirname(folder)) {
+		files.push(join(folder, "package.json"));
+		if (dirname(folder) === folder) return files;
+	}
 }
 
 const SYSTEM_READ_PATHS = [

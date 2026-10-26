@@ -240,7 +240,22 @@ describe("verifierPolicy", () => {
 			"/dev",
 			"/opt/homebrew",
 			"/private/var/select",
+			"/tmp/package.json",
+			"/package.json",
 		]);
+	});
+
+	it("reads the package.json of every folder above its directory, and nothing else of those folders", () => {
+		const reads = verifierPolicy({ ...verifier, dir: "/var/folders/x/T/atelier-verify-2" }).filesystem.allowRead ?? [];
+		expect(reads.filter((path) => typeof path === "string" && path.endsWith("package.json"))).toEqual([
+			"/var/folders/x/T/package.json",
+			"/var/folders/x/package.json",
+			"/var/folders/package.json",
+			"/var/package.json",
+			"/package.json",
+		]);
+		expect(reads).not.toContain("/var/folders/x/T");
+		expect(reads).not.toContain("/var");
 	});
 
 	it("adds the developer directory's usr/ when there is a real git to run", () => {
