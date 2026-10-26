@@ -2441,6 +2441,24 @@ describe("review roles and profiles", () => {
 	}
 	const byRole = (h: { roles: RoleBackend }, role: string) => h.roles.roles.find((r) => r.role === role);
 
+	it("keeps the frozen profile on the main agent's session_started in the correction turn", async () => {
+		const started: FakeStep = {
+			event: { type: "session_started", backend: "fake", model: "session-model", authSource: "none" },
+		};
+		const h = await profiled({ explorer: { thinking: "low" } }, new RoleBackend(), [
+			[started, ...HIGH_TURN],
+			[started, change("src/auth.ts", "export const a = 2;\n"), { event: finished }],
+		]);
+		const events = await h.send("add auth");
+		expect(h.main.prompts).toHaveLength(2);
+		const mains = events.filter((event) => event.type === "session_started" && event.agent === undefined);
+		expect(mains).toHaveLength(2);
+		for (const event of mains)
+			expect(event).toMatchObject({
+				profile: { name: "p", origin: "active", roles: { explorer: { thinking: "low" } } },
+			});
+	});
+
 	it("starts every role on the session's backend and model, with no thinking, when there is no profile", async () => {
 		const h = await profiled(undefined, new RoleBackend(verifying(vreport())), [VERIFY_TURN]);
 		await h.send("make it need a keypress");

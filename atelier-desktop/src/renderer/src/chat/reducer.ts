@@ -285,7 +285,8 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 	if (event.parentCallId !== undefined) return applySubagentEvent(state, event, event.parentCallId);
 	switch (event.type) {
 		case "session_started": {
-			const { effort: _effort, profile: _profile, ...rest } = state;
+			// Claude Code says session_started on every init: a later one without a profile keeps the known one.
+			const { effort: _effort, ...rest } = state;
 			return {
 				...rest,
 				backend: event.backend,

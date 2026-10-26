@@ -152,6 +152,24 @@ describe("Renderer", () => {
 		expect(render([started]).stdout).toBe("atelier · anthropic-api · m · api_key\n");
 	});
 
+	it("repeats the profile in a later header, even when that session_started carries none", () => {
+		const started = {
+			type: "session_started",
+			backend: "claude-code",
+			model: "m",
+			authSource: "subscription",
+		} as const;
+		const profile = { name: "cheap", origin: "repo", roles: { explorer: { thinking: "low" } } } as const;
+		const header = "atelier · claude-code · m · subscription\nprofile cheap (repo) · explorer thinking low\n";
+		expect(
+			render([
+				{ ...started, profile },
+				{ ...started, profile },
+			]).stdout,
+		).toBe(header + header);
+		expect(render([{ ...started, profile }, started]).stdout).toBe(header + header);
+	});
+
 	it("warns when the session is not using a subscription", () => {
 		const { stderr } = render([{ type: "session_started", backend: "claude-code", model: "m", authSource: "api_key" }]);
 		expect(stderr).toBe("warning: not using a Claude subscription (auth: api_key); usage may be billed separately.\n");

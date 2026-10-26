@@ -138,6 +138,8 @@ function stepText(step: ReviewStep): string {
 export class Renderer {
 	readonly #options: RendererOptions;
 	readonly #tools = new Map<string, string>();
+	/** The profile the header last said: a later session_started without one repeats it. */
+	#profile: NonNullable<Extract<AtelierEvent, { type: "session_started" }>["profile"]> | undefined;
 	#atLineStart = true;
 	/** The turn in which the "not sandboxed" line was printed: its sandbox warning would say the same. */
 	#unsandboxedTurn: string | undefined;
@@ -363,7 +365,8 @@ export class Renderer {
 		switch (event.type) {
 			case "session_started":
 				this.#line(this.#style("dim", startedLine(event)));
-				if (event.profile !== undefined) this.#line(this.#style("dim", profileLine(event.profile)));
+				this.#profile = event.profile ?? this.#profile;
+				if (this.#profile !== undefined) this.#line(this.#style("dim", profileLine(this.#profile)));
 				// anthropic-api is billed to the API key by choice; only an unexpected bill deserves a warning.
 				if (event.authSource !== "subscription" && event.backend !== "anthropic-api")
 					this.#warn(

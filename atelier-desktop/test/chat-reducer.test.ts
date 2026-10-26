@@ -87,6 +87,16 @@ describe("reduceChat", () => {
 		});
 	});
 
+	it("keeps the known profile when a later session_started carries none", () => {
+		const profile = { name: "cheap", origin: "repo" as const, roles: {} };
+		const state = run([
+			...ready,
+			event({ type: "session_started", backend: "claude-code", model: "opus", authSource: "subscription", profile }),
+			event({ type: "session_started", backend: "claude-code", model: "opus", authSource: "subscription" }),
+		]);
+		expect(state.profile).toEqual(profile);
+	});
+
 	it("keeps each finished turn's model when a later session_started reports another", () => {
 		const state = run([
 			...ready,

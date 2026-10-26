@@ -513,7 +513,7 @@ export class Session {
 						} else {
 							if (event.type === "error") failed = true;
 							if (event.type === "session_started") this.#mainAgent = phaseAgent("orchestrator", event);
-							turn.push(event);
+							turn.push(this.#withOrchestrator(this.#withProfile(event)));
 						}
 					}
 				} catch (error) {
