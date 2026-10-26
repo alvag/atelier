@@ -78,6 +78,16 @@ function serve(turns: FakeStep[][] = [[{ event: finished }], [{ event: finished 
 }
 
 describe("session.set_model and session.set_effort", () => {
+	it("session.start answers the configuration the first turn runs with", async () => {
+		const h = serve();
+		const response = await h.ask({ command: "session.start", cwd: home, model: "opus", mode: "auto" });
+		expect(response).toMatchObject({
+			ok: true,
+			result: { configuration: { backend: "fake", model: "opus", permissionMode: "auto", pending: false } },
+		});
+		await h.close();
+	});
+
 	it("session.set_model answers the resulting configuration and the next turn runs with it", async () => {
 		const h = serve();
 		const sessionId = await h.open({ model: "opus" });

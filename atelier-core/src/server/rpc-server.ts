@@ -228,7 +228,11 @@ export class RpcServer {
 					mode: message.mode,
 					noSession: message.noSession === true,
 				});
-				return { sessionId: started.sessionId, ...(started.savedId === undefined ? {} : { savedId: started.savedId }) };
+				return {
+					sessionId: started.sessionId,
+					...(started.savedId === undefined ? {} : { savedId: started.savedId }),
+					configuration: configurationResult(started.session.configuration()),
+				};
 			}
 			case "sessions.list":
 				return this.#saved(async (store) => ({

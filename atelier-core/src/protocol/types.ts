@@ -20,6 +20,10 @@ export type BackendName = (typeof BACKEND_NAMES)[number];
 export const DEFAULT_BACKEND: BackendName = "claude-code";
 
 export type ClientCommand =
+	/**
+	 * Starts a session; answers `sessionId`, `savedId` when it is saved, and `configuration`, what the first turn runs
+	 * with (as `session.set_model` answers it).
+	 */
 	| {
 			command: "session.start";
 			cwd: string;

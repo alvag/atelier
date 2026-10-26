@@ -138,7 +138,7 @@ describe("saving the sessions a server starts", () => {
 	it("saves nothing for a session started with noSession", async () => {
 		const h = serve();
 		const started = await h.open({ noSession: true });
-		expect(started).toEqual({ sessionId: expect.any(String) });
+		expect(started).toEqual({ sessionId: expect.any(String), configuration: expect.any(Object) });
 		await h.turn(started.sessionId);
 		expect(await files()).toEqual([]);
 		expect((await h.result({ command: "sessions.list", cwd })).sessions).toEqual([]);
@@ -149,7 +149,7 @@ describe("saving the sessions a server starts", () => {
 		for (const options of [{ noHome: true }, { sessions: false }]) {
 			const h = serve(options);
 			const started = await h.open();
-			expect(started).toEqual({ sessionId: expect.any(String) });
+			expect(started).toEqual({ sessionId: expect.any(String), configuration: expect.any(Object) });
 			await h.turn(started.sessionId);
 			for (const command of [
 				{ command: "sessions.list", cwd },

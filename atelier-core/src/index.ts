@@ -101,6 +101,7 @@ export {
 	type ApprovalRequest,
 	type PermissionMode,
 	Session,
+	type SessionConfiguration,
 	type SessionOptions,
 	type SubagentOptions,
 } from "./session.ts";
