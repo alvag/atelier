@@ -52,6 +52,30 @@ describe("parseCliArgs", () => {
 		expect(parseCliArgs(["x"], "/h").backend).toBe("claude-code");
 	});
 
+	it("reads --continue, --resume and --no-session, absent by default, and documents them", () => {
+		expect(parseCliArgs(["x"], "/h")).not.toHaveProperty("continueSession");
+		expect(parseCliArgs(["x"], "/h")).not.toHaveProperty("resume");
+		expect(parseCliArgs(["x"], "/h")).not.toHaveProperty("noSession");
+		expect(parseCliArgs(["--continue"], "/h")).toMatchObject({ continueSession: true });
+		expect(parseCliArgs(["--resume", "abc-1", "x"], "/h")).toMatchObject({ resume: "abc-1", prompt: "x" });
+		expect(parseCliArgs(["--no-session", "x"], "/h")).toMatchObject({ noSession: true });
+		for (const flag of ["--continue", "--resume <id>", "--no-session"]) expect(USAGE).toContain(flag);
+		expect(USAGE).toContain("~/.atelier/sessions/");
+	});
+
+	it("rejects --resume without a value and combinations that make no sense", () => {
+		expect(() => parseCliArgs(["--resume", " "], "/h")).toThrow(new UsageError("--resume needs a value."));
+		expect(() => parseCliArgs(["--resume"], "/h")).toThrow(UsageError);
+		expect(() => parseCliArgs(["--continue", "--resume", "a"], "/h")).toThrow(
+			new UsageError("--continue and --resume cannot be used together."),
+		);
+		for (const argv of [
+			["--no-session", "--continue"],
+			["--no-session", "--resume", "a"],
+		])
+			expect(() => parseCliArgs(argv, "/h")).toThrow(/--no-session cannot be used with --continue or --resume/);
+	});
+
 	it("reads --profile, which needs a value, and documents it", () => {
 		expect(parseCliArgs(["--profile", "cheap", "x"], "/h").profile).toBe("cheap");
 		expect(parseCliArgs(["x"], "/h")).not.toHaveProperty("profile");

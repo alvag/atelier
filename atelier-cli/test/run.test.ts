@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import {
 	type AtelierEventBody,
+	type BackendName,
 	coreTools,
 	createBashTool,
 	FakeBackend,
@@ -14,6 +15,7 @@ import {
 	MissingApiKeyError,
 	Sandbox,
 	type SandboxManagerLike,
+	SessionStore,
 } from "@atelier/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../src/run.ts";
@@ -78,9 +80,11 @@ function harness(
 		uid?: number;
 		/** false: `bash` has no sandbox, so every command asks. */
 		sandbox?: boolean;
+		/** The name the backend answers to; a saved session needs a real one. */
+		backendId?: string;
 	} = {},
 ) {
-	const backend = new FakeBackend(turns);
+	const backend = new FakeBackend(turns, options.backendId);
 	let interruptHandler: (() => void) | undefined;
 	let terminateHandler: ((signal: number) => void) | undefined;
 	const exits: number[] = [];
@@ -154,7 +158,7 @@ describe("run", () => {
 	it("gives the model the project instructions and says which files it loaded", async () => {
 		await writeFile(join(cwd, "AGENTS.md"), "Prefer tabs.");
 		const h = harness([[{ event: started }, { event: finished }]], { home: dirname(cwd) });
-		expect(await run(["hi"], h.io, h.createBackend)).toBe(0);
+		expect(await run(["--no-session", "hi"], h.io, h.createBackend)).toBe(0);
 		expect(h.backend.startOptions?.systemPromptAppend).toContain(
 			`Project instructions from ${join(cwd, "AGENTS.md")}:\n\nPrefer tabs.`,
 		);
@@ -1536,5 +1540,195 @@ describe("--mode auto", () => {
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("saved sessions", () => {
+	let home: string;
+	beforeEach(async () => {
+		home = await mkdtemp(join(tmpdir(), "atelier-cli-saved-"));
+	});
+	afterEach(async () => {
+		await rm(home, { recursive: true, force: true });
+	});
+
+	const answer = (value: string): FakeStep[] => [
+		{ event: started },
+		{ event: { type: "text_delta", text: value } },
+		{ event: finished },
+	];
+	const saved = () => new SessionStore(home).list(cwd);
+	const savedHarness = (turns: FakeStep[][], options: Parameters<typeof harness>[1] = {}) =>
+		harness(turns, { home, backendId: "claude-code", ...options });
+
+	/** Saves a session of one turn and gives its id; `at` is the file's last write, in seconds. */
+	async function save(prompt: string, reply: string, at: number, argv: string[] = []): Promise<string> {
+		const h = savedHarness([answer(reply)]);
+		h.backend.resumeState = { sessionId: `cc-${at}` };
+		expect(await run([...argv, prompt], h.io, h.createBackend)).toBe(0);
+		const [info] = (await saved()).filter((one) => one.lastPrompt === prompt);
+		await utimes(join(new SessionStore(home).folder(cwd), `${info?.id}.jsonl`), at, at);
+		return info?.id as string;
+	}
+
+	/** Runs the CLI and gives back what it did; the backend it asked for is the harness's. */
+	async function resumeWith(argv: string[], turns: FakeStep[][] = [answer("next answer")], input?: string[]) {
+		const h = savedHarness(turns, input === undefined ? {} : { input });
+		const names: BackendName[] = [];
+		const code = await run(argv, h.io, (name) => {
+			names.push(name);
+			return h.backend;
+		});
+		return { h, code, names };
+	}
+
+	it("saves a session by default: the file holds the prompt and the answer, under the home", async () => {
+		const id = await save("explain the parser", "it parses", 1_700_000_000);
+		expect(await saved()).toEqual([
+			expect.objectContaining({
+				id,
+				turns: 1,
+				lastPrompt: "explain the parser",
+				backend: "claude-code",
+				resumable: true,
+			}),
+		]);
+		const file = await readFile(join(new SessionStore(home).folder(cwd), `${id}.jsonl`), "utf8");
+		expect(file).toContain('"text":"it parses"');
+	});
+
+	it("saves nothing with --no-session, nor without a home", async () => {
+		const withFlag = savedHarness([answer("x")]);
+		expect(await run(["--no-session", "hi"], withFlag.io, withFlag.createBackend)).toBe(0);
+		expect(withFlag.backend.startOptions).not.toHaveProperty("persist");
+		expect(await readdir(home)).toEqual([]);
+
+		const noHome = harness([answer("x")], { backendId: "claude-code" });
+		expect(await run(["hi"], noHome.io, noHome.createBackend)).toBe(0);
+		expect(noHome.backend.startOptions).not.toHaveProperty("persist");
+		expect(await readdir(home)).toEqual([]);
+	});
+
+	it("--continue prints what was said, resumes the newest session of the folder and goes on interactively", async () => {
+		await save("old question", "old answer", 1_700_000_000);
+		const newest = await save("new question", "new answer", 1_800_000_000);
+		const { h, code, names } = await resumeWith(["--continue"], [answer("second answer")], ["and then?"]);
+		expect(code).toBe(0);
+		expect(names).toEqual(["claude-code"]);
+		expect(h.out().startsWith(`resumed session ${newest}: 1 turn\n> new question\nnew answer\n`)).toBe(true);
+		expect(h.out()).not.toContain("old question");
+		expect(h.out()).toContain("second answer");
+		expect(h.backend.prompts).toEqual(["and then?"]);
+		expect(h.backend.startOptions?.resume).toEqual({ sessionId: "cc-1800000000" });
+		expect(h.err()).not.toContain("error:");
+		// It is the same session, one turn longer.
+		expect(await saved()).toHaveLength(2);
+		expect((await saved()).find((info) => info.id === newest)).toMatchObject({ turns: 2, lastPrompt: "and then?" });
+	});
+
+	it("--resume <id> resumes that session, not the newest, and runs a prompt given with it", async () => {
+		const older = await save("old question", "old answer", 1_700_000_000);
+		await save("new question", "new answer", 1_800_000_000);
+		const { h, code } = await resumeWith(["--resume", older, "follow up"]);
+		expect(code).toBe(0);
+		expect(h.out().startsWith(`resumed session ${older}: 1 turn\n> old question\nold answer\n`)).toBe(true);
+		expect(h.backend.prompts).toEqual(["follow up"]);
+		expect(h.backend.startOptions?.resume).toEqual({ sessionId: "cc-1700000000" });
+	});
+
+	it("prints each prompt with the final text of its turn only, shows hidden characters, and names a renamed session", async () => {
+		const store = new SessionStore(home);
+		const record = store.create(cwd);
+		record.config({ backend: "claude-code", mode: "normal" });
+		record.prompt("t1", "first\nsecond line");
+		record.event({ type: "text_delta", text: "let me look", seq: 1, turnId: "t1" });
+		record.event({ type: "tool_call_started", callId: "c", tool: "read", input: {}, seq: 2, turnId: "t1" });
+		record.event({ type: "text_delta", text: "child words", seq: 3, turnId: "t1", agent: "worker", parentCallId: "c" });
+		record.event({ type: "text_delta", text: "done \u001b[31mred", seq: 4, turnId: "t1" });
+		record.prompt("t2", "no answer here");
+		record.name("my work");
+		await record.flush();
+		const { h } = await resumeWith(["--resume", record.id, "go"]);
+		expect(
+			h
+				.out()
+				.startsWith(
+					`resumed session ${record.id} "my work": 2 turns\n> first\n  second line\ndone ␛[31mred\n> no answer here\n`,
+				),
+		).toBe(true);
+		expect(h.out()).not.toContain("let me look");
+		expect(h.out()).not.toContain("child words");
+	});
+
+	it("restores the saved model and mode, and what is given on the command line wins", async () => {
+		await save("q", "a", 1_700_000_000, ["--model", "sonnet", "--mode", "yolo"]);
+		const restored = await resumeWith(["--continue"], [], ["/mode"]);
+		expect(restored.h.backend.startOptions?.model).toBe("sonnet");
+		expect(restored.h.out()).toContain("mode: yolo\n");
+
+		const overridden = await resumeWith(["--continue", "--model", "opus", "--mode", "auto"], [], ["/mode"]);
+		expect(overridden.h.backend.startOptions?.model).toBe("opus");
+		expect(overridden.h.out()).toContain("mode: auto\n");
+	});
+
+	it("says there is nothing to continue, and starts nothing", async () => {
+		const { h, code, names } = await resumeWith(["--continue"]);
+		expect(code).toBe(1);
+		expect(names).toEqual([]);
+		expect(h.err()).toBe(`error: No saved session to continue in ${cwd}.\n`);
+		expect(h.out()).toBe("");
+	});
+
+	it("says a session is missing, from a newer format or corrupt, and starts nothing", async () => {
+		const folder = new SessionStore(home).folder(cwd);
+		await mkdir(folder, { recursive: true });
+		const header = { kind: "atelier.session", version: 1, createdAt: "2026-01-01T00:00:00.000Z", cwd };
+		await writeFile(join(folder, "future.jsonl"), `${JSON.stringify({ ...header, id: "future", version: 3 })}\n`);
+		await writeFile(
+			join(folder, "broken.jsonl"),
+			`${JSON.stringify({ ...header, id: "broken" })}\n{oops\n{"type":"name","name":"x"}\n`,
+		);
+		const cases: [string, string][] = [
+			["absent", `error: No saved session "absent" for ${cwd}.\n`],
+			[
+				"future",
+				"error: Saved session future cannot be resumed: it was saved with session format version 3, and this Atelier reads version 1.\n",
+			],
+			["broken", "error: Saved session broken is corrupt: line 2 is not valid JSON.\n"],
+		];
+		for (const [id, message] of cases) {
+			const { h, code, names } = await resumeWith(["--resume", id]);
+			expect(code).toBe(1);
+			expect(names).toEqual([]);
+			expect(h.err()).toBe(message);
+		}
+		// --continue passes over a file it cannot resume.
+		expect((await resumeWith(["--continue"])).h.err()).toBe(`error: No saved session to continue in ${cwd}.\n`);
+	});
+
+	it("starts nothing when the backend cannot resume, and leaves the file as it was", async () => {
+		const id = await save("q", "a", 1_700_000_000);
+		const path = join(new SessionStore(home).folder(cwd), `${id}.jsonl`);
+		const before = await readFile(path, "utf8");
+		const h = savedHarness([answer("x")]);
+		h.backend.startError = "Claude Code has no session cc-1700000000";
+		expect(await run(["--resume", id, "go"], h.io, h.createBackend)).toBe(1);
+		expect(h.err()).toBe(`error: Could not resume session ${id}: Claude Code has no session cc-1700000000\n`);
+		expect(h.out()).toBe("");
+		expect(await readFile(path, "utf8")).toBe(before);
+	});
+
+	it("refuses a --backend other than the one the session was saved on", async () => {
+		const id = await save("q", "a", 1_700_000_000);
+		const { h, code, names } = await resumeWith(["--resume", id, "--backend", "anthropic-api"]);
+		expect(code).toBe(2);
+		expect(names).toEqual([]);
+		expect(h.err()).toBe(`error: Session ${id} was saved on claude-code; --backend anthropic-api cannot resume it.\n`);
+	});
+
+	it("needs a home directory to read the sessions from", async () => {
+		const h = harness([], { backendId: "claude-code" });
+		expect(await run(["--continue"], h.io, h.createBackend)).toBe(1);
+		expect(h.err()).toBe("error: --continue and --resume need a home directory to read ~/.atelier/sessions from.\n");
 	});
 });

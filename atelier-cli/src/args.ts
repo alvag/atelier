@@ -27,6 +27,12 @@ export interface CliArgs {
 	review: boolean;
 	/** Present when `bash` runs without the sandbox: --no-sandbox or ATELIER_SANDBOX=off. */
 	noSandbox?: true;
+	/** --continue: resume the newest saved session of `cwd`. */
+	continueSession?: true;
+	/** --resume <id>: resume that saved session of `cwd`. */
+	resume?: string;
+	/** --no-session: the session is not saved. */
+	noSession?: true;
 }
 
 export const USAGE = `Usage: atelier [options] [prompt]
@@ -56,12 +62,22 @@ Options:
                          over the local pin, the repository's and the active one;
                          --model and --backend still replace the main agent's
       --cwd <dir>        Working directory (default: current directory)
+      --continue         Resume the newest saved session of the working directory
+      --resume <id>      Resume that saved session of the working directory
+      --no-session       Do not save this session (it cannot be resumed)
       --no-review        Do not review or verify changes (see below)
       --no-sandbox       Run bash without the macOS sandbox: every command asks in
                          normal mode and goes to the classifier in auto mode, and
                          each turn warns about it
   -h, --help             Show this help
   -v, --version          Show the version
+
+Sessions are saved under ~/.atelier/sessions/, one folder per working directory: the
+configuration, the prompts, the events and what the backend needs to resume. --continue
+and --resume print what was said (each prompt and the answer's final text), then go on as
+usual, interactive or with a prompt. The profile is frozen again from the files as they
+are now; --model, --backend (it must be the one saved), --mode and --profile win over
+the saved ones. The files hold what the agent saw, tool output included.
 
 Long-term memory is used when its memory service is installed; the session says
 which project it uses, or why it has none.
@@ -110,6 +126,13 @@ export function parseCliArgs(
 	if (mode !== undefined && !isPermissionMode(mode)) throw new UsageError("--mode must be normal, auto or yolo.");
 	const backend = values.backend ?? DEFAULT_BACKEND;
 	if (!isBackendName(backend)) throw new UsageError(`--backend must be ${BACKEND_NAMES.join(" or ")}.`);
+	if (values.resume !== undefined && values.resume.trim() === "") throw new UsageError("--resume needs a value.");
+	if (values.continue && values.resume !== undefined)
+		throw new UsageError("--continue and --resume cannot be used together.");
+	if (values["no-session"] && (values.continue || values.resume !== undefined))
+		throw new UsageError(
+			"--no-session cannot be used with --continue or --resume: a session that is not saved cannot be resumed.",
+		);
 	const prompt = positionals.length > 0 ? positionals.join(" ") : undefined;
 	if (prompt !== undefined && prompt.trim() === "") throw new UsageError("The prompt is empty.");
 	return {
@@ -125,6 +148,9 @@ export function parseCliArgs(
 		version: values.version ?? false,
 		review: !(values["no-review"] ?? false) && reviewEnabled(env),
 		...((values["no-sandbox"] ?? false) || !sandboxEnabled(env) ? { noSandbox: true as const } : {}),
+		...(values.continue ? { continueSession: true as const } : {}),
+		...(values.resume === undefined ? {} : { resume: values.resume }),
+		...(values["no-session"] ? { noSession: true as const } : {}),
 	};
 }
 
@@ -144,6 +170,9 @@ function parse(argv: readonly string[]) {
 			version: { type: "boolean", short: "v" },
 			"no-review": { type: "boolean" },
 			"no-sandbox": { type: "boolean" },
+			continue: { type: "boolean" },
+			resume: { type: "string" },
+			"no-session": { type: "boolean" },
 		},
 	});
 }

@@ -12,6 +12,7 @@ import {
 	createBackend as createNamedBackend,
 	describeError,
 	freezeProfile,
+	type LoadedSession,
 	loadSandboxAdditions,
 	type MemoryPort,
 	orchestratorBackend,
@@ -22,6 +23,8 @@ import {
 	roleStartMessage,
 	SandboxConfigError,
 	Session,
+	SessionFileError,
+	SessionStore,
 	SYSTEM_PROMPT_APPEND,
 	sessionBackend,
 	type ToolDefinition,
@@ -32,6 +35,7 @@ import {
 import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { Renderer } from "./render.ts";
 import { createTerminalReader, type LineReader } from "./terminal-input.ts";
+import { savedTranscript } from "./transcript.ts";
 
 export interface CliIO {
 	stdin: Readable;
@@ -123,11 +127,34 @@ export async function run(
 		return EXIT_USAGE;
 	}
 
-	// --mode wins; --yes is --mode normal; otherwise the saved default, which says why when it is unusable.
+	// A saved session is read before anything starts: one that cannot be resumed starts nothing.
+	let resumed: LoadedSession | undefined;
+	if (args.continueSession || args.resume !== undefined) {
+		if (io.home === undefined) {
+			io.stderr("error: --continue and --resume need a home directory to read ~/.atelier/sessions from.\n");
+			return EXIT_FAILED;
+		}
+		try {
+			resumed = await loadSaved(new SessionStore(io.home), args.cwd, args.resume);
+		} catch (error) {
+			if (!(error instanceof SessionFileError)) throw error;
+			io.stderr(`error: ${error.message}\n`);
+			return EXIT_FAILED;
+		}
+		if (args.explicitBackend !== undefined && args.explicitBackend !== resumed.config.backend) {
+			io.stderr(
+				`error: Session ${resumed.header.id} was saved on ${resumed.config.backend}; --backend ${args.explicitBackend} cannot resume it.\n`,
+			);
+			return EXIT_USAGE;
+		}
+	}
+
+	// --mode wins; --yes is --mode normal; a resumed session keeps its mode; otherwise the saved default, which says why when it is unusable.
 	const home = io.home ?? homedir();
 	if (args.yes) io.stderr(YES_DEPRECATED);
-	const saved = args.mode === undefined && !args.yes ? await readDefaultPermissionMode(home) : undefined;
-	let mode: PermissionMode = args.mode ?? saved?.mode ?? "normal";
+	const saved =
+		args.mode === undefined && !args.yes && resumed === undefined ? await readDefaultPermissionMode(home) : undefined;
+	let mode: PermissionMode = args.mode ?? (args.yes ? undefined : resumed?.config.mode) ?? saved?.mode ?? "normal";
 
 	// A broken file stops the start: ignoring it would silently widen or narrow what commands may do.
 	if (!args.noSandbox && io.home !== undefined) {
@@ -151,14 +178,18 @@ export async function run(
 			: await freezeProfile({
 					cwd: args.cwd,
 					home: io.home,
-					...(args.profile === undefined ? {} : { choice: args.profile }),
+					...((args.profile ?? resumed?.config.profile) === undefined
+						? {}
+						: { choice: (args.profile ?? resumed?.config.profile) as string }),
 				});
-	const kind = sessionBackend(profile, args.explicitBackend, args.backend);
+	// A resumed session runs on the backend it was saved on, as if it had been asked for.
+	const requestedBackend = args.explicitBackend ?? resumed?.config.backend;
+	const kind = sessionBackend(profile, requestedBackend, args.backend);
 	let backend: AgentBackend;
 	try {
 		backend = await createBackend(kind);
 	} catch (error) {
-		const named = args.explicitBackend === undefined ? orchestratorBackend(profile) : undefined;
+		const named = requestedBackend === undefined ? orchestratorBackend(profile) : undefined;
 		io.stderr(
 			`error: ${named === undefined ? describeError(error) : roleStartMessage("orchestrator", named, error)}\n`,
 		);
@@ -264,8 +295,17 @@ export async function run(
 	};
 	onCtrlC = () => leaveWhileStarting(EXIT_INTERRUPTED);
 	const removeStartupTerminate = io.onTerminate?.((signal) => leaveWhileStarting(SIGNAL_EXIT + signal));
+	const recorder = resumed
+		? new SessionStore(io.home as string).continue(args.cwd, resumed)
+		: args.noSession || io.home === undefined
+			? undefined
+			: new SessionStore(io.home).create(args.cwd);
+	const model = args.model ?? resumed?.config.model;
 	const session = await Session.start({
 		backend,
+		...(recorder === undefined ? {} : { record: recorder }),
+		...(resumed?.resume === undefined ? {} : { resume: resumed.resume }),
+		...(resumed?.config.thinking === undefined ? {} : { thinking: resumed.config.thinking }),
 		...(memory ? { memory } : {}),
 		...(memoryUnavailable === undefined ? {} : { memoryUnavailable }),
 		...(profile === undefined ? {} : { profile }),
@@ -279,7 +319,7 @@ export async function run(
 		odd: true,
 		...(io.home === undefined ? {} : { projectInstructions: { home: io.home } }),
 		cwd: args.cwd,
-		...(args.model === undefined ? {} : { model: args.model }),
+		...(model === undefined ? {} : { model }),
 		tools: io.tools ?? coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
 		...(args.noSandbox ? { noSandbox: true } : {}),
@@ -331,12 +371,18 @@ export async function run(
 			);
 		},
 	})
-		.catch((error: unknown) => {
+		.catch(async (error: unknown) => {
 			lines.close();
 			restoreTerminal();
-			throw error;
+			if (resumed === undefined) throw error;
+			// Nothing was started: say why and leave the saved session as it was.
+			await memory?.close().catch(() => {});
+			io.stderr(`error: Could not resume session ${resumed.header.id}: ${describeError(error)}\n`);
+			return undefined;
 		})
 		.finally(() => removeStartupTerminate?.());
+	if (session === undefined) return EXIT_FAILED;
+	if (resumed) renderer.write(savedTranscript(resumed.header.id, resumed.name, resumed.entries));
 
 	// Ctrl+C: the first press interrupts the turn (and answers no to a pending
 	// approval); a press with no turn running, or a second one, closes the
@@ -426,6 +472,14 @@ export async function run(
 		removeInterrupt?.();
 		removeTerminate?.();
 	}
+}
+
+/** The saved session `id` of the folder, or the newest one it can resume. */
+async function loadSaved(store: SessionStore, cwd: string, id: string | undefined): Promise<LoadedSession> {
+	if (id !== undefined) return store.load(cwd, id);
+	const newest = (await store.list(cwd)).find((info) => info.resumable);
+	if (newest === undefined) throw new SessionFileError("not_found", `No saved session to continue in ${cwd}.`);
+	return store.load(cwd, newest.id);
 }
 
 /** Reads stdin line by line on demand; opened lazily so a one-shot run without prompts never touches stdin. */
