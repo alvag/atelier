@@ -8,6 +8,7 @@ import type {
 	Phase,
 	RefusalCause,
 	RiskDeclaration,
+	SessionProfile,
 	TurnPhases,
 	Usage,
 } from "@atelier/core/protocol";
@@ -161,6 +162,10 @@ export interface ChatState {
 	backend?: string;
 	model?: string;
 	authSource?: AuthSource;
+	/** The main agent's effort, when a level was asked. */
+	effort?: string;
+	/** The profile the session froze, when the core resolved one. */
+	profile?: SessionProfile;
 	/** The ODD phase the agent is in. */
 	phase?: Phase;
 	/** Whether `bash` runs in the sandbox, with what, or why not; absent until the first turn says. */
@@ -230,6 +235,8 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 				review: _review,
 				context: _context,
 				expectedMissTurns: _expected,
+				effort: _effort,
+				profile: _profile,
 				...rest
 			} = state;
 			return {
@@ -277,8 +284,17 @@ function withoutSession(state: ChatState): ChatState {
 function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 	if (event.parentCallId !== undefined) return applySubagentEvent(state, event, event.parentCallId);
 	switch (event.type) {
-		case "session_started":
-			return { ...state, backend: event.backend, model: event.model, authSource: event.authSource };
+		case "session_started": {
+			const { effort: _effort, profile: _profile, ...rest } = state;
+			return {
+				...rest,
+				backend: event.backend,
+				model: event.model,
+				authSource: event.authSource,
+				...(event.effort === undefined ? {} : { effort: event.effort }),
+				...(event.profile === undefined ? {} : { profile: event.profile }),
+			};
+		}
 		case "rate_limit": {
 			if (event.status === "allowed") return state;
 			return { ...state, notice: `Rate limit: ${event.status}${event.window ? ` (${event.window})` : ""}` };

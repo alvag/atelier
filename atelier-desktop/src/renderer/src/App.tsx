@@ -1,4 +1,4 @@
-import { type BackendName, DEFAULT_BACKEND } from "@atelier/core/protocol";
+import { type BackendName, DEFAULT_BACKEND, type SessionProfile } from "@atelier/core/protocol";
 import { type FormEvent, useCallback, useState } from "react";
 import type { AtelierBridge } from "../../shared/bridge.ts";
 import { FeaturePanel } from "./chat/FeaturePanel.tsx";
@@ -21,6 +21,23 @@ function contextLabel({ tokens, window }: { tokens: number; window: number }): s
 	return `context ${numbers.format(tokens)} / ${numbers.format(window)} (${Math.round((tokens / window) * 100)}%)`;
 }
 
+/** `profile: cheap (repo)`, or `profile: default`. */
+function profileLabel({ name, origin }: SessionProfile): string {
+	return name === undefined ? `profile: ${origin}` : `profile: ${name} (${origin})`;
+}
+
+/** One line per role the profile sets: `verifier: anthropic-api/claude-sonnet-5-5 thinking medium`. */
+function profileRoles({ roles }: SessionProfile): string {
+	return Object.entries(roles)
+		.map(([role, { backend, model, thinking }]) => {
+			const parts: string[] = [];
+			if (model !== undefined) parts.push(backend === undefined ? model : `${backend}/${model}`);
+			if (thinking !== undefined) parts.push(`thinking ${thinking}`);
+			return `${role}: ${parts.join(" ")}`;
+		})
+		.join("\n");
+}
+
 function coreLabel(core: ReturnType<typeof useChat>["state"]["core"]): string {
 	if (core.status === "ready") return `core ${core.version}`;
 	if (core.status === "starting") return "starting the core…";
@@ -33,6 +50,8 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 	const [backend, setBackend] = useState<BackendName>(DEFAULT_BACKEND);
 	const [model, setModel] = useState(MODELS[DEFAULT_BACKEND][0] as string);
 	const [noSandbox, setNoSandbox] = useState(false);
+	/** Empty: the core resolves the profile by layers. */
+	const [profile, setProfile] = useState("");
 	const [draft, setDraft] = useState("");
 	const onAnswer = useCallback(
 		(callId: string, approved: boolean) => void chat.answerApproval(callId, approved),
@@ -48,7 +67,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 
 	const openFolder = async () => {
 		const cwd = await chat.pickFolder();
-		if (cwd) await chat.openSession(cwd, model, backend, noSandbox);
+		if (cwd) await chat.openSession(cwd, model, backend, noSandbox, profile || undefined);
 	};
 	const submit = (event?: FormEvent) => {
 		event?.preventDefault();
@@ -90,6 +109,19 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 						))}
 					</select>
 				</label>
+				{chat.profiles.profiles.length > 0 ? (
+					<label>
+						profile{" "}
+						<select value={profile} onChange={(event) => setProfile(event.target.value)} disabled={state.busy}>
+							<option value="">
+								{chat.profiles.active === undefined ? "by layers" : `by layers (active: ${chat.profiles.active})`}
+							</option>
+							{chat.profiles.profiles.map((name) => (
+								<option key={name}>{name}</option>
+							))}
+						</select>
+					</label>
+				) : null}
 				<label className={noSandbox ? "warning" : undefined}>
 					<input
 						type="checkbox"
@@ -142,7 +174,10 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 
 			<footer className="status" role="status">
 				<span>{coreLabel(state.core)}</span>
-				{state.model ? <span>{state.model}</span> : null}
+				{state.model ? (
+					<span>{state.effort === undefined ? state.model : `${state.model} · effort ${state.effort}`}</span>
+				) : null}
+				{state.profile ? <span title={profileRoles(state.profile)}>{profileLabel(state.profile)}</span> : null}
 				{state.phase ? <span className="phase">{state.phase}</span> : null}
 				{state.context ? (
 					<span title={`compacts at ${numbers.format(state.context.compactAt)} tokens`}>

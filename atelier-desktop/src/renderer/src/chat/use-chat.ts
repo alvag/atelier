@@ -1,5 +1,5 @@
 import type { BackendName, ClientCommand } from "@atelier/core/protocol";
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { AtelierBridge, CommandResult, HostMessage } from "../../../shared/bridge.ts";
 import { type ChatAction, type ChatState, initialChatState, reduceChat } from "./reducer.ts";
 
@@ -8,8 +8,16 @@ const nextFrame = (callback: () => void) =>
 
 export interface Chat {
 	state: ChatState;
-	/** With `noSandbox`, the session's `bash` runs without the sandbox. */
-	openSession(cwd: string, model: string | undefined, backend: BackendName, noSandbox?: boolean): Promise<void>;
+	/** With `noSandbox`, the session's `bash` runs without the sandbox; `profile` is the chosen profile, absent to resolve it by layers. */
+	openSession(
+		cwd: string,
+		model: string | undefined,
+		backend: BackendName,
+		noSandbox?: boolean,
+		profile?: string,
+	): Promise<void>;
+	/** The profile names in `~/.atelier/profiles.json` and its `active`, asked each time the core is ready; none when it cannot say. */
+	profiles: ProfileList;
 	send(prompt: string): Promise<void>;
 	interrupt(): Promise<void>;
 	answerApproval(callId: string, approved: boolean): Promise<void>;
@@ -20,6 +28,22 @@ export interface Chat {
 	undoCorrection(reviewId: string): Promise<void>;
 	restartCore(): Promise<void>;
 	pickFolder(): Promise<string | undefined>;
+}
+
+export interface ProfileList {
+	profiles: string[];
+	active?: string;
+}
+
+const NO_PROFILES: ProfileList = { profiles: [] };
+
+/** What `profiles.list` answered, keeping only names. */
+function profileList(result: Record<string, unknown>): ProfileList {
+	const { profiles, active } = result;
+	return {
+		profiles: Array.isArray(profiles) ? profiles.filter((name): name is string => typeof name === "string") : [],
+		...(typeof active === "string" ? { active } : {}),
+	};
 }
 
 /** Chat state fed by the bridge. Host messages are applied once per frame, so streaming does not re-render per delta. */
@@ -51,6 +75,19 @@ export function useChat(bridge: AtelierBridge): Chat {
 		return unsubscribe;
 	}, [bridge]);
 
+	const [profiles, setProfiles] = useState<ProfileList>(NO_PROFILES);
+	const ready = state.core.status === "ready";
+	useEffect(() => {
+		if (!ready) return;
+		let current = true;
+		void bridge.request({ command: "profiles.list" }).then((result) => {
+			if (current) setProfiles(result.ok ? profileList(result.result) : NO_PROFILES);
+		});
+		return () => {
+			current = false;
+		};
+	}, [bridge, ready]);
+
 	const request = useCallback(
 		async (command: ClientCommand): Promise<CommandResult> => {
 			const result = await bridge.request(command);
@@ -62,7 +99,8 @@ export function useChat(bridge: AtelierBridge): Chat {
 
 	return {
 		state,
-		openSession: async (cwd, model, backend, noSandbox = false) => {
+		profiles,
+		openSession: async (cwd, model, backend, noSandbox = false, profile) => {
 			const previous = stateRef.current.session;
 			if (previous) await request({ command: "session.close", sessionId: previous.id });
 			const result = await request({
@@ -71,6 +109,7 @@ export function useChat(bridge: AtelierBridge): Chat {
 				...(model ? { model } : {}),
 				backend,
 				...(noSandbox ? { noSandbox: true } : {}),
+				...(profile ? { profile } : {}),
 			});
 			if (result.ok && typeof result.result.sessionId === "string")
 				dispatch({ type: "session_opened", sessionId: result.result.sessionId, cwd, noSandbox });

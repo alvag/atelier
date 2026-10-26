@@ -10,15 +10,18 @@ afterEach(cleanup);
 /** In-memory bridge: records commands, answers them with `answers`, and lets the test push host messages. */
 function fakeBridge(status: CoreStatus = { type: "core_ready", version: "0.0.0" }) {
 	const commands: ClientCommand[] = [];
+	/** `profiles.list` requests, kept apart: the selector asks for them on its own. */
+	const listed: ClientCommand[] = [];
 	const listeners = new Set<(message: HostMessage) => void>();
 	let seq = 0;
 	const answers: Partial<Record<ClientCommand["command"], CommandResult>> = {
 		"session.start": { ok: true, result: { sessionId: "s1" } },
 		"session.send": { ok: true, result: { turnId: "t1" } },
+		"profiles.list": { ok: true, result: { profiles: [] } },
 	};
 	const bridge: AtelierBridge = {
 		request: async (command) => {
-			commands.push(command);
+			(command.command === "profiles.list" ? listed : commands).push(command);
 			return answers[command.command] ?? { ok: true, result: {} };
 		},
 		onMessage: (listener) => {
@@ -37,7 +40,7 @@ function fakeBridge(status: CoreStatus = { type: "core_ready", version: "0.0.0" 
 		});
 	const emit = (body: AtelierEventBody) =>
 		push({ type: "event", sessionId: "s1", event: { ...body, seq: ++seq, turnId: "t1" } as never });
-	return { bridge, commands, answers, push, emit };
+	return { bridge, commands, listed, answers, push, emit };
 }
 
 async function openFolderAndSend(fake: ReturnType<typeof fakeBridge>, prompt: string) {
@@ -68,6 +71,61 @@ describe("App", () => {
 		]);
 		expect(screen.getByText("add validation")).toBeTruthy();
 		expect((screen.getByLabelText("Prompt") as HTMLTextAreaElement).value).toBe("");
+	});
+
+	it("lists the profiles once the core is ready and starts the session with the chosen one", async () => {
+		const fake = fakeBridge();
+		fake.answers["profiles.list"] = { ok: true, result: { profiles: ["cheap", "deep"], active: "deep" } };
+		render(<App bridge={fake.bridge} />);
+		await screen.findByText("core 0.0.0");
+		const select = (await screen.findByLabelText("profile")) as HTMLSelectElement;
+		await waitFor(() => expect([...select.options].map((option) => option.value)).toEqual(["", "cheap", "deep"]));
+		expect(select.options[0]?.textContent).toBe("by layers (active: deep)");
+		expect(fake.listed).toEqual([{ command: "profiles.list" }]);
+		fireEvent.change(select, { target: { value: "cheap" } });
+		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
+		await waitFor(() =>
+			expect(fake.commands).toEqual([
+				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code", profile: "cheap" },
+			]),
+		);
+	});
+
+	it("has no profile selector without profiles", async () => {
+		const fake = fakeBridge();
+		render(<App bridge={fake.bridge} />);
+		await screen.findByText("core 0.0.0");
+		await waitFor(() => expect(fake.listed).toHaveLength(1));
+		expect(screen.queryByLabelText("profile")).toBeNull();
+	});
+
+	it("shows the session's profile, its origin and its effort in the status bar", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({
+			type: "session_started",
+			backend: "claude-code",
+			model: "opus",
+			authSource: "subscription",
+			effort: "high",
+			profile: {
+				name: "cheap",
+				origin: "repo",
+				roles: { verifier: { backend: "anthropic-api", model: "claude-sonnet-5-5", thinking: "medium" } },
+			},
+		});
+		const status = screen.getByRole("status");
+		const profile = await within(status).findByText("profile: cheap (repo)");
+		expect(profile.getAttribute("title")).toBe("verifier: anthropic-api/claude-sonnet-5-5 thinking medium");
+		expect(within(status).getByText("opus · effort high")).toBeTruthy();
+		fake.emit({
+			type: "session_started",
+			backend: "claude-code",
+			model: "opus",
+			authSource: "subscription",
+			profile: { origin: "default", roles: {} },
+		});
+		expect(await within(status).findByText("profile: default")).toBeTruthy();
 	});
 
 	it("streams text, shows tool rows and the turn's tokens", async () => {
