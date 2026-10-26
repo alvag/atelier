@@ -3,7 +3,14 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findReceipt, type Receipt, writeReceipt } from "../src/review/receipts.ts";
+import {
+	findReceipt,
+	findReceipts,
+	latestCorrection,
+	type Receipt,
+	replaceReceipt,
+	writeReceipt,
+} from "../src/review/receipts.ts";
 
 const TREE = "a".repeat(40);
 const receipt = (over: Partial<Receipt> = {}): Receipt => ({
@@ -38,13 +45,13 @@ const scratch = async () => {
 };
 
 describe("receipts", () => {
-	it("writes <gitDir>/atelier/reviews/<candidate tree>.json with mode 0600 and reads it back", async () => {
+	it("writes <gitDir>/atelier/reviews/<candidate tree>-<review id>.json with mode 0600 and reads it back", async () => {
 		const gitDir = await scratch();
 		await writeReceipt(gitDir, receipt());
-		const file = join(gitDir, "atelier", "reviews", `${TREE}.json`);
+		const file = join(gitDir, "atelier", "reviews", `${TREE}-r1.json`);
 		expect((await stat(file)).mode & 0o777).toBe(0o600);
 		expect(await findReceipt(gitDir, TREE)).toEqual(receipt());
-		expect(await readdir(join(gitDir, "atelier", "reviews"))).toEqual([`${TREE}.json`]);
+		expect(await readdir(join(gitDir, "atelier", "reviews"))).toEqual([`${TREE}-r1.json`]);
 	});
 
 	it("round-trips the optional fields", async () => {
@@ -60,11 +67,75 @@ describe("receipts", () => {
 		expect(await findReceipt(gitDir, TREE)).toEqual(full);
 	});
 
-	it("replaces an earlier receipt of the same candidate", async () => {
+	it("keeps one file per review of the same candidate, both readable, and finds the most recent", async () => {
 		const gitDir = await scratch();
-		await writeReceipt(gitDir, receipt({ verdict: "declined" }));
-		await writeReceipt(gitDir, receipt({ verdict: "approved" }));
-		expect((await findReceipt(gitDir, TREE))?.verdict).toBe("approved");
+		const first = receipt({ id: "r1", verdict: "declined", createdAt: "2026-10-22T10:00:00.000Z" });
+		const second = receipt({ id: "r2", verdict: "approved", createdAt: "2026-10-22T11:00:00.000Z" });
+		await writeReceipt(gitDir, second);
+		await writeReceipt(gitDir, first);
+		expect((await readdir(join(gitDir, "atelier", "reviews"))).sort()).toEqual([`${TREE}-r1.json`, `${TREE}-r2.json`]);
+		expect((await findReceipts(gitDir, TREE)).map((stored) => stored.receipt)).toEqual([second, first]);
+		expect(await findReceipt(gitDir, TREE)).toEqual(second);
+	});
+
+	it("reads a legacy <tree>.json receipt, and it is the latest when it is newer", async () => {
+		const gitDir = await scratch();
+		const reviews = join(gitDir, "atelier", "reviews");
+		await mkdir(reviews, { recursive: true });
+		const legacy = receipt({ id: "old", verdict: "declined", createdAt: "2026-10-22T12:00:00.000Z" });
+		await writeFile(join(reviews, `${TREE}.json`), `${JSON.stringify(legacy, null, 2)}\n`);
+		expect(await findReceipt(gitDir, TREE)).toEqual(legacy);
+		await writeReceipt(gitDir, receipt({ id: "r1", createdAt: "2026-10-22T10:00:00.000Z" }));
+		expect(await findReceipt(gitDir, TREE)).toEqual(legacy);
+		await writeReceipt(gitDir, receipt({ id: "r2", verdict: "escalated", createdAt: "2026-10-22T13:00:00.000Z" }));
+		expect((await findReceipt(gitDir, TREE))?.id).toBe("r2");
+		expect(await readdir(reviews)).toContain(`${TREE}.json`);
+	});
+
+	it("does not mix up the receipts of two trees", async () => {
+		const gitDir = await scratch();
+		const other = "d".repeat(40);
+		await writeReceipt(gitDir, receipt({ id: "r1" }));
+		await writeReceipt(gitDir, receipt({ id: "r2", candidate: other, createdAt: "2026-10-23T10:00:00.000Z" }));
+		expect((await findReceipt(gitDir, TREE))?.id).toBe("r1");
+		expect((await findReceipt(gitDir, other))?.id).toBe("r2");
+	});
+
+	it("finds the latest correction across trees and across receipts of one tree, legacy files included", async () => {
+		const gitDir = await scratch();
+		const reviews = join(gitDir, "atelier", "reviews");
+		const other = "d".repeat(40);
+		const fix = (over: Partial<Receipt>) => receipt({ verdict: "escalated", corrected: "c".repeat(40), ...over });
+		await writeReceipt(gitDir, fix({ id: "a1", createdAt: "2026-10-22T10:00:00.000Z" }));
+		await writeReceipt(gitDir, fix({ id: "b1", candidate: other, createdAt: "2026-10-22T11:00:00.000Z" }));
+		expect((await latestCorrection(gitDir))?.id).toBe("b1");
+		await writeReceipt(gitDir, fix({ id: "a2", createdAt: "2026-10-22T12:00:00.000Z" }));
+		expect((await latestCorrection(gitDir))?.id).toBe("a2");
+		await writeFile(
+			join(reviews, `${other}.json`),
+			JSON.stringify(fix({ id: "legacy", candidate: other, createdAt: "2026-10-22T13:00:00.000Z" })),
+		);
+		expect((await latestCorrection(gitDir))?.id).toBe("legacy");
+		await writeReceipt(gitDir, receipt({ id: "a3", createdAt: "2026-10-22T14:00:00.000Z" }));
+		expect((await latestCorrection(gitDir))?.id).toBe("legacy");
+	});
+
+	it("replaces one receipt in place and leaves the other of the same tree byte-identical", async () => {
+		const gitDir = await scratch();
+		const reviews = join(gitDir, "atelier", "reviews");
+		await writeReceipt(gitDir, receipt({ id: "r1", createdAt: "2026-10-22T10:00:00.000Z" }));
+		await writeReceipt(gitDir, receipt({ id: "r2", createdAt: "2026-10-22T11:00:00.000Z" }));
+		const before = await readFile(join(reviews, `${TREE}-r2.json`));
+		const [, older] = await findReceipts(gitDir, TREE);
+		await replaceReceipt(gitDir, older?.file as string, {
+			...(older?.receipt as Receipt),
+			undoneAt: "2026-10-23T00:00:00.000Z",
+		});
+		expect(await readFile(join(reviews, `${TREE}-r2.json`))).toEqual(before);
+		expect((await readdir(reviews)).sort()).toEqual([`${TREE}-r1.json`, `${TREE}-r2.json`]);
+		expect(JSON.parse(await readFile(join(reviews, `${TREE}-r1.json`), "utf8"))).toMatchObject({
+			undoneAt: "2026-10-23T00:00:00.000Z",
+		});
 	});
 
 	it("reads an old receipt with major and minor as warning and suggestion, and leaves the file as it was", async () => {
@@ -116,9 +187,9 @@ describe("receipts", () => {
 		const gitDir = await scratch();
 		const reviews = join(gitDir, "atelier", "reviews");
 		// A directory where the receipt belongs makes the final rename fail.
-		await mkdir(join(reviews, `${TREE}.json`), { recursive: true });
+		await mkdir(join(reviews, `${TREE}-r1.json`), { recursive: true });
 		await expect(writeReceipt(gitDir, receipt())).rejects.toThrow();
-		expect(await readdir(reviews)).toEqual([`${TREE}.json`]);
+		expect(await readdir(reviews)).toEqual([`${TREE}-r1.json`]);
 	});
 
 	it("never touches the worktree: git status is unchanged after writing", async () => {

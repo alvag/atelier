@@ -26,7 +26,7 @@ import type { ToolDefinition } from "../tools/types.ts";
 import { type Candidate, emptyStartBase, type FreezeOptions, freezeCandidate, readTurnGit } from "./candidate.ts";
 import type { Finding } from "./findings.ts";
 import { gitText, runGit } from "./git.ts";
-import { findReceipt, latestCorrection, type Receipt, writeReceipt } from "./receipts.ts";
+import { findReceipt, findReceipts, latestCorrection, type Receipt, replaceReceipt, writeReceipt } from "./receipts.ts";
 import { type ReviewDeps, type RoleName, type RoleResult, runReview } from "./reviewer.ts";
 import { type Assessment, assessRisk, type Escalation } from "./risk.ts";
 import { createRiskTool, RiskRequests } from "./tool.ts";
@@ -164,9 +164,11 @@ export class SessionReview {
 					: `No review ${reviewId} in this session.`,
 			);
 		const { root, gitDir } = found;
-		// The stored receipt knows whether another session undid it; this session's copy stands in when it was not written.
-		const stored = await findReceipt(gitDir, found.receipt.candidate);
-		const receipt = stored ?? found.receipt;
+		// The stored receipt of this very review knows whether another session undid it; this session's copy stands in when it was not written.
+		const stored = (await findReceipts(gitDir, found.receipt.candidate)).find(
+			({ receipt }) => receipt.id === found.receipt.id,
+		);
+		const receipt = stored?.receipt ?? found.receipt;
 		const id = reviewId ?? this.#reviewIdOf(receipt) ?? receipt.id;
 		if (receipt.verdict !== "escalated")
 			return refuse(
@@ -174,7 +176,7 @@ export class SessionReview {
 				`The review was ${receipt.verdict}, not escalated: there is no correction to undo.`,
 			);
 		if (receipt.corrected === null) return refuse("no_correction", "The review left no correction in the worktree.");
-		if (this.#undone.has(receipt.candidate) || receipt.undoneAt !== undefined)
+		if (this.#undone.has(receipt.id) || receipt.undoneAt !== undefined)
 			return refuse("correction_already_undone", "This correction was already undone.");
 		if (receipt.headTree === undefined)
 			return refuse(
@@ -183,9 +185,12 @@ export class SessionReview {
 			);
 		const result = await undoCorrection(root, receipt.candidate, receipt.corrected, receipt.headTree);
 		if (!result.ok) return refuse(result.code, result.message);
-		this.#undone.add(receipt.candidate);
+		this.#undone.add(receipt.id);
 		try {
-			await writeReceipt(gitDir, { ...receipt, undoneAt: new Date().toISOString() });
+			const undone = { ...receipt, undoneAt: new Date().toISOString() };
+			// The file the receipt came from, never a newer receipt of the same tree.
+			if (stored === undefined) await writeReceipt(gitDir, undone);
+			else await replaceReceipt(gitDir, stored.file, undone);
 		} catch (error) {
 			host.push(errorEvent("review_receipt_failed", `The receipt was not updated: ${describeError(error)}`, true));
 		}
@@ -207,7 +212,7 @@ export class SessionReview {
 
 	/** The id this session gave the review of a receipt, when it ran it. */
 	#reviewIdOf(receipt: Receipt): string | undefined {
-		return [...this.#finished].find(([, found]) => found.receipt.candidate === receipt.candidate)?.[0];
+		return [...this.#finished].find(([, found]) => found.receipt.id === receipt.id)?.[0];
 	}
 
 	async #run(host: ReviewHost, manual: boolean, ref?: string): Promise<Spent> {

@@ -643,7 +643,7 @@ describe("run: review", () => {
 			"Review this change?\n  risk: high\n  reasons: path: src/auth.ts (auth)\n  lenses: risk, resilience, readability, reliability\n[y/N] ",
 		);
 		expect(h.backend.prompts).toHaveLength(5);
-		expect(h.out()).toMatch(/✓ review approved · receipt \.git\/atelier\/reviews\/[0-9a-f]+\.json\n/);
+		expect(h.out()).toMatch(/✓ review approved · receipt \.git\/atelier\/reviews\/[0-9a-f]+-[A-Za-z0-9_.-]+\.json\n/);
 	});
 
 	it("asks with the lenses the agent chose and why, and runs only those", async () => {

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -632,7 +632,8 @@ describe("consent and the cycle", () => {
 			refuted: [],
 		});
 		expect(done?.correction).toEqual({ budget: 2, used: 2 });
-		expect(done?.receiptPath?.endsWith(join(".git", "atelier", "reviews", `${assessed?.tree}.json`))).toBe(true);
+		expect(done?.receiptPath).toContain(join(".git", "atelier", "reviews", `${assessed?.tree}-`));
+		expect(done?.receiptPath?.endsWith(".json")).toBe(true);
 		expect(JSON.parse(await readFile(done?.receiptPath as string, "utf8"))).toMatchObject({ verdict: "approved" });
 		expect(done?.usage.input).toBe(4 * 2 + 2 + 2 + 1);
 
@@ -776,7 +777,7 @@ describe("Session.review", () => {
 		expect(await receipts(s.cwd)).toHaveLength(1);
 	});
 
-	it("reviews again, overwriting the receipt, even when the candidate already has one", async () => {
+	it("reviews again, keeping the earlier receipt, even when the candidate already has one", async () => {
 		const s = await start({ roles: new RoleBackend(clean) });
 		await writeFile(join(s.cwd, "a.ts"), "base\nmore\n");
 		await collect(s.session.review());
@@ -784,8 +785,19 @@ describe("Session.review", () => {
 		const events = await collect(s.session.review());
 		expect(ofType(events, "review_finished")[0]).toMatchObject({ verdict: "approved" });
 		expect(s.roles.roles).toHaveLength(2);
-		expect(await receipts(s.cwd)).toHaveLength(1);
-		expect((await receipts(s.cwd))[0]?.file).toBe(first?.file);
+		const stored = await receipts(s.cwd);
+		expect(stored).toHaveLength(2);
+		expect(stored.map(({ file }) => file)).toContain(first?.file);
+	});
+
+	it("does not offer a candidate again when it has two receipts", async () => {
+		const s = await start({ turns: [HIGH_TURN, [{ event: finished }]], roles: new RoleBackend(clean) });
+		await s.send("add auth");
+		await collect(s.session.review());
+		expect(await receipts(s.cwd)).toHaveLength(2);
+		const again = await s.send("again");
+		expect(types(again).filter((type) => type.startsWith("review_"))).toEqual([]);
+		expect(s.asked).toHaveLength(1);
 	});
 
 	it("answers review_unavailable outside a git repo, and busy or closed like send", async () => {
@@ -1272,7 +1284,7 @@ describe("the declaration of a turn", () => {
 		expect([...(assessed[0]?.files ?? [])].sort()).toEqual(["a.ts", "src/auth.ts"]);
 		expect(assessed[0]).toMatchObject({ level: "high", reviewDue: true, declaration: { kind: "none" } });
 		expect(s.asked).toHaveLength(1);
-		expect((await receipts(s.cwd)).map(({ file }) => file)).toEqual([`${assessed[0]?.tree}.json`]);
+		expect((await receipts(s.cwd)).map(({ file }) => file.split("-")[0])).toEqual([assessed[0]?.tree]);
 	});
 
 	it("stops quietly when the answer to the ask undoes the change", async () => {
@@ -1843,7 +1855,7 @@ describe("independent verification", () => {
 			expect(gitIn(s.cwd, "show", `${assessed?.tree}:a.ts`)).toBe("base\nfixed\n");
 			expect(await readFile(join(s.cwd, "a.ts"), "utf8")).toBe("base\nfixed\n");
 			expect(s.asked).toHaveLength(1);
-			expect((await receipts(s.cwd)).map(({ file }) => file)).toEqual([`${assessed?.tree}.json`]);
+			expect((await receipts(s.cwd)).map(({ file }) => file.split("-")[0])).toEqual([assessed?.tree]);
 		});
 
 		it("skips the review when the correction undoes the whole change", async () => {
@@ -2316,6 +2328,93 @@ describe("undoing an escalated correction", () => {
 		const found = (await receipts(cwd)).find(({ receipt }) => (receipt as Record<string, unknown>).corrected !== null);
 		return { file: join(cwd, ".git", "atelier", "reviews", found?.file as string), receipt: found?.receipt };
 	};
+
+	/** The candidate tree of the review that escalated, read from its receipt. */
+	const treeOf = async (cwd: string) =>
+		((await reviewedReceipt(cwd)).receipt as { candidate?: string }).candidate as string;
+
+	/** Another receipt of the same tree, as a later review of it would leave: its own file, id and time. */
+	const siblingReceipt = async (cwd: string, name: string, over: Record<string, unknown>) => {
+		const { file, receipt } = await reviewedReceipt(cwd);
+		const sibling = join(dirname(file), name);
+		await writeFile(sibling, `${JSON.stringify({ ...receipt, ...over }, null, 2)}\n`);
+		return { original: file, sibling };
+	};
+	const LATER = "2999-01-01T00:00:00.000Z";
+
+	it("undoes the latest receipt of a tree when a second review of it is newer, and marks only that file", async () => {
+		const s = await escalated();
+		const { original, sibling } = await siblingReceipt(s.cwd, `${await treeOf(s.cwd)}-newer.json`, {
+			id: "newer",
+			createdAt: LATER,
+		});
+		const originalBytes = await readFile(original);
+		const events = await collect(s.session.undoCorrection());
+		expect(ofType(events, "error")).toEqual([]);
+		expect(ofType(events, "correction_undone")).toHaveLength(1);
+		expect(JSON.parse(await readFile(sibling, "utf8"))).toMatchObject({ id: "newer", undoneAt: expect.any(String) });
+		expect(await readFile(original)).toEqual(originalBytes);
+		const [again] = ofType(await collect(s.session.undoCorrection()), "error");
+		expect(again).toMatchObject({ code: "correction_already_undone" });
+	});
+
+	it("marks the receipt of the review it was asked to undo, not a newer one of the same tree", async () => {
+		const s = await escalated();
+		const { original, sibling } = await siblingReceipt(s.cwd, `${await treeOf(s.cwd)}-newer.json`, {
+			id: "newer",
+			createdAt: LATER,
+		});
+		const siblingBytes = await readFile(sibling);
+		const events = await s.undo(s.reviewId);
+		expect(ofType(events, "error")).toEqual([]);
+		expect(JSON.parse(await readFile(original, "utf8"))).toMatchObject({ undoneAt: expect.any(String) });
+		expect(await readFile(sibling)).toEqual(siblingBytes);
+	});
+
+	it("undoes the latest correction across several trees", async () => {
+		const s = await escalated();
+		const { receipt } = await reviewedReceipt(s.cwd);
+		const other = "e".repeat(40);
+		await siblingReceipt(s.cwd, `${other}-x.json`, {
+			id: "x",
+			candidate: other,
+			createdAt: "2000-01-01T00:00:00.000Z",
+		});
+		const events = await collect(s.session.undoCorrection());
+		expect(ofType(events, "error")).toEqual([]);
+		expect(ofType(events, "correction_undone")).toMatchObject([{ restored: ["a.ts", "src/auth.ts"] }]);
+		expect(receipt).toMatchObject({ verdict: "escalated" });
+	});
+
+	it("reads a legacy <tree>.json receipt, undoes it, and writes undoneAt into that same file", async () => {
+		const s = await escalated();
+		const { file } = await reviewedReceipt(s.cwd);
+		const tree = await treeOf(s.cwd);
+		const legacy = join(dirname(file), `${tree}.json`);
+		await rename(file, legacy);
+		const later = await start({ cwd: s.cwd });
+		const events = await collect(later.session.undoCorrection());
+		expect(ofType(events, "error")).toEqual([]);
+		expect(ofType(events, "correction_undone")).toHaveLength(1);
+		expect(JSON.parse(await readFile(legacy, "utf8"))).toMatchObject({
+			verdict: "escalated",
+			undoneAt: expect.any(String),
+		});
+		expect((await readdir(dirname(file))).filter((name) => name.startsWith(tree))).toEqual([basename(legacy)]);
+	});
+
+	it("prefers a legacy receipt over a newer-named file only when it is newer by createdAt", async () => {
+		const s = await escalated();
+		const { file, receipt } = await reviewedReceipt(s.cwd);
+		const legacy = join(dirname(file), `${await treeOf(s.cwd)}.json`);
+		// The file named after the review is the newest, so it is the one undone; the legacy one is left alone.
+		await writeFile(legacy, `${JSON.stringify({ ...receipt, id: "legacy", createdAt: "2000-01-01T00:00:00.000Z" })}\n`);
+		const legacyBytes = await readFile(legacy);
+		const events = await collect(s.session.undoCorrection());
+		expect(ofType(events, "error")).toEqual([]);
+		expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({ undoneAt: expect.any(String) });
+		expect(await readFile(legacy)).toEqual(legacyBytes);
+	});
 
 	it("undoes in a new session the latest escalated correction an earlier session left, from its receipt", async () => {
 		const s = await escalated();
