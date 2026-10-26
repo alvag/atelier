@@ -29,6 +29,8 @@ import {
 	CLASSIFIER_TIMEOUT_MS,
 	classifierPrompt,
 	denialMessage,
+	lastMessageTail,
+	type PreviousTurn,
 	parseDecision,
 	pauseReason,
 } from "./permission-classifier.ts";
@@ -177,8 +179,12 @@ export class Session {
 	#announced = false;
 	/** The sandbox warning was already said in this turn. */
 	#warned = false;
-	/** The user's prompt of the turn running now, verbatim: all the classifier knows of the conversation. */
+	/** The user's prompt of the turn running now, verbatim: what the classifier judges an action against. */
 	#turnPrompt: string | undefined;
+	/** The last `send` turn that finished: the rest the classifier knows of the conversation. */
+	#previousTurn: PreviousTurn | undefined;
+	/** The main agent's text since its last tool call in this turn: what the user reads before writing the next prompt. */
+	#lastMessage = "";
 	/** What the classifier did in this turn; it pauses for the rest of the turn when these reach their limits. */
 	#classifier = { consecutive: 0, denials: 0, failures: 0 };
 	/** What the classifier's calls cost in this turn, added to `turn_finished` as the `classifier` part. */
@@ -357,12 +363,14 @@ export class Session {
 			}
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }> | undefined;
 			let failed = false;
+			this.#lastMessage = "";
 			try {
 				for await (const event of backendSession.send(sent)) {
 					if (event.type === "turn_finished") finish ??= event;
 					else {
 						if (event.type === "error") failed = true;
 						if (event.type === "session_started") this.#mainAgent = phaseAgent("orchestrator", event);
+						if (event.type === "text_delta") this.#lastMessage += event.text;
 						turn.push(this.#withOrchestrator(this.#withProfile(this.#withMode(event))));
 					}
 				}
@@ -370,6 +378,7 @@ export class Session {
 				failed = true;
 				turn.push(errorEvent("backend_error", describeError(error)));
 			}
+			this.#previousTurn = { request: prompt, lastMessage: lastMessageTail(this.#lastMessage) };
 			await logged;
 			const ended = withMainPhase(
 				finish ?? {
@@ -617,6 +626,7 @@ export class Session {
 		const callId = call.callId ?? this.#createId();
 		const emit = (event: AtelierEventBody) => this.#turn?.push(event);
 		emit({ type: "tool_call_started", callId, tool: call.tool, input: call.input });
+		this.#lastMessage = "";
 		this.#odd?.toolStarted(call.tool, call.input);
 
 		const fail = (summary: string): ToolCallResult => {
@@ -712,7 +722,7 @@ export class Session {
 		if (request === undefined) return undecided("classifier unavailable: no request in this turn");
 		const answer = await this.#askClassifier(
 			options,
-			classifierPrompt(request, tool, approval.command, approval.reason),
+			classifierPrompt(request, tool, approval.command, approval.reason, this.#previousTurn),
 		);
 		if (!answer.ok) {
 			this.#classifier.failures++;

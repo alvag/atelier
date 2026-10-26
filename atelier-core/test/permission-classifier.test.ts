@@ -198,17 +198,65 @@ describe("the permission classifier in auto", () => {
 		expect(instruction).toMatch(/destroys data/i);
 	});
 
-	it("never shows the classifier the conversation, only the current turn's prompt", async () => {
-		const { made, permissionClassifier } = classifier(reply("allow"), reply("allow"));
+	it("gives the classifier no previous turn in the first one", async () => {
+		const { made, permissionClassifier } = classifier(reply("allow"));
+		await run([[outside("c1"), finished]], { permissionClassifier });
+		expect(made[0]?.prompts[0]).not.toMatch(/previous/i);
+	});
+
+	it("gives the classifier the previous turn's request and the agent's last message, and nothing older", async () => {
+		const { made, permissionClassifier } = classifier(reply("allow"), reply("allow"), reply("allow"));
+		const say = (words: string): FakeStep => ({ event: { type: "text_delta", text: words } });
 		await run(
 			[
-				[outside("c1"), finished],
+				[
+					say("looking first"),
+					outside("c0", "echo tool-output"),
+					say("A test asks to touch a file; "),
+					say("shall I?"),
+					finished,
+				],
+				[outside("c1"), say("done"), finished],
 				[outside("c2"), finished],
 			],
 			{ permissionClassifier },
 		);
-		expect(made[1]?.prompts[0]).toContain("request 1");
-		expect(made[1]?.prompts[0]).not.toContain("request 0");
+		const second = made[1]?.prompts[0] ?? "";
+		expect(second).toContain("<previous_request>\nrequest 0\n</previous_request>");
+		expect(second).toContain("<agent_last_message>\nA test asks to touch a file; shall I?\n</agent_last_message>");
+		expect(second).toContain("<request>\nrequest 1\n</request>");
+		expect(second).not.toContain("looking first");
+		expect(second).not.toContain("tool-output");
+		const third = made[2]?.prompts[0] ?? "";
+		expect(third).toContain("<previous_request>\nrequest 1\n</previous_request>");
+		expect(third).toContain("<agent_last_message>\ndone\n</agent_last_message>");
+		expect(third).not.toContain("request 0");
+		expect(third).not.toContain("shall I?");
+	});
+
+	it("keeps only the end of a long last message", async () => {
+		const { made, permissionClassifier } = classifier(reply("allow"));
+		const long = `${"a".repeat(10_000)}the proposal`;
+		await run(
+			[
+				[{ event: { type: "text_delta", text: long } }, finished],
+				[outside("c1"), finished],
+			],
+			{
+				permissionClassifier,
+			},
+		);
+		const prompt = made[0]?.prompts[0] ?? "";
+		expect(prompt).toContain("the proposal\n</agent_last_message>");
+		expect(prompt.length).toBeLessThan(6_000);
+	});
+
+	it("tells the classifier that the agent's reason is not evidence of what the user asked", async () => {
+		const { made, permissionClassifier } = classifier(reply("allow"));
+		await run([[outside("c1"), finished]], { permissionClassifier });
+		const instruction = made[0]?.startOptions?.systemPromptAppend ?? "";
+		expect(instruction).toMatch(/claim, not evidence/i);
+		expect(instruction).toMatch(/agent's last message/i);
 	});
 
 	it("keeps the classifier's events out of the turn's stream", async () => {
