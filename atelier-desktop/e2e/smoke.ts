@@ -1,6 +1,7 @@
 /**
  * Smoke test of the built desktop app: launches Electron with Playwright,
- * opens a session, runs a turn and answers an approval, then quits and
+ * opens a session, runs a turn, runs a sandboxed command without a question,
+ * answers the approval of a command the guard asks to confirm, then quits and
  * checks that no core process is left running.
  *
  *   pnpm -C atelier-desktop smoke            # echo backend, no network
@@ -53,17 +54,27 @@ try {
 	if (!real) {
 		await send("hello");
 		await page.getByText("echo: hello").waitFor();
+		// The token breakdown folds under the turn's usage line.
+		await page.getByTestId("usage").first().locator("summary").click();
 		await page
 			.getByText(/^tokens: input 0/)
 			.first()
 			.waitFor();
 
+		// Normal mode: a command the sandbox contains runs without a question.
 		await send("bash: echo smoke-ok");
-		await page.getByRole("button", { name: "Allow" }).click();
 		await page.getByText("echo smoke-ok (exit 0)").waitFor();
-		await page.getByText("bash ok").waitFor();
+		// The turn's usage line shows when it has finished: only then does the prompt take the next one.
+		await page.getByTestId("usage").nth(1).waitFor();
+		assert.equal(await page.getByRole("button", { name: "Allow" }).count(), 0, "a sandboxed command asked");
+
+		// A command the guard asks to confirm asks in every mode.
+		await send("bash: mkdir smoke-dir && rm -r smoke-dir");
+		await page.getByRole("button", { name: "Allow" }).click();
+		await page.getByText("mkdir smoke-dir && rm -r smoke-dir (exit 0)").waitFor();
+		await page.getByTestId("usage").nth(2).waitFor();
 		await shot(page, "smoke");
-		console.log("smoke: turn streamed, approval answered, tool ran");
+		console.log("smoke: turn streamed, sandboxed command ran unasked, guard approval answered");
 	} else {
 		await send(promptArg ?? "Reply with the single word: ready");
 		// Allow every command the agent asks for until the turn ends.
