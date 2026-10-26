@@ -43,12 +43,15 @@ export interface TuiOptions {
 	color: boolean;
 	/** Registers a handler for SIGTERM and SIGHUP, given the signal's number; returns a function that removes it. */
 	onTerminate?: (handler: (signal: number) => void) => () => void;
+	/** How long closing the session may take before the core is closed anyway (default 3000 ms). */
+	closeTimeoutMs?: number;
 }
 
 const EXIT_OK = 0;
 const EXIT_FAILED = 1;
 const EXIT_INTERRUPTED = 130;
 const SIGNAL_EXIT = 128;
+const CLOSE_TIMEOUT_MS = 3000;
 
 const COMMANDS = [
 	{ name: "mode", description: "Show or change the permission mode: [normal|auto|yolo] | default <mode>" },
@@ -64,7 +67,9 @@ const isMode = (word: string | undefined): word is PermissionMode =>
 
 /** ` (asked by worker)` for a subagent's question; the main agent's says nothing. */
 const asker = (event: AtelierEvent) =>
-	event.parentCallId === undefined ? "" : ` (asked by ${event.agent ?? "a subagent"})`;
+	event.parentCallId === undefined
+		? ""
+		: ` (asked by ${event.agent === undefined ? "a subagent" : shown(event.agent).text})`;
 
 /** The question an approval asks, worded as the CLI's yes/no question. */
 function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_requested" }>): {
@@ -83,7 +88,7 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 		};
 	}
 	const reason = event.reason === undefined ? undefined : shown(event.reason);
-	const guard = event.confirm === undefined ? "" : ` (guard: ${event.confirm})`;
+	const guard = event.confirm === undefined ? "" : ` (guard: ${shown(event.confirm).text})`;
 	const warning =
 		command.hadHidden || reason?.hadHidden
 			? ["warning: the command contains invisible or control characters, shown as markers."]
@@ -121,7 +126,7 @@ async function openSession(
 	link: CoreLink,
 	args: CliArgs,
 	conversation: Conversation,
-): Promise<{ sessionId: string } | { error: string }> {
+): Promise<{ sessionId: string; mode?: PermissionMode } | { error: string }> {
 	const mode = args.mode ?? (args.yes ? "normal" : undefined);
 	if (!args.continueSession && args.resume === undefined) {
 		const started = (await link.request({
@@ -133,7 +138,7 @@ async function openSession(
 			...(args.profile === undefined ? {} : { profile: args.profile }),
 			...(args.noSession ? { noSession: true } : {}),
 		})) as { sessionId: string };
-		return { sessionId: started.sessionId };
+		return { sessionId: started.sessionId, ...(mode === undefined ? {} : { mode }) };
 	}
 	const { sessions } = (await link.request({ command: "sessions.list", cwd: args.cwd })) as {
 		sessions: { id: string; backend: string; resumable: boolean }[];
@@ -165,7 +170,7 @@ async function openSession(
 	if (args.profile !== undefined)
 		await link.request({ command: "session.set_profile", sessionId, profile: args.profile });
 	if (args.model !== undefined) await link.request({ command: "session.set_model", sessionId, model: args.model });
-	return { sessionId };
+	return { sessionId, ...(mode === undefined ? {} : { mode }) };
 }
 
 /**
@@ -186,7 +191,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		return EXIT_FAILED;
 	}
 	const conversation = new Conversation(paint, options.color, args.cwd);
-	let opened: { sessionId: string } | { error: string };
+	let opened: { sessionId: string; mode?: PermissionMode } | { error: string };
 	try {
 		opened = await openSession(link, args, conversation);
 	} catch (error) {
@@ -201,6 +206,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const tui = new TuiMainScreen(options.terminal);
 	const footer = new Footer(paint);
+	// What the arguments asked for, until the session's own events say what it applied.
+	if (opened.mode !== undefined) footer.state = footerWithMode(footer.state, opened.mode);
 	const status = new Container();
 	const dialogs = new Container();
 	const editor = new Editor(tui, editorTheme(paint));
@@ -424,7 +431,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		removeTerminate?.();
 		loader.stop();
 		tui.stop();
-		await link.request({ command: "session.close", sessionId }).catch(() => {});
+		// A core that does not answer must not keep the terminal's owner waiting: close the link anyway.
+		let timer: NodeJS.Timeout | undefined;
+		const gaveUp = new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS);
+		});
+		await Promise.race([link.request({ command: "session.close", sessionId }).catch(() => {}), gaveUp]);
+		clearTimeout(timer);
 		await link.close();
 	}
 }

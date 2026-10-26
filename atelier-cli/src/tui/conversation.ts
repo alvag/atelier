@@ -18,16 +18,16 @@ function finishedLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): 
 
 /** `◇ model claude-sonnet-5-5 · effort high · mode auto`, and the backend change with what it carried. */
 function configuredLine(event: Extract<AtelierEvent, { type: "session_configured" }>): string {
-	const parts = [`backend ${event.backend}`];
-	if (event.model !== undefined) parts.push(`model ${event.model}`);
-	if (event.thinking !== undefined) parts.push(`effort ${event.thinking}`);
+	const parts = [`backend ${shown(event.backend)}`];
+	if (event.model !== undefined) parts.push(`model ${shown(event.model)}`);
+	if (event.thinking !== undefined) parts.push(`effort ${shown(event.thinking)}`);
 	parts.push(`mode ${event.permissionMode}`);
-	if (event.profile !== undefined) parts.push(`profile ${event.profile.name ?? event.profile.origin}`);
+	if (event.profile !== undefined) parts.push(`profile ${shown(event.profile.name ?? event.profile.origin)}`);
 	const change = event.backendChange;
 	const moved =
 		change === undefined
 			? ""
-			: ` · moved from ${change.from}${change.summarized ? " with a summary of the conversation" : ""}`;
+			: ` · moved from ${shown(change.from)}${change.summarized ? " with a summary of the conversation" : ""}`;
 	return `◇ now ${parts.join(" · ")}${moved}`;
 }
 
@@ -123,7 +123,7 @@ export class Conversation extends Container {
 		const header = [startedLine(event), ...(event.profile === undefined ? [] : [profileLine(event.profile)])].join(
 			"\n",
 		);
-		if (header !== this.#header) this.note(header);
+		if (header !== this.#header) this.note(shown(header));
 		this.#header = header;
 		if (event.authSource !== "subscription" && event.backend !== "anthropic-api")
 			this.note(

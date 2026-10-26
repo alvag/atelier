@@ -1,4 +1,4 @@
-import type { AtelierEvent, ContextUsage, Phase } from "@atelier/core";
+import { type AtelierEvent, type ContextUsage, type Phase, visibleText } from "@atelier/core";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { Paint } from "./style.ts";
 
@@ -74,19 +74,25 @@ export const footerWithMode = (state: FooterState, mode: string): FooterState =>
  */
 export function footerLine(state: FooterState, width: number, paint: Paint): string {
 	const parts: string[] = [];
-	const model = [state.model ?? state.backend, state.effort].filter((part) => part !== undefined).join(" ");
+	const model = [state.model ?? state.backend, state.effort]
+		.filter((part) => part !== undefined)
+		.map(shown)
+		.join(" ");
 	if (model !== "") parts.push(paint("bold", model));
-	if (state.profile !== undefined) parts.push(`profile ${state.profile}`);
-	if (state.mode !== undefined) parts.push(state.mode === "normal" ? state.mode : paint("yellow", state.mode));
+	if (state.profile !== undefined) parts.push(`profile ${shown(state.profile)}`);
+	if (state.mode !== undefined) parts.push(state.mode === "normal" ? state.mode : paint("yellow", shown(state.mode)));
 	if (state.sandboxed !== undefined) parts.push(state.sandboxed ? "sandbox ✓" : paint("yellow", "sandbox ✗"));
 	if (state.context !== undefined) parts.push(`ctx ${contextShare(state.context)}%`);
 	if (state.costUsd !== undefined) parts.push(`$${state.costUsd.toFixed(2)}`);
-	if (state.phase !== undefined) parts.push(paint("magenta", state.phase));
+	if (state.phase !== undefined) parts.push(paint("magenta", shown(state.phase)));
 	if (state.task !== undefined) {
 		const { id, done, total } = state.task;
-		parts.push(id === undefined ? `${done}/${total}` : `${id} ${done}/${total}`);
+		parts.push(id === undefined ? `${done}/${total}` : `${shown(id)} ${done}/${total}`);
 	}
 	return truncateToWidth(` ${parts.join(paint("dim", " · "))}`, width);
 }
+
+/** Event strings shown with markers for control characters, as the line CLI shows them. */
+const shown = (text: string) => visibleText(text).text;
 
 const contextShare = ({ tokens, window }: ContextUsage) => (window > 0 ? Math.round((tokens / window) * 100) : 0);

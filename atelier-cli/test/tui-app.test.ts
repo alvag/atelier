@@ -387,3 +387,126 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(out).toContain("atelier · fake · m · subscription");
 	});
 });
+
+describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => {
+	const pasteCases: [string, string[]][] = [
+		["in two chunks", ["\x1b[200~echo\x1b[A", "\r\x1b[201~"]],
+		["in three chunks", ["\x1b[200~echo", "\x1b[A\r", "more\x1b[201~"]],
+		["with a split start marker", ["\x1b[20", "0~\x1b[A\r\x1b[201~"]],
+		["with a split end marker", ["\x1b[200~\x1b[A\r\x1b[20", "1~"]],
+		["with its markers apart from its content", ["\x1b[200~", "\x1b[A", "\r", "\x1b[201~"]],
+	];
+
+	it.each(pasteCases)("never answers a question with a paste %s", async (_name, chunks) => {
+		const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo hi" } } }, { event: finished }]]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Run this command?"));
+		for (const chunk of chunks) h.screen.type(chunk);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(h.backend.toolResults).toEqual([]);
+		// Deny is still the selected answer.
+		h.screen.type("\r");
+		await until(() => h.backend.toolResults.length === 1);
+		expect(h.backend.toolResults[0]?.output).toBe("The user denied this command.");
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("takes keys typed after a split paste", async () => {
+		const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo hi" } } }, { event: finished }]]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Run this command?"));
+		h.screen.type("\x1b[200~x\x1b[B");
+		h.screen.type("\r\x1b[201~");
+		h.screen.type("\x1b[A");
+		h.screen.type("\r");
+		await until(() => h.backend.toolResults.length === 1);
+		expect(h.backend.toolResults[0]?.output).toContain("hi");
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	/** A core that answers `session.start` and lets the test send events and hold back `session.close`. */
+	function stubCore(options: { closeHangs?: boolean } = {}) {
+		const listeners = new Set<(sessionId: string, event: AtelierEvent) => void>();
+		const log = { commands: [] as ClientCommand[], closed: false };
+		const link: CoreLink = {
+			request: (command) => {
+				log.commands.push(command);
+				if (command.command === "session.close" && options.closeHangs) return new Promise(() => {});
+				return Promise.resolve({ sessionId: "s1" });
+			},
+			onEvent: (listener) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onExit: () => () => {},
+			close: async () => {
+				log.closed = true;
+			},
+		};
+		const emit = (event: Record<string, unknown>) => {
+			for (const listener of listeners) listener("s1", event as unknown as AtelierEvent);
+		};
+		return { link, log, emit };
+	}
+
+	it("shows the event's strings with markers for control characters", async () => {
+		const h = harness([]);
+		const stub = stubCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		stub.emit({ type: "session_started", backend: "fake", model: "mo\x1b[31mdel", authSource: "subscription" });
+		stub.emit({ type: "tool_call_started", callId: "c1", tool: "to\x1b[31mol", input: {} });
+		stub.emit({
+			type: "approval_requested",
+			callId: "c2",
+			command: "echo hi",
+			confirm: "ru\x1b[31mle",
+			agent: "wor\x1b[31mker",
+			parentCallId: "c1",
+		});
+		await until(() => h.screen.screen().includes("Run this command?"));
+		const screen = h.screen.screen();
+		expect(screen).toContain("(guard: ru␛[31mle)");
+		expect(screen).toContain("(asked by wor␛[31mker)");
+		expect(screen).toContain("mo␛[31mdel");
+		expect(screen).toContain("atelier · fake · mo␛[31mdel");
+		expect(screen).toContain("to␛[31mol");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("says the mode --mode selected before any turn", async () => {
+		const h = harness([]);
+		const code = run(["--no-session", "--mode", "yolo"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/mode");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("mode: yolo"));
+		expect(h.screen.screen()).not.toContain("unknown until the first turn");
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
+	it("quits and gives the terminal back when the core never answers session.close", async () => {
+		const h = harness([]);
+		const stub = stubCore({ closeHangs: true });
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, closeTimeoutMs: 50 } as typeof h.io.tui;
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+		expect(h.screen.stopped()).toBe(true);
+		expect(stub.log.closed).toBe(true);
+	});
+});

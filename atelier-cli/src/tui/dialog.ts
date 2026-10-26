@@ -8,6 +8,16 @@ import {
 } from "@earendil-works/pi-tui";
 import { type Paint, selectListTheme } from "./style.ts";
 
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
+
+/** The length of the longest end of `text` that begins `marker` without being all of it. */
+function partialMarker(text: string, marker: string, least: number): number {
+	for (let length = Math.min(marker.length - 1, text.length); length >= least; length--)
+		if (marker.startsWith(text.slice(text.length - length))) return length;
+	return 0;
+}
+
 export interface Choice<T extends string> {
 	value: T;
 	label: string;
@@ -23,6 +33,10 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 	readonly #lines: readonly string[];
 	readonly #list: SelectList;
 	readonly #paint: Paint;
+	/** Between a paste's start marker and its end marker, which may arrive in different chunks of input. */
+	#pasting = false;
+	/** The end of a chunk that may be the start of a marker, kept until the next chunk says. */
+	#pending = "";
 
 	constructor(
 		options: { title: string; lines: readonly string[]; choices: readonly Choice<T>[]; initial: T; cancel: T },
@@ -46,8 +60,34 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
-		if (data.startsWith("\x1b[200~")) return;
-		this.#list.handleInput(data);
+		let rest = this.#pending + data;
+		this.#pending = "";
+		let keys = "";
+		while (rest !== "") {
+			if (this.#pasting) {
+				const end = rest.indexOf(PASTE_END);
+				if (end === -1) {
+					// Everything in a paste is dropped; only a cut end marker is kept.
+					this.#pending = rest.slice(rest.length - partialMarker(rest, PASTE_END, 1));
+					break;
+				}
+				rest = rest.slice(end + PASTE_END.length);
+				this.#pasting = false;
+				continue;
+			}
+			const start = rest.indexOf(PASTE_START);
+			if (start === -1) {
+				// A lone Esc is the key, not a cut marker: only "ESC [" and longer wait for the rest.
+				const cut = partialMarker(rest, PASTE_START, 2);
+				keys += rest.slice(0, rest.length - cut);
+				this.#pending = rest.slice(rest.length - cut);
+				break;
+			}
+			keys += rest.slice(0, start);
+			rest = rest.slice(start + PASTE_START.length);
+			this.#pasting = true;
+		}
+		if (keys !== "") this.#list.handleInput(keys);
 	}
 
 	invalidate(): void {

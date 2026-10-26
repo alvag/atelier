@@ -106,8 +106,8 @@ export class AgentActivity {
 
 	/** `worker · claude-sonnet-5-5 · 3 tools · $0.04`. */
 	summary(): string {
-		const parts = [this.agent ?? "subagent"];
-		if (this.#model !== undefined) parts.push(this.#model);
+		const parts = [shown(this.agent ?? "subagent")];
+		if (this.#model !== undefined) parts.push(shown(this.#model));
 		parts.push(plural(this.#tools.size, "tool"));
 		if (this.#costUsd !== undefined) parts.push(`$${this.#costUsd.toFixed(2)}`);
 		return parts.join(" · ");
@@ -117,7 +117,7 @@ export class AgentActivity {
 	details(paint: Paint): string[] {
 		const lines = [...this.#tools.values()].map(({ tool, summary, ok }) => {
 			const mark = ok === undefined ? paint("dim", "…") : ok ? paint("green", "✓") : paint("red", "✗");
-			return `${paint("cyan", "▸")} ${tool} ${summary === undefined ? "" : summaryText(summary)} ${mark}`;
+			return `${paint("cyan", "▸")} ${shown(tool)} ${summary === undefined ? "" : summaryText(summary)} ${mark}`;
 		});
 		const text = this.#text.trim();
 		if (text !== "") lines.push(...capped(shown(text), MAX_DETAIL_LINES).map((line) => paint("dim", line)));
@@ -168,14 +168,16 @@ export class ToolCard implements Component {
 		const arrow = paint("cyan", this.#view.expanded ? "▾" : "▸");
 		const what = done === undefined ? target(this.#input) : summaryText(done.summary);
 		const mark = done === undefined ? paint("dim", "…") : done.ok ? paint("green", "✓") : paint("red", "✗");
-		const lines = [truncateToWidth(` ${arrow} ${paint("bold", this.tool)} ${what} ${mark}`, width)];
+		const lines = [truncateToWidth(` ${arrow} ${paint("bold", shown(this.tool))} ${what} ${mark}`, width)];
 		if (this.#activity) lines.push(truncateToWidth(paint("dim", `   └ ${this.#activity.summary()}`), width));
 		for (const cause of done?.blocked ?? [])
-			lines.push(...indented([paint("yellow", `sandbox blocked: ${cause}`)], width, "   "));
+			lines.push(...indented([paint("yellow", `sandbox blocked: ${shown(cause)}`)], width, "   "));
 		if (!this.#view.expanded) return lines;
 		const details = inputLines(this.tool, this.#input, paint);
 		if (done?.truncated)
-			details.push(paint("dim", done.fullOutputPath ? `full output: ${done.fullOutputPath}` : "output truncated"));
+			details.push(
+				paint("dim", done.fullOutputPath ? `full output: ${shown(done.fullOutputPath)}` : "output truncated"),
+			);
 		lines.push(...indented(details, width, "   │ "));
 		if (this.#activity) lines.push(...indented(this.#activity.details(paint), width, "     "));
 		return lines;
