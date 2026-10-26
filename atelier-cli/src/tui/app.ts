@@ -102,9 +102,9 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 function consentQuestion(event: Extract<AtelierEvent, { type: "review_consent_requested" }>): string[] {
 	const why = event.lensesReason === undefined ? "" : ` (${shown(event.lensesReason).text})`;
 	return [
-		`risk: ${event.level}`,
+		`risk: ${shown(event.level).text}`,
 		`reasons: ${event.reasons.map((reason) => shown(reason).text).join("; ")}`,
-		`lenses: ${event.lenses.join(", ")}${why}`,
+		`lenses: ${event.lenses.map((lens) => shown(lens).text).join(", ")}${why}`,
 	];
 }
 
@@ -190,7 +190,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		options.stderr(`error: The core could not start: ${describeError(error)}\n`);
 		return EXIT_FAILED;
 	}
-	const conversation = new Conversation(paint, options.color, args.cwd);
+	const conversation = new Conversation(paint, args.cwd);
 	let opened: { sessionId: string; mode?: PermissionMode } | { error: string };
 	try {
 		opened = await openSession(link, args, conversation);

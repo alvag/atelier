@@ -45,18 +45,20 @@ export class Conversation extends Container {
 	/** The Markdown block the agent's text goes on, until something else is shown after it. */
 	#text: { block: Markdown; source: string } | undefined;
 	readonly #cards = new Map<string, ToolCard>();
+	/** The verifier's and the review roles' groups, by call and agent: a review gives all its roles one call id. */
 	readonly #groups = new Map<string, AgentGroup>();
 	/** The header last shown: it is repeated only when it changes. */
 	#header: string | undefined;
 	#backend: string | undefined;
 
-	constructor(paint: Paint, color: boolean, cwd: string) {
+	constructor(paint: Paint, cwd: string) {
 		super();
 		this.#paint = paint;
 		const write = (text: string) => {
 			this.#notes += text;
 		};
-		this.#renderer = new Renderer({ stdout: write, stderr: write, color, cwd });
+		// Plain on purpose: the lines are shown with markers for control characters, which would also break its colors.
+		this.#renderer = new Renderer({ stdout: write, stderr: write, color: false, cwd });
 	}
 
 	/** Toggles the details of every tool card. */
@@ -109,6 +111,10 @@ export class Conversation extends Container {
 				this.note(configuredLine(event));
 				return;
 			case "turn_finished": {
+				// The renderer counts the turns after a compaction, which decide whether a cache miss is expected.
+				this.#renderer.render(event);
+				this.#renderer.endLine();
+				this.#notes = "";
 				const phases = phasesLine(event, this.#backend);
 				this.note(phases === undefined ? finishedLine(event) : `${finishedLine(event)}\n${phases}`);
 				return;
@@ -139,10 +145,11 @@ export class Conversation extends Container {
 			card.child(event);
 			return;
 		}
-		let group = this.#groups.get(parent);
+		const key = `${parent}\0${event.agent ?? ""}`;
+		let group = this.#groups.get(key);
 		if (!group) {
 			group = new AgentGroup(this.view, this.#paint);
-			this.#groups.set(parent, group);
+			this.#groups.set(key, group);
 			this.#add(group);
 		}
 		group.add(event);
@@ -152,7 +159,7 @@ export class Conversation extends Container {
 	#rendered(event: AtelierEvent): void {
 		this.#renderer.render(event);
 		this.#renderer.endLine();
-		const text = this.#notes.trimEnd();
+		const text = shown(this.#notes.trimEnd());
 		this.#notes = "";
 		if (text !== "") this.#add(new Text(text, 1, 0));
 	}

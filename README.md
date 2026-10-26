@@ -10,7 +10,7 @@ Coding-agent orchestrator with two first-class clients, a CLI and a desktop app,
 
 ## Requirements
 
-- Node 22.18+ (TypeScript runs natively; there is no build step) and pnpm.
+- Node 22.19+ (TypeScript runs natively; there is no build step) and pnpm.
 - For the default `claude-code` backend: Claude Code logged in with your Claude subscription (run `claude` and use `/login`).
 - For the `anthropic-api` backend: an Anthropic API key with credit, stored once in the macOS Keychain. The command asks for the key, so it stays out of your shell history:
 

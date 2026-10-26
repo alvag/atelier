@@ -486,6 +486,29 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
+	it("shows the strings of a review question with markers for control characters", async () => {
+		const h = harness([]);
+		const stub = stubCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		stub.emit({
+			type: "review_consent_requested",
+			reviewId: "r1",
+			level: "hi\x1b[31mgh",
+			reasons: ["re\x1b[31mason"],
+			lenses: ["le\x1b[31mns"],
+			lensesReason: "wh\x1b[31my",
+		});
+		await until(() => h.screen.screen().includes("Review this change?"));
+		const screen = h.screen.screen();
+		expect(screen).toContain("risk: hi␛[31mgh");
+		expect(screen).toContain("reasons: re␛[31mason");
+		expect(screen).toContain("lenses: le␛[31mns (wh␛[31my)");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
 	it("says the mode --mode selected before any turn", async () => {
 		const h = harness([]);
 		const code = run(["--no-session", "--mode", "yolo"], h.io, () => h.backend);

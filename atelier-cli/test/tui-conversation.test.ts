@@ -11,7 +11,7 @@ type Body = AtelierEventBody & { parentCallId?: string; agent?: string };
 const stamp = (bodies: Body[]) => bodies.map((body, i) => ({ ...body, seq: i + 1, turnId: "t" }) as AtelierEvent);
 
 function shown(bodies: Body[], width = 80, expanded = false) {
-	const conversation = new Conversation(plain, false, "/repo");
+	const conversation = new Conversation(plain, "/repo");
 	for (const event of stamp(bodies)) conversation.event(event);
 	if (expanded) conversation.toggleCards();
 	const lines = conversation.render(width);
@@ -117,6 +117,7 @@ describe("Conversation", () => {
 				summary: "pnpm test (exit 0)",
 				truncated: false,
 				parentCallId: "v1",
+				agent: "verify:verifier",
 			},
 			{ type: "verification_finished", verifyId: "v1", outcome: "passed", rounds: 1, openDefects: [], usage },
 		]);
@@ -130,6 +131,59 @@ describe("Conversation", () => {
 		]);
 		expect(text).toContain("hi ␛[2J there");
 		expect(text).toContain("echo ⟨U+202E⟩x");
+	});
+
+	it("keeps review roles and their costs separate even with one review id", () => {
+		const role = (agent: string, model: string, text: string, costUsd: number): Body[] => [
+			{ type: "session_started", backend: "b", model, authSource: "subscription", agent, parentCallId: "r" },
+			{ type: "text_delta", text, agent, parentCallId: "r" },
+			{ type: "turn_finished", stopReason: "end_turn", usage, costUsd, agent, parentCallId: "r" },
+		];
+		const { text } = shown([
+			...role("review:risk", "risk-model", "Risk report.", 0.01),
+			...role("review:reliability", "reliability-model", "Reliability report.", 0.02),
+		]);
+		expect(text).toContain("review:risk · risk-model · 0 tools · $0.01");
+		expect(text).toContain("review:reliability · reliability-model · 0 tools · $0.02");
+		expect(text).not.toContain("Risk report.Reliability report.");
+	});
+
+	it("expects a cache miss only in the compaction's turn and the next one", () => {
+		const compacted: Body = {
+			type: "compaction_finished",
+			ok: true,
+			reason: "manual",
+			tokensBefore: 9000,
+			kept: 1,
+			usage,
+		};
+		const turn: Body = { type: "turn_finished", stopReason: "end_turn", usage };
+		const miss: Body = { type: "cache_miss", reason: "system_changed", missedTokens: 100 };
+		const soon = shown([compacted, turn, miss]).text;
+		expect(soon).toContain("cache miss after compaction: system_changed (expected)");
+		const late = shown([compacted, turn, turn, turn, miss]).text;
+		expect(late).toContain("cache miss: system_changed (100 tokens not read from the cache)");
+		expect(late).not.toContain("(expected)");
+	});
+
+	it("shows control characters of every event string as markers", () => {
+		const esc = "x\u001b[31my";
+		const { text } = shown([
+			{ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "ls" } },
+			{ type: "tool_call_finished", callId: "c1", ok: false, summary: "ls (exit 1)", truncated: false, blocked: [esc] },
+			{ type: "memory_status", available: true, project: esc },
+			{ type: "memory_status", available: false, reason: esc },
+			{ type: "project_instructions", files: [esc], dropped: [esc] },
+			{ type: "review_status", available: false, reason: esc },
+			{ type: "sandbox_status", sandboxed: false, mechanism: esc, reason: esc },
+			{ type: "sandbox_warning", reason: esc },
+			{ type: "cache_miss", reason: esc, missedTokens: 1 },
+			{ type: "rate_limit", status: esc, window: esc },
+			{ type: "error", code: esc, message: esc, recoverable: false },
+			{ type: "phase_changed", phase: "planning", source: "inferred" },
+		]);
+		expect(text).toContain("x␛[31my");
+		expect(text).not.toContain("\u001b");
 	});
 
 	it("says the header once while it does not change, and what a turn took", () => {
