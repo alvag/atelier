@@ -1,4 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { createInterface, type Interface } from "node:readline";
 import type { Readable } from "node:stream";
 import {
@@ -14,7 +15,10 @@ import {
 	loadSandboxAdditions,
 	type MemoryPort,
 	orchestratorBackend,
+	PERMISSION_MODES,
+	type PermissionMode,
 	type ReviewConsentRequest,
+	readDefaultPermissionMode,
 	roleStartMessage,
 	SandboxConfigError,
 	Session,
@@ -23,6 +27,7 @@ import {
 	type ToolDefinition,
 	VERSION,
 	visibleText,
+	writeDefaultPermissionMode,
 } from "@atelier/core";
 import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { Renderer } from "./render.ts";
@@ -76,6 +81,9 @@ const PROMPT = "> ";
 const ANSWER_PROMPT = "[y/N] ";
 const BRACKETED_PASTE_ON = "\x1b[?2004h";
 const BRACKETED_PASTE_OFF = "\x1b[?2004l";
+const YES_DEPRECATED =
+	"warning: --yes is deprecated: normal, the default mode, already runs sandboxed commands without asking; use --mode\n";
+const MODE_USAGE = "usage: /mode [normal|auto|yolo] | /mode default <normal|auto|yolo>\n";
 
 export async function run(
 	argv: readonly string[],
@@ -114,6 +122,12 @@ export async function run(
 		io.stderr(`error: Working directory does not exist: ${args.cwd}\n`);
 		return EXIT_USAGE;
 	}
+
+	// --mode wins; --yes is --mode normal; otherwise the saved default, which says why when it is unusable.
+	const home = io.home ?? homedir();
+	if (args.yes) io.stderr(YES_DEPRECATED);
+	const saved = args.mode === undefined && !args.yes ? await readDefaultPermissionMode(home) : undefined;
+	let mode: PermissionMode = args.mode ?? saved?.mode ?? "normal";
 
 	// A broken file stops the start: ignoring it would silently widen or narrow what commands may do.
 	if (!args.noSandbox && io.home !== undefined) {
@@ -259,6 +273,8 @@ export async function run(
 		...(args.review
 			? { review: { createBackend: (name) => createBackend(name ?? kind), consent } }
 			: { reviewUnavailable: "Review is off (--no-review or ATELIER_REVIEW=off)." }),
+		permissionMode: mode,
+		...(saved?.problem === undefined ? {} : { permissionModeProblem: saved.problem }),
 		odd: true,
 		...(io.home === undefined ? {} : { projectInstructions: { home: io.home } }),
 		cwd: args.cwd,
@@ -277,7 +293,7 @@ export async function run(
 					renderer.endLine();
 					const change = tool === "edit" ? "change a file" : "create or replace a file";
 					io.stderr(
-						`${tool} asks to ${change} outside the working directory and needs your approval, but there is no terminal to ask (--yes does not allow this): ${path.text}\n`,
+						`${tool} asks to ${change} outside the working directory and needs your approval, but there is no terminal to ask (--mode yolo allows it): ${path.text}\n`,
 					);
 					return false;
 				}
@@ -291,8 +307,8 @@ export async function run(
 				renderer.endLine();
 				io.stderr(
 					why
-						? `bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask (--yes does not allow this): ${shown.text}\n  reason: ${why.text}\n`
-						: `bash command needs approval and there is no terminal to ask; --yes does not apply because the sandbox is off or unavailable: ${shown.text}\n`,
+						? `bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask (--mode yolo allows it): ${shown.text}\n  reason: ${why.text}\n`
+						: `bash command needs approval and there is no terminal to ask; the sandbox is off or unavailable (--mode yolo allows it): ${shown.text}\n`,
 				);
 				return false;
 			}
@@ -353,6 +369,22 @@ export async function run(
 		renderer.endLine();
 	};
 
+	const runModeCommand = async (command: ModeCommand) => {
+		if (command.kind === "usage") return io.stderr(MODE_USAGE);
+		if (command.kind === "show") return renderer.write(`mode: ${mode}\n`);
+		if (command.kind === "session") {
+			session.setPermissionMode(command.mode);
+			mode = command.mode;
+			return renderer.write(`mode: ${mode} (this session)\n`);
+		}
+		try {
+			await writeDefaultPermissionMode(home, command.mode);
+		} catch (error) {
+			return io.stderr(`error: could not save the default mode: ${describeError(error)}\n`);
+		}
+		renderer.write(`default mode: ${command.mode} (saved in ~/.atelier/permission-mode.json)\n`);
+	};
+
 	try {
 		if (args.prompt !== undefined) {
 			await runTurn(session.send(args.prompt));
@@ -368,6 +400,11 @@ export async function run(
 			if (quitting) return quitCode;
 			if (line === undefined || line.trim() === "/exit") break;
 			if (line.trim() === "") continue;
+			const modeCommand = parseModeCommand(line);
+			if (modeCommand) {
+				await runModeCommand(modeCommand);
+				continue;
+			}
 			await runTurn(commandTurn(session, line) ?? session.send(line));
 			if (quitting) return quitCode;
 		}
@@ -437,6 +474,25 @@ function createLineReader(stdin: Readable): LineReader {
 		},
 		close: () => rl?.close(),
 	};
+}
+
+type ModeCommand =
+	| { kind: "show" }
+	| { kind: "session"; mode: PermissionMode }
+	| { kind: "default"; mode: PermissionMode }
+	| { kind: "usage" };
+
+const isMode = (word: string | undefined): word is PermissionMode => PERMISSION_MODES.some((mode) => mode === word);
+
+/** `/mode`, `/mode <mode>` and `/mode default <mode>`; anything else after `/mode` is a usage error. Not a turn: no model is called. */
+function parseModeCommand(line: string): ModeCommand | undefined {
+	const words = line.trim().split(/\s+/);
+	if (words[0] !== "/mode") return undefined;
+	const [, first, second] = words;
+	if (first === undefined) return { kind: "show" };
+	if (words.length === 2 && isMode(first)) return { kind: "session", mode: first };
+	if (words.length === 3 && first === "default" && isMode(second)) return { kind: "default", mode: second };
+	return { kind: "usage" };
 }
 
 /** The interactive commands that are turns of their own: /review [ref], /undo-correction and /compact [instructions]. */

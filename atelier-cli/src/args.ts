@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { reviewEnabled, sandboxEnabled } from "@atelier/core";
+import { PERMISSION_MODES, type PermissionMode, reviewEnabled, sandboxEnabled } from "@atelier/core";
 import { BACKEND_NAMES, type BackendName, DEFAULT_BACKEND } from "@atelier/core/protocol";
 
 export class UsageError extends Error {
@@ -10,7 +10,10 @@ export class UsageError extends Error {
 export interface CliArgs {
 	/** Absent: interactive session. */
 	prompt?: string;
+	/** Deprecated: --yes, an alias of `--mode normal`. */
 	yes: boolean;
+	/** Present only when --mode was given: it wins over --yes and over the default saved in the home. */
+	mode?: PermissionMode;
 	model?: string;
 	backend: BackendName;
 	/** Present only when --backend was given: it wins over the backend the orchestrator's profile entry names. */
@@ -32,8 +35,11 @@ Runs a coding agent in the working directory. With a prompt, runs one turn
 and exits; without one, starts an interactive session (/exit or Ctrl+D to quit).
 
 Options:
-  -y, --yes              No effect: bash commands that run in the sandbox (macOS)
-                         never ask; a command outside it is always asked
+      --mode <mode>      Permission mode of the session: normal (default; commands that
+                         run in the sandbox never ask), auto or yolo (nothing outside
+                         the sandbox or --cwd asks); without it, the default saved
+                         with /mode default, else normal
+  -y, --yes              Deprecated alias of --mode normal; prints a warning
       --backend <name>   claude-code (default): Claude Code on your Claude subscription
                          anthropic-api: Atelier's own loop, billed to an API key read
                          from the macOS Keychain (service atelier-anthropic) or from
@@ -45,8 +51,8 @@ Options:
                          --model and --backend still replace the main agent's
       --cwd <dir>        Working directory (default: current directory)
       --no-review        Do not review or verify changes (see below)
-      --no-sandbox       Run bash without the macOS sandbox: every command asks, --yes
-                         does not apply, and each turn warns about it
+      --no-sandbox       Run bash without the macOS sandbox: every command asks in
+                         normal and auto mode, and each turn warns about it
   -h, --help             Show this help
   -v, --version          Show the version
 
@@ -54,9 +60,13 @@ Long-term memory is used when its memory service is installed; the session says
 which project it uses, or why it has none.
 
 After a turn that leaves risky uncommitted changes in a git repository, Atelier asks
-whether to review them (the question needs a terminal; --yes does not answer it).
+whether to review them (the question needs a terminal; no mode answers it).
 In an interactive session, /compact [instructions] summarizes the older history now,
 keeping the latest messages and what the instructions ask for.
+
+In an interactive session, /mode [normal|auto|yolo] prints the session's permission
+mode, or changes it for this session; /mode default <normal|auto|yolo> saves the
+default for new sessions without changing the running one.
 
 In an interactive session, /review reviews the current changes at any risk, against
 HEAD; /review <ref> reviews them against that git ref instead. A review never commits
@@ -89,6 +99,8 @@ export function parseCliArgs(
 	const { values, positionals } = parsed;
 	if (values.model !== undefined && values.model.trim() === "") throw new UsageError("--model needs a value.");
 	if (values.profile !== undefined && values.profile.trim() === "") throw new UsageError("--profile needs a value.");
+	const mode = values.mode;
+	if (mode !== undefined && !isPermissionMode(mode)) throw new UsageError("--mode must be normal, auto or yolo.");
 	const backend = values.backend ?? DEFAULT_BACKEND;
 	if (!isBackendName(backend)) throw new UsageError(`--backend must be ${BACKEND_NAMES.join(" or ")}.`);
 	const prompt = positionals.length > 0 ? positionals.join(" ") : undefined;
@@ -96,6 +108,7 @@ export function parseCliArgs(
 	return {
 		...(prompt === undefined ? {} : { prompt }),
 		yes: values.yes ?? false,
+		...(mode === undefined ? {} : { mode }),
 		...(values.model === undefined ? {} : { model: values.model }),
 		backend,
 		...(values.backend === undefined ? {} : { explicitBackend: backend }),
@@ -115,6 +128,7 @@ function parse(argv: readonly string[]) {
 		strict: true,
 		options: {
 			yes: { type: "boolean", short: "y" },
+			mode: { type: "string" },
 			model: { type: "string" },
 			backend: { type: "string" },
 			profile: { type: "string" },
@@ -125,6 +139,10 @@ function parse(argv: readonly string[]) {
 			"no-sandbox": { type: "boolean" },
 		},
 	});
+}
+
+function isPermissionMode(name: string): name is PermissionMode {
+	return (PERMISSION_MODES as readonly string[]).includes(name);
 }
 
 function isBackendName(name: string): name is BackendName {

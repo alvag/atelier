@@ -23,11 +23,17 @@ const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_tur
 const started: AtelierEventBody = { type: "session_started", backend: "fake", model: "m", authSource: "subscription" };
 
 let cwd: string;
+/** The user's home, for the CLI that is given none: the default mode is read from it. */
+let fallbackHome: string;
 beforeEach(async () => {
 	cwd = await mkdtemp(join(tmpdir(), "atelier-cli-"));
+	fallbackHome = await mkdtemp(join(tmpdir(), "atelier-cli-home-"));
+	vi.stubEnv("HOME", fallbackHome);
 });
 afterEach(async () => {
+	vi.unstubAllEnvs();
 	await rm(cwd, { recursive: true, force: true });
+	await rm(fallbackHome, { recursive: true, force: true });
 });
 
 /** The core's tools with a `bash` whose sandbox is there and wraps nothing, so the output does not depend on the platform. */
@@ -834,7 +840,7 @@ describe("bash outside the sandbox", () => {
 		expect(h.out().match(/Run this command\?/g)).toHaveLength(2);
 		expect(h.backend.toolResults.map((result) => result.ok)).toEqual([true, false]);
 		// The first turn says it once, in the status line; the warning that follows would repeat it.
-		const status = `bash: not sandboxed (${SANDBOX_OFF}): every command asks for approval and --yes does not apply\n`;
+		const status = `bash: not sandboxed (${SANDBOX_OFF}): every command asks for approval in normal and auto mode\n`;
 		expect(h.err()).toContain(status);
 		expect(h.err().match(/not sandboxed|without a sandbox/g)).toHaveLength(1);
 	});
@@ -856,7 +862,7 @@ describe("bash outside the sandbox", () => {
 		await run(["--no-sandbox", "--yes", "x"], h.io, h.createBackend);
 		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
 		expect(h.err()).toContain(
-			"bash command needs approval and there is no terminal to ask; --yes does not apply because the sandbox is off or unavailable: rm marker\n",
+			"bash command needs approval and there is no terminal to ask; the sandbox is off or unavailable (--mode yolo allows it): rm marker\n",
 		);
 		expect(await readFile(join(cwd, "marker"), "utf8")).toBe("");
 	});
@@ -865,7 +871,7 @@ describe("bash outside the sandbox", () => {
 		const turn = [bash({ command: "echo one" }), { event: finished }];
 		const h = harness([turn, turn], { input: ["first", "second"] });
 		await run(["--no-sandbox", "--no-review"], h.io, h.createBackend);
-		const effect = "every command asks for approval and --yes does not apply";
+		const effect = "every command asks for approval in normal and auto mode";
 		expect(h.err().match(new RegExp(`^bash: not sandboxed \\(${SANDBOX_OFF}\\): ${effect}$`, "gm"))).toHaveLength(1);
 		expect(
 			h.err().match(new RegExp(`^warning: bash runs without a sandbox \\(${SANDBOX_OFF}\\): ${effect}$`, "gm")),
@@ -896,7 +902,7 @@ describe("bash outside the sandbox", () => {
 		await run(["--yes", "x"], h.io, h.createBackend);
 		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
 		expect(h.err()).toContain(
-			"bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask (--yes does not allow this): rm marker\n  reason: cleanup\n",
+			"bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask (--mode yolo allows it): rm marker\n  reason: cleanup\n",
 		);
 		expect(await readFile(join(cwd, "marker"), "utf8")).toBe("");
 	});
@@ -947,7 +953,7 @@ describe("bash outside the sandbox", () => {
 			const h = harness([[edit(join(elsewhere, "note.txt")), { event: finished }]]);
 			await run(["--yes", "x"], h.io, h.createBackend);
 			expect(h.err()).toContain(
-				`edit asks to change a file outside the working directory and needs your approval, but there is no terminal to ask (--yes does not allow this): ${join(elsewhere, "note.txt")}\n`,
+				`edit asks to change a file outside the working directory and needs your approval, but there is no terminal to ask (--mode yolo allows it): ${join(elsewhere, "note.txt")}\n`,
 			);
 			expect(await readFile(join(elsewhere, "note.txt"), "utf8")).toBe("old\n");
 		});
@@ -998,7 +1004,7 @@ describe("bash outside the sandbox", () => {
 			const h = harness([[write(target), { event: finished }]]);
 			await run(["--yes", "x"], h.io, h.createBackend);
 			expect(h.err()).toContain(
-				`write asks to create or replace a file outside the working directory and needs your approval, but there is no terminal to ask (--yes does not allow this): ${target}\n`,
+				`write asks to create or replace a file outside the working directory and needs your approval, but there is no terminal to ask (--mode yolo allows it): ${target}\n`,
 			);
 			await expect(readFile(target, "utf8")).rejects.toThrow();
 		});
@@ -1244,4 +1250,144 @@ describe("agent profiles", () => {
 			/^error: \S+\/\.atelier\/profiles\.json: profile "p": unknown role "verifer", did you mean "verifier"\?, dropped\n/,
 		);
 	});
+});
+
+describe("permission modes", () => {
+	const bash = (command: string): FakeStep => ({ toolCall: { tool: "bash", input: { command } } });
+	const modeFile = (home: string) => join(home, ".atelier", ["permission", "mode.json"].join("-"));
+	const writeModeFile = async (home: string, text: string) => {
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		await writeFile(modeFile(home), text);
+	};
+	const turn = [{ event: started }, bash("echo hi"), { event: finished }];
+	const denied = { ok: false, output: "The user denied this command." };
+	const withHome = async (body: (home: string) => Promise<void>) => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-cli-home-"));
+		try {
+			await body(home);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	};
+
+	it("runs an unsandboxed command without asking with --mode yolo, and the header says so", async () => {
+		const h = harness([turn], { sandbox: false });
+		expect(await run(["--mode", "yolo", "--no-review", "x"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.toolResults[0]?.ok).toBe(true);
+		expect(h.out()).toContain("atelier · fake · m · subscription · mode yolo\n");
+		expect(h.err()).not.toContain("needs approval");
+	});
+
+	it("keeps the header of the normal mode as it was", async () => {
+		const h = harness([turn], { sandbox: false });
+		await run(["--no-review", "x"], h.io, h.createBackend);
+		expect(h.out()).toMatch(/^atelier · fake · m · subscription\n/);
+		expect(h.out()).not.toContain("mode");
+		expect(h.backend.toolResults[0]).toEqual(denied);
+	});
+
+	it("rejects an unknown --mode as a usage error", async () => {
+		const h = harness([]);
+		expect(await run(["--mode", "bogus", "x"], h.io, h.createBackend)).toBe(2);
+		expect(h.err()).toBe("error: --mode must be normal, auto or yolo.\nRun atelier --help for usage.\n");
+		expect(h.out()).toBe("");
+	});
+
+	it("uses the default mode saved in the home when --mode is absent", () =>
+		withHome(async (home) => {
+			await writeModeFile(home, '{ "kind": "atelier.permission_mode", "version": 1, "default": "yolo" }');
+			const h = harness([turn], { sandbox: false, home });
+			await run(["--no-review", "x"], h.io, h.createBackend);
+			expect(h.backend.toolResults[0]?.ok).toBe(true);
+			expect(h.out()).toContain("· mode yolo\n");
+		}));
+
+	it("reads the default from the user's home when the CLI has none", async () => {
+		await writeModeFile(fallbackHome, '{ "kind": "atelier.permission_mode", "version": 1, "default": "auto" }');
+		const h = harness([turn]);
+		await run(["--no-review", "x"], h.io, h.createBackend);
+		expect(h.out()).toContain("· mode auto\n");
+	});
+
+	it("warns about an invalid default file once and runs in normal", () =>
+		withHome(async (home) => {
+			await writeModeFile(home, "not json");
+			const h = harness([turn], { sandbox: false, home });
+			expect(await run(["--no-review", "x"], h.io, h.createBackend)).toBe(0);
+			expect(h.err().match(/mode\.json: not valid JSON; using normal\n/g)).toHaveLength(1);
+			expect(h.err()).toContain("error: ");
+			expect(h.out()).not.toContain("mode");
+			expect(h.backend.toolResults[0]).toEqual(denied);
+		}));
+
+	it("takes --yes as --mode normal and warns once", async () => {
+		const warning =
+			"warning: --yes is deprecated: normal, the default mode, already runs sandboxed commands without asking; use --mode\n";
+		const h = harness([turn], { sandbox: false });
+		await run(["--yes", "--no-review", "x"], h.io, h.createBackend);
+		expect(h.err().split(warning)).toHaveLength(2);
+		expect(h.out()).not.toContain("mode");
+		expect(h.backend.toolResults[0]).toEqual(denied);
+	});
+
+	it("lets --mode win over --yes, and still warns", async () => {
+		const h = harness([turn], { sandbox: false });
+		await run(["--yes", "--mode", "yolo", "--no-review", "x"], h.io, h.createBackend);
+		expect(h.err()).toContain("warning: --yes is deprecated");
+		expect(h.backend.toolResults[0]?.ok).toBe(true);
+	});
+
+	it("ignores the default file with --yes, which is --mode normal", async () => {
+		await writeModeFile(fallbackHome, '{ "kind": "atelier.permission_mode", "version": 1, "default": "yolo" }');
+		const h = harness([turn]);
+		await run(["--yes", "--no-review", "x"], h.io, h.createBackend);
+		expect(h.out()).not.toContain("mode");
+	});
+
+	it("says the mode with /mode", async () => {
+		const h = harness([], { input: ["/mode"] });
+		await run(["--mode", "auto"], h.io, h.createBackend);
+		expect(h.out()).toContain("mode: auto\n");
+		expect(h.backend.prompts).toEqual([]);
+	});
+
+	it("changes the mode of the session with /mode <mode>", async () => {
+		const command = [bash("echo hi"), { event: finished }];
+		const h = harness([command, command], {
+			input: ["first", "/mode yolo", "second", "/mode"],
+			sandbox: false,
+		});
+		await run(["--no-review"], h.io, h.createBackend);
+		expect(h.out()).toContain("mode: yolo (this session)\n");
+		expect(h.out().endsWith("mode: yolo\n")).toBe(true);
+		expect(h.backend.toolResults.map((result) => result.ok)).toEqual([false, true]);
+		expect(h.backend.prompts).toHaveLength(2);
+	});
+
+	it("saves the default with /mode default <mode> and leaves the session as it is", () =>
+		withHome(async (home) => {
+			const h = harness([], { input: ["/mode default auto", "/mode"], home });
+			await run([], h.io, h.createBackend);
+			expect(h.out()).toContain("default mode: auto (saved in ~/.atelier/permission-mode.json)\n");
+			expect(h.out().endsWith("mode: normal\n")).toBe(true);
+			expect(JSON.parse(await readFile(modeFile(home), "utf8"))).toEqual({
+				kind: "atelier.permission_mode",
+				version: 1,
+				default: "auto",
+			});
+			expect(h.backend.prompts).toEqual([]);
+		}));
+
+	it.each(["/mode bogus", "/mode default", "/mode default bogus", "/mode yolo extra", "/mode default yolo extra"])(
+		"answers %s with the usage and changes nothing",
+		async (line) => {
+			const h = harness([], { input: [line, "/mode"] });
+			await run(["--mode", "auto"], h.io, h.createBackend);
+			expect(h.err()).toBe("usage: /mode [normal|auto|yolo] | /mode default <normal|auto|yolo>\n");
+			expect(h.out().endsWith("mode: auto\n")).toBe(true);
+			expect(h.out().match(/mode: /g)).toHaveLength(1);
+			expect(h.backend.prompts).toEqual([]);
+			await expect(readFile(modeFile(fallbackHome), "utf8")).rejects.toThrow();
+		},
+	);
 });

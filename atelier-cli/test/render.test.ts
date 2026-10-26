@@ -58,7 +58,7 @@ describe("Renderer", () => {
 			]);
 			expect(stdout).toBe("");
 			expect(stderr).toBe(
-				"bash: not sandboxed (sandbox not available on this platform): every command asks for approval and --yes does not apply\n",
+				"bash: not sandboxed (sandbox not available on this platform): every command asks for approval in normal and auto mode\n",
 			);
 		});
 
@@ -74,8 +74,8 @@ describe("Renderer", () => {
 				renderer.render({ ...body, seq: i + 1, turnId } as AtelierEvent);
 			expect(stderr).toBe(
 				[
-					"bash: not sandboxed (r): every command asks for approval and --yes does not apply",
-					"warning: bash runs without a sandbox (r): every command asks for approval and --yes does not apply",
+					"bash: not sandboxed (r): every command asks for approval in normal and auto mode",
+					"warning: bash runs without a sandbox (r): every command asks for approval in normal and auto mode",
 					"",
 				].join("\n"),
 			);

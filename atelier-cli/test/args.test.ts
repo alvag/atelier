@@ -32,6 +32,19 @@ describe("parseCliArgs", () => {
 		expect(parseCliArgs(["-y", "x"], "/home").yes).toBe(true);
 	});
 
+	it("reads --mode, absent by default, and rejects an unknown one", () => {
+		expect(parseCliArgs(["x"], "/h").mode).toBeUndefined();
+		for (const mode of ["normal", "auto", "yolo"]) expect(parseCliArgs(["--mode", mode, "x"], "/h").mode).toBe(mode);
+		expect(() => parseCliArgs(["--mode", "strict", "x"], "/h")).toThrow("--mode must be normal, auto or yolo.");
+	});
+
+	it("documents --mode, the deprecated --yes and the /mode commands in the help", () => {
+		expect(USAGE).toContain("--mode <mode>");
+		expect(USAGE).toContain("Deprecated alias of --mode normal");
+		expect(USAGE).toContain("/mode [normal|auto|yolo]");
+		expect(USAGE).toContain("/mode default <normal|auto|yolo>");
+	});
+
 	it("reads --backend, claude-code by default", () => {
 		expect(parseCliArgs(["--backend", "anthropic-api", "x"], "/h").backend).toBe("anthropic-api");
 		expect(parseCliArgs(["x"], "/h").backend).toBe("claude-code");

@@ -65,10 +65,12 @@ function compactionFailedLine(event: Extract<AtelierEvent, { type: "compaction_f
 	return `compaction failed: ${event.error ?? "no reason given"}`;
 }
 
-/** The main agent's header: backend, model, authentication and, when a level was asked, its effort. */
+/** The main agent's header: backend, model, authentication and, when they are not the usual, its effort and its mode. */
 function startedLine(event: Extract<AtelierEvent, { type: "session_started" }>): string {
 	const effort = event.effort === undefined ? "" : ` · effort ${event.effort}`;
-	return `atelier · ${event.backend} · ${event.model} · ${event.authSource}${effort}`;
+	const mode =
+		event.permissionMode === undefined || event.permissionMode === "normal" ? "" : ` · mode ${event.permissionMode}`;
+	return `atelier · ${event.backend} · ${event.model} · ${event.authSource}${effort}${mode}`;
 }
 
 /** `profile cheap (local-pin) · verifier claude-code/claude-sonnet-5-5 thinking medium`; the default profile by its origin alone. */
@@ -98,7 +100,7 @@ function phaseSpent({ usage, requests, costUsd }: PhaseSpent): string {
 	return count ?? `${numbers.format(usage.input + usage.output)} tokens`;
 }
 
-const UNSANDBOXED_EFFECT = "every command asks for approval and --yes does not apply";
+const UNSANDBOXED_EFFECT = "every command asks for approval in normal and auto mode";
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
