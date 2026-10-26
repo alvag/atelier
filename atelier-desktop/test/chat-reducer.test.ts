@@ -258,6 +258,22 @@ describe("reduceChat", () => {
 		]);
 	});
 
+	it("keeps the guard rule of an approval card", () => {
+		const asked = run([
+			...ready,
+			{ type: "prompt_sent", text: "x" },
+			event({ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "git push" } }),
+			event({ type: "approval_requested", callId: "c1", command: "git push", confirm: "git push" }),
+		]);
+		expect(asked.turns[0]?.items[1]).toEqual({
+			kind: "approval",
+			callId: "c1",
+			command: "git push",
+			confirm: "git push",
+			state: "pending",
+		});
+	});
+
 	it("shows an approval card and the denied tool", () => {
 		const asked = run([
 			...ready,

@@ -64,11 +64,10 @@ function ApprovalCard({
 	const fileTool = item.tool === "edit" || item.tool === "write";
 	// An edit's or a write's reason is the legend itself; only bash's says why it leaves the sandbox.
 	const reason = item.reason === undefined || fileTool ? undefined : visibleText(item.reason);
+	const guard = item.confirm === undefined ? "" : ` (guard: ${item.confirm})`;
 	const title = fileTool
 		? `${item.tool === "edit" ? "Edit" : "Write"} a file outside the working directory?`
-		: reason
-			? "Run this command outside the sandbox?"
-			: "Run this command?";
+		: `${reason ? "Run this command outside the sandbox?" : "Run this command?"}${guard}`;
 	return (
 		<fieldset className="approval">
 			<legend>{title}</legend>

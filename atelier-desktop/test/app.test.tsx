@@ -638,6 +638,32 @@ describe("App", () => {
 		expect(row.textContent).toContain("sandbox blocked: and 2 more");
 	});
 
+	it("names the guard rule on the approval card of a command the sandbox contains", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "rm -r build" } });
+		fake.emit({ type: "approval_requested", callId: "c1", command: "rm -r build", confirm: "recursive removal" });
+		expect(await screen.findByText("Run this command? (guard: recursive removal)")).toBeTruthy();
+		expect(screen.getByText("rm -r build")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Allow" }));
+		await waitFor(() => expect(fake.commands.at(-1)).toMatchObject({ command: "session.approve", approved: true }));
+	});
+
+	it("names the guard rule and the reason when the command also leaves the sandbox", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "npm publish" } });
+		fake.emit({
+			type: "approval_requested",
+			callId: "c1",
+			command: "npm publish",
+			reason: "needs the registry",
+			confirm: "npm publish",
+		});
+		expect(await screen.findByText("Run this command outside the sandbox? (guard: npm publish)")).toBeTruthy();
+		expect(screen.getByText("needs the registry")).toBeTruthy();
+	});
+
 	it("keeps the plain approval card when there is no reason", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

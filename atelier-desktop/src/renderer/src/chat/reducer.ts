@@ -44,6 +44,8 @@ export type TurnItem =
 			reason?: string;
 			/** `edit` or `write` when the question is about changing a file outside the working directory; absent for `bash`. */
 			tool?: string;
+			/** The guard rule (`recursive removal`, `git push`, ...) that makes the command ask, also inside the sandbox; absent otherwise. */
+			confirm?: string;
 			state: "pending" | "approved" | "denied";
 	  }
 	| {
@@ -505,6 +507,7 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					command: event.command,
 					...(event.reason === undefined ? {} : { reason: event.reason }),
 					...(event.tool === undefined ? {} : { tool: event.tool }),
+					...(event.confirm === undefined ? {} : { confirm: event.confirm }),
 					state: "pending",
 				},
 			];

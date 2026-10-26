@@ -283,7 +283,7 @@ export async function run(
 		tools: io.tools ?? coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
 		...(args.noSandbox ? { noSandbox: true } : {}),
-		approve: async ({ command, reason, tool }) => {
+		approve: async ({ command, reason, tool, confirm }) => {
 			// The command and the reason come from the model: show escape sequences and bidi controls instead of letting the terminal run them.
 			const shown = visibleText(command);
 			const why = reason === undefined ? undefined : visibleText(reason);
@@ -306,21 +306,28 @@ export async function run(
 			}
 			if (!io.isTTY) {
 				renderer.endLine();
-				io.stderr(
-					why
-						? `bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask (--mode yolo allows it): ${shown.text}\n  reason: ${why.text}\n`
-						: `bash command needs approval and there is no terminal to ask; the sandbox is off or unavailable (--mode yolo allows it): ${shown.text}\n`,
-				);
+				// The rule is the guard's own text; yolo does not allow it, except a plain push or rebase, which never gets here.
+				if (confirm !== undefined)
+					io.stderr(
+						`bash command matches a guard rule (${confirm}) and needs your approval, but there is no terminal to ask: ${shown.text}\n${why ? `  reason: ${why.text}\n` : ""}`,
+					);
+				else
+					io.stderr(
+						why
+							? `bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask (--mode yolo allows it): ${shown.text}\n  reason: ${why.text}\n`
+							: `bash command needs approval and there is no terminal to ask; the sandbox is off or unavailable (--mode yolo allows it): ${shown.text}\n`,
+					);
 				return false;
 			}
 			const warning =
 				shown.hadHidden || why?.hadHidden
 					? "warning: the command contains invisible or control characters, shown as markers.\n"
 					: "";
+			const guard = confirm === undefined ? "" : ` (guard: ${confirm})`;
 			return askYesNo(
 				why
-					? `Run this command OUTSIDE the sandbox?\n  ${shown.text}\n  reason: ${why.text}\n${warning}`
-					: `Run this command?\n  ${shown.text}\n${warning}`,
+					? `Run this command OUTSIDE the sandbox?${guard}\n  ${shown.text}\n  reason: ${why.text}\n${warning}`
+					: `Run this command?${guard}\n  ${shown.text}\n${warning}`,
 			);
 		},
 	})

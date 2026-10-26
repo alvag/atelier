@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -35,6 +35,12 @@ afterEach(async () => {
 	await rm(cwd, { recursive: true, force: true });
 	await rm(fallbackHome, { recursive: true, force: true });
 });
+
+const exists = (path: string) =>
+	stat(path).then(
+		() => true,
+		() => false,
+	);
 
 /** The core's tools with a `bash` whose sandbox is there and wraps nothing, so the output does not depend on the platform. */
 const tools = (() => {
@@ -895,6 +901,61 @@ describe("bash outside the sandbox", () => {
 		const h = harness([[bash(leave), { event: finished }]], { isTTY: true, answers: ["n"] });
 		await run(["--yes", "x"], h.io, h.createBackend);
 		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+	});
+
+	it.each([
+		["normal", ["--mode", "normal"]],
+		["auto", ["--mode", "auto"]],
+		["yolo", ["--mode", "yolo"]],
+	])("asks about a recursive removal inside the sandbox in %s, naming the guard rule", async (_mode, flags) => {
+		await mkdir(join(cwd, "build"));
+		const h = harness([[bash({ command: "rm -r build" }), { event: finished }]], { isTTY: true, answers: ["y"] });
+		await run([...flags, "x"], h.io, h.createBackend);
+		expect(h.out()).toContain("Run this command? (guard: recursive removal)\n  rm -r build\n[y/N] ");
+		expect(h.backend.toolResults[0]?.ok).toBe(true);
+		expect(await exists(join(cwd, "build"))).toBe(false);
+	});
+
+	it("leaves the directory alone when a guard question is answered no", async () => {
+		await mkdir(join(cwd, "build"));
+		const h = harness([[bash({ command: "rm -r build" }), { event: finished }]], { isTTY: true, answers: ["n"] });
+		await run(["--mode", "yolo", "x"], h.io, h.createBackend);
+		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+		expect(await exists(join(cwd, "build"))).toBe(true);
+	});
+
+	it("names the rule and the reason when a guard question also leaves the sandbox", async () => {
+		const publish = { command: "npm publish --dry-run", unsandboxed: true, reason: "needs the registry" };
+		const h = harness([[bash(publish), { event: finished }]], { isTTY: true, answers: ["n"] });
+		await run(["x"], h.io, h.createBackend);
+		expect(h.out()).toContain(
+			"Run this command OUTSIDE the sandbox? (guard: npm publish)\n  npm publish --dry-run\n  reason: needs the registry\n[y/N] ",
+		);
+	});
+
+	it("refuses a guard question without a terminal, in every mode, and says which rule asks", async () => {
+		for (const flags of [[], ["--mode", "auto"], ["--mode", "yolo"]]) {
+			await mkdir(join(cwd, "build"), { recursive: true });
+			const h = harness([[bash({ command: "rm -r build" }), { event: finished }]]);
+			await run([...flags, "x"], h.io, h.createBackend);
+			expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+			expect(h.err()).toContain(
+				"bash command matches a guard rule (recursive removal) and needs your approval, but there is no terminal to ask: rm -r build\n",
+			);
+			expect(await exists(join(cwd, "build"))).toBe(true);
+		}
+	});
+
+	it("does not ask about a plain push in yolo, and has no one to ask about it in normal", async () => {
+		const push = { command: "git push -u origin feat" };
+		const yolo = harness([[bash(push), { event: finished }]], { isTTY: true, input: [] });
+		await run(["--mode", "yolo", "x"], yolo.io, yolo.createBackend);
+		expect(yolo.out()).not.toContain("[y/N]");
+		expect(yolo.err()).not.toContain("guard rule");
+
+		const normal = harness([[bash(push), { event: finished }]], { isTTY: true, answers: ["n"] });
+		await run(["x"], normal.io, normal.createBackend);
+		expect(normal.out()).toContain("Run this command? (guard: git push)\n  git push -u origin feat\n[y/N] ");
 	});
 
 	it("refuses to leave the sandbox without a terminal, even with --yes", async () => {

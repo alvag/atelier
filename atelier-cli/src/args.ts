@@ -36,12 +36,15 @@ and exits; without one, starts an interactive session (/exit or Ctrl+D to quit).
 
 Options:
       --mode <mode>      Permission mode of the session: normal (default; commands that
-                         run in the sandbox never ask), auto (what normal would ask
-                         goes to a classifier model, the session's unless the profile's
-                         permission-classifier role sets one, which allows or denies it;
-                         you are asked when it cannot decide) or yolo (nothing outside
-                         the sandbox or --cwd asks); without it, the default saved
-                         with /mode default, else normal
+                         run in the sandbox never ask, except the ones the guard
+                         confirms in every mode: recursive removal, git push, ...),
+                         auto (what normal would ask goes to a classifier model, the
+                         session's unless the profile's permission-classifier role sets
+                         one, which allows or denies it; you are asked when it cannot
+                         decide; the guard's confirmations always ask you) or yolo
+                         (nothing outside the sandbox or --cwd asks, and of the guard's
+                         confirmations only a plain git push or rebase is waived);
+                         without it, the default saved with /mode default, else normal
   -y, --yes              Deprecated alias of --mode normal; prints a warning
       --backend <name>   claude-code (default): Claude Code on your Claude subscription
                          anthropic-api: Atelier's own loop, billed to an API key read
