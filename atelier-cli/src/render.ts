@@ -4,6 +4,7 @@ import {
 	type AtelierEvent,
 	cacheHitRate,
 	describeRefusal,
+	type PhaseAgent,
 	type PhaseSpent,
 	type ReviewStep,
 	type TurnPhase,
@@ -86,11 +87,30 @@ function profileLine(profile: NonNullable<Extract<AtelierEvent, { type: "session
 	return [head, ...roles].join(" · ");
 }
 
-/** The turn's cost by part, under its tokens line; undefined when the turn had a single part, which the total already says. */
-function phasesLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): string | undefined {
+/**
+ * The turn's cost by part, under its tokens line, with who ran in each part when it says so;
+ * undefined when the turn had a single part, which the total already says.
+ */
+function phasesLine(
+	event: Extract<AtelierEvent, { type: "turn_finished" }>,
+	sessionBackend: string | undefined,
+): string | undefined {
 	const phases = Object.entries(event.phases ?? {}) as [TurnPhase, PhaseSpent][];
 	if (phases.length < 2) return undefined;
-	return `phases: ${phases.map(([phase, spent]) => `${phase} ${phaseSpent(spent)}`).join(" · ")}`;
+	const part = ([phase, spent]: [TurnPhase, PhaseSpent]) => {
+		const agents = phaseAgents(spent.agents ?? [], sessionBackend);
+		return agents === "" ? `${phase} ${phaseSpent(spent)}` : `${phase} ${phaseSpent(spent)} on ${agents}`;
+	};
+	return `phases: ${phases.map(part).join(" · ")}`;
+}
+
+/** `codex/gpt-5.5 medium, claude-haiku-5-5`: each distinct model and effort once, the backend only when it is not the session's. */
+function phaseAgents(agents: PhaseAgent[], sessionBackend: string | undefined): string {
+	const described = agents.map(({ backend, model, effort }) => {
+		const who = backend === sessionBackend ? model : `${backend}/${model}`;
+		return effort === undefined ? who : `${who} ${effort}`;
+	});
+	return [...new Set(described)].join(", ");
 }
 
 /** `$0.0300 (3 req)`; the tokens only when neither the cost nor the requests are known. */
@@ -156,6 +176,8 @@ export class Renderer {
 	readonly #tools = new Map<string, string>();
 	/** The profile the header last said: a later session_started without one repeats it. */
 	#profile: NonNullable<Extract<AtelierEvent, { type: "session_started" }>["profile"]> | undefined;
+	/** The backend the header last said: the phases line names another backend only. */
+	#backend: string | undefined;
 	#atLineStart = true;
 	/** The turn in which the "not sandboxed" line was printed: its sandbox warning would say the same. */
 	#unsandboxedTurn: string | undefined;
@@ -384,6 +406,7 @@ export class Renderer {
 		switch (event.type) {
 			case "session_started":
 				this.#line(this.#style("dim", startedLine(event)));
+				this.#backend = event.backend;
 				this.#profile = event.profile ?? this.#profile;
 				if (this.#profile !== undefined) this.#line(this.#style("dim", profileLine(this.#profile)));
 				// anthropic-api is billed to the API key by choice; only an unexpected bill deserves a warning.
@@ -430,7 +453,7 @@ export class Renderer {
 				if (this.#expectedMissTurns > 0) this.#expectedMissTurns--;
 				if (event.stopReason === "error") this.failed = true;
 				this.#line(this.#style("dim", tokensLine(event)));
-				const phases = phasesLine(event);
+				const phases = phasesLine(event, this.#backend);
 				if (phases !== undefined) this.#line(this.#style("dim", phases));
 				return;
 			}

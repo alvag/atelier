@@ -253,6 +253,46 @@ describe("Renderer", () => {
 		);
 	});
 
+	it("says on the phases line each part's models and efforts, and the backend only when it is not the session's", () => {
+		const part = (input: number) => ({ input, output: 1, cacheRead: 0, cacheWrite: 0 });
+		const agent = (role: string, backend: string, model: string, effort?: "medium" | "high") => ({
+			role,
+			backend,
+			model,
+			...(effort === undefined ? {} : { effort }),
+		});
+		const { stdout } = render([
+			{ type: "session_started", backend: "claude-code", model: "claude-opus-5-5", authSource: "subscription" },
+			{
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				phases: {
+					main: {
+						usage: part(1000),
+						requests: 1,
+						costUsd: 0.04,
+						agents: [agent("orchestrator", "claude-code", "claude-opus-5-5", "high")],
+					},
+					verify: { usage: part(150), costUsd: 0.0021, agents: [agent("verifier", "codex", "gpt-5.5", "medium")] },
+					lenses: {
+						usage: part(40),
+						requests: 2,
+						agents: [
+							agent("review-risk", "claude-code", "claude-sonnet-5-5", "medium"),
+							agent("review-reliability", "claude-code", "claude-sonnet-5-5", "medium"),
+							agent("review-readability", "claude-code", "claude-haiku-5-5"),
+						],
+					},
+					validator: { usage: part(9) },
+				},
+			},
+		]);
+		expect(stdout.split("\n").find((line) => line.startsWith("phases:"))).toBe(
+			"phases: main $0.0400 (1 req) on claude-opus-5-5 high · verify $0.0021 on codex/gpt-5.5 medium · lenses 2 req on claude-sonnet-5-5 medium, claude-haiku-5-5 · validator 10 tokens",
+		);
+	});
+
 	it("indents a subagent's work under a header, without failing the parent's turn", () => {
 		const child = (body: Record<string, unknown>) =>
 			({ ...body, parentCallId: "c1", agent: "explorer" }) as unknown as AtelierEventBody;
