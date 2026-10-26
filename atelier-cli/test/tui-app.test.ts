@@ -372,6 +372,40 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(0);
 	});
 
+	it("starts a new session with /new, and resumes the one before from /resume's list", async () => {
+		// Saved on claude-code, which resumes by its session id.
+		const h = harness([[{ event: finished }]], { saveSessions: true, backendId: "claude-code" });
+		h.backend.resumeState = { sessionId: "cc-1" };
+		const code = run(["--mode", "auto"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("first prompt");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("/new");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("── new session ──"));
+		const starts = h.core.commands.filter((command) => command.command === "session.start");
+		expect(starts).toEqual([
+			{ command: "session.start", cwd, mode: "auto" },
+			{ command: "session.start", cwd, mode: "auto" },
+		]);
+		await until(() => h.backend.closed);
+
+		h.screen.type("/resume");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Resume a session"));
+		expect(h.screen.screen()).toMatch(/first prompt +just now · 1 turn/);
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("── resumed session ──"));
+		await until(() => h.screen.screen().includes(": 1 turn"));
+		const resumed = h.core.commands.find((command) => command.command === "session.resume");
+		expect(resumed).toMatchObject({ command: "session.resume", cwd });
+		// The session /new started is closed once the resumed one runs.
+		await until(() => h.core.commands.filter((command) => command.command === "session.close").length === 2);
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
 	it("expands and folds the tool cards with Ctrl+O", async () => {
 		const h = harness([
 			[{ toolCall: { tool: "bash", input: { command: "echo one\necho two" } } }, { event: finished }],

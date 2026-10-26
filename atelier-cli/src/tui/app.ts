@@ -5,6 +5,7 @@ import {
 	type JsonValue,
 	type PermissionMode,
 	type SavedEntry,
+	type SavedSessionInfo,
 	type SessionConfiguration,
 	visibleText,
 	writeDefaultPermissionMode,
@@ -19,6 +20,7 @@ import {
 	Loader,
 	matchesKey,
 	type Terminal,
+	Text,
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import type { CliArgs } from "../args.ts";
@@ -26,7 +28,15 @@ import { savedTranscript } from "../transcript.ts";
 import { Conversation } from "./conversation.ts";
 import { type Choice, ChoiceDialog } from "./dialog.ts";
 import { type FooterState, footerAfter, footerLine, footerWithConfiguration, footerWithMode } from "./footer.ts";
-import { choicesOf, LIST_ROWS, modeChoices, nextMode, type Options, profileChoices } from "./selectors.ts";
+import {
+	choicesOf,
+	LIST_ROWS,
+	modeChoices,
+	nextMode,
+	type Options,
+	profileChoices,
+	sessionChoices,
+} from "./selectors.ts";
 import { editorTheme, type Paint, painter } from "./style.ts";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
@@ -62,6 +72,8 @@ const COMMANDS = [
 	{ name: "profile", description: "Freeze another profile for this session [name]" },
 	{ name: "mode", description: "Change the permission mode: [normal|auto|yolo] | default <mode>" },
 	{ name: "backend", description: "Move the session to another backend, with a summary [name]" },
+	{ name: "new", description: "Start a new session" },
+	{ name: "resume", description: "Resume a saved session of this folder [id]" },
 	{ name: "review", description: "Review the current changes, against HEAD or a git ref" },
 	{ name: "undo-correction", description: "Undo the latest escalated review's correction" },
 	{ name: "compact", description: "Summarize the older history now [instructions]" },
@@ -258,7 +270,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		options.stderr(`error: The core could not start: ${describeError(error)}\n`);
 		return EXIT_FAILED;
 	}
-	const conversation = new Conversation(paint, args.cwd);
+	let conversation = new Conversation(paint, args.cwd);
 	let chosen: Chosen = {
 		...(args.model === undefined ? {} : { model: args.model }),
 		...(args.profile === undefined ? {} : { profile: args.profile }),
@@ -275,7 +287,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		options.stderr(`error: ${opened.error}\n`);
 		return EXIT_FAILED;
 	}
-	const { sessionId } = opened;
+	let { sessionId, savedId } = opened;
 
 	const tui = new TuiMainScreen(options.terminal);
 	const footer = new Footer(paint);
@@ -568,6 +580,61 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		conversation.note(`backend: ${backend} from the next turn, ${carried}`);
 	};
 
+	/** Shows `next` in a conversation of its own and closes the session it replaces. */
+	const switchTo = (next: Opened, shownIn: Conversation) => {
+		const previous = sessionId;
+		sessionId = next.sessionId;
+		savedId = next.savedId;
+		conversation = shownIn;
+		footer.state = next.configuration === undefined ? {} : footerWithConfiguration({}, next.configuration);
+		void request({ command: "session.close", sessionId: previous });
+	};
+	/** A conversation for the next session, after a rule that ends the one before. */
+	const nextConversation = (title: string) => {
+		const next = new Conversation(paint, args.cwd);
+		next.addChild(new Text(paint("dim", `── ${title} ──`), 1, 1));
+		transcript.addChild(next);
+		return next;
+	};
+	const withoutConversation = (shownIn: Conversation) => transcript.removeChild(shownIn);
+
+	/** Starts a new session with what was chosen and the mode in use; the one before stays on screen. */
+	const runNew = async () => {
+		const mode = isMode(footer.state.mode) ? footer.state.mode : undefined;
+		const shownIn = nextConversation("new session");
+		try {
+			switchTo(await startSession(link, args, chosen, mode), shownIn);
+		} catch (error) {
+			withoutConversation(shownIn);
+			return conversation.note(`error: ${describeError(error)}`, true);
+		}
+	};
+
+	/** Resumes a saved session of the folder, chosen from a list when no id is given; the one running is not listed. */
+	const runResume = async (id: string | undefined) => {
+		let chosenId = id;
+		if (chosenId === undefined) {
+			const listed = (await request({ command: "sessions.list", cwd: args.cwd })) as
+				| { sessions: SavedSessionInfo[] }
+				| undefined;
+			if (listed === undefined) return;
+			const choices = sessionChoices(listed.sessions, savedId, Date.now());
+			if (choices.length === 0) return conversation.note("no other saved session to resume in this folder");
+			chosenId = await pick("Resume a session", [], choices);
+			if (chosenId === undefined) return;
+		}
+		if (chosenId === savedId) return conversation.note(`session ${shown(chosenId).text} is the one running`);
+		const shownIn = nextConversation("resumed session");
+		try {
+			switchTo(await resumeSession(link, args.cwd, chosenId, shownIn), shownIn);
+		} catch (error) {
+			withoutConversation(shownIn);
+			return conversation.note(`error: ${describeError(error)}`, true);
+		}
+		// The saved session brings back its own model, level, profile and backend.
+		chosen = {};
+	};
+
 	const submit = async (line: string) => {
 		const text = line.trim();
 		if (text === "" || busy) return;
@@ -583,6 +650,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (command === "/effort" && single) await runEffort(argument);
 		else if (command === "/profile" && single) await runProfile(argument);
 		else if (command === "/backend" && single) await runBackend(argument);
+		else if (text === "/new") await runNew();
+		else if (command === "/resume" && single) await runResume(argument);
 		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });
 		else if (/^\/review(?:\s+\S+)?$/.test(text))
 			await startTurn({ command: "session.review", sessionId, ...(words[1] === undefined ? {} : { ref: words[1] }) });
