@@ -42,6 +42,19 @@ const shell = defineTool({
 	execute: async ({ command }) => ({ ok: true, output: `ran ${command}`, summary: command, truncated: false }),
 });
 
+/** Waits for what the test needs, never a fixed delay: a loaded machine answers a session.start slower. */
+const until = async (condition: () => boolean) => {
+	for (let i = 0; i < 400 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+	expect(condition()).toBe(true);
+};
+
+/** Resolves once the server has read the end of `input`, so it knows the client is gone. */
+const inputEnded = async (input: PassThrough) => {
+	if (!input.readableEnded) await new Promise((resolve) => input.once("end", resolve));
+	// The server's read loop sees the end in the microtasks that follow the event.
+	await new Promise((resolve) => setImmediate(resolve));
+};
+
 let cwd: string;
 beforeEach(async () => {
 	cwd = await mkdtemp(join(tmpdir(), "atelier-rpc-"));
@@ -218,7 +231,7 @@ describe("RpcServer", () => {
 		});
 		void server.run();
 		input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd })}\n`);
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		await until(() => messages.some((m) => m.type === "response"));
 		expect(messages.find((m) => m.type === "response")).toMatchObject({
 			ok: false,
 			error: { code: "session_start_failed", message: "claude not found" },
@@ -247,7 +260,7 @@ describe("RpcServer", () => {
 			});
 			void server.run();
 			input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd })}\n`);
-			await new Promise((resolve) => setTimeout(resolve, 50));
+			await until(() => messages.some((m) => m.type === "response"));
 			expect(messages.find((m) => m.type === "response")).toMatchObject({
 				ok: false,
 				error: {
@@ -428,12 +441,14 @@ describe("RpcServer", () => {
 		const gate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
+		let starting = false;
 		const server = new RpcServer({
 			input,
 			write: () => {},
 			createBackend: () => ({
 				id: "slow",
 				start: async (options) => {
+					starting = true;
 					await gate;
 					return fake.start(options);
 				},
@@ -444,9 +459,9 @@ describe("RpcServer", () => {
 		});
 		const done = server.run();
 		input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd })}\n`);
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await until(() => starting);
 		input.end();
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await inputEnded(input);
 		release();
 		await done;
 		expect(fake.closed).toBe(true);
@@ -469,13 +484,16 @@ describe("RpcServer", () => {
 	it("survives an output that fails while a turn streams", async () => {
 		const input = new PassThrough();
 		let sessionId = "";
+		let failedWrites = 0;
 		const server = new RpcServer({
 			input,
 			write: (line) => {
 				const message = decodeServerMessage(line.trimEnd());
 				if (message.type === "response" && message.ok && typeof message.result.sessionId === "string")
 					sessionId = message.result.sessionId;
-				if (message.type === "event") throw new Error("EPIPE");
+				if (message.type !== "event") return;
+				failedWrites++;
+				throw new Error("EPIPE");
 			},
 			createBackend: () => new FakeBackend([[{ event: { type: "text_delta", text: "x" } }, { event: finished }]]),
 			tools: [],
@@ -484,9 +502,9 @@ describe("RpcServer", () => {
 		});
 		const done = server.run();
 		input.write(`${JSON.stringify({ type: "command", id: "s", command: "session.start", cwd })}\n`);
-		for (let i = 0; i < 100 && sessionId === ""; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+		await until(() => sessionId !== "");
 		input.write(`${JSON.stringify({ type: "command", id: "t", command: "session.send", sessionId, prompt: "x" })}\n`);
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		await until(() => failedWrites > 0);
 		input.end();
 		await done;
 	});
@@ -681,10 +699,6 @@ describe("session.start profiles", () => {
 		});
 		void server.run();
 		const answered = (id: string) => messages.some((m) => m.type === "response" && m.id === id);
-		const until = async (condition: () => boolean) => {
-			for (let i = 0; i < 400 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
-			expect(condition()).toBe(true);
-		};
 		input.write(`${JSON.stringify({ type: "command", id: "slow", command: "profiles.list", cwd })}\n`);
 		input.write(`${JSON.stringify({ type: "command", id: "fast", command: "profiles.list" })}\n`);
 		await until(() => answered("fast"));
