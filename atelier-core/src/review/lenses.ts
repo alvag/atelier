@@ -1,4 +1,5 @@
 import type { Candidate } from "./candidate.ts";
+import { SEVERITY_CRITERION } from "./findings.ts";
 import { runGit } from "./git.ts";
 import type { Lens } from "./risk.ts";
 
@@ -9,9 +10,9 @@ const COMMON = [
 	"You are a read-only code reviewer: you cannot change files or run commands, only read and grep the frozen change.",
 	'Judge only the change in the patch. Code it did not touch is out of scope, except to report a problem there with cause "pre-existing".',
 	"Report only what the frozen tree proves, with path:line evidence you checked with read or grep. Do not speculate.",
-	"Severity: blocker or critical only for a defect the change introduces that must not ship; major or minor otherwise.",
+	`Severity: blocker, critical, warning or suggestion. ${SEVERITY_CRITERION} A defect that is real but not severe is a warning; a style or maintainability remark is a suggestion.`,
 	'Cause: "candidate" if the change introduced it, "pre-existing" if it was already there, "unknown" if you cannot tell.',
-	'Your final message is only this JSON object, no other text: {"findings":[{"id":"1","lens":"<your lens>","severity":"blocker|critical|major|minor","cause":"candidate|pre-existing|unknown","path":"src/x.ts","line":12,"claim":"what is wrong","evidence":"src/x.ts:12 and why"}]}. Use an empty list when there is nothing to report.',
+	'Your final message is only this JSON object, no other text: {"findings":[{"id":"1","lens":"<your lens>","severity":"blocker|critical|warning|suggestion","cause":"candidate|pre-existing|unknown","path":"src/x.ts","line":12,"claim":"what is wrong","evidence":"src/x.ts:12 and why"}]}. Use an empty list when there is nothing to report.',
 ].join("\n");
 
 const CONCERN: Record<Lens, string> = {

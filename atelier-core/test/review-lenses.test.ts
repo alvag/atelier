@@ -8,11 +8,12 @@ import { freezeCandidate } from "../src/review/candidate.ts";
 import { type Finding, isBlocking, parseFindings } from "../src/review/findings.ts";
 import { buildLensPrompt, LENS_CONTEXT_LIMIT_BYTES, LENS_INSTRUCTIONS, readPatch } from "../src/review/lenses.ts";
 import { LENSES } from "../src/review/risk.ts";
+import { REFUTER_INSTRUCTION } from "../src/review/roles.ts";
 
 const finding = (over: Partial<Finding> = {}): Finding => ({
 	id: "x",
 	lens: "risk",
-	severity: "major",
+	severity: "warning",
 	cause: "candidate",
 	path: "src/a.ts",
 	line: 3,
@@ -53,6 +54,15 @@ describe("parseFindings", () => {
 		expect(parseFindings(asJson([finding({ line: 0 })])).ok).toBe(false);
 	});
 
+	it("reads the severities of an older reply: major as warning, minor as suggestion", () => {
+		const result = parseFindings(
+			asJson([finding({ severity: "major" as never }), finding({ severity: "minor" as never })]),
+			"risk",
+		);
+		if (!result.ok) throw new Error(result.error);
+		expect(result.findings.map((f) => f.severity)).toEqual(["warning", "suggestion"]);
+	});
+
 	it("accepts a finding without a line", () => {
 		const { line: _line, ...noLine } = finding();
 		expect(parseFindings(asJson([noLine])).ok).toBe(true);
@@ -79,8 +89,8 @@ describe("isBlocking", () => {
 	const table: [Finding["severity"], Finding["cause"], boolean][] = [
 		["blocker", "candidate", true],
 		["critical", "candidate", true],
-		["major", "candidate", false],
-		["minor", "candidate", false],
+		["warning", "candidate", false],
+		["suggestion", "candidate", false],
 		["blocker", "pre-existing", false],
 		["critical", "pre-existing", false],
 		["blocker", "unknown", false],
@@ -95,10 +105,37 @@ describe("lens instructions", () => {
 	it.each(LENSES)("%s has a short, read-only instruction", (lens) => {
 		const text = LENS_INSTRUCTIONS[lens];
 		expect(text.length).toBeGreaterThan(200);
-		expect(text.length).toBeLessThanOrEqual(1200);
+		expect(text.length).toBeLessThanOrEqual(2400);
 		expect(text).toContain("read-only");
 		expect(text).toContain("pre-existing");
 		expect(text).toContain('"findings"');
+	});
+
+	it("asks for the four levels and no longer names major or minor", () => {
+		for (const lens of LENSES) {
+			expect(LENS_INSTRUCTIONS[lens]).toContain("blocker|critical|warning|suggestion");
+			expect(LENS_INSTRUCTIONS[lens]).not.toMatch(/\b(major|minor)\b/);
+		}
+	});
+
+	const criterion = [
+		"must name its observable harm",
+		"violating what was requested",
+		"breaking something that worked before",
+		"Silently ignoring an explicit option",
+		"changing an existing output nobody asked to change",
+		"already happened on the base",
+		"out-of-range values",
+		"at most warning",
+	];
+	it.each(LENSES)("%s carries the severity criterion", (lens) => {
+		for (const sentence of criterion) expect(LENS_INSTRUCTIONS[lens]).toContain(sentence);
+	});
+
+	it("gives the refuter the same criterion and the downgrade to warning", () => {
+		for (const sentence of criterion) expect(REFUTER_INSTRUCTION).toContain(sentence);
+		expect(REFUTER_INSTRUCTION).toContain("downgraded");
+		expect(REFUTER_INSTRUCTION).toContain("confirmed|refuted|downgraded");
 	});
 
 	it("differ in concern", () => {

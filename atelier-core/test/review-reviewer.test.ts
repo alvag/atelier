@@ -105,7 +105,7 @@ async function drive(env: Awaited<ReturnType<typeof setup>>, deps: ReviewDeps, s
 	}
 }
 
-const verdicts = (...v: { id: string; verdict: "confirmed" | "refuted"; reason?: string }[]) =>
+const verdicts = (...v: { id: string; verdict: "confirmed" | "refuted" | "downgraded"; reason?: string }[]) =>
 	JSON.stringify({ verdicts: v.map((x) => ({ reason: "because", ...x })) });
 const results = (...r: { id: string; resolved: boolean }[]) =>
 	JSON.stringify({ results: r.map((x) => ({ evidence: "a.ts:2", ...x })) });
@@ -205,6 +205,73 @@ describe("runReview", () => {
 		expect(events.some((e) => e.type === "refuter_finished")).toBe(true);
 	});
 
+	it("turns a finding the refuter downgrades into a warning follow-up and approves", async () => {
+		const env = await setup(20);
+		const { deps, corrections, calls } = harness(env, {
+			...severeLens(),
+			refuter: () => ok(verdicts({ id: "RL-001", verdict: "downgraded", reason: "no observable harm" })),
+		});
+		const { receipt, events } = await drive(env, deps);
+		expect(receipt.verdict).toBe("approved");
+		expect(receipt.findings).toEqual([]);
+		expect(receipt.refuted).toEqual([]);
+		expect(receipt.followUps).toMatchObject([{ id: "RL-001", severity: "warning", cause: "candidate" }]);
+		expect(corrections).toHaveLength(0);
+		expect(calls.some((c) => c.role === "validator")).toBe(false);
+		expect(events).toContainEqual({ type: "refuter_finished", confirmed: 0, refuted: 0, downgraded: 1 });
+	});
+
+	it("corrects only the findings the refuter confirms when it also downgrades one", async () => {
+		const env = await setup(20);
+		const { deps, corrections } = harness(env, {
+			lens: (_c, n) => (n === 1 ? ok(report(finding(), finding({ claim: "Other." }))) : ok(report())),
+			refuter: () => ok(verdicts({ id: "RL-001", verdict: "confirmed" }, { id: "RL-002", verdict: "downgraded" })),
+			correct: tweak(2),
+			validator: () => ok(results({ id: "RL-001", resolved: true })),
+		});
+		const { receipt } = await drive(env, deps);
+		expect(receipt.verdict).toBe("approved");
+		expect(receipt.findings.map((f) => f.id)).toEqual(["RL-001"]);
+		expect(receipt.followUps).toMatchObject([{ id: "RL-002", severity: "warning" }]);
+		expect(corrections[0]).toContain("RL-001");
+		expect(corrections[0]).not.toContain("RL-002");
+	});
+
+	it("does not stop for a candidate warning or suggestion, and never calls the refuter", async () => {
+		const env = await setup(4);
+		const { deps, calls } = harness(env, {
+			lens: () => ok(report(finding({ severity: "warning" }), finding({ severity: "suggestion" }))),
+		});
+		const { receipt } = await drive(env, deps);
+		expect(receipt.verdict).toBe("approved");
+		expect(receipt.findings).toEqual([]);
+		expect(receipt.followUps.map((f) => f.severity)).toEqual(["warning", "suggestion"]);
+		expect(calls.map((c) => c.role)).toEqual(["reliability"]);
+	});
+
+	it("still stops for a candidate critical finding the refuter confirms", async () => {
+		const env = await setup(20);
+		const { deps, corrections } = harness(env, {
+			...severeLens({ severity: "critical" }),
+			refuter: () => ok(verdicts({ id: "RL-001", verdict: "confirmed" })),
+			correct: tweak(2),
+			validator: () => ok(results({ id: "RL-001", resolved: false })),
+		});
+		const { receipt } = await drive(env, deps);
+		expect(receipt.verdict).toBe("escalated");
+		expect(receipt.findings).toMatchObject([{ id: "RL-001", severity: "critical" }]);
+		expect(corrections[0]).toContain("[critical]");
+	});
+
+	it("reads an older lens reply that uses major as a warning that does not block", async () => {
+		const env = await setup(4);
+		const old = JSON.stringify({ findings: [{ ...finding(), severity: "major" }] });
+		const { deps } = harness(env, { lens: () => ok(old) });
+		const { receipt } = await drive(env, deps);
+		expect(receipt.verdict).toBe("approved");
+		expect(receipt.followUps).toMatchObject([{ severity: "warning" }]);
+	});
+
 	it("sends all severe findings to one refuter call, unknown cause included", async () => {
 		const env = await setup(4);
 		const { deps, calls } = harness(env, {
@@ -214,7 +281,7 @@ describe("runReview", () => {
 							report(
 								finding(),
 								finding({ cause: "unknown", severity: "blocker", claim: "Maybe" }),
-								finding({ severity: "major" }),
+								finding({ severity: "warning" }),
 							),
 						)
 					: ok(report()),
@@ -237,7 +304,7 @@ describe("runReview", () => {
 				ok(
 					report(
 						finding({ cause: "pre-existing", severity: "blocker" }),
-						finding({ severity: "minor", cause: "unknown" }),
+						finding({ severity: "suggestion", cause: "unknown" }),
 					),
 				),
 		});
@@ -483,7 +550,7 @@ describe("runReview", () => {
 		const env = await setup(20);
 		const status = () => execFileSync("git", ["status", "--porcelain"], { cwd: env.root, encoding: "utf8" });
 		const before = status();
-		const { deps } = harness(env, severeLens({ severity: "minor" }));
+		const { deps } = harness(env, severeLens({ severity: "suggestion" }));
 		await drive(env, deps);
 		expect(status()).toBe(before);
 	});

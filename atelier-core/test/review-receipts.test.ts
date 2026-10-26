@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -65,6 +65,33 @@ describe("receipts", () => {
 		await writeReceipt(gitDir, receipt({ verdict: "declined" }));
 		await writeReceipt(gitDir, receipt({ verdict: "approved" }));
 		expect((await findReceipt(gitDir, TREE))?.verdict).toBe("approved");
+	});
+
+	it("reads an old receipt with major and minor as warning and suggestion, and leaves the file as it was", async () => {
+		const gitDir = await scratch();
+		const reviews = join(gitDir, "atelier", "reviews");
+		await mkdir(reviews, { recursive: true });
+		const found = (severity: string, id: string) => ({
+			id,
+			lens: "risk",
+			severity,
+			cause: "candidate",
+			path: "a.ts",
+			claim: "c",
+			evidence: "a.ts:1",
+		});
+		const text = JSON.stringify({
+			...receipt(),
+			findings: [found("critical", "RK-001")],
+			refuted: [{ ...found("major", "RK-002"), reason: "guarded" }],
+			followUps: [found("major", "RK-003"), found("minor", "RK-004")],
+		});
+		await writeFile(join(reviews, `${TREE}.json`), text);
+		const read = await findReceipt(gitDir, TREE);
+		expect(read?.findings.map((f) => f.severity)).toEqual(["critical"]);
+		expect(read?.refuted.map((f) => f.severity)).toEqual(["warning"]);
+		expect(read?.followUps.map((f) => f.severity)).toEqual(["warning", "suggestion"]);
+		expect(await readFile(join(reviews, `${TREE}.json`), "utf8")).toBe(text);
 	});
 
 	it("returns undefined when there is no receipt, or the file is corrupt or has the wrong shape", async () => {

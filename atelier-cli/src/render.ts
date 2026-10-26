@@ -158,7 +158,7 @@ function stepText(step: ReviewStep): string {
 		case "refuter_started":
 			return `refuting ${plural(step.findings, "finding")}`;
 		case "refuter_finished":
-			return `${step.confirmed} confirmed · ${step.refuted} refuted`;
+			return `${step.confirmed} confirmed · ${step.refuted} refuted${step.downgraded ? ` · ${step.downgraded} downgraded` : ""}`;
 		case "correction_started":
 			return `correcting (budget ${plural(step.budget, "line")})`;
 		case "correction_finished":

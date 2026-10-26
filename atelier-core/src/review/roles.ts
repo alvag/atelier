@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { describeError } from "../events.ts";
+import { SEVERITY_CRITERION } from "./findings.ts";
 
 export const REFUTER_INSTRUCTION = [
 	"You are a read-only refuter: you cannot change files or run commands, only read and grep the frozen change.",
 	"You receive severe findings that reviewers raised against a change. Try to refute each one: check the claim and its evidence in the frozen tree.",
-	'Answer "refuted" only when the tree proves the claim wrong (a guard, a test, or code the reviewer missed), and say what proves it. Answer "confirmed" when the claim holds or you cannot disprove it.',
-	'Your final message is only this JSON object, no other text: {"verdicts":[{"id":"RL-001","verdict":"confirmed|refuted","reason":"what you checked and found, with path:line"}]}. Answer every finding id you were given.',
+	`Severity criterion: ${SEVERITY_CRITERION}`,
+	'Answer "refuted" only when the tree proves the claim wrong (a guard, a test, or code the reviewer missed), and say what proves it. Answer "downgraded" when the claim holds but does not name an observable harm that meets the criterion above: it becomes a warning and a follow-up, and no longer blocks. Answer "confirmed" when the claim holds and meets the criterion, or you cannot disprove it.',
+	'Your final message is only this JSON object, no other text: {"verdicts":[{"id":"RL-001","verdict":"confirmed|refuted|downgraded","reason":"what you checked and found, with path:line"}]}. Answer every finding id you were given.',
 ].join("\n");
 
 export const VALIDATOR_INSTRUCTION = [
@@ -24,7 +26,11 @@ export function commitInstruction(committed: boolean): string {
 
 const verdictsSchema = z.object({
 	verdicts: z.array(
-		z.object({ id: z.string().min(1), verdict: z.enum(["confirmed", "refuted"]), reason: z.string().min(1) }),
+		z.object({
+			id: z.string().min(1),
+			verdict: z.enum(["confirmed", "refuted", "downgraded"]),
+			reason: z.string().min(1),
+		}),
 	),
 });
 const resultsSchema = z.object({

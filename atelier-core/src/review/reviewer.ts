@@ -48,7 +48,7 @@ export type ReviewProgress =
 	| { type: "lens_started"; lens: Lens }
 	| { type: "lens_finished"; lens: Lens; ok: boolean; findings: number }
 	| { type: "refuter_started"; findings: number }
-	| { type: "refuter_finished"; confirmed: number; refuted: number }
+	| { type: "refuter_finished"; confirmed: number; refuted: number; downgraded: number }
 	| { type: "correction_started"; budget: number; findings: number }
 	| { type: "correction_finished"; ok: boolean; used?: number }
 	| { type: "validator_started"; findings: number }
@@ -210,9 +210,18 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	if (!verdicts.ok)
 		return finish("unavailable", `The refuter returned an invalid reply: ${verdicts.error}`, unreadable(reply.text));
 	const reasons = new Map(verdicts.verdicts.filter((v) => v.verdict === "refuted").map((v) => [v.id, v.reason]));
-	confirmed = toRefute.filter((f) => !reasons.has(f.id));
+	const downgraded = new Set(verdicts.verdicts.filter((v) => v.verdict === "downgraded").map((v) => v.id));
+	confirmed = toRefute.filter((f) => !reasons.has(f.id) && !downgraded.has(f.id));
 	refuted = toRefute.filter((f) => reasons.has(f.id)).map((f) => ({ ...f, reason: reasons.get(f.id) as string }));
-	yield { type: "refuter_finished", confirmed: confirmed.length, refuted: refuted.length };
+	// A downgraded finding stands as a warning: it stops blocking and stays as a follow-up.
+	const warnings = toRefute.filter((f) => downgraded.has(f.id)).map((f): Finding => ({ ...f, severity: "warning" }));
+	followUps = [...followUps, ...warnings];
+	yield {
+		type: "refuter_finished",
+		confirmed: confirmed.length,
+		refuted: refuted.length,
+		downgraded: warnings.length,
+	};
 	if (confirmed.length === 0) return finish("approved");
 
 	// The one correction, by the main agent, measured by the core.

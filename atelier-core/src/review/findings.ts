@@ -2,13 +2,36 @@ import { z } from "zod";
 import { describeError } from "../events.ts";
 import { LENSES, type Lens } from "./risk.ts";
 
-const SEVERITIES = ["blocker", "critical", "major", "minor"] as const;
+const SEVERITIES = ["blocker", "critical", "warning", "suggestion"] as const;
 const CAUSES = ["candidate", "pre-existing", "unknown"] as const;
+
+/**
+ * The severity criterion, copied from gentle-ai (`reviewerprovider/contract.go`),
+ * that the lenses and the refuter both apply. Severities are lowercase here
+ * because they are the values of the JSON the lenses answer.
+ */
+export const SEVERITY_CRITERION = [
+	"A blocker or critical finding must be caused by this change (the behavior does not already happen on the base) and reachable with realistic input.",
+	"A blocker or critical finding must name its observable harm: violating what was requested, or breaking something that worked before.",
+	"Silently ignoring an explicit option or argument while reporting success, or changing an existing output nobody asked to change, is also severe.",
+	"What already happened on the base and was not asked to change, what needs out-of-range values, and what falls outside the scope of the request without violating anything are at most warning.",
+].join(" ");
+
+/** Replies and receipts written before the four levels used major and minor: they read as warning and suggestion. */
+const LEGACY_SEVERITIES = { major: "warning", minor: "suggestion" } as const;
+
+const severitySchema = z.preprocess(
+	(value) =>
+		typeof value === "string" && value in LEGACY_SEVERITIES
+			? LEGACY_SEVERITIES[value as keyof typeof LEGACY_SEVERITIES]
+			: value,
+	z.enum(SEVERITIES),
+);
 
 export const findingSchema = z.object({
 	id: z.string().min(1),
 	lens: z.enum(LENSES),
-	severity: z.enum(SEVERITIES),
+	severity: severitySchema,
 	cause: z.enum(CAUSES),
 	path: z.string().min(1),
 	line: z.number().int().min(1).optional(),

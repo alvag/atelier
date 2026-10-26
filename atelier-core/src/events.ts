@@ -52,7 +52,7 @@ export type ReviewStep =
 	| { type: "lens_started"; lens: string }
 	| { type: "lens_finished"; lens: string; ok: boolean; findings: number }
 	| { type: "refuter_started"; findings: number }
-	| { type: "refuter_finished"; confirmed: number; refuted: number }
+	| { type: "refuter_finished"; confirmed: number; refuted: number; downgraded?: number }
 	| { type: "correction_started"; budget: number; findings: number }
 	| { type: "correction_finished"; ok: boolean; used?: number }
 	| { type: "validator_started"; findings: number }
