@@ -174,7 +174,13 @@ interface Chosen {
 	backend?: BackendName;
 }
 
-/** Starts a session with what was chosen; the level has no place in `session.start`, so it is changed right after. */
+/** The core refused the level chosen for a session it had just started. */
+class EffortRefused extends Error {}
+
+/**
+ * Starts a session with what was chosen; the level has no place in `session.start`, so it is changed right after.
+ * If that fails, the session just started is closed so that the core does not go on running it.
+ */
 async function startSession(
 	link: CoreLink,
 	args: CliArgs,
@@ -191,12 +197,17 @@ async function startSession(
 		...(args.noSession ? { noSession: true } : {}),
 	})) as Opened;
 	if (chosen.effort === undefined) return started;
-	const configuration = (await link.request({
-		command: "session.set_effort",
-		sessionId: started.sessionId,
-		effort: chosen.effort as Extract<ClientCommand, { command: "session.set_effort" }>["effort"],
-	})) as SessionConfiguration;
-	return { ...started, configuration };
+	try {
+		const configuration = (await link.request({
+			command: "session.set_effort",
+			sessionId: started.sessionId,
+			effort: chosen.effort as Extract<ClientCommand, { command: "session.set_effort" }>["effort"],
+		})) as SessionConfiguration;
+		return { ...started, configuration };
+	} catch (error) {
+		await link.request({ command: "session.close", sessionId: started.sessionId }).catch(() => {});
+		throw new EffortRefused(describeError(error));
+	}
 }
 
 /** Resumes the saved session `savedId` and shows what it said; answers it as the core started it again. */
@@ -644,6 +655,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			switchTo(await startSession(link, args, chosen, mode), shownIn);
 		} catch (error) {
 			withoutConversation(shownIn);
+			// A level the core refused is not asked for again by the next /new.
+			if (error instanceof EffortRefused) {
+				const { effort: _effort, ...rest } = chosen;
+				chosen = rest;
+			}
 			return conversation.note(`error: ${describeError(error)}`, true);
 		}
 	};
@@ -690,6 +706,17 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 		tui.requestRender();
 	};
+	/** The commands that take no more than the arguments in their usage; with others they print it. */
+	const usages = new Map([
+		["/model", "/model [name]"],
+		["/effort", "/effort [level]"],
+		["/profile", "/profile [name]"],
+		["/backend", `/backend [${BACKEND_NAMES.join("|")}]`],
+		["/new", "/new"],
+		["/resume", "/resume [id]"],
+		["/undo-correction", "/undo-correction"],
+		["/review", "/review [ref]"],
+	]);
 	const dispatch = async (text: string, line: string) => {
 		const words = text.split(/\s+/);
 		const [command, argument] = words;
@@ -707,7 +734,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (/^\/compact(?:\s|$)/.test(text)) {
 			const instructions = text.slice("/compact".length).trim();
 			await startTurn({ command: "session.compact", sessionId, ...(instructions === "" ? {} : { instructions }) });
-		} else await startTurn({ command: "session.send", sessionId, prompt: line });
+		} else if (usages.has(command ?? "")) conversation.note(`usage: ${usages.get(command ?? "")}`, true);
+		else await startTurn({ command: "session.send", sessionId, prompt: line });
 	};
 	editor.onSubmit = (line) => void submit(line);
 

@@ -841,6 +841,76 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(0);
 	});
 
+	it("closes the session /new started when its effort is refused, keeps the old one and drops the effort", async () => {
+		const h = harness([]);
+		let starts = 0;
+		const stub = stubCore({
+			answer: (command) => {
+				if (command.command === "session.start") return { sessionId: `s${++starts}` };
+				if (command.command === "session.set_effort" && command.sessionId !== "s1")
+					return Promise.reject(new Error("effort not supported"));
+				return {};
+			},
+		});
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		const sent = (name: string) => stub.log.commands.filter((command) => command.command === name);
+
+		h.screen.type("/effort high");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("effort: high from the next turn"));
+
+		h.screen.type("/new");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("error: effort not supported"));
+		expect(sent("session.close")).toEqual([{ command: "session.close", sessionId: "s2" }]);
+
+		// The old session still takes prompts.
+		h.screen.type("still here");
+		h.screen.type("\r");
+		await until(() => sent("session.send").length === 1);
+		expect(sent("session.send")).toEqual([{ command: "session.send", sessionId: "s1", prompt: "still here" }]);
+		stub.emit({ type: "turn_finished", stopReason: "end_turn", usage }, "s1");
+
+		// The refused effort is not asked again: the second /new starts a session and does not repeat the request.
+		await until(() => h.screen.screen().includes("still here"));
+		h.screen.type("/new");
+		h.screen.type("\r");
+		await until(() => starts === 3);
+		await until(() => sent("session.close").length === 2);
+		expect(sent("session.set_effort")).toHaveLength(2);
+		expect(sent("session.close")).toEqual([
+			{ command: "session.close", sessionId: "s2" },
+			{ command: "session.close", sessionId: "s1" },
+		]);
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it.each([
+		["/model a b", "usage: /model [name]"],
+		["/effort high now", "usage: /effort [level]"],
+		["/profile a b", "usage: /profile [name]"],
+		["/backend a b", "usage: /backend [claude-code|anthropic-api]"],
+		["/new x", "usage: /new"],
+		["/resume a b", "usage: /resume [id]"],
+		["/undo-correction x", "usage: /undo-correction"],
+		["/review a b", "usage: /review [ref]"],
+	])("prints the usage for %s and does not send it to the model", async (line, usageLine) => {
+		const h = harness([]);
+		const stub = listingCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type(line);
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes(usageLine));
+		expect(stub.log.commands.map((command) => command.command)).toEqual(["session.start"]);
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
 	it("asks before moving to another backend, starting on Stay", async () => {
 		const h = harness([]);
 		const stub = listingCore();
