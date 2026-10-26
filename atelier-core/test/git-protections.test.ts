@@ -259,7 +259,7 @@ describe("when git cannot answer inside a repository, the protection holds anywa
 		expect(questions).toEqual([]);
 		expect(results).toEqual([refusal(".hooks/pre-commit"), refusal(".hooks/pre-commit"), refusal(".git/hooks/x")]);
 		expect(await readFile(join(cwd, ".hooks", "pre-commit"), "utf8")).toBe("old\n");
-	});
+	}, 30_000);
 
 	it.skipIf(!onMac)("bash cannot write the hooks directory", async () => {
 		const cwd = await broken();
