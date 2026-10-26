@@ -68,7 +68,7 @@ function compactionFailedLine(event: Extract<AtelierEvent, { type: "compaction_f
 }
 
 /** The main agent's header: backend, model, authentication and, when they are not the usual, its effort and its mode. */
-function startedLine(event: Extract<AtelierEvent, { type: "session_started" }>): string {
+export function startedLine(event: Extract<AtelierEvent, { type: "session_started" }>): string {
 	const effort = event.effort === undefined ? "" : ` · effort ${event.effort}`;
 	const mode =
 		event.permissionMode === undefined || event.permissionMode === "normal" ? "" : ` · mode ${event.permissionMode}`;
@@ -76,7 +76,9 @@ function startedLine(event: Extract<AtelierEvent, { type: "session_started" }>):
 }
 
 /** `profile cheap (local-pin) · verifier claude-code/claude-sonnet-5-5 thinking medium`; the default profile by its origin alone. */
-function profileLine(profile: NonNullable<Extract<AtelierEvent, { type: "session_started" }>["profile"]>): string {
+export function profileLine(
+	profile: NonNullable<Extract<AtelierEvent, { type: "session_started" }>["profile"]>,
+): string {
 	const head = profile.name === undefined ? `profile ${profile.origin}` : `profile ${profile.name} (${profile.origin})`;
 	const roles = Object.entries(profile.roles).map(([role, { backend, model, thinking }]) => {
 		const parts = [role];
@@ -91,7 +93,7 @@ function profileLine(profile: NonNullable<Extract<AtelierEvent, { type: "session
  * The turn's cost by part, under its tokens line, with who ran in each part when it says so;
  * undefined when the turn had a single part, which the total already says.
  */
-function phasesLine(
+export function phasesLine(
 	event: Extract<AtelierEvent, { type: "turn_finished" }>,
 	sessionBackend: string | undefined,
 ): string | undefined {
