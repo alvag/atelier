@@ -2,6 +2,7 @@ export type {
 	AgentBackend,
 	BackendSession,
 	BackendStartOptions,
+	SessionChange,
 	ToolCall,
 	ToolCallResult,
 	ToolExecutor,

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentBackend, BackendSession, ToolCall, ToolCallResult } from "./backend.ts";
+import type { AgentBackend, BackendSession, SessionChange, ToolCall, ToolCallResult } from "./backend.ts";
 import { Channel } from "./channel.ts";
 import {
 	type AtelierEvent,
@@ -11,6 +11,7 @@ import {
 	errorEvent,
 	type PhaseAgent,
 	type PhaseSpent,
+	type SessionProfile,
 	type SubagentTag,
 	ZERO_USAGE,
 } from "./events.ts";
@@ -35,6 +36,7 @@ import {
 	parseDecision,
 	pauseReason,
 } from "./permission-classifier.ts";
+import { thinkingToSend } from "./pricing.ts";
 import {
 	compactionSettings,
 	type FrozenProfile,
@@ -141,6 +143,29 @@ export interface SessionOptions {
 	review?: ReviewOptions;
 }
 
+/** What the main agent runs with, as `Session.configure` and the `session_configured` event say it. */
+export interface SessionConfiguration {
+	backend: string;
+	/** Absent while the backend's default model runs and nothing changed it. */
+	model?: string;
+	thinking?: ThinkingLevel;
+	permissionMode: PermissionMode;
+	profile?: SessionProfile;
+	/** A turn is running: the model and level above wait for it to end. */
+	pending: boolean;
+}
+
+/** A change the session or its backend refuses; `code` is what the protocol answers. */
+export class ConfigureError extends Error {
+	readonly code: string;
+	constructor(code: string, message: string) {
+		super(message);
+		this.code = code;
+	}
+}
+
+const THINKING_BACKENDS: ReadonlySet<string> = new Set(["claude-code", "anthropic-api"]);
+
 export interface SubagentOptions {
 	agents: readonly SubagentDefinition[];
 	/** A fresh backend for each child: the one `name` says, or the parent's kind when the profile names none. */
@@ -156,9 +181,16 @@ export class Session {
 	readonly #options: SessionOptions;
 	readonly #tools: Map<string, ToolDefinition>;
 	readonly #createId: () => string;
-	/** The main agent's model and thinking level: the explicit choice, then the orchestrator's entry. */
-	readonly #model: string | undefined;
-	readonly #thinking: ThinkingLevel | undefined;
+	/** The main agent's model and thinking level: the explicit choice, then the orchestrator's entry; `configure` changes them. */
+	#model: string | undefined;
+	#thinking: ThinkingLevel | undefined;
+	/** A change asked while a turn runs: held until the turn ends. */
+	#pending: SessionChange | undefined;
+	/** Changes made one after another, so a turn never starts between a change and its backend call. */
+	#changes: Promise<unknown> = Promise.resolve();
+	#changing = 0;
+	/** The model, level or mode changed and the clients were not told yet. */
+	#unannounced = false;
 	/** What the profile reported at start; said once, in the first turn. */
 	readonly #profileNotices: string[];
 	/** What the profile's files held when the last turn began, to tell what changed since. */
@@ -489,6 +521,11 @@ export class Session {
 		const pump = (async () => {
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }>;
 			try {
+				// The change made just before this turn reaches the backend before the turn's prompt does.
+				if (this.#changing > 0) await this.#changes;
+				// A change that arrived as the last turn was ending is applied before this one starts.
+				if (this.#pending !== undefined) await this.#applyPending(turn);
+				this.#announceConfiguration(turn);
 				// Not awaited without a profile: a session without one starts its turn on the same tick as always.
 				if (this.#options.profile) await this.#noticeProfileChanges(turn, this.#options.profile);
 				finish = await work(turn, abort.signal, backendSession);
@@ -497,6 +534,8 @@ export class Session {
 				finish = { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
 			}
 			await Promise.all(this.#archiving);
+			// A change asked during the turn lands now, between this turn and the next.
+			await this.#applyPending(turn);
 			finish = this.#withClassifier(finish);
 			turn.push({ ...finish, durationMs: Math.round(performance.now() - started) });
 			turn.close();
@@ -524,7 +563,97 @@ export class Session {
 
 	/** Changes the mode for the next tool calls of this session; children keep running in `normal`. */
 	setPermissionMode(mode: PermissionMode): void {
+		if (mode !== (this.#options.permissionMode ?? "normal")) this.#unannounced = true;
 		this.#options.permissionMode = mode;
+	}
+
+	/**
+	 * Changes the main agent's model or thinking level from the next turn on; the history stays. Between turns the
+	 * backend gets the change now; while a turn runs the change is held and applied when it ends, never in the middle.
+	 * Rejects with a `ConfigureError` when the backend cannot take it, and then nothing changes.
+	 */
+	async configure(change: SessionChange): Promise<SessionConfiguration> {
+		const backendSession = this.#backendSession;
+		if (this.#closed || !backendSession) throw new ConfigureError("session_closed", "The session is closed.");
+		if (!backendSession.configure)
+			throw new ConfigureError(
+				"configure_unsupported",
+				`The ${this.#options.backend.id} backend cannot change the model or the effort of an open session.`,
+			);
+		if (this.#turn) this.#pending = { ...this.#pending, ...change };
+		else {
+			this.#changing++;
+			const applying = this.#changes.then(() => this.#apply(change));
+			this.#changes = applying.catch(() => {}).finally(() => this.#changing--);
+			await applying;
+		}
+		return this.configuration();
+	}
+
+	/** The configuration the next turn runs with, and whether a held change is part of it. */
+	configuration(): SessionConfiguration {
+		const model = this.#pending?.model ?? this.#model;
+		const thinking = this.#pending?.thinking ?? this.#thinking;
+		const profile = this.#options.profile;
+		return {
+			backend: this.#options.backend.id,
+			...(model === undefined ? {} : { model }),
+			...(thinking === undefined ? {} : { thinking }),
+			permissionMode: this.#options.permissionMode ?? "normal",
+			...(profile === undefined ? {} : { profile: profileSummary(profile) }),
+			pending: this.#pending !== undefined,
+		};
+	}
+
+	/** Gives the backend the change, then takes it as the session's own; a refusal leaves both as they were. */
+	async #apply(change: SessionChange): Promise<void> {
+		try {
+			await this.#backendSession?.configure?.(change);
+		} catch (error) {
+			throw new ConfigureError("configure_failed", describeError(error));
+		}
+		if (change.model !== undefined) this.#model = change.model;
+		if (change.thinking !== undefined) this.#thinking = change.thinking;
+		this.#unannounced = true;
+		this.#patchMainAgent();
+	}
+
+	/** The turn parts name the model and effort the backend was told, also when it does not say `session_started` again. */
+	#patchMainAgent(): void {
+		const agent = this.#mainAgent;
+		if (agent === undefined) return;
+		const next: PhaseAgent = { ...agent, ...(this.#model === undefined ? {} : { model: this.#model }) };
+		const backend = this.#options.backend.id;
+		if (this.#thinking !== undefined && THINKING_BACKENDS.has(backend)) {
+			const sent = thinkingToSend(next.model, this.#thinking, backend as "claude-code" | "anthropic-api");
+			if (sent !== undefined) {
+				next.effort = sent.report;
+				delete next.effectiveEffort;
+			}
+		}
+		this.#mainAgent = next;
+	}
+
+	/** Applies what a turn held; a failure is said in that turn and the old configuration stays. */
+	async #applyPending(turn: Channel<TurnEvent>): Promise<void> {
+		const change = this.#pending;
+		this.#pending = undefined;
+		if (change !== undefined) {
+			try {
+				await this.#apply(change);
+			} catch (error) {
+				turn.push(errorEvent("configure_failed", describeError(error), true));
+			}
+		}
+		this.#announceConfiguration(turn);
+	}
+
+	/** Says the configuration once after it changed. */
+	#announceConfiguration(turn: Channel<TurnEvent>): void {
+		if (!this.#unannounced) return;
+		this.#unannounced = false;
+		const { pending: _pending, ...configuration } = this.configuration();
+		turn.push({ type: "session_configured", ...configuration });
 	}
 
 	/** `session_started` says the session's permission mode. */

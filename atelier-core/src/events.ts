@@ -218,6 +218,20 @@ export type AtelierEventBody =
 			/** Set by the session: how much it asks before a tool call. */
 			permissionMode?: "normal" | "auto" | "yolo";
 	  }
+	/**
+	 * The session's configuration after its model, thinking level or permission mode changed: what the next turns
+	 * run with, sent in the turn where the change took effect (the next turn after a change made between turns).
+	 * `thinking`: the level asked for, in the profiles' names (`off`, `minimal`, `low` ... `max`); `model` is absent
+	 * while the backend's default one runs and nothing changed it.
+	 */
+	| {
+			type: "session_configured";
+			backend: string;
+			model?: string;
+			thinking?: string;
+			permissionMode: "normal" | "auto" | "yolo";
+			profile?: SessionProfile;
+	  }
 	| { type: "text_delta"; text: string }
 	| { type: "thinking_delta"; text: string }
 	| { type: "tool_call_started"; callId: string; tool: string; input: JsonValue }
