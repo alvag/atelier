@@ -19,5 +19,6 @@ export type {
 	Usage,
 } from "../events.ts";
 export { cacheHitRate, describeRefusal, PHASES, REFUSAL_CAUSES } from "../events.ts";
+export { BACKEND_MODELS } from "../options.ts";
 export * from "./codec.ts";
 export * from "./types.ts";

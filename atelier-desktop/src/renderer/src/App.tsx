@@ -1,4 +1,4 @@
-import { type BackendName, DEFAULT_BACKEND, type SessionProfile } from "@atelier/core/protocol";
+import { BACKEND_MODELS, type BackendName, DEFAULT_BACKEND, type SessionProfile } from "@atelier/core/protocol";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import type { AtelierBridge } from "../../shared/bridge.ts";
 import { FeaturePanel } from "./chat/FeaturePanel.tsx";
@@ -12,10 +12,7 @@ const MODE_HINTS: Partial<Record<PermissionMode, string>> = {
 };
 
 /** The first model of each backend is its default. */
-const MODELS: Record<BackendName, readonly string[]> = {
-	"claude-code": ["opus", "sonnet", "haiku"],
-	"anthropic-api": ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
-};
+const MODELS = BACKEND_MODELS;
 const BACKENDS = Object.keys(MODELS) as BackendName[];
 
 const numbers = new Intl.NumberFormat("en-US");

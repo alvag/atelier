@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PERMISSION_MODES } from "../modes.ts";
+import { THINKING_LEVELS } from "../thinking.ts";
 import { BACKEND_NAMES, type ClientMessage, MAX_COMPACT_INSTRUCTIONS_BYTES, type ServerMessage } from "./types.ts";
 
 /**
@@ -71,6 +72,9 @@ const commandSchema = z.discriminatedUnion("command", [
 			.optional(),
 	}),
 	z.object({ command: z.literal("session.set_mode"), sessionId, mode: z.enum(PERMISSION_MODES) }),
+	z.object({ command: z.literal("session.set_model"), sessionId, model: z.string().min(1) }),
+	z.object({ command: z.literal("session.set_effort"), sessionId, effort: z.enum(THINKING_LEVELS) }),
+	z.object({ command: z.literal("options.list"), cwd: z.string().min(1).optional() }),
 	z.object({ command: z.literal("session.close"), sessionId }),
 	z.object({ command: z.literal("shutdown") }),
 ]);

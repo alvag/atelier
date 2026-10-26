@@ -1,5 +1,6 @@
 import type { AtelierEvent, JsonValue } from "../events.ts";
 import type { PermissionMode } from "../session.ts";
+import type { ThinkingLevel } from "../thinking.ts";
 
 /** Bumped on any incompatible change; sent first by the server in `hello`. */
 export const PROTOCOL_VERSION = 6;
@@ -42,6 +43,18 @@ export type ClientCommand =
 	| { command: "session.compact"; sessionId: string; instructions?: string }
 	/** Changes the session's permission mode for its next tool calls; answers `{ mode }`. */
 	| { command: "session.set_mode"; sessionId: string; mode: PermissionMode }
+	/**
+	 * Changes the model of the main agent for the next turn; answers the session's configuration (`backend`, `model`,
+	 * `thinking`, `permissionMode`, `profile`) and `pending`, true while a running turn holds the change until it ends.
+	 */
+	| { command: "session.set_model"; sessionId: string; model: string }
+	/** Changes the thinking level of the main agent (`effort`, in the profiles' level names) like `session.set_model`. */
+	| { command: "session.set_effort"; sessionId: string; effort: ThinkingLevel }
+	/**
+	 * What a client can offer: `backends` (`name`, `models`), `efforts`, `modes`, and what `profiles.list` answers
+	 * (`profiles`, `active`, and with `cwd`, `effective`).
+	 */
+	| { command: "options.list"; cwd?: string }
 	| { command: "session.close"; sessionId: string }
 	| { command: "shutdown" };
 

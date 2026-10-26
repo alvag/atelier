@@ -59,6 +59,11 @@ describe("decodeClientMessage", () => {
 		[{ type: "command", id: "c9", command: "session.review", sessionId: "s1" }],
 		[{ type: "command", id: "m1", command: "session.start", cwd: "/w", mode: "auto" }],
 		[{ type: "command", id: "m2", command: "session.set_mode", sessionId: "s1", mode: "yolo" }],
+		[{ type: "command", id: "h1", command: "session.set_model", sessionId: "s1", model: "sonnet" }],
+		[{ type: "command", id: "h2", command: "session.set_effort", sessionId: "s1", effort: "xhigh" }],
+		[{ type: "command", id: "h3", command: "session.set_effort", sessionId: "s1", effort: "off" }],
+		[{ type: "command", id: "h4", command: "options.list" }],
+		[{ type: "command", id: "h5", command: "options.list", cwd: "/w" }],
 		[
 			{
 				type: "command",
@@ -87,6 +92,12 @@ describe("decodeClientMessage", () => {
 		[{ command: "session.start", cwd: "/w", mode: "strict" }],
 		[{ command: "session.set_mode", sessionId: "s1", mode: "strict" }],
 		[{ command: "session.set_mode", sessionId: "s1" }],
+		[{ command: "session.set_model", sessionId: "s1" }],
+		[{ command: "session.set_model", sessionId: "s1", model: "" }],
+		[{ command: "session.set_model", model: "sonnet" }],
+		[{ command: "session.set_effort", sessionId: "s1", effort: "turbo" }],
+		[{ command: "session.set_effort", sessionId: "s1" }],
+		[{ command: "options.list", cwd: "" }],
 	])("rejects %j, keeping its id", (command) => {
 		const result = decodeClientMessage(JSON.stringify({ type: "command", id: "m3", ...command }));
 		expect(result).toMatchObject({ ok: false, id: "m3" });

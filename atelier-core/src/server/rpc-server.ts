@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Readable } from "node:stream";
-import type { AgentBackend } from "../backend.ts";
+import type { AgentBackend, SessionChange } from "../backend.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { MemoryPort } from "../memory/index.ts";
+import { PERMISSION_MODES } from "../modes.ts";
+import { BACKEND_MODELS } from "../options.ts";
 import { type DefaultPermissionMode, readDefaultPermissionMode } from "../permission-mode.ts";
 import {
 	freezeProfile,
@@ -19,14 +21,16 @@ import {
 } from "../profiles/index.ts";
 import { decodeClientMessage, encodeMessage, LineSplitter } from "../protocol/codec.ts";
 import {
+	BACKEND_NAMES,
 	type BackendName,
 	type ClientMessage,
 	DEFAULT_BACKEND,
 	PROTOCOL_VERSION,
 	type ServerMessage,
 } from "../protocol/types.ts";
-import { type PermissionMode, Session } from "../session.ts";
+import { ConfigureError, type PermissionMode, Session, type SessionConfiguration } from "../session.ts";
 import { BUILTIN_AGENTS, type SubagentDefinition } from "../subagents/definitions.ts";
+import { THINKING_LEVELS } from "../thinking.ts";
 import { loadSandboxAdditions, SandboxConfigError } from "../tools/sandbox-config.ts";
 import type { ToolDefinition } from "../tools/types.ts";
 import { VERSION } from "../version.ts";
@@ -256,6 +260,12 @@ export class RpcServer {
 				this.#session(message.sessionId).session.setPermissionMode(message.mode);
 				return { mode: message.mode };
 			}
+			case "session.set_model":
+				return this.#configure(message.sessionId, { model: message.model });
+			case "session.set_effort":
+				return this.#configure(message.sessionId, { thinking: message.effort });
+			case "options.list":
+				return this.#optionsList(message.cwd);
 			case "session.close": {
 				const entry = this.#session(message.sessionId);
 				this.#sessions.delete(message.sessionId);
@@ -269,6 +279,26 @@ export class RpcServer {
 				await this.#closeAll();
 				return {};
 		}
+	}
+
+	/** Changes the main agent's model or level and answers the configuration the next turn runs with. */
+	async #configure(sessionId: string, change: SessionChange): Promise<Result> {
+		try {
+			return configurationResult(await this.#session(sessionId).session.configure(change));
+		} catch (error) {
+			if (error instanceof ConfigureError) throw new CommandError(error.code, error.message);
+			throw error;
+		}
+	}
+
+	/** What the selectors of a client offer: the backends with their models, the effort levels, the modes and the profiles. */
+	async #optionsList(cwd: string | undefined): Promise<Result> {
+		return {
+			backends: BACKEND_NAMES.map((name) => ({ name, models: [...BACKEND_MODELS[name]] })),
+			efforts: [...THINKING_LEVELS],
+			modes: [...PERMISSION_MODES],
+			...(await this.#profiles(cwd)),
+		};
 	}
 
 	/** The profile names for a selector, the global `active`, and the profile a session in `cwd` would take without a choice. */
@@ -441,6 +471,11 @@ export class RpcServer {
 		}
 		await Promise.allSettled(entries.map((entry) => entry.session.close()));
 	}
+}
+
+/** The answer of a configuration command: the session's configuration as plain JSON. */
+function configurationResult(configuration: SessionConfiguration): Result {
+	return JSON.parse(JSON.stringify(configuration)) as Result;
 }
 
 function denyAll(entry: ServerSession): void {
