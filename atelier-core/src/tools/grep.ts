@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { matchesGlob, relative, resolve } from "node:path";
+import { isAbsolute, matchesGlob, relative, resolve } from "node:path";
 import { z } from "zod";
 import { errorMessage, failure, MAX_GREP_MATCHES, MAX_LINE_CHARS, takeHead } from "./limits.ts";
 import { isInside, isProtected, protectedReadPaths, resolveInside, resolveOutside } from "./paths.ts";
@@ -161,6 +161,11 @@ function grepArgs(target: string, pattern: string, glob: string | undefined, ski
 	return args;
 }
 
+/** Whether `path` is a file (following links); a missing path is not. */
+async function isFile(path: string): Promise<boolean> {
+	return (await stat(path).catch(() => undefined))?.isFile() ?? false;
+}
+
 /** Applies a glob that has a directory to a relative path; a leading `!` negates it. */
 function globFilter(glob: string): (path: string) => boolean {
 	return glob.startsWith("!") ? (path) => !matchesGlob(path, glob.slice(1)) : (path) => matchesGlob(path, glob);
@@ -216,10 +221,17 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 				const skipped = secrets.filter((secret) => secret !== target && isInside(target, secret));
 				if (signal?.aborted) return failure("Search aborted.");
 				const useRipgrep = options.useRipgrep ?? hasRipgrep();
+				// ripgrep never filters a file given as the target by a glob; the fallback drops the glob there too.
+				const searchedGlob = (await isFile(target)) ? undefined : glob;
 				// Only the fallback applies a glob with a directory itself; ripgrep takes it as given.
-				const byGlob = glob?.includes("/") ? globFilter(glob) : undefined;
+				const byGlob = searchedGlob?.includes("/") ? globFilter(searchedGlob) : undefined;
+				// A match outside the working directory comes back absolute; its glob sees it from the searched folder, so
+				// the folders above (which may be hidden, and `**` skips hidden ones) never decide.
+				const globPath = (match: string) =>
+					isAbsolute(match) && isInside(target, match) ? relative(target, match) : match;
 				const accept = (match: string) =>
-					(options.outside ? isReadable(match, root, secrets) : true) && (useRipgrep || (byGlob?.(match) ?? true));
+					(options.outside ? isReadable(match, root, secrets) : true) &&
+					(useRipgrep || (byGlob?.(globPath(match)) ?? true));
 				const result = useRipgrep
 					? await runSearch(
 							"rg",
@@ -233,7 +245,7 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 							signal,
 							accept,
 						)
-					: await runSearch("grep", grepArgs(target, pattern, glob, skipped), root, signal, accept);
+					: await runSearch("grep", grepArgs(target, pattern, searchedGlob, skipped), root, signal, accept);
 				if (result.stopped === "aborted") return failure("Search aborted.");
 
 				const limited = result.matches.slice(0, MAX_GREP_MATCHES);

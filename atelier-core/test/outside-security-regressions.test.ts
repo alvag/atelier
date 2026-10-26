@@ -64,6 +64,31 @@ describe.each([true, false])("S2 secret-safe grep, ripgrep=%s", (useRipgrep) => 
 		expect(result.output).toContain("note.txt:1:PUBLIC_MARKER");
 	});
 
+	// The temporary directory itself may sit under a hidden folder (a verifier's copy does).
+	it("keeps public matches with **/*.txt under an outside search root inside a hidden directory", async () => {
+		const under = join(root, ".hidden", "outside");
+		await mkdir(join(under, "sub"), { recursive: true });
+		await writeFile(join(under, "sub", "note.txt"), "PUBLIC_MARKER\n");
+		await writeFile(join(under, "other.txt"), "PUBLIC_MARKER\n");
+		const result = await search(under, "**/*.txt");
+		expect(result.output).toContain("sub/note.txt:1:PUBLIC_MARKER");
+		expect(result.output).toContain("other.txt:1:PUBLIC_MARKER");
+	});
+
+	// ripgrep never filters a file given as the target by a glob; the fallback does the same.
+	it.each(["**/*.txt", "sub/*.txt", "*.md", "!**/*.txt", "!*.txt"])(
+		"searches an outside file given as the target whatever the glob, %s",
+		async (glob) => {
+			for (const dir of [outside, join(root, ".hidden", "outside")]) {
+				await mkdir(dir, { recursive: true });
+				const file = join(dir, "note.txt");
+				await writeFile(file, "PUBLIC_MARKER\n");
+				const result = await search(file, glob);
+				expect(result.output).toContain("note.txt:1:PUBLIC_MARKER");
+			}
+		},
+	);
+
 	it("still returns public files whose names have colons or newlines", async () => {
 		await writeFile(join(outside, "a:1:b.txt"), "PUBLIC_MARKER\n");
 		const result = await search(outside, "*.txt");
@@ -83,6 +108,21 @@ describe.each([true, false])("S2 exclusion globs, ripgrep=%s", (useRipgrep) => {
 		expect(result.ok).toBe(true);
 		expect(result.output).toBe("src/visible.txt:1:PUBLIC_MARKER");
 	});
+
+	it.each([true, false])(
+		"never filter a file inside the working directory given as the target, outside=%s",
+		async (open) => {
+			await mkdir(join(cwd, "src"), { recursive: true });
+			await writeFile(join(cwd, "src", "a.ts"), "PUBLIC_MARKER\n");
+			for (const glob of ["**/*.md", "*.md", "!src/**"]) {
+				const result = await createGrepTool({ outside: open, home, useRipgrep }).execute(
+					{ pattern: "MARKER", path: "src/a.ts", glob },
+					{ cwd },
+				);
+				expect(result.output).toBe("src/a.ts:1:PUBLIC_MARKER");
+			}
+		},
+	);
 });
 
 describe.each([true, false])("grep output for ordinary files, ripgrep=%s", (useRipgrep) => {
