@@ -1,4 +1,10 @@
-import { type AtelierEvent, type ContextUsage, type Phase, visibleText } from "@atelier/core";
+import {
+	type AtelierEvent,
+	type ContextUsage,
+	type Phase,
+	type SessionConfiguration,
+	visibleText,
+} from "@atelier/core";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { Paint } from "./style.ts";
 
@@ -32,17 +38,8 @@ export function footerAfter(state: FooterState, event: AtelierEvent): FooterStat
 				...(event.profile === undefined ? {} : { profile: event.profile.name ?? event.profile.origin }),
 				...(event.permissionMode === undefined ? {} : { mode: event.permissionMode }),
 			};
-		case "session_configured": {
-			const { model: _model, effort: _effort, ...rest } = state;
-			return {
-				...rest,
-				backend: event.backend,
-				...(event.model === undefined ? {} : { model: event.model }),
-				...(event.thinking === undefined ? {} : { effort: event.thinking }),
-				...(event.profile === undefined ? {} : { profile: event.profile.name ?? event.profile.origin }),
-				mode: event.permissionMode,
-			};
-		}
+		case "session_configured":
+			return footerWithConfiguration(state, event);
 		case "sandbox_status":
 			return { ...state, sandboxed: event.sandboxed };
 		case "sandbox_warning":
@@ -63,6 +60,27 @@ export function footerAfter(state: FooterState, event: AtelierEvent): FooterStat
 		default:
 			return state;
 	}
+}
+
+/**
+ * The footer after the configuration a command answered or `session_configured` said: an absent model or level is the
+ * backend's default, so the one shown before goes.
+ */
+export function footerWithConfiguration(
+	state: FooterState,
+	configuration: Omit<SessionConfiguration, "pending" | "thinking"> & { thinking?: string },
+): FooterState {
+	const { model: _model, effort: _effort, ...rest } = state;
+	return {
+		...rest,
+		backend: configuration.backend,
+		...(configuration.model === undefined ? {} : { model: configuration.model }),
+		...(configuration.thinking === undefined ? {} : { effort: configuration.thinking }),
+		...(configuration.profile === undefined
+			? {}
+			: { profile: configuration.profile.name ?? configuration.profile.origin }),
+		mode: configuration.permissionMode,
+	};
 }
 
 /** Sets the mode a client changed, which the session reports only in its next turn. */

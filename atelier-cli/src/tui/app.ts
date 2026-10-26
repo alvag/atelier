@@ -5,10 +5,12 @@ import {
 	type JsonValue,
 	type PermissionMode,
 	type SavedEntry,
+	type SessionConfiguration,
 	visibleText,
 	writeDefaultPermissionMode,
 } from "@atelier/core";
 import type { CoreExit } from "@atelier/core/client";
+import { BACKEND_NAMES, type BackendName } from "@atelier/core/protocol";
 import {
 	CombinedAutocompleteProvider,
 	type Component,
@@ -22,8 +24,9 @@ import {
 import type { CliArgs } from "../args.ts";
 import { savedTranscript } from "../transcript.ts";
 import { Conversation } from "./conversation.ts";
-import { ChoiceDialog } from "./dialog.ts";
-import { type FooterState, footerAfter, footerLine, footerWithMode } from "./footer.ts";
+import { type Choice, ChoiceDialog } from "./dialog.ts";
+import { type FooterState, footerAfter, footerLine, footerWithConfiguration, footerWithMode } from "./footer.ts";
+import { choicesOf, LIST_ROWS, modeChoices, nextMode, type Options, profileChoices } from "./selectors.ts";
 import { editorTheme, type Paint, painter } from "./style.ts";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
@@ -54,16 +57,24 @@ const SIGNAL_EXIT = 128;
 const CLOSE_TIMEOUT_MS = 3000;
 
 const COMMANDS = [
-	{ name: "mode", description: "Show or change the permission mode: [normal|auto|yolo] | default <mode>" },
+	{ name: "model", description: "Change the model from the next turn [name]" },
+	{ name: "effort", description: "Change the thinking level from the next turn [level]" },
+	{ name: "profile", description: "Freeze another profile for this session [name]" },
+	{ name: "mode", description: "Change the permission mode: [normal|auto|yolo] | default <mode>" },
+	{ name: "backend", description: "Move the session to another backend, with a summary [name]" },
 	{ name: "review", description: "Review the current changes, against HEAD or a git ref" },
 	{ name: "undo-correction", description: "Undo the latest escalated review's correction" },
 	{ name: "compact", description: "Summarize the older history now [instructions]" },
 	{ name: "exit", description: "Close the session" },
 ];
 
+/** The answer a list gives when Esc closes it. */
+const CANCELLED = "\0";
+
 const shown = (text: string) => visibleText(text);
 const isMode = (word: string | undefined): word is PermissionMode =>
 	word === "normal" || word === "auto" || word === "yolo";
+const isBackend = (word: string | undefined): word is BackendName => BACKEND_NAMES.some((name) => name === word);
 
 /** ` (asked by worker)` for a subagent's question; the main agent's says nothing. */
 const asker = (event: AtelierEvent) =>
@@ -121,25 +132,74 @@ class Footer implements Component {
 	}
 }
 
-/** Starts or resumes the session the arguments ask for; answers its id, or the message to fail with. */
+/** A session the TUI runs: its id in the core, its file's id when it is saved, and what its next turn runs with. */
+interface Opened {
+	sessionId: string;
+	savedId?: string;
+	configuration?: SessionConfiguration;
+}
+
+/** What the user chose for the session, on the command line or with the lists, which `/new` keeps. */
+interface Chosen {
+	model?: string;
+	effort?: string;
+	profile?: string;
+	backend?: BackendName;
+}
+
+/** Starts a session with what was chosen; the level has no place in `session.start`, so it is changed right after. */
+async function startSession(
+	link: CoreLink,
+	args: CliArgs,
+	chosen: Chosen,
+	mode: PermissionMode | undefined,
+): Promise<Opened> {
+	const started = (await link.request({
+		command: "session.start",
+		cwd: args.cwd,
+		...(chosen.model === undefined ? {} : { model: chosen.model }),
+		...(chosen.backend === undefined ? {} : { backend: chosen.backend }),
+		...(mode === undefined ? {} : { mode }),
+		...(chosen.profile === undefined ? {} : { profile: chosen.profile }),
+		...(args.noSession ? { noSession: true } : {}),
+	})) as Opened;
+	if (chosen.effort === undefined) return started;
+	const configuration = (await link.request({
+		command: "session.set_effort",
+		sessionId: started.sessionId,
+		effort: chosen.effort as Extract<ClientCommand, { command: "session.set_effort" }>["effort"],
+	})) as SessionConfiguration;
+	return { ...started, configuration };
+}
+
+/** Resumes the saved session `savedId` and shows what it said; answers it as the core started it again. */
+async function resumeSession(
+	link: CoreLink,
+	cwd: string,
+	savedId: string,
+	conversation: Conversation,
+): Promise<Opened> {
+	const resumed = (await link.request({ command: "session.resume", sessionId: savedId, cwd })) as Opened & {
+		name?: string;
+		entries: JsonValue[];
+	};
+	conversation.plain(savedTranscript(savedId, resumed.name, resumed.entries as unknown as SavedEntry[]));
+	return {
+		sessionId: resumed.sessionId,
+		savedId,
+		...(resumed.configuration === undefined ? {} : { configuration: resumed.configuration }),
+	};
+}
+
+/** Starts or resumes the session the arguments ask for, or answers the message to fail with. */
 async function openSession(
 	link: CoreLink,
 	args: CliArgs,
+	chosen: Chosen,
 	conversation: Conversation,
-): Promise<{ sessionId: string; mode?: PermissionMode } | { error: string }> {
+): Promise<Opened | { error: string }> {
 	const mode = args.mode ?? (args.yes ? "normal" : undefined);
-	if (!args.continueSession && args.resume === undefined) {
-		const started = (await link.request({
-			command: "session.start",
-			cwd: args.cwd,
-			...(args.model === undefined ? {} : { model: args.model }),
-			...(args.explicitBackend === undefined ? {} : { backend: args.explicitBackend }),
-			...(mode === undefined ? {} : { mode }),
-			...(args.profile === undefined ? {} : { profile: args.profile }),
-			...(args.noSession ? { noSession: true } : {}),
-		})) as { sessionId: string };
-		return { sessionId: started.sessionId, ...(mode === undefined ? {} : { mode }) };
-	}
+	if (!args.continueSession && args.resume === undefined) return startSession(link, args, chosen, mode);
 	const { sessions } = (await link.request({ command: "sessions.list", cwd: args.cwd })) as {
 		sessions: { id: string; backend: string; resumable: boolean }[];
 	};
@@ -158,19 +218,27 @@ async function openSession(
 		return {
 			error: `Session ${saved.id} was saved on ${saved.backend}; --backend ${args.explicitBackend} cannot resume it.`,
 		};
-	const resumed = (await link.request({ command: "session.resume", sessionId: saved.id, cwd: args.cwd })) as {
-		sessionId: string;
-		name?: string;
-		entries: JsonValue[];
-	};
+	const resumed = await resumeSession(link, args.cwd, saved.id, conversation);
 	const { sessionId } = resumed;
-	conversation.plain(savedTranscript(saved.id, resumed.name, resumed.entries as unknown as SavedEntry[]));
+	let { configuration } = resumed;
 	// What the arguments ask for wins over what was saved, as at start.
-	if (mode !== undefined) await link.request({ command: "session.set_mode", sessionId, mode });
+	if (mode !== undefined) {
+		await link.request({ command: "session.set_mode", sessionId, mode });
+		if (configuration !== undefined) configuration = { ...configuration, permissionMode: mode };
+	}
 	if (args.profile !== undefined)
-		await link.request({ command: "session.set_profile", sessionId, profile: args.profile });
-	if (args.model !== undefined) await link.request({ command: "session.set_model", sessionId, model: args.model });
-	return { sessionId, ...(mode === undefined ? {} : { mode }) };
+		configuration = (await link.request({
+			command: "session.set_profile",
+			sessionId,
+			profile: args.profile,
+		})) as SessionConfiguration;
+	if (args.model !== undefined)
+		configuration = (await link.request({
+			command: "session.set_model",
+			sessionId,
+			model: args.model,
+		})) as SessionConfiguration;
+	return { ...resumed, ...(configuration === undefined ? {} : { configuration }) };
 }
 
 /**
@@ -191,9 +259,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		return EXIT_FAILED;
 	}
 	const conversation = new Conversation(paint, args.cwd);
-	let opened: { sessionId: string; mode?: PermissionMode } | { error: string };
+	let chosen: Chosen = {
+		...(args.model === undefined ? {} : { model: args.model }),
+		...(args.profile === undefined ? {} : { profile: args.profile }),
+		...(args.explicitBackend === undefined ? {} : { backend: args.explicitBackend }),
+	};
+	let opened: Opened | { error: string };
 	try {
-		opened = await openSession(link, args, conversation);
+		opened = await openSession(link, args, chosen, conversation);
 	} catch (error) {
 		opened = { error: describeError(error) };
 	}
@@ -206,8 +279,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const tui = new TuiMainScreen(options.terminal);
 	const footer = new Footer(paint);
-	// What the arguments asked for, until the session's own events say what it applied.
-	if (opened.mode !== undefined) footer.state = footerWithMode(footer.state, opened.mode);
+	// What the core answered, until the session's own events say more.
+	if (opened.configuration !== undefined) footer.state = footerWithConfiguration({}, opened.configuration);
+	// Each session gets a conversation of its own, after the ones before it.
+	const transcript = new Container();
+	transcript.addChild(conversation);
 	const status = new Container();
 	const dialogs = new Container();
 	const editor = new Editor(tui, editorTheme(paint));
@@ -218,7 +294,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		(text) => paint("dim", text),
 		"working… (Esc to interrupt)",
 	);
-	for (const component of [conversation, status, dialogs, editor, footer]) tui.addChild(component);
+	for (const component of [transcript, status, dialogs, editor, footer]) tui.addChild(component);
 	tui.setFocus(editor);
 
 	let busy = false;
@@ -249,7 +325,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		tui.requestRender();
 	};
 	const ask = <T extends string>(
-		question: { title: string; lines: string[]; choices: { value: T; label: string }[]; initial: T; cancel: T },
+		question: { title: string; lines: string[]; choices: Choice<T>[]; initial: T; cancel: T; rows?: number },
 		answer: (value: T) => void,
 	) => {
 		let answered = false;
@@ -278,6 +354,23 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			tui.requestRender();
 			return undefined;
 		});
+	/** Shows a list starting on `now`; answers the value chosen, or nothing when Esc closes it or it is empty. */
+	const pick = (title: string, lines: string[], choices: Choice<string>[], now?: string) =>
+		new Promise<string | undefined>((resolve) => {
+			const first = choices[0];
+			if (first === undefined) return resolve(undefined);
+			const initial = choices.some((choice) => choice.value === now) && now !== undefined ? now : first.value;
+			ask({ title, lines, choices, initial, cancel: CANCELLED, rows: LIST_ROWS }, (value) =>
+				resolve(value === CANCELLED ? undefined : value),
+			);
+		});
+	const listOptions = async () => (await request({ command: "options.list", cwd: args.cwd })) as Options | undefined;
+	/** Sends a change of the session's configuration and shows in the footer what the core answered. */
+	const configure = async (command: ClientCommand) => {
+		const answer = (await request(command)) as SessionConfiguration | undefined;
+		if (answer !== undefined) footer.state = footerWithConfiguration(footer.state, answer);
+		return answer;
+	};
 
 	const onEvent = (id: string, event: AtelierEvent) => {
 		if (id !== sessionId) return;
@@ -345,13 +438,28 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		void request({ command: "session.interrupt", sessionId });
 	};
 
+	/** Changes the mode, shown in the footer at once; a mode the core refused goes back, unless another came since. */
+	const setMode = async (mode: PermissionMode) => {
+		const before = footer.state.mode;
+		footer.state = footerWithMode(footer.state, mode);
+		tui.requestRender();
+		if ((await request({ command: "session.set_mode", sessionId, mode })) !== undefined) return true;
+		if (footer.state.mode === mode && before !== undefined) footer.state = footerWithMode(footer.state, before);
+		return false;
+	};
+
 	const runMode = async (words: string[]) => {
 		const [, first, second] = words;
-		if (first === undefined) return conversation.note(`mode: ${footer.state.mode ?? "unknown until the first turn"}`);
+		if (first === undefined) {
+			const modes = (await listOptions())?.modes;
+			if (modes === undefined) return;
+			const mode = await pick("Permission mode", [], modeChoices(modes, footer.state.mode), footer.state.mode);
+			if (isMode(mode) && (await setMode(mode))) conversation.note(`mode: ${mode} (this session)`);
+			return;
+		}
 		if (words.length === 2 && isMode(first)) {
-			if ((await request({ command: "session.set_mode", sessionId, mode: first })) === undefined) return;
-			footer.state = footerWithMode(footer.state, first);
-			return conversation.note(`mode: ${first} (this session)`);
+			if (await setMode(first)) conversation.note(`mode: ${first} (this session)`);
+			return;
 		}
 		if (words.length === 3 && first === "default" && isMode(second)) {
 			if (options.home === undefined)
@@ -366,6 +474,100 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		conversation.note("usage: /mode [normal|auto|yolo] | /mode default <normal|auto|yolo>", true);
 	};
 
+	const runModel = async (name: string | undefined) => {
+		const { backend, model: now } = footer.state;
+		let model = name;
+		if (model === undefined) {
+			const options = await listOptions();
+			if (options === undefined) return;
+			const models = options.backends.find((listed) => listed.name === backend)?.models ?? [];
+			if (models.length === 0)
+				return conversation.note(
+					`no models listed for ${shown(backend ?? "this backend").text}; use /model <name>`,
+					true,
+				);
+			model = await pick(`Model on ${shown(backend ?? "").text}`, [], choicesOf(models, now), now);
+			if (model === undefined) return;
+		}
+		if (model === now) return conversation.note(`model: ${shown(model).text} (unchanged)`);
+		if ((await configure({ command: "session.set_model", sessionId, model })) === undefined) return;
+		chosen = { ...chosen, model };
+		conversation.note(`model: ${shown(model).text} from the next turn; the prompt cache starts over`);
+	};
+
+	const runEffort = async (level: string | undefined) => {
+		const now = footer.state.effort;
+		let effort = level;
+		if (effort === undefined) {
+			const efforts = (await listOptions())?.efforts;
+			if (efforts === undefined) return;
+			effort = await pick("Thinking level", [], choicesOf(efforts, now), now);
+			if (effort === undefined) return;
+		}
+		const command = {
+			command: "session.set_effort",
+			sessionId,
+			effort,
+		} as Extract<ClientCommand, { command: "session.set_effort" }>;
+		if ((await configure(command)) === undefined) return;
+		chosen = { ...chosen, effort };
+		conversation.note(`effort: ${shown(effort).text} from the next turn`);
+	};
+
+	const runProfile = async (name: string | undefined) => {
+		let profile = name;
+		if (profile === undefined) {
+			const options = await listOptions();
+			if (options === undefined) return;
+			if (options.profiles.length === 0) return conversation.note("no profiles in ~/.atelier/profiles.json", true);
+			const now = footer.state.profile;
+			profile = await pick("Profile", [], profileChoices(options, now), now);
+			if (profile === undefined) return;
+		}
+		if ((await configure({ command: "session.set_profile", sessionId, profile })) === undefined) return;
+		chosen = { ...chosen, profile };
+		conversation.note(`profile: ${shown(profile).text} from the next turn`);
+	};
+
+	/** Moves the session to another backend once the user confirms that a summary replaces the conversation. */
+	const runBackend = async (name: string | undefined) => {
+		const now = footer.state.backend;
+		let backend = name;
+		if (backend === undefined) {
+			const options = await listOptions();
+			if (options === undefined) return;
+			const names = options.backends.map((listed) => listed.name);
+			backend = await pick("Backend", [], choicesOf(names, now), now);
+			if (backend === undefined) return;
+		}
+		if (!isBackend(backend)) return conversation.note(`usage: /backend [${BACKEND_NAMES.join("|")}]`, true);
+		if (backend === now) return conversation.note(`backend: ${backend} (unchanged)`);
+		const answer = await pick(
+			`Move this session to ${backend}?`,
+			[
+				"The new backend gets a summary of the conversation, not the conversation itself:",
+				"detail is lost, and the prompt cache starts over.",
+			],
+			[
+				{ value: "move", label: "Move, with a summary" },
+				{ value: "stay", label: `Stay on ${shown(now ?? "this backend").text}` },
+			],
+			"stay",
+		);
+		if (answer !== "move") return conversation.note(`backend: ${shown(now ?? "unchanged").text} (unchanged)`);
+		conversation.note(`moving to ${backend}: summarizing the conversation…`);
+		tui.requestRender();
+		const configuration = await configure({ command: "session.set_backend", sessionId, backend });
+		if (configuration === undefined) return;
+		// The model chosen was the old backend's; the new one starts with the profile's or its default.
+		const { model: _model, ...rest } = chosen;
+		chosen = { ...rest, backend };
+		const carried = configuration.backendChange?.summarized
+			? "with a summary of the conversation"
+			: "nothing to carry yet";
+		conversation.note(`backend: ${backend} from the next turn, ${carried}`);
+	};
+
 	const submit = async (line: string) => {
 		const text = line.trim();
 		if (text === "" || busy) return;
@@ -374,7 +576,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if (text === "/exit") return quit(EXIT_OK);
 		conversation.prompt(line);
 		const words = text.split(/\s+/);
-		if (words[0] === "/mode") await runMode(words);
+		const [command, argument] = words;
+		const single = words.length <= 2;
+		if (command === "/mode") await runMode(words);
+		else if (command === "/model" && single) await runModel(argument);
+		else if (command === "/effort" && single) await runEffort(argument);
+		else if (command === "/profile" && single) await runProfile(argument);
+		else if (command === "/backend" && single) await runBackend(argument);
 		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });
 		else if (/^\/review(?:\s+\S+)?$/.test(text))
 			await startTurn({ command: "session.review", sessionId, ...(words[1] === undefined ? {} : { ref: words[1] }) });
@@ -408,6 +616,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 		if (matchesKey(data, "ctrl+d") && !busy && editor.getText() === "") {
 			quit(EXIT_OK);
+			return { consume: true };
+		}
+		// Shift+Tab takes the mode between normal and auto, as Claude Code's does; yolo is only chosen by name.
+		if (matchesKey(data, "shift+tab") && questions.length === 0) {
+			void setMode(nextMode(footer.state.mode));
 			return { consume: true };
 		}
 		if (matchesKey(data, "ctrl+o")) {

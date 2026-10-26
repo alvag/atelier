@@ -21,6 +21,8 @@ function partialMarker(text: string, marker: string, least: number): number {
 export interface Choice<T extends string> {
 	value: T;
 	label: string;
+	/** Shown dimmed after the label. */
+	description?: string;
 }
 
 /**
@@ -39,15 +41,27 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 	#pending = "";
 
 	constructor(
-		options: { title: string; lines: readonly string[]; choices: readonly Choice<T>[]; initial: T; cancel: T },
+		options: {
+			title: string;
+			lines: readonly string[];
+			choices: readonly Choice<T>[];
+			initial: T;
+			cancel: T;
+			/** How many choices are shown at once; all of them by default. */
+			rows?: number;
+		},
 		paint: Paint,
 		answer: (value: T) => void,
 	) {
 		this.#title = options.title;
 		this.#lines = options.lines;
 		this.#paint = paint;
-		const items = options.choices.map(({ value, label }) => ({ value, label }));
-		this.#list = new SelectList(items, items.length, selectListTheme(paint));
+		const items = options.choices.map(({ value, label, description }) => ({
+			value,
+			label,
+			...(description === undefined ? {} : { description }),
+		}));
+		this.#list = new SelectList(items, Math.min(items.length, options.rows ?? items.length), selectListTheme(paint));
 		this.#list.setSelectedIndex(
 			Math.max(
 				0,

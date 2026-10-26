@@ -49,7 +49,7 @@ const until = async (condition: () => boolean) => {
 };
 
 /** The core in this process, over the protocol's own encoding: what the TUI sends is what a server receives. */
-function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: FakeBackend[]) {
+function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: FakeBackend[], backendId?: string) {
 	const commands: ClientCommand[] = [];
 	const envs: Record<string, string>[] = [];
 	let closed = false;
@@ -77,7 +77,7 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 			// The session's own backend first, then one for each subagent.
 			createBackend: (() => {
 				let created = 0;
-				return () => (created++ === 0 ? backend : (children.shift() ?? new FakeBackend([])));
+				return () => (created++ === 0 ? backend : (children.shift() ?? new FakeBackend([], backendId)));
 			})(),
 			review: env.ATELIER_REVIEW !== "off",
 			noSandbox: env.ATELIER_SANDBOX === "off",
@@ -154,10 +154,13 @@ function fakeTerminal() {
 	};
 }
 
-function harness(turns: FakeStep[][], options: { saveSessions?: boolean; children?: FakeBackend[] } = {}) {
-	const backend = new FakeBackend(turns);
+function harness(
+	turns: FakeStep[][],
+	options: { saveSessions?: boolean; children?: FakeBackend[]; backendId?: string } = {},
+) {
+	const backend = new FakeBackend(turns, options.backendId);
 	let terminate: ((signal: number) => void) | undefined;
-	const core = inProcessCore(backend, options.saveSessions ?? false, options.children ?? []);
+	const core = inProcessCore(backend, options.saveSessions ?? false, options.children ?? [], options.backendId);
 	const screen = fakeTerminal();
 	let stderr = "";
 	const io = {
@@ -326,6 +329,49 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(0);
 	});
 
+	it("changes the model and the effort by name, and the next turn runs with them", async () => {
+		const h = harness([[{ event: finished }]]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/model claude-sonnet-5-5");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("the prompt cache starts over"));
+		expect(h.screen.screen()).toContain("model: claude-sonnet-5-5 from the next turn");
+		h.screen.type("/effort high");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("effort: high from the next turn"));
+		expect(h.screen.screen()).toContain("claude-sonnet-5-5 high · profile default");
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		expect(Object.assign({}, ...h.backend.configured)).toEqual({ model: "claude-sonnet-5-5", thinking: "high" });
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
+	it("lists the modes with the one in use, and Shift+Tab takes the mode between normal and auto", async () => {
+		const h = harness([]);
+		const code = run(["--no-session", "--mode", "yolo"], h.io, () => h.backend);
+		await until(h.screen.started);
+		await until(() => h.screen.screen().includes("profile default · yolo"));
+		h.screen.type("/mode");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Permission mode"));
+		expect(h.screen.screen()).toMatch(/yolo +current · a plain git push/);
+		// yolo is selected: Up goes to auto.
+		h.screen.type("\x1b[A");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("mode: auto (this session)"));
+		h.screen.type("\x1b[Z");
+		h.screen.type("\x1b[Z");
+		const modes = () =>
+			h.core.commands.flatMap((command) => (command.command === "session.set_mode" ? [command.mode] : []));
+		await until(() => modes().length === 3);
+		expect(modes()).toEqual(["auto", "normal", "auto"]);
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
 	it("expands and folds the tool cards with Ctrl+O", async () => {
 		const h = harness([
 			[{ toolCall: { tool: "bash", input: { command: "echo one\necho two" } } }, { event: finished }],
@@ -435,14 +481,14 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 	});
 
 	/** A core that answers `session.start` and lets the test send events and hold back `session.close`. */
-	function stubCore(options: { closeHangs?: boolean } = {}) {
+	function stubCore(options: { closeHangs?: boolean; answer?: (command: ClientCommand) => unknown } = {}) {
 		const listeners = new Set<(sessionId: string, event: AtelierEvent) => void>();
 		const log = { commands: [] as ClientCommand[], closed: false };
 		const link: CoreLink = {
 			request: (command) => {
 				log.commands.push(command);
 				if (command.command === "session.close" && options.closeHangs) return new Promise(() => {});
-				return Promise.resolve({ sessionId: "s1" });
+				return Promise.resolve(options.answer?.(command) ?? { sessionId: "s1" });
 			},
 			onEvent: (listener) => {
 				listeners.add(listener);
@@ -509,14 +555,128 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
-	it("says the mode --mode selected before any turn", async () => {
+	/** A core on claude-code with two models and two profiles, which answers each change with the configuration it leaves. */
+	function listingCore() {
+		let configuration: Record<string, unknown> = {
+			backend: "claude-code",
+			model: "opus",
+			thinking: "medium",
+			permissionMode: "normal",
+			profile: { name: "cheap", origin: "active" },
+			pending: false,
+		};
+		const change = (fields: Record<string, unknown>) => {
+			configuration = { ...configuration, ...fields };
+			return configuration;
+		};
+		return stubCore({
+			answer: (command) => {
+				switch (command.command) {
+					case "session.start":
+						return { sessionId: "s1", configuration };
+					case "options.list":
+						return {
+							backends: [
+								{ name: "claude-code", models: ["opus", "sonnet"] },
+								{ name: "anthropic-api", models: ["api-model"] },
+							],
+							efforts: ["low", "medium", "high"],
+							modes: ["normal", "auto", "yolo"],
+							profiles: ["cheap", "fast"],
+							active: "cheap",
+						};
+					case "session.set_model":
+						return change({ model: command.model });
+					case "session.set_effort":
+						return change({ thinking: command.effort });
+					case "session.set_profile":
+						return change({ profile: { name: command.profile, origin: "explicit" } });
+					case "session.set_backend":
+						return {
+							...change({ backend: command.backend, model: "api-model" }),
+							backendChange: { from: "claude-code", summarized: true },
+						};
+					default:
+						return {};
+				}
+			},
+		});
+	}
+
+	it("picks the model, the effort and the profile from lists that start on the ones in use", async () => {
 		const h = harness([]);
-		const code = run(["--no-session", "--mode", "yolo"], h.io, () => h.backend);
+		const stub = listingCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
 		await until(h.screen.started);
-		h.screen.type("/mode");
+		await until(() => h.screen.screen().includes("opus medium · profile cheap · normal"));
+		const sent = (name: string) => stub.log.commands.filter((command) => command.command === name);
+
+		h.screen.type("/model");
 		h.screen.type("\r");
-		await until(() => h.screen.screen().includes("mode: yolo"));
-		expect(h.screen.screen()).not.toContain("unknown until the first turn");
+		await until(() => h.screen.screen().includes("Model on claude-code"));
+		expect(h.screen.screen()).toMatch(/opus +current/);
+		h.screen.type("\x1b[B");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("model: sonnet from the next turn"));
+		expect(sent("session.set_model")).toEqual([{ command: "session.set_model", sessionId: "s1", model: "sonnet" }]);
+
+		h.screen.type("/effort");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Thinking level"));
+		h.screen.type("\x1b[B");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("effort: high from the next turn"));
+
+		h.screen.type("/profile");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Profile"));
+		expect(h.screen.screen()).toMatch(/cheap +current · active/);
+		h.screen.type("\x1b[B");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("profile: fast from the next turn"));
+		expect(h.screen.screen()).toContain("sonnet high · profile fast · normal");
+
+		// Esc closes a list without changing anything.
+		h.screen.type("/model");
+		h.screen.type("\r");
+		await until(() => sent("options.list").length === 4);
+		h.screen.type("\x1b");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(sent("session.set_model")).toHaveLength(1);
+		expect(sent("session.set_effort")).toEqual([{ command: "session.set_effort", sessionId: "s1", effort: "high" }]);
+		expect(sent("session.set_profile")).toEqual([{ command: "session.set_profile", sessionId: "s1", profile: "fast" }]);
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
+	it("asks before moving to another backend, starting on Stay", async () => {
+		const h = harness([]);
+		const stub = listingCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		const moves = () => stub.log.commands.filter((command) => command.command === "session.set_backend");
+
+		h.screen.type("/backend");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Backend"));
+		h.screen.type("\x1b[B");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Move this session to anthropic-api?"));
+		expect(h.screen.screen()).toContain("detail is lost, and the prompt cache starts over.");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("backend: claude-code (unchanged)"));
+		expect(moves()).toEqual([]);
+
+		h.screen.type("/backend anthropic-api");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().split("Move this session to anthropic-api?").length === 3);
+		h.screen.type("\x1b[A");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("with a summary of the conversation"));
+		expect(moves()).toEqual([{ command: "session.set_backend", sessionId: "s1", backend: "anthropic-api" }]);
+		expect(h.screen.screen()).toContain("api-model medium · profile cheap");
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
 	});
