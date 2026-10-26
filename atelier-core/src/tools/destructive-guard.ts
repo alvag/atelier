@@ -359,8 +359,10 @@ function operands(args: readonly string[]): string[] {
 	return found;
 }
 
-const RECURSIVE_RM = /^(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)$/;
-const RECURSIVE_CH = /^(?:-[a-zA-Z]*R[a-zA-Z]*|--recursive)$/;
+/** `-r`, `-R` or a cluster with one, or `--recursive` and its prefixes (`--rec`). */
+const isRecursiveRm = (arg: string) => /^-[a-zA-Z]*[rR][a-zA-Z]*$/.test(arg) || abbreviates(arg, "--recursive");
+/** `-R` or a cluster with it, or `--recursive` and its prefixes; `--re`, which could be `--reference`, fails closed. */
+const isRecursiveCh = (arg: string) => /^-[a-zA-Z]*R[a-zA-Z]*$/.test(arg) || abbreviates(arg, "--recursive");
 /** Devices `dd` may write: they are not storage. */
 const HARMLESS_DEVICES = /^\/dev\/(?:null|stdout|stderr|stdin|tty|fd\/\d+)$/;
 
@@ -505,7 +507,7 @@ function commandRule(name: string, args: readonly string[], context: GuardContex
 	if (/^mkfs(?:\..+)?$/.test(name)) return "mkfs";
 	if (name === "dd" && args.some((arg) => arg.startsWith("of=/dev/") && !HARMLESS_DEVICES.test(arg.slice(3))))
 		return "dd to a device";
-	if (name === "rm" && args.some((arg) => RECURSIVE_RM.test(arg))) {
+	if (name === "rm" && args.some(isRecursiveRm)) {
 		for (const operand of operands(args)) {
 			const kind = pathKind(operand, context);
 			if (kind) return REMOVAL_RULE[kind];
@@ -515,7 +517,7 @@ function commandRule(name: string, args: readonly string[], context: GuardContex
 		const kind = findRemovalKind(args, context);
 		if (kind) return REMOVAL_RULE[kind];
 	}
-	if ((name === "chmod" || name === "chown") && args.some((arg) => RECURSIVE_CH.test(arg)))
+	if ((name === "chmod" || name === "chown") && args.some(isRecursiveCh))
 		if (operands(args).some((operand) => pathKind(operand, context) === "root")) return "recursive chmod/chown on /";
 	if (name === "git") return gitRule(args);
 	return undefined;
@@ -689,7 +691,8 @@ function sqlPayloads(
 	args: readonly string[],
 	piped: readonly Token[] | undefined,
 ): string[] {
-	const payloads = args.map((arg) => arg.replace(/^(?:--command|--execute)=/, ""));
+	// A long option's value, under any prefix the client accepts (`--comm=`, `--exec=`), is judged as SQL.
+	const payloads = args.map((arg) => arg.replace(/^--[\w-]+=/, ""));
 	const lineEnd = lineAt(command, head.index).end;
 	const heredoc = heredocs(command).find(({ header }) => header >= head.index && header < lineEnd);
 	if (heredoc) payloads.push(command.slice(heredoc.body, heredoc.terminator));
@@ -719,7 +722,7 @@ function gitAction(args: readonly string[]): { action: string | undefined; flags
 
 function deletesBranchByForce(flags: readonly string[]): boolean {
 	if (flags.some((arg) => /^-[a-zA-Z]*D/.test(arg))) return true;
-	return flags.some(isForce) && flags.some((arg) => arg === "--delete" || /^-[a-zA-Z]*d/.test(arg));
+	return flags.some(isForce) && flags.some((arg) => abbreviates(arg, "--delete") || /^-[a-zA-Z]*d/.test(arg));
 }
 
 // What `yolo` waives, following gentle-shell's list: a push or rebase is eligible only as a plain word list or
@@ -806,7 +809,7 @@ function segmentConfirmations(
 	const args = segment.slice(cursor + 1).map((token) => token.value);
 	const found: ConfirmMatch[] = [];
 	const add = (rule: string, yoloWaived = false) => found.push({ rule, yoloWaived });
-	if (name === "rm" && args.some((arg) => RECURSIVE_RM.test(arg))) add("recursive removal");
+	if (name === "rm" && args.some(isRecursiveRm)) add("recursive removal");
 	if (FIND_NAMES.includes(name)) {
 		const deletes = args.some((arg) => arg === "-delete");
 		const execRm = args.some((arg, index) => FIND_EXEC.has(arg) && runsRm(execCommand(args, index + 1).words));
@@ -828,9 +831,22 @@ function segmentConfirmations(
 	return found;
 }
 
-/** Every confirm rule `command` matches, one entry per match, in the order they appear. */
+/**
+ * Every confirm rule `command` matches, one entry per match, in the order they appear. A command with line
+ * continuations is judged both joined and as written, like the refusals, and `yolo` waives none of it.
+ */
 export function findConfirmCommands(command: string, depth = 0): ConfirmMatch[] {
 	if (depth > MAX_DEPTH) return [];
+	const joined = joinContinuations(command);
+	if (joined === command) return confirmRules(command, depth);
+	return [...confirmRules(joined, depth), ...confirmRules(command, depth)].map(({ rule }) => ({
+		rule,
+		yoloWaived: false,
+	}));
+}
+
+/** The confirm rules a command matches as written. */
+function confirmRules(command: string, depth: number): ConfirmMatch[] {
 	const text = blankHeredocs(command);
 	const parts = splitParts(tokenize(text));
 	const matches: ConfirmMatch[] = [];

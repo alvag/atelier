@@ -21,6 +21,18 @@ async function gateOf(command: string, options: Parameters<typeof createBashTool
 }
 
 const CONFIRMED: [string, string][] = [
+	// a backslash before a newline joins the lines, even inside a word
+	["r\\\nm -r build", "recursive removal"],
+	["rm \\\n  -r build", "recursive removal"],
+	["git \\\n push origin feat", "git push"],
+	["psql -c \\\n 'DROP TABLE users'", "SQL deletion"],
+	// long options as any prefix the command accepts
+	["rm --rec build", "recursive removal"],
+	["rm --r build", "recursive removal"],
+	["git branch --del --force old", "forced branch deletion"],
+	["git branch --delete --fo old", "forced branch deletion"],
+	["psql --comm='DROP TABLE users'", "SQL deletion"],
+	["mysql --exec='DELETE FROM users'", "SQL deletion"],
 	["rm -r build", "recursive removal"],
 	["rm -rf build", "recursive removal"],
 	["rm -R build", "recursive removal"],
@@ -76,6 +88,10 @@ const NOT_CONFIRMED = [
 	"npm install",
 	"npm run publish-docs",
 	"pnpm test",
+	"echo 'rm \\\n -r build'",
+	"rm --verbose build/output.txt",
+	"git branch --delete merged",
+	"psql --command='SELECT 1'",
 ];
 
 describe("the confirm category of the guard", () => {
@@ -118,6 +134,11 @@ describe("the confirm category of the guard", () => {
 	it("does not ask for the verifier's bash, which runs in a throwaway copy", async () => {
 		const gate = await gateOf("rm -rf build", { withoutApproval: true, policy: "verifier" });
 		expect(gate?.approval).toBeUndefined();
+	});
+
+	it("does not waive in yolo a push split over lines", async () => {
+		expect((await gateOf("git push \\\n origin feat"))?.approval).toMatchObject({ confirm: "git push" });
+		expect((await gateOf("git push \\\n origin feat"))?.approval?.yoloWaived).toBeUndefined();
 	});
 
 	it("asks nothing for an ordinary command", async () => {

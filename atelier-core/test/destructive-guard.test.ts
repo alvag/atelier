@@ -32,6 +32,8 @@ const REFUSED: [string, string][] = [
 	["rm --recursive --force /", "recursive removal of /"],
 	["rm -rf --no-preserve-root /", "recursive removal of /"],
 	["rm -rf -- /", "recursive removal of /"],
+	["rm --rec -f /", "recursive removal of /"],
+	["chmod --rec 777 /", "recursive chmod/chown on /"],
 	['rm -rf "/"', "recursive removal of /"],
 	["rm -rf //", "recursive removal of /"],
 	["rm -rf ~", "recursive removal of the home directory"],
