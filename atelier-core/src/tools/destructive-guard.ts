@@ -33,9 +33,25 @@ interface Heredoc {
 	body: number;
 	terminator: number;
 	end: number;
+	/** A quoted delimiter (`<<'EOF'`, `<<"EOF"`, `<<E\OF`) keeps the body literal; otherwise it runs its substitutions. */
+	quoted: boolean;
 }
 
-const HEREDOC_HEADER = /^<<(-?)[ \t]*(['"]?)([A-Za-z_]\w*)\2/;
+interface HeredocHeader {
+	header: number;
+	tabs: boolean;
+	delimiter: string;
+	quoted: boolean;
+}
+
+/** What the shell reads in a command: its heredocs, and the `\` of every line continuation it removes. */
+interface ShellReading {
+	heredocs: Heredoc[];
+	continuations: number[];
+}
+
+/** The characters that end an unquoted shell word. */
+const METACHARACTER = /[\s;&|()<>]/;
 
 /** The line of `command` that starts at `at`, and where it ends. */
 function lineAt(command: string, at: number): { line: string; end: number } {
@@ -45,60 +61,159 @@ function lineAt(command: string, at: number): { line: string; end: number } {
 }
 
 /**
- * The named heredocs of a command, as the shell reads them: a `<<` (not `<<<`) outside quotes, comments and
- * `((...))`, whose bodies start on the line after the header, one after the other, and end at the first line that
- * is the delimiter (with leading tabs for `<<-`). One with no terminator is not one: it fails closed.
+ * The delimiter of a heredoc header, from the word that starts at `from`, as the shell builds it: the whole word,
+ * without its quotes and backslashes, which make it quoted (`<<'EOF'x` is `EOFx`, `<<E\OF` is `EOF`). Undefined
+ * when there is no word or a quote does not close.
  */
-function heredocs(command: string): Heredoc[] {
+function heredocDelimiter(
+	command: string,
+	from: number,
+	continuations: number[],
+): { delimiter: string; quoted: boolean; end: number } | undefined {
+	let delimiter = "";
+	let quoted = false;
+	let at = from;
+	while (at < command.length && !METACHARACTER.test(command[at] as string)) {
+		const char = command[at] as string;
+		if (char === "\\") {
+			if (command[at + 1] === "\n") continuations.push(at);
+			else {
+				delimiter += command[at + 1] ?? "";
+				quoted = true;
+			}
+			at += 2;
+		} else if (char === "'") {
+			const close = command.indexOf("'", at + 1);
+			if (close < 0) return undefined;
+			delimiter += command.slice(at + 1, close);
+			quoted = true;
+			at = close + 1;
+		} else if (char === '"') {
+			quoted = true;
+			at++;
+			while (command[at] !== '"') {
+				if (at >= command.length) return undefined;
+				const next = command[at + 1] ?? "";
+				if (command[at] === "\\" && next === "\n") at += 2;
+				else if (command[at] === "\\" && /["\\$`]/.test(next)) {
+					delimiter += next;
+					at += 2;
+				} else delimiter += command[at++];
+			}
+			at++;
+		} else {
+			delimiter += char;
+			at++;
+		}
+	}
+	return delimiter === "" && !quoted ? undefined : { delimiter, quoted, end: at };
+}
+
+/**
+ * Where a heredoc body that starts at `from` ends: at the first line that is its delimiter (leading tabs removed for
+ * `<<-`). In an unquoted body a line ending in an unescaped `\` goes on in the next one, as in the shell, and that
+ * `\` is a continuation. Undefined when no line ends it.
+ */
+function heredocEnd(
+	command: string,
+	from: number,
+	{ delimiter, tabs, quoted }: HeredocHeader,
+	continuations: number[],
+): { terminator: number; end: number } | undefined {
+	for (let line = from; line <= command.length; ) {
+		let text = "";
+		let end = line;
+		for (;;) {
+			const { line: physical, end: stop } = lineAt(command, end);
+			const backslashes = /\\*$/.exec(physical)?.[0].length ?? 0;
+			if (quoted || backslashes % 2 === 0 || stop >= command.length) {
+				text += physical;
+				end = stop;
+				break;
+			}
+			text += physical.slice(0, -1);
+			continuations.push(stop - 1);
+			end = stop + 1;
+		}
+		if ((tabs ? text.replace(/^\t+/, "") : text) === delimiter) return { terminator: line, end };
+		if (end >= command.length) return undefined;
+		line = end + 1;
+	}
+	return undefined;
+}
+
+/**
+ * The heredocs and line continuations of a command, as the shell reads them. A heredoc is a `<<` (not `<<<`) outside
+ * quotes, comments and `((...))`; the bodies start on the line after the header, one after the other. One with no
+ * terminator is not one, and reading stops there: it fails closed. A continuation is a `\` before a newline outside
+ * single quotes, comments and quoted heredoc bodies; quotes inside a body are text.
+ */
+function readShell(command: string): ShellReading {
 	const found: Heredoc[] = [];
-	const pending: { header: number; tabs: boolean; delimiter: string }[] = [];
+	const continuations: number[] = [];
+	const pending: HeredocHeader[] = [];
 	let quote: "'" | '"' | undefined;
 	let arithmetic = 0;
+	let previous = "";
 	for (let at = 0; at < command.length; at++) {
 		const char = command[at] as string;
 		if (quote === "'") {
 			if (char === "'") quote = undefined;
-		} else if (char === "\\") at++;
-		else if (char === '"') quote = quote === '"' ? undefined : '"';
-		else if (quote === '"') continue;
-		else if (char === "'") quote = "'";
-		else if (char === "#" && /^$|[\s;&|()]$/.test(command[at - 1] ?? "")) at = lineAt(command, at).end - 1;
-		else if (command.startsWith("((", at)) {
-			arithmetic++;
+		} else if (char === "\\") {
+			if (command[at + 1] === "\n") continuations.push(at);
+			else previous = command[at + 1] ?? "";
 			at++;
-		} else if (arithmetic > 0 && command.startsWith("))", at)) {
-			arithmetic--;
-			at++;
-		} else if (char === "<" && command[at + 1] === "<") {
-			const header = arithmetic === 0 ? HEREDOC_HEADER.exec(command.slice(at)) : null;
-			if (header) pending.push({ header: at, tabs: header[1] === "-", delimiter: header[3] as string });
-			at += command[at + 2] === "<" ? 2 : 1;
-		} else if (char === "\n" && pending.length > 0) {
-			let body = at + 1;
-			for (const { header, tabs, delimiter } of pending.splice(0)) {
-				let line = body;
-				for (;;) {
-					const { line: text, end } = lineAt(command, line);
-					if ((tabs ? text.replace(/^\t+/, "") : text) === delimiter) {
-						found.push({ header, body, terminator: line, end });
-						body = end + 1;
-						break;
-					}
-					if (end >= command.length) return found;
-					line = end + 1;
+			continue;
+		} else if (char === '"') quote = quote === '"' ? undefined : '"';
+		else if (quote === undefined) {
+			if (char === "'") quote = "'";
+			else if (char === "#" && /^$|[\s;&|()]$/.test(previous)) at = lineAt(command, at).end - 1;
+			else if (command.startsWith("((", at)) {
+				arithmetic++;
+				at++;
+			} else if (arithmetic > 0 && command.startsWith("))", at)) {
+				arithmetic--;
+				at++;
+			} else if (command.startsWith("<<<", at)) at += 2;
+			else if (command.startsWith("<<", at) && arithmetic === 0) {
+				const tabs = command[at + 2] === "-";
+				let from = at + (tabs ? 3 : 2);
+				while (command[from] === " " || command[from] === "\t") from++;
+				const word = heredocDelimiter(command, from, continuations);
+				if (word) {
+					pending.push({ header: at, tabs, delimiter: word.delimiter, quoted: word.quoted });
+					at = word.end - 1;
+				} else at++;
+			} else if (char === "\n" && pending.length > 0) {
+				let body = at + 1;
+				for (const header of pending.splice(0)) {
+					const ends = heredocEnd(command, body, header, continuations);
+					if (!ends) return { heredocs: found, continuations };
+					found.push({ header: header.header, body, ...ends, quoted: header.quoted });
+					body = ends.end + 1;
 				}
+				at = body - 1;
 			}
-			at = body - 1;
 		}
+		previous = command[at] as string;
 	}
-	return found;
+	return { heredocs: found, continuations };
 }
+
+const heredocs = (command: string): Heredoc[] => readShell(command).heredocs;
 
 /** Literal, named heredocs are data, not commands: their bodies and terminators become blanks, offsets preserved. */
 function blankHeredocs(command: string): string {
 	let text = command;
 	for (const { body, end } of heredocs(command)) text = text.slice(0, body) + " ".repeat(end - body) + text.slice(end);
 	return text;
+}
+
+/** The substitutions an unquoted heredoc body runs, where quotes are text; a quoted body runs nothing. */
+function heredocSubstitutions(command: string): string[] {
+	return heredocs(command)
+		.filter(({ quoted }) => !quoted)
+		.flatMap(({ body, terminator }) => substitutionBodies(command.slice(body, terminator), false));
 }
 
 /** A redirection operator with its optional descriptor (`2>`, `{fd}>`, `>|`, `2>&1`, `&>`); the file is the next word. */
@@ -283,9 +398,10 @@ function envValueFlag(flag: string): boolean {
 
 /**
  * Bodies of `$(...)` and backtick substitutions outside single quotes (also
- * inside double quotes), which run like commands of their own.
+ * inside double quotes), which run like commands of their own. Without
+ * `quotes`, as in a heredoc body, quotes are text and hide nothing.
  */
-function substitutionBodies(command: string): string[] {
+function substitutionBodies(command: string, quotes = true): string[] {
 	const bodies: string[] = [];
 	let quote: "'" | '"' | undefined;
 	for (let index = 0; index < command.length; index++) {
@@ -294,9 +410,9 @@ function substitutionBodies(command: string): string[] {
 			if (char === "'") quote = undefined;
 		} else if (char === "\\") {
 			index++;
-		} else if (char === "'" && quote === undefined) {
+		} else if (quotes && char === "'" && quote === undefined) {
 			quote = "'";
-		} else if (char === '"') {
+		} else if (quotes && char === '"') {
 			quote = quote === '"' ? undefined : '"';
 		} else if (char === "`") {
 			let end = index + 1;
@@ -577,29 +693,14 @@ function nestedCommands(name: string, args: readonly string[]): string[] {
 
 /**
  * The command as the shell reads it after line continuations: a `\` before a newline is removed, even inside a
- * word or double quotes, but not inside single quotes or a comment.
+ * word, double quotes or an unquoted heredoc body, but not inside single quotes, a comment or a quoted heredoc body.
  */
 function joinContinuations(command: string): string {
+	const removed = new Set(readShell(command).continuations);
 	let joined = "";
-	let quote: "'" | '"' | undefined;
 	for (let at = 0; at < command.length; at++) {
-		const char = command[at] as string;
-		if (quote === "'") {
-			if (char === "'") quote = undefined;
-		} else if (char === "\\") {
-			if (command[at + 1] !== "\n") joined += command.slice(at, at + 2);
-			at++;
-			continue;
-		} else if (char === '"') quote = quote === '"' ? undefined : '"';
-		else if (char === "'" && quote === undefined) quote = "'";
-		else if (char === "#" && quote === undefined && /^$|[\s;&|()]$/.test(joined.slice(-1))) {
-			const end = command.indexOf("\n", at);
-			const stop = end < 0 ? command.length : end;
-			joined += command.slice(at, stop);
-			at = stop - 1;
-			continue;
-		}
-		joined += char;
+		if (removed.has(at)) at++;
+		else joined += command[at];
 	}
 	return joined;
 }
@@ -648,7 +749,7 @@ function destructiveRule(command: string, context: GuardContext, depth: number):
 			if (found.length > 0) return broadest(found);
 		}
 	}
-	for (const body of substitutionBodies(text)) {
+	for (const body of [...substitutionBodies(text), ...heredocSubstitutions(command)]) {
 		const found = findDestructiveCommand(body, context, depth + 1);
 		if (found) return found;
 	}
@@ -865,6 +966,6 @@ function confirmRules(command: string, depth: number): ConfirmMatch[] {
 			matches.push(...segmentConfirmations(command, parts, at, item > 0, resolved));
 		}
 	});
-	for (const body of substitutionBodies(text)) matches.push(...nested(body));
+	for (const body of [...substitutionBodies(text), ...heredocSubstitutions(command)]) matches.push(...nested(body));
 	return matches;
 }

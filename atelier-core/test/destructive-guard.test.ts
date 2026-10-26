@@ -185,6 +185,18 @@ const REFUSED: [string, string][] = [
 	["# cat <<EOF\ngit reset --hard\nEOF", "git reset --hard"],
 	["cat <<A <<B; git reset --hard\na\nA\nb\nB", "git reset --hard"],
 	["cat <<A <<B\nA\nB\nrm -rf /\nB", "recursive removal of /"],
+	// an unquoted heredoc body runs its substitutions
+	["cat <<EOF\n$(rm -rf /)\nEOF", "recursive removal of /"],
+	["cat <<EOF\nnote: `git reset --hard`\nEOF", "git reset --hard"],
+	["cat <<-EOF\n\tit's $(git push -f)\n\tEOF", "force push"],
+	['cat > out.txt <<EOF\n"$(sudo ls)"\nEOF', "sudo"],
+	// the delimiter is the whole shell word after `<<`
+	["cat <<'EOF'x\nEOFx\ngit reset --hard\nEOF", "git reset --hard"],
+	['cat <<EOF"x"\nEOFx\ngit push --force\nEOF', "force push"],
+	["cat <<E\\OF\nEOF\nrm -rf /\nE", "recursive removal of /"],
+	// a quote in a heredoc body is text, so a continuation after it still joins
+	["cat <<EOF\nit's\nEOF\ngit re\\\nset --hard", "git reset --hard"],
+	["cat <<'EOF'\nit's\nEOF\ngit push \\\n -f", "force push"],
 ];
 
 const ALLOWED = [
@@ -250,6 +262,12 @@ const ALLOWED = [
 	"cat > notes.md <<-'EOF'\n\trm -rf /\nEOF\necho done",
 	"cat <<A <<B\nrm -rf /\nA\ngit reset --hard\nB\necho done",
 	"cat <<EOF\n'unbalanced quote\nEOF\necho done",
+	"cat <<'EOF'\n$(rm -rf /)\n`git reset --hard`\nEOF",
+	'cat <<"EOF"\n$(git push --force)\nEOF',
+	"cat <<EOF\n\\$(rm -rf /) and \\`sudo ls\\`\nEOF",
+	"cat <<'EOF'x\nEOF\nrm -rf /\nEOFx",
+	"cat <<EOF\nx\\\nEOF\ngit reset --hard\nEOF",
+	"cat <<-EOF\n\tx\\\n\tEOF\nrm -rf /\nEOF",
 ];
 
 describe("the destructive command guard", () => {

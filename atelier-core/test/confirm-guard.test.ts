@@ -28,6 +28,9 @@ const CONFIRMED: [string, string][] = [
 	["psql -c \\\n 'DROP TABLE users'", "SQL deletion"],
 	// long options as any prefix the command accepts
 	["rm --rec build", "recursive removal"],
+	// an unquoted heredoc body runs its substitutions
+	["cat <<EOF\n$(rm -r build)\nEOF", "recursive removal"],
+	["cat <<EOF\nit's `git push`\nEOF", "git push"],
 	["rm --r build", "recursive removal"],
 	["git branch --del --force old", "forced branch deletion"],
 	["git branch --delete --fo old", "forced branch deletion"],
@@ -92,6 +95,7 @@ const NOT_CONFIRMED = [
 	"rm --verbose build/output.txt",
 	"git branch --delete merged",
 	"psql --command='SELECT 1'",
+	"cat <<'EOF'\n$(rm -r build)\nEOF",
 ];
 
 describe("the confirm category of the guard", () => {
