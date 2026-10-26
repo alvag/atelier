@@ -466,6 +466,32 @@ describe("the permission-classifier profile role", () => {
 		expect(made[0]?.startOptions).toMatchObject({ model: "small-model", thinking: "low" });
 	});
 
+	it("uses the classifier entry of a profile set with setProfile from the next call on", async () => {
+		const { made, permissionClassifier } = classifier(reply("allow"), reply("allow"));
+		const backend = new FakeBackend([
+			[outside("c1"), finished],
+			[outside("c2"), finished],
+		]);
+		const session = await Session.start({
+			backend,
+			cwd,
+			tools: [createBashTool({ sandbox: sandboxed() })],
+			permissionMode: "auto",
+			approve: async () => true,
+			permissionClassifier,
+			model: "main-model",
+			profile: await freeze({ "permission-classifier": { model: "small-model", thinking: "low" } }),
+		});
+		await collect(session.send("one"));
+		await session.setProfile(await freeze({ "permission-classifier": { model: "other-model", thinking: "high" } }));
+		await collect(session.send("two"));
+		await session.close();
+		expect(made.map((m) => m.startOptions)).toMatchObject([
+			{ model: "small-model", thinking: "low" },
+			{ model: "other-model", thinking: "high" },
+		]);
+	});
+
 	it("inherits the session's model and level when the profile sets none", async () => {
 		const profile = await freeze({ worker: { model: "other" } });
 		const { made, permissionClassifier } = classifier(reply("allow"));

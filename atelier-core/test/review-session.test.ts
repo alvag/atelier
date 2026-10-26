@@ -2658,6 +2658,28 @@ describe("review roles and profiles", () => {
 		expect(asked("resilience")).toBeUndefined();
 	});
 
+	it("gives the verifier and the lenses the profile set with setProfile from the next turn on", async () => {
+		const h = await profiled(
+			{ verifier: { model: "claude-opus-5-5" }, "review-reliability": { thinking: "low" } },
+			new RoleBackend(verifying(vreport())),
+			[[{ event: finished }], VERIFY_TURN, [change("a.ts", "base\nfixed\n"), text("fixed"), { event: finished }]],
+		);
+		await h.send("hello");
+		expect(h.roles.roles).toEqual([]);
+		await h.session.setProfile(
+			await freeze({
+				verifier: { model: "claude-sonnet-5-5", thinking: "medium" },
+				"review-reliability": { model: "claude-haiku-5-5" },
+				"review-refuter": { thinking: "high" },
+			}),
+		);
+		await h.send("make it need a keypress");
+		expect(byRole(h, "verifier")).toMatchObject({ model: "claude-sonnet-5-5", thinking: "medium" });
+		expect(byRole(h, "reliability")).toMatchObject({ model: "claude-haiku-5-5" });
+		expect(byRole(h, "reliability")).not.toHaveProperty("thinking");
+		expect(byRole(h, "refuter")).toMatchObject({ thinking: "high" });
+	});
+
 	it("gives every review role the session's thinking unless its entry sets one", async () => {
 		const h = await profiled(
 			{ orchestrator: { thinking: "high" }, "review-refuter": { thinking: "low" } },

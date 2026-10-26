@@ -45,6 +45,11 @@ export interface SessionChange {
 	model?: string;
 	/** A level from the profiles' names (`off`, `minimal`, `low` ... `max`); the backend sends what its model takes. */
 	thinking?: ThinkingLevel;
+	/**
+	 * The profile's compaction entry for the summary request, when a profile change brings a different one; `null`
+	 * clears it, so the summary runs with the session's model and level again. Backends that do not summarize ignore it.
+	 */
+	compaction?: { model?: string; thinking?: ThinkingLevel } | null;
 }
 
 export interface BackendSession {

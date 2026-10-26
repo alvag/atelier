@@ -71,6 +71,21 @@ export type StoredMessage = Anthropic.MessageParam & { effort?: Effort | "off" }
 /** What the summary request changes in the request state: the model and how it thinks. */
 export type SummaryRequestState = Pick<RequestState, "model" | "effort" | "thinking">;
 
+/** The summary request's model and level: the compaction entry's, and the session's where the entry sets none. */
+function summaryRequest(
+	model: string,
+	thinking: SessionChange["thinking"],
+	entry: NonNullable<SessionChange["compaction"]>,
+): SummaryRequestState {
+	const summaryModel = entry.model ?? model;
+	const sent = thinkingToSend(summaryModel, entry.thinking ?? thinking, BACKEND_ID);
+	return {
+		model: summaryModel,
+		...(sent?.effort === undefined ? {} : { effort: sent.effort }),
+		...(sent?.thinking === undefined ? {} : { thinking: sent.thinking }),
+	};
+}
+
 /** Totals a turn's requests; the summary may run on another model, so it is priced on its own. */
 class TurnMeter {
 	readonly #main: UsageMeter;
@@ -207,19 +222,8 @@ export class AnthropicApiBackend implements AgentBackend {
 			messages: [],
 		};
 		// The summary request has its own model and level when the profile's compaction entry sets them.
-		const summaryModel = start.compaction?.model ?? model;
-		const summarySent =
-			start.compaction === undefined
-				? undefined
-				: thinkingToSend(summaryModel, start.compaction.thinking ?? start.thinking, BACKEND_ID);
-		const summary: SummaryRequestState | undefined =
-			start.compaction === undefined
-				? undefined
-				: {
-						model: summaryModel,
-						...(summarySent?.effort === undefined ? {} : { effort: summarySent.effort }),
-						...(summarySent?.thinking === undefined ? {} : { thinking: summarySent.thinking }),
-					};
+		const summary =
+			start.compaction === undefined ? undefined : summaryRequest(model, start.thinking, start.compaction);
 		const maxRequests = start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
 		// The window lookup runs while the session starts; the first request waits for it, never the start.
 		const { contextWindow, compactAt, keepRecentTokens } = this.#options;
@@ -281,7 +285,7 @@ class AnthropicApiSession implements BackendSession {
 	readonly #compactionState: (() => string | undefined) | undefined;
 	readonly #compacted: ((summary: string) => void) | undefined;
 	/** Set when the summary request runs on another model or level than the session's. */
-	readonly #summary: SummaryRequestState | undefined;
+	#summary: SummaryRequestState | undefined;
 	#abort: AbortController | undefined;
 	#announced = false;
 	#closed = false;
@@ -432,6 +436,10 @@ class AnthropicApiSession implements BackendSession {
 		if (sent?.thinking !== undefined) state.thinking = sent.thinking;
 		this.#effort = sent?.report;
 		this.#thinking = thinking;
+		// A new entry replaces the summary request's model and level; none makes it the session's own request.
+		if (change.compaction !== undefined) {
+			this.#summary = change.compaction === null ? undefined : summaryRequest(model, thinking, change.compaction);
+		}
 		if (model !== state.model) {
 			state.model = model;
 			// The window belongs to the model: the next request waits for the new one.

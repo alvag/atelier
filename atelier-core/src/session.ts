@@ -155,6 +155,9 @@ export interface SessionConfiguration {
 	pending: boolean;
 }
 
+/** What a caller changes in the main agent: the model, the thinking level, or both. */
+export type MainChange = Omit<SessionChange, "compaction">;
+
 /** A change the session or its backend refuses; `code` is what the protocol answers. */
 export class ConfigureError extends Error {
 	readonly code: string;
@@ -185,18 +188,23 @@ export class Session {
 	#model: string | undefined;
 	#thinking: ThinkingLevel | undefined;
 	/** A change asked while a turn runs: held until the turn ends. */
-	#pending: SessionChange | undefined;
+	#pending: MainChange | undefined;
+	/** A profile asked while a turn runs: held with `#pending`, and applied after it. */
+	#pendingProfile: FrozenProfile | undefined;
+	/** The model and the level were chosen by the user (at start or with `configure`): a profile does not change them. */
+	#explicitModel: boolean;
+	#explicitThinking: boolean;
 	/** Changes made one after another, so a turn never starts between a change and its backend call. */
 	#changes: Promise<unknown> = Promise.resolve();
 	#changing = 0;
 	/** The model, level or mode changed and the clients were not told yet. */
 	#unannounced = false;
-	/** What the profile reported at start; said once, in the first turn. */
-	readonly #profileNotices: string[];
+	/** What the profile reported when it was frozen; said once, in the next turn. */
+	#profileNotices: string[];
 	/** What the profile's files held when the last turn began, to tell what changed since. */
 	#profileFiles: Record<string, string>;
 	/** The summary request's model and level, from the compaction entry; none on a backend that compacts on its own. */
-	readonly #compaction: { model?: string; thinking?: ThinkingLevel } | undefined;
+	#compaction: { model?: string; thinking?: ThinkingLevel } | undefined;
 	#backendSession: BackendSession | undefined;
 	/** The main agent as its backend's `session_started` described it: what the turn's parts say it ran with. */
 	#mainAgent: PhaseAgent | undefined;
@@ -238,6 +246,8 @@ export class Session {
 		const orchestrator = roleSettings(options.profile, "orchestrator", undefined);
 		this.#model = options.model ?? orchestrator.model;
 		this.#thinking = options.thinking ?? orchestrator.thinking;
+		this.#explicitModel = options.model !== undefined;
+		this.#explicitThinking = options.thinking !== undefined;
 		this.#profileFiles = { ...options.profile?.files };
 		this.#profileNotices = (options.profile?.resolved.reports ?? []).map(({ path, message }) => `${path}: ${message}`);
 		// A child gets the compaction already settled for its own backend; a session works it out from the profile.
@@ -389,7 +399,7 @@ export class Session {
 					turn.push({ type: "memory_status", available: false, reason: this.#options.memoryUnavailable });
 				if (!this.#options.review && this.#options.reviewUnavailable !== undefined)
 					turn.push({ type: "review_status", available: false, reason: this.#options.reviewUnavailable });
-				for (const notice of this.#profileNotices) turn.push(errorEvent("profile_warning", notice, true));
+				this.#sayProfileNotices(turn);
 				if (this.#options.permissionModeProblem !== undefined)
 					turn.push(errorEvent("permission_mode_invalid", this.#options.permissionModeProblem, true));
 				if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
@@ -526,6 +536,7 @@ export class Session {
 				// A change that arrived as the last turn was ending is applied before this one starts.
 				if (this.#pending !== undefined) await this.#applyPending(turn);
 				this.#announceConfiguration(turn);
+				if (this.#announced) this.#sayProfileNotices(turn);
 				// Not awaited without a profile: a session without one starts its turn on the same tick as always.
 				if (this.#options.profile) await this.#noticeProfileChanges(turn, this.#options.profile);
 				finish = await work(turn, abort.signal, backendSession);
@@ -572,7 +583,7 @@ export class Session {
 	 * backend gets the change now; while a turn runs the change is held and applied when it ends, never in the middle.
 	 * Rejects with a `ConfigureError` when the backend cannot take it, and then nothing changes.
 	 */
-	async configure(change: SessionChange): Promise<SessionConfiguration> {
+	async configure(change: MainChange): Promise<SessionConfiguration> {
 		const backendSession = this.#backendSession;
 		if (this.#closed || !backendSession) throw new ConfigureError("session_closed", "The session is closed.");
 		if (!backendSession.configure)
@@ -590,32 +601,109 @@ export class Session {
 		return this.configuration();
 	}
 
+	/**
+	 * Takes a new frozen profile for the roles that start from the next turn on: subagents, verifier, lenses, refuter,
+	 * validator, classifier and compaction. The orchestrator's entry sets the main model and level through `configure`'s
+	 * path, except what the user chose. Held while a turn runs, like `configure`. Rejects with a `ConfigureError` when
+	 * the orchestrator's entry names another backend than the session's, or the backend cannot take the change; nothing
+	 * changes then.
+	 */
+	async setProfile(profile: FrozenProfile): Promise<SessionConfiguration> {
+		const backendSession = this.#backendSession;
+		if (this.#closed || !backendSession) throw new ConfigureError("session_closed", "The session is closed.");
+		const named = orchestratorBackend(profile);
+		if (named !== undefined && named !== this.#options.backend.id)
+			throw new ConfigureError(
+				"profile_backend_change",
+				`Profile "${profile.resolved.name ?? "default"}" runs the orchestrator on ${named}, but this session runs on ${this.#options.backend.id}; the backend of an open session does not change with the profile.`,
+			);
+		if (!backendSession.configure && Object.keys(this.#planProfile(profile, this.#pending)).length > 0)
+			throw new ConfigureError(
+				"configure_unsupported",
+				`The ${this.#options.backend.id} backend cannot change the model or the effort of an open session.`,
+			);
+		if (this.#turn) this.#pendingProfile = profile;
+		else {
+			this.#changing++;
+			const applying = this.#changes.then(() => this.#apply(undefined, profile));
+			this.#changes = applying.catch(() => {}).finally(() => this.#changing--);
+			await applying;
+		}
+		return this.configuration();
+	}
+
+	/** What the orchestrator's entry and the compaction entry of `profile` change in the backend, leaving what the user chose. */
+	#planProfile(profile: FrozenProfile, user: MainChange | undefined): SessionChange {
+		const entry = roleSettings(profile, "orchestrator", undefined);
+		const change: SessionChange = {};
+		if (!this.#explicitModel && user?.model === undefined && entry.model !== undefined && entry.model !== this.#model)
+			change.model = entry.model;
+		if (
+			!this.#explicitThinking &&
+			user?.thinking === undefined &&
+			entry.thinking !== undefined &&
+			entry.thinking !== this.#thinking
+		)
+			change.thinking = entry.thinking;
+		const compaction = compactionSettings(profile, this.#options.backend.id).compaction;
+		if (JSON.stringify(compaction) !== JSON.stringify(this.#compaction)) change.compaction = compaction ?? null;
+		return change;
+	}
+
 	/** The configuration the next turn runs with, and whether a held change is part of it. */
 	configuration(): SessionConfiguration {
-		const model = this.#pending?.model ?? this.#model;
-		const thinking = this.#pending?.thinking ?? this.#thinking;
-		const profile = this.#options.profile;
+		const held = this.#pendingProfile && this.#planProfile(this.#pendingProfile, this.#pending);
+		const model = this.#pending?.model ?? held?.model ?? this.#model;
+		const thinking = this.#pending?.thinking ?? held?.thinking ?? this.#thinking;
+		const profile = this.#pendingProfile ?? this.#options.profile;
 		return {
 			backend: this.#options.backend.id,
 			...(model === undefined ? {} : { model }),
 			...(thinking === undefined ? {} : { thinking }),
 			permissionMode: this.#options.permissionMode ?? "normal",
 			...(profile === undefined ? {} : { profile: profileSummary(profile) }),
-			pending: this.#pending !== undefined,
+			pending: this.#pending !== undefined || this.#pendingProfile !== undefined,
 		};
 	}
 
-	/** Gives the backend the change, then takes it as the session's own; a refusal leaves both as they were. */
-	async #apply(change: SessionChange): Promise<void> {
-		try {
-			await this.#backendSession?.configure?.(change);
-		} catch (error) {
-			throw new ConfigureError("configure_failed", describeError(error));
+	/**
+	 * Gives the backend the user's change and what `profile` brings (the user's choices win), then takes them as the
+	 * session's own; a refusal leaves the backend, the choices and the profile as they were.
+	 */
+	async #apply(user: MainChange | undefined, profile?: FrozenProfile): Promise<void> {
+		const change: SessionChange = { ...(profile && this.#planProfile(profile, user)), ...user };
+		if (user !== undefined || Object.keys(change).length > 0) {
+			try {
+				await this.#backendSession?.configure?.(change);
+			} catch (error) {
+				throw new ConfigureError("configure_failed", describeError(error));
+			}
 		}
 		if (change.model !== undefined) this.#model = change.model;
 		if (change.thinking !== undefined) this.#thinking = change.thinking;
+		if (user?.model !== undefined) this.#explicitModel = true;
+		if (user?.thinking !== undefined) this.#explicitThinking = true;
+		if (change.compaction !== undefined) this.#compaction = change.compaction ?? undefined;
+		if (profile) this.#adopt(profile);
 		this.#unannounced = true;
 		this.#patchMainAgent();
+	}
+
+	/** Takes `profile` as the frozen one: its files are the ones to watch, and what it dropped is said in the next turn. */
+	#adopt(profile: FrozenProfile): void {
+		this.#options.profile = profile;
+		this.#profileFiles = { ...profile.files };
+		const notice = compactionSettings(profile, this.#options.backend.id).notice;
+		this.#profileNotices = [
+			...profile.resolved.reports.map(({ path, message }) => `${path}: ${message}`),
+			...(notice === undefined ? [] : [notice]),
+		];
+	}
+
+	/** Says what the profile reported when it was frozen, once. */
+	#sayProfileNotices(turn: Channel<TurnEvent>): void {
+		for (const notice of this.#profileNotices) turn.push(errorEvent("profile_warning", notice, true));
+		this.#profileNotices = [];
 	}
 
 	/** The turn parts name the model and effort the backend was told, also when it does not say `session_started` again. */
@@ -637,10 +725,12 @@ export class Session {
 	/** Applies what a turn held; a failure is said in that turn and the old configuration stays. */
 	async #applyPending(turn: Channel<TurnEvent>): Promise<void> {
 		const change = this.#pending;
+		const profile = this.#pendingProfile;
 		this.#pending = undefined;
-		if (change !== undefined) {
+		this.#pendingProfile = undefined;
+		if (change !== undefined || profile !== undefined) {
 			try {
-				await this.#apply(change);
+				await this.#apply(change, profile);
 			} catch (error) {
 				turn.push(errorEvent("configure_failed", describeError(error), true));
 			}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { BackendSession, BackendStartOptions, ToolCall, ToolCallResult } from "../src/backend.ts";
+import type { BackendSession, BackendStartOptions, SessionChange, ToolCall, ToolCallResult } from "../src/backend.ts";
 import { AnthropicApiBackend, type AnthropicApiBackendOptions } from "../src/backends/anthropic-api/backend.ts";
 import type { AtelierEvent, AtelierEventBody } from "../src/events.ts";
 import { FakeBackend } from "../src/fake-backend.ts";
@@ -1269,7 +1269,7 @@ describe("AnthropicApiBackend compaction entry", () => {
 	};
 	const done: Scripted = { blocks: [{ type: "text", text: "done" }] };
 	/** A turn that crosses the threshold once: the requests are main, summary, main. */
-	async function compactingWith(startOptions: Partial<BackendStartOptions>) {
+	async function compactingWith(startOptions: Partial<BackendStartOptions>, change?: SessionChange) {
 		const { session, api } = await start(
 			[toolUse, summaryReply(), done],
 			async () => ({ ok: true, output: "x".repeat(400) }),
@@ -1277,6 +1277,7 @@ describe("AnthropicApiBackend compaction entry", () => {
 			undefined,
 			startOptions,
 		);
+		if (change) await session.configure?.(change);
 		const events = await collect(session.send("Refactor the parser"));
 		return { api, events };
 	}
@@ -1303,6 +1304,32 @@ describe("AnthropicApiBackend compaction entry", () => {
 		expect(api.bodies.map((body) => [body.model, body.output_config])).toEqual(
 			Array(3).fill(["claude-sonnet-5-5", { effort: "high" }]),
 		);
+	});
+
+	it("asks for the summary with the entry a configure brings, then without it when configure clears it", async () => {
+		const set = await compactingWith(
+			{ thinking: "high" },
+			{ compaction: { model: "claude-opus-5-5", thinking: "medium" } },
+		);
+		expect(set.api.bodies.map((body) => [body.model, body.output_config])).toEqual([
+			["claude-sonnet-5-5", { effort: "high" }],
+			["claude-opus-5-5", { effort: "medium" }],
+			["claude-sonnet-5-5", { effort: "high" }],
+		]);
+		const cleared = await compactingWith(
+			{ thinking: "high", compaction: { model: "claude-opus-5-5" } },
+			{ compaction: null },
+		);
+		expect(cleared.api.bodies.map((body) => body.model)).toEqual(Array(3).fill("claude-sonnet-5-5"));
+	});
+
+	it("changes the compaction entry and the model in one configure", async () => {
+		const { api } = await compactingWith(
+			{ thinking: "high", compaction: { model: "claude-opus-5-5" } },
+			{ model: "claude-haiku-5-5", compaction: { thinking: "low" } },
+		);
+		expect(api.bodies.map((body) => body.model)).toEqual(Array(3).fill("claude-haiku-5-5"));
+		expect(api.bodies[1]?.output_config).toEqual({ effort: "low" });
 	});
 
 	it("prices the summary at the compaction model and the turn as the sum of both", async () => {
