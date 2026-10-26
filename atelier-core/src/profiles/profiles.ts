@@ -17,6 +17,7 @@ export const ROLES = [
 	"review-refuter",
 	"review-validator",
 	"compaction",
+	"permission-classifier",
 ] as const;
 export type Role = (typeof ROLES)[number];
 

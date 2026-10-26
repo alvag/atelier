@@ -381,6 +381,7 @@ export class RpcServer {
 				systemPromptAppend: this.#options.systemPromptAppend,
 				...(noSandbox ? { noSandbox: true } : {}),
 				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
+				permissionClassifier: { createBackend: (name) => this.#options.createBackend(name ?? backend) },
 				odd: true,
 				...(this.#options.home === undefined ? {} : { projectInstructions: { home: this.#options.home } }),
 				...(review

@@ -59,10 +59,19 @@ export type ReviewStep =
 	| { type: "validator_finished"; resolved: number; unresolved: number };
 
 /**
- * The parts of a turn, in the order they run: the main agent, the request to declare the risk, the verifier and
- * its correction, and the review's lenses, refuter, correction and validator.
+ * The parts of a turn, in the order they run: the main agent, the permission classifier of `auto`, the request to
+ * declare the risk, the verifier and its correction, and the review's lenses, refuter, correction and validator.
  */
-export const TURN_PHASES = ["main", "declare", "verify", "lenses", "refuter", "correction", "validator"] as const;
+export const TURN_PHASES = [
+	"main",
+	"classifier",
+	"declare",
+	"verify",
+	"lenses",
+	"refuter",
+	"correction",
+	"validator",
+] as const;
 export type TurnPhase = (typeof TURN_PHASES)[number];
 
 /** One agent that ran in a part of a turn: its profile role, and the backend, model and effort its `session_started` said. */
@@ -224,6 +233,17 @@ export type AtelierEventBody =
 	| { type: "sandbox_warning"; reason: string }
 	/** `reason`: the agent asked to run the command outside the sandbox, and says why. */
 	| { type: "approval_requested"; callId: string; command: string; reason?: string; tool?: string }
+	/**
+	 * `auto`: what the permission classifier decided about the call, before it runs or is refused. `undecided`: the
+	 * classifier failed or is paused (`reason` says why) and the user is asked as in `normal`; `paused` is set while paused.
+	 */
+	| {
+			type: "permission_classified";
+			callId: string;
+			decision: "allow" | "deny" | "undecided";
+			reason: string;
+			paused?: true;
+	  }
 	/**
 	 * `requests`: model requests the turn made, when the backend knows it; `context`: how full the context is, when known.
 	 * `durationMs`: wall time of the whole turn, tools and end-of-turn review included; set by the session.

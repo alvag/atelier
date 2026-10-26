@@ -115,6 +115,24 @@ describe("RpcServer", () => {
 		);
 	});
 
+	it("gives an auto session a classifier on the session's own backend", async () => {
+		const verdict = JSON.stringify({ decision: "allow", reason: "it is what was asked" });
+		const h = harness([
+			[[{ toolCall: { tool: "shell", input: { command: "make" }, callId: "k1" } }, { event: finished }]],
+			[[{ event: { type: "text_delta", text: verdict } }, { event: finished }]],
+		]);
+		const response = await h.responseTo(h.send({ command: "session.start", cwd, mode: "auto" }));
+		const sessionId = (response as unknown as { result: { sessionId: string } }).result.sessionId;
+		h.send({ command: "session.send", sessionId, prompt: "build it" });
+		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
+		const events = h.events(sessionId);
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "permission_classified", callId: "k1", decision: "allow" }),
+		);
+		expect(events.some((e) => e.type === "approval_requested")).toBe(false);
+		expect(h.backends[1]?.prompts[0]).toContain("build it");
+	});
+
 	it("starts a session, runs a turn and streams its events", async () => {
 		const h = harness([[[{ event: { type: "text_delta", text: "hi" } }, { event: finished }]]]);
 		const sessionId = await h.start();

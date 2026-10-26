@@ -10,6 +10,7 @@ import {
 	describeError,
 	errorEvent,
 	type PhaseAgent,
+	type PhaseSpent,
 	type SubagentTag,
 	ZERO_USAGE,
 } from "./events.ts";
@@ -23,6 +24,14 @@ import {
 } from "./memory/index.ts";
 import type { CompletedFeature } from "./odd/tracker.ts";
 import { FEATURE_TOOL, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
+import {
+	CLASSIFIER_INSTRUCTION,
+	CLASSIFIER_TIMEOUT_MS,
+	classifierPrompt,
+	denialMessage,
+	parseDecision,
+	pauseReason,
+} from "./permission-classifier.ts";
 import {
 	compactionSettings,
 	type FrozenProfile,
@@ -65,6 +74,14 @@ export interface ApprovalRequest {
 	tool?: string;
 }
 
+/** What `auto` decides with: a backend for the classifier's separate model call. Never given to children. */
+export interface PermissionClassifierOptions {
+	/** A fresh backend for each classification: the one the profile's `permission-classifier` entry names, or the session's kind. */
+	createBackend: RoleBackendFactory;
+	/** How long one classification may take before the user is asked instead; 60 seconds by default. */
+	timeoutMs?: number;
+}
+
 /** How much the session asks the user before a tool call. */
 export type PermissionMode = "normal" | "auto" | "yolo";
 
@@ -90,6 +107,8 @@ export interface SessionOptions {
 	 * in every mode, and subagents always run in `normal`.
 	 */
 	permissionMode?: PermissionMode;
+	/** In `auto`, decides what would ask the user; without it `auto` asks like `normal`. Subagents never get one. */
+	permissionClassifier?: PermissionClassifierOptions;
 	/** Turns the sandbox off for this session (`--no-sandbox`): `bash` runs unsandboxed, every command asks, and the verifier gets no `bash`. */
 	noSandbox?: boolean;
 	/** Asks the user; without it, calls that need approval are denied. */
@@ -154,6 +173,12 @@ export class Session {
 	#announced = false;
 	/** The sandbox warning was already said in this turn. */
 	#warned = false;
+	/** The user's prompt of the turn running now, verbatim: all the classifier knows of the conversation. */
+	#turnPrompt: string | undefined;
+	/** What the classifier did in this turn; it pauses for the rest of the turn when these reach their limits. */
+	#classifier = { consecutive: 0, denials: 0, failures: 0 };
+	/** What the classifier's calls cost in this turn, added to `turn_finished` as the `classifier` part. */
+	#classifierSpent: PhaseSpent | undefined;
 	/** Real paths outside the usual places that the user approved for editing; only that exact file, only this session. */
 	readonly #approvedPaths = new Set<string>();
 	#abort: AbortController | undefined;
@@ -298,6 +323,7 @@ export class Session {
 		yield* this.#stream(turnId, async (turn, signal, backendSession) => {
 			// The user's words reach the feature log as the turn starts, without delaying the backend;
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
+			this.#turnPrompt = prompt;
 			const logged = this.#odd?.userMessage(prompt);
 			// What the agent declared in an earlier turn does not cover this one, and its candidate starts from today's HEAD.
 			this.#review?.startTurn(this.#options.cwd, prompt);
@@ -440,6 +466,9 @@ export class Session {
 		const turn = new Channel<TurnEvent>();
 		this.#turn = turn;
 		this.#warned = false;
+		this.#turnPrompt = undefined;
+		this.#classifier = { consecutive: 0, denials: 0, failures: 0 };
+		this.#classifierSpent = undefined;
 		const abort = new AbortController();
 		this.#abort = abort;
 		const started = performance.now();
@@ -454,6 +483,7 @@ export class Session {
 				finish = { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
 			}
 			await Promise.all(this.#archiving);
+			finish = this.#withClassifier(finish);
 			turn.push({ ...finish, durationMs: Math.round(performance.now() - started) });
 			turn.close();
 		})();
@@ -612,7 +642,10 @@ export class Session {
 				emit({ type: "sandbox_warning", reason: gate.warning });
 			}
 			const { approval } = gate;
-			if (approval && this.#options.permissionMode === "yolo") {
+			const mode = this.#options.permissionMode;
+			const verdict = approval && mode === "auto" ? await this.#classify(callId, call.tool, approval, emit) : undefined;
+			if (verdict?.decision === "deny") return fail(denialMessage(verdict.reason));
+			if (approval && (mode === "yolo" || verdict?.decision === "allow")) {
 				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
 			} else if (approval) {
 				const { command, reason, tool: asking } = approval;
@@ -648,6 +681,128 @@ export class Session {
 			const prefix = error instanceof ToolInputError ? "Invalid input" : "Tool failed";
 			return fail(`${prefix}: ${describeError(error)}`);
 		}
+	}
+
+	/**
+	 * Asks the classifier about a call that would ask the user, and says what it decided. Undefined means it did not
+	 * decide (it failed, is paused or is missing) and the user is asked as in `normal`.
+	 */
+	async #classify(
+		callId: string,
+		tool: string,
+		approval: NonNullable<ToolGate["approval"]>,
+		emit: (event: AtelierEventBody) => void,
+	): Promise<{ decision: "allow" | "deny"; reason: string } | undefined> {
+		const undecided = (reason: string, paused?: true): undefined => {
+			emit({ type: "permission_classified", callId, decision: "undecided", reason, ...(paused ? { paused } : {}) });
+			return undefined;
+		};
+		const options = this.#options.permissionClassifier;
+		if (!options) return undecided("classifier unavailable: not configured");
+		const paused = pauseReason(this.#classifier);
+		if (paused !== undefined) return undecided(paused, true);
+		const request = this.#turnPrompt;
+		if (request === undefined) return undecided("classifier unavailable: no request in this turn");
+		const answer = await this.#askClassifier(
+			options,
+			classifierPrompt(request, tool, approval.command, approval.reason),
+		);
+		if (!answer.ok) {
+			this.#classifier.failures++;
+			return undecided(`classifier unavailable: ${answer.error}`);
+		}
+		const { decision, reason } = answer.decision;
+		if (decision === "allow") this.#classifier.consecutive = 0;
+		else {
+			this.#classifier.consecutive++;
+			this.#classifier.denials++;
+		}
+		emit({ type: "permission_classified", callId, decision, reason });
+		return answer.decision;
+	}
+
+	/** One separate model call with no tools, in a child session of its own; its events stay out of the turn's stream. */
+	async #askClassifier(
+		options: PermissionClassifierOptions,
+		prompt: string,
+	): Promise<{ ok: true; decision: { decision: "allow" | "deny"; reason: string } } | { ok: false; error: string }> {
+		const settings = roleSettings(this.#options.profile, "permission-classifier", this.#model, this.#thinking);
+		let child: Session | undefined;
+		let agent: PhaseAgent | undefined;
+		let usage = ZERO_USAGE;
+		let requests: number | undefined;
+		let costUsd: number | undefined;
+		let timer: NodeJS.Timeout | undefined;
+		const signal = this.#abort?.signal;
+		const stop = () => void child?.interrupt();
+		try {
+			const backend = await options.createBackend(settings.backend);
+			const compaction = compactionSettings(this.#options.profile, backend.id).compaction;
+			child = await Session.start({
+				backend,
+				cwd: this.#options.cwd,
+				...(settings.model === undefined ? {} : { model: settings.model }),
+				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
+				...(compaction === undefined ? {} : { compaction }),
+				tools: [],
+				systemPromptAppend: CLASSIFIER_INSTRUCTION,
+				maxRequestsPerTurn: 1,
+				createId: this.#createId,
+			});
+			const running = child;
+			const timedOut = new Promise<never>((_, reject) => {
+				timer = setTimeout(() => {
+					void running.close();
+					reject(new Error("timed out"));
+				}, options.timeoutMs ?? CLASSIFIER_TIMEOUT_MS);
+			});
+			signal?.addEventListener("abort", stop, { once: true });
+			let text = "";
+			let failure: string | undefined;
+			let stopReason = "incomplete";
+			const reading = (async () => {
+				for await (const event of running.send(prompt)) {
+					if (event.type === "session_started") agent = phaseAgent("permission-classifier", event);
+					else if (event.type === "text_delta") text += event.text;
+					else if (event.type === "error") failure ??= `${event.code}: ${event.message}`;
+					else if (event.type === "turn_finished") {
+						stopReason = event.stopReason;
+						usage = event.usage;
+						requests = event.requests;
+						costUsd = event.costUsd;
+					}
+				}
+			})();
+			// A timeout closes the child, which ends `reading`; its late outcome is not wanted.
+			await Promise.race([reading, timedOut]);
+			if (signal?.aborted) return { ok: false, error: "interrupted" };
+			if (stopReason !== "end_turn" || failure !== undefined)
+				return { ok: false, error: failure ?? `the classifier stopped: ${stopReason}` };
+			const parsed = parseDecision(text);
+			return parsed.ok ? { ok: true, decision: parsed.decision } : { ok: false, error: parsed.error };
+		} catch (error) {
+			return { ok: false, error: describeError(error) };
+		} finally {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", stop);
+			await child?.close().catch(() => {});
+			const spent: PhaseSpent = {
+				usage,
+				...(requests === undefined ? {} : { requests }),
+				...(costUsd === undefined ? {} : { costUsd }),
+				...(agent === undefined ? {} : { agents: [agent] }),
+			};
+			this.#classifierSpent = this.#classifierSpent ? addPhaseSpent(this.#classifierSpent, spent) : spent;
+		}
+	}
+
+	/** The turn's closing event with what the classifier cost as its own part, added to the totals. */
+	#withClassifier(
+		ended: Extract<AtelierEventBody, { type: "turn_finished" }>,
+	): Extract<AtelierEventBody, { type: "turn_finished" }> {
+		const spent = this.#classifierSpent;
+		if (spent === undefined) return ended;
+		return addSpent(ended, { ...spent, phases: onePhase("classifier", spent) });
 	}
 
 	/** What the tool says about the call; a tool without a gate only has the command to approve. */
