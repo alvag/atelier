@@ -36,7 +36,10 @@ and exits; without one, starts an interactive session (/exit or Ctrl+D to quit).
 
 Options:
       --mode <mode>      Permission mode of the session: normal (default; commands that
-                         run in the sandbox never ask), auto or yolo (nothing outside
+                         run in the sandbox never ask), auto (what normal would ask
+                         goes to a classifier model, the session's unless the profile's
+                         permission-classifier role sets one, which allows or denies it;
+                         you are asked when it cannot decide) or yolo (nothing outside
                          the sandbox or --cwd asks); without it, the default saved
                          with /mode default, else normal
   -y, --yes              Deprecated alias of --mode normal; prints a warning
@@ -52,7 +55,8 @@ Options:
       --cwd <dir>        Working directory (default: current directory)
       --no-review        Do not review or verify changes (see below)
       --no-sandbox       Run bash without the macOS sandbox: every command asks in
-                         normal and auto mode, and each turn warns about it
+                         normal mode and goes to the classifier in auto mode, and
+                         each turn warns about it
   -h, --help             Show this help
   -v, --version          Show the version
 

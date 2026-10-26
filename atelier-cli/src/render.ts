@@ -7,6 +7,7 @@ import {
 	type PhaseSpent,
 	type ReviewStep,
 	type TurnPhase,
+	visibleText,
 } from "@atelier/core";
 
 export interface RendererOptions {
@@ -100,7 +101,20 @@ function phaseSpent({ usage, requests, costUsd }: PhaseSpent): string {
 	return count ?? `${numbers.format(usage.input + usage.output)} tokens`;
 }
 
-const UNSANDBOXED_EFFECT = "every command asks for approval in normal and auto mode";
+const UNSANDBOXED_EFFECT = "every command asks for approval in normal mode, and goes to the classifier in auto mode";
+
+/** What the auto-mode classifier decided about a call; its reason comes from a model, so hidden characters are shown. */
+function classifiedLine(event: Extract<AtelierEvent, { type: "permission_classified" }>): string {
+	const reason = visibleText(event.reason).text;
+	switch (event.decision) {
+		case "allow":
+			return `auto: allowed — ${reason}`;
+		case "deny":
+			return `auto: denied — ${reason}`;
+		case "undecided":
+			return `auto: undecided — ${reason}; asking you`;
+	}
+}
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
@@ -203,6 +217,9 @@ export class Renderer {
 				this.#blocked(event.blocked, `${CHILD}  `);
 				return;
 			}
+			case "permission_classified":
+				this.#line(`${CHILD}  ${classifiedLine(event)}`);
+				return;
 			case "turn_finished":
 				this.#line(`${CHILD}${this.#style("dim", tokensLine(event))}`);
 				return;
@@ -406,6 +423,9 @@ export class Renderer {
 				this.#blocked(event.blocked, "  ");
 				return;
 			}
+			case "permission_classified":
+				this.#line(`  ${classifiedLine(event)}`);
+				return;
 			case "turn_finished": {
 				if (this.#expectedMissTurns > 0) this.#expectedMissTurns--;
 				if (event.stopReason === "error") this.failed = true;

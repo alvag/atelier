@@ -832,6 +832,7 @@ describe("M9 baseline non-TTY output", () => {
 describe("bash outside the sandbox", () => {
 	const SANDBOX_OFF = "sandbox turned off for this session";
 	const bash = (input: Record<string, string | boolean>): FakeStep => ({ toolCall: { tool: "bash", input } });
+	const EFFECT = "every command asks for approval in normal mode, and goes to the classifier in auto mode";
 
 	it("asks every command with --no-sandbox, even with --yes, and warns once per turn", async () => {
 		const turn = [bash({ command: "echo one" }), bash({ command: "echo two" }), { event: finished }];
@@ -840,7 +841,7 @@ describe("bash outside the sandbox", () => {
 		expect(h.out().match(/Run this command\?/g)).toHaveLength(2);
 		expect(h.backend.toolResults.map((result) => result.ok)).toEqual([true, false]);
 		// The first turn says it once, in the status line; the warning that follows would repeat it.
-		const status = `bash: not sandboxed (${SANDBOX_OFF}): every command asks for approval in normal and auto mode\n`;
+		const status = `bash: not sandboxed (${SANDBOX_OFF}): ${EFFECT}\n`;
 		expect(h.err()).toContain(status);
 		expect(h.err().match(/not sandboxed|without a sandbox/g)).toHaveLength(1);
 	});
@@ -871,7 +872,7 @@ describe("bash outside the sandbox", () => {
 		const turn = [bash({ command: "echo one" }), { event: finished }];
 		const h = harness([turn, turn], { input: ["first", "second"] });
 		await run(["--no-sandbox", "--no-review"], h.io, h.createBackend);
-		const effect = "every command asks for approval in normal and auto mode";
+		const effect = EFFECT;
 		expect(h.err().match(new RegExp(`^bash: not sandboxed \\(${SANDBOX_OFF}\\): ${effect}$`, "gm"))).toHaveLength(1);
 		expect(
 			h.err().match(new RegExp(`^warning: bash runs without a sandbox \\(${SANDBOX_OFF}\\): ${effect}$`, "gm")),
@@ -1390,4 +1391,89 @@ describe("permission modes", () => {
 			await expect(readFile(modeFile(fallbackHome), "utf8")).rejects.toThrow();
 		},
 	);
+});
+
+describe("--mode auto", () => {
+	const leave = { command: "touch marker", unsandboxed: true, reason: "the user asked for a marker" };
+	const call: FakeStep = { toolCall: { tool: "bash", input: leave } };
+	const reply = (body: object): FakeStep[] => [
+		{ event: { type: "text_delta", text: JSON.stringify(body) } },
+		{ event: finished },
+	];
+	const exists = (path: string) =>
+		readFile(path).then(
+			() => true,
+			() => false,
+		);
+
+	/** The main agent's backend is the first the CLI asks for; the classifier's is the next. */
+	function withClassifier(classifierTurns: FakeStep[][], options: Parameters<typeof harness>[1] = {}) {
+		const h = harness([[call, { event: finished }]], { isTTY: true, ...options });
+		const classifier = new FakeBackend(classifierTurns);
+		const names: string[] = [];
+		const createBackend = (name: string) => {
+			names.push(name);
+			return names.length === 1 ? h.backend : classifier;
+		};
+		return { h, classifier, names, createBackend };
+	}
+
+	it("runs what the classifier allows, with no question, and says so", async () => {
+		const { h, classifier, createBackend } = withClassifier([reply({ decision: "allow", reason: "the user asked" })]);
+		await run(["--mode", "auto", "--no-review", "make a marker"], h.io, createBackend);
+		expect(h.out()).toContain("  auto: allowed — the user asked\n");
+		expect(h.out()).not.toContain("[y/N]");
+		expect(h.backend.toolResults[0]?.ok).toBe(true);
+		expect(await exists(join(cwd, "marker"))).toBe(true);
+		expect(classifier.prompts[0]).toContain("make a marker");
+		expect(classifier.prompts[0]).toContain("touch marker");
+	});
+
+	it("does not run what the classifier denies, and asks nobody", async () => {
+		const { h, createBackend } = withClassifier([reply({ decision: "deny", reason: "not in the request" })]);
+		await run(["--mode", "auto", "--no-review", "x"], h.io, createBackend);
+		expect(h.out()).toContain("  auto: denied — not in the request\n");
+		expect(h.out()).not.toContain("[y/N]");
+		expect(h.backend.toolResults[0]?.ok).toBe(false);
+		expect(h.backend.toolResults[0]?.output).toContain("Denied by the permission classifier (auto mode)");
+		expect(await exists(join(cwd, "marker"))).toBe(false);
+	});
+
+	it("says it is undecided when the classifier fails, and then asks", async () => {
+		const { h, createBackend } = withClassifier([[{ throw: "boom" }]], { answers: ["y"] });
+		await run(["--mode", "auto", "--no-review", "x"], h.io, createBackend);
+		const out = h.out();
+		const line = out.indexOf("  auto: undecided — classifier unavailable: ");
+		expect(line).toBeGreaterThanOrEqual(0);
+		expect(out.slice(line)).toMatch(/; asking you\n/);
+		expect(out.indexOf("Run this command OUTSIDE the sandbox?")).toBeGreaterThan(line);
+		expect(h.backend.toolResults[0]?.ok).toBe(true);
+	});
+
+	it("creates the classifier's backend as the session's kind", async () => {
+		const { h, names, createBackend } = withClassifier([reply({ decision: "allow", reason: "ok" })]);
+		await run(["--mode", "auto", "--no-review", "x"], h.io, createBackend);
+		expect(names).toEqual(["claude-code", "claude-code"]);
+	});
+
+	it("creates the classifier's backend as its profile role says", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-cli-home-"));
+		try {
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "profiles.json"),
+				JSON.stringify({
+					kind: "atelier.agent_model_profiles",
+					version: 1,
+					active: "p",
+					profiles: { p: { "permission-classifier": { model: "anthropic-api/claude-sonnet-5-5" } } },
+				}),
+			);
+			const { h, names, createBackend } = withClassifier([reply({ decision: "allow", reason: "ok" })], { home });
+			await run(["--mode", "auto", "--no-review", "x"], h.io, createBackend);
+			expect(names).toEqual(["claude-code", "anthropic-api"]);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
 });

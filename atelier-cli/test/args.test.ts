@@ -41,6 +41,8 @@ describe("parseCliArgs", () => {
 	it("documents --mode, the deprecated --yes and the /mode commands in the help", () => {
 		expect(USAGE).toContain("--mode <mode>");
 		expect(USAGE).toContain("Deprecated alias of --mode normal");
+		expect(USAGE).toContain("auto (what normal would ask");
+		expect(USAGE).toContain("permission-classifier role");
 		expect(USAGE).toContain("/mode [normal|auto|yolo]");
 		expect(USAGE).toContain("/mode default <normal|auto|yolo>");
 	});

@@ -58,7 +58,7 @@ describe("Renderer", () => {
 			]);
 			expect(stdout).toBe("");
 			expect(stderr).toBe(
-				"bash: not sandboxed (sandbox not available on this platform): every command asks for approval in normal and auto mode\n",
+				"bash: not sandboxed (sandbox not available on this platform): every command asks for approval in normal mode, and goes to the classifier in auto mode\n",
 			);
 		});
 
@@ -74,8 +74,8 @@ describe("Renderer", () => {
 				renderer.render({ ...body, seq: i + 1, turnId } as AtelierEvent);
 			expect(stderr).toBe(
 				[
-					"bash: not sandboxed (r): every command asks for approval in normal and auto mode",
-					"warning: bash runs without a sandbox (r): every command asks for approval in normal and auto mode",
+					"bash: not sandboxed (r): every command asks for approval in normal mode, and goes to the classifier in auto mode",
+					"warning: bash runs without a sandbox (r): every command asks for approval in normal mode, and goes to the classifier in auto mode",
 					"",
 				].join("\n"),
 			);
@@ -111,6 +111,33 @@ describe("Renderer", () => {
 					"  sandbox blocked: and 2 more",
 					"  │ ▸ bash cat /k (exit 1) ✗",
 					"  │   sandbox blocked: read of /k (denied by the sandbox policy)",
+					"",
+				].join("\n"),
+			);
+		});
+	});
+
+	describe("permission_classified", () => {
+		it("prints what the classifier decided, a subagent's indented, and shows hidden characters in its reason", () => {
+			const { stdout } = render([
+				{ type: "permission_classified", callId: "c1", decision: "allow", reason: "installs what was asked" },
+				{ type: "permission_classified", callId: "c2", decision: "deny", reason: "publishes\u001b[31m" },
+				{ type: "permission_classified", callId: "c3", decision: "undecided", reason: "classifier unavailable: boom" },
+				{
+					type: "permission_classified",
+					callId: "c4",
+					decision: "allow",
+					reason: "ok",
+					parentCallId: "p",
+					agent: "worker",
+				},
+			]);
+			expect(stdout).toBe(
+				[
+					"  auto: allowed — installs what was asked",
+					"  auto: denied — publishes␛[31m",
+					"  auto: undecided — classifier unavailable: boom; asking you",
+					"  │   auto: allowed — ok",
 					"",
 				].join("\n"),
 			);
