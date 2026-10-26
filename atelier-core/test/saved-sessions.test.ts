@@ -26,7 +26,7 @@ import {
 	type SessionOptions,
 	SessionStore,
 } from "../src/index.ts";
-import { SessionRecorder } from "../src/sessions/index.ts";
+import type { SessionRecorder } from "../src/sessions/index.ts";
 
 const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 };
 const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage };
