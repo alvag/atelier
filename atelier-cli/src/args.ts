@@ -38,7 +38,8 @@ export interface CliArgs {
 export const USAGE = `Usage: atelier [options] [prompt]
 
 Runs a coding agent in the working directory. With a prompt, runs one turn
-and exits; without one, starts an interactive session (/exit or Ctrl+D to quit).
+and exits; without one, starts an interactive session (/exit or Ctrl+D to quit),
+in a terminal interface when stdin and stdout are terminals.
 
 Options:
       --mode <mode>      Permission mode of the session: normal (default; commands that
@@ -101,6 +102,8 @@ Environment:
   ATELIER_MEMORY=off     Run without long-term memory
   ATELIER_REVIEW=off     Run without reviewing or verifying changes, like --no-review
   ATELIER_SANDBOX=off    Run bash without the sandbox, like --no-sandbox
+  ATELIER_TUI=off        Run the interactive session line by line, without the
+                         terminal interface
   ATELIER_ALLOW_ROOT     As root (uid 0) Atelier refuses to start unless this is exactly
                          "I accept the risk"; it then warns on every start
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their

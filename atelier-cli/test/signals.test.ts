@@ -29,7 +29,7 @@ describe.skipIf(process.platform === "win32")("terminating signals", () => {
 		async (signal, code) => {
 			const child = spawn(process.execPath, ["--import", `data:text/javascript,${fakeTerminal}`, main], {
 				cwd: home,
-				env: { ...process.env, HOME: home, ATELIER_MEMORY: "off", NO_COLOR: "1" },
+				env: { ...process.env, HOME: home, ATELIER_MEMORY: "off", NO_COLOR: "1", ATELIER_TUI: "off" },
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 			let stdout = "";

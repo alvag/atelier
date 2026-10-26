@@ -36,6 +36,7 @@ import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { Renderer } from "./render.ts";
 import { createTerminalReader, type LineReader } from "./terminal-input.ts";
 import { savedTranscript } from "./transcript.ts";
+import { runTui, type TuiOptions } from "./tui/app.ts";
 
 export interface CliIO {
 	stdin: Readable;
@@ -66,6 +67,11 @@ export interface CliIO {
 	forceExitMs?: number;
 	/** The tools sessions get; tests pass their own. Defaults to the core's. */
 	tools?: readonly ToolDefinition[];
+	/**
+	 * Runs an interactive session in the TUI, with the core as a separate process; given only when stdin and stdout are
+	 * both terminals. Without it, or with a prompt, the CLI prints line by line and runs the session itself.
+	 */
+	tui?: Pick<TuiOptions, "terminal" | "connect">;
 }
 
 /** Connects long-term memory for the working directory; may fail, and then the session runs without it. */
@@ -125,6 +131,17 @@ export async function run(
 	) {
 		io.stderr(`error: Working directory does not exist: ${args.cwd}\n`);
 		return EXIT_USAGE;
+	}
+
+	if (args.prompt === undefined && io.tui !== undefined && io.isTTY) {
+		if (args.yes) io.stderr(YES_DEPRECATED);
+		return runTui(args, {
+			...io.tui,
+			stderr: io.stderr,
+			color: io.color,
+			...(io.home === undefined ? {} : { home: io.home }),
+			...(io.onTerminate === undefined ? {} : { onTerminate: io.onTerminate }),
+		});
 	}
 
 	// A saved session is read before anything starts: one that cannot be resumed starts nothing.

@@ -2,6 +2,7 @@
 import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import {
 	type BackendName,
 	connectMemory,
@@ -10,6 +11,8 @@ import {
 	MemoryUnavailableError,
 	parseCompactAt,
 } from "@atelier/core";
+import { RpcClient } from "@atelier/core/client";
+import { ProcessTerminal } from "@earendil-works/pi-tui";
 import { run } from "./run.ts";
 
 let compactAt: number | undefined;
@@ -29,6 +32,22 @@ const createBackend = (name: BackendName) =>
 			: {}),
 		...(compactAt === undefined ? {} : { anthropicApi: { compactAt } }),
 	});
+
+/** The core's protocol server, which the TUI runs as a separate process. */
+const coreServer = fileURLToPath(new URL("src/server/main.ts", import.meta.resolve("@atelier/core/package.json")));
+// ATELIER_TUI=off keeps the line-by-line session; recording SDK messages needs the session in this process.
+const tui =
+	process.stdin.isTTY && process.stdout.isTTY && process.env.ATELIER_TUI !== "off" && recordPath === undefined
+		? {
+				terminal: new ProcessTerminal(),
+				connect: (env: Record<string, string>) =>
+					RpcClient.connect({
+						command: process.execPath,
+						args: [coreServer, "serve"],
+						env: { ...process.env, ...env },
+					}),
+			}
+		: undefined;
 
 const exitCode = await run(
 	process.argv.slice(2),
@@ -60,6 +79,7 @@ const exitCode = await run(
 			};
 		},
 		exit: (code) => process.exit(code),
+		...(tui === undefined ? {} : { tui }),
 	},
 	createBackend,
 	process.env.ATELIER_MEMORY === "off"
