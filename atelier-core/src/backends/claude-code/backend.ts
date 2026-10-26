@@ -316,6 +316,8 @@ class ClaudeCodeSession implements BackendSession {
 	async *#turnFor(prompt: string): AsyncIterable<AtelierEventBody> {
 		const early = this.#early;
 		this.#early = [];
+		// A level belongs to the turn its Stop hook ran in, also when this turn only reports a failure.
+		delete this.#applied.level;
 		if (this.#failure !== undefined) {
 			// The session failed between turns: this turn reports why, the ones after it refuse.
 			if (early.length === 0) throw new Error(this.#failure);
@@ -323,7 +325,6 @@ class ClaudeCodeSession implements BackendSession {
 			return;
 		}
 		const turn = new Channel<AtelierEventBody>();
-		delete this.#applied.level;
 		for (const event of early) turn.push(event);
 		this.#turn = turn;
 		this.#input.push({

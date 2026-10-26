@@ -339,6 +339,21 @@ describe("ClaudeCodeBackend turns", () => {
 		expect(calls.hookOutputs).toEqual([{}, {}]);
 	});
 
+	it("does not carry the effort of a turn into the next one when Claude Code crashed between them", async () => {
+		const { query } = fakeQuery(
+			[init],
+			[[text("a"), stop("high"), result(0.03), new Error("claude exited with code 1")]],
+		);
+		const session = await Session.start({ backend: new ClaudeCodeBackend({ query, env: {} }), cwd: "/w", tools: [] });
+		const first = await collect(session.send("one"));
+		const second = await collect(session.send("two"));
+
+		expect(first.at(-1)?.phases).toMatchObject({ main: { agents: [{ effectiveEffort: "high" }] } });
+		expect(second.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
+		const ended = second.at(-1) as { phases?: { main?: { agents?: object[] } } } | undefined;
+		for (const agent of ended?.phases?.main?.agents ?? []) expect(agent).not.toHaveProperty("effectiveEffort");
+	});
+
 	it("says no effective effort when Claude Code reports none or one it does not know", async () => {
 		const { query } = fakeQuery(
 			[init],
