@@ -3,6 +3,7 @@ export type {
 	AtelierEventBody,
 	AtelierEventType,
 	AuthSource,
+	BackendChange,
 	CompactionReason,
 	ContextUsage,
 	FeatureTask,

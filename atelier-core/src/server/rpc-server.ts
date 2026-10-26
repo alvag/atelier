@@ -275,6 +275,8 @@ export class RpcServer {
 				return this.#configure(message.sessionId, { thinking: message.effort });
 			case "session.set_profile":
 				return this.#setProfile(message.sessionId, message.profile);
+			case "session.set_backend":
+				return this.#setBackend(message.sessionId, message.backend, message.model);
 			case "options.list":
 				return this.#optionsList(message.cwd);
 			case "session.close": {
@@ -296,6 +298,20 @@ export class RpcServer {
 	async #configure(sessionId: string, change: MainChange): Promise<Result> {
 		const session = this.#session(sessionId).session;
 		return this.#changing(() => session.configure(change));
+	}
+
+	/** Creates the backend as `session.start` does, refusing what it cannot create, and moves the session to it. */
+	async #setBackend(sessionId: string, name: BackendName, model: string | undefined): Promise<Result> {
+		const session = this.#session(sessionId).session;
+		let backend: AgentBackend;
+		try {
+			backend = await this.#options.createBackend(name);
+		} catch (error) {
+			if (error instanceof MissingApiKeyError || error instanceof KeychainError)
+				throw new CommandError(error.code, error.message);
+			throw new CommandError("backend_start_failed", `${name} could not start: ${describeError(error)}`);
+		}
+		return this.#changing(() => session.setBackend(backend, model));
 	}
 
 	/**

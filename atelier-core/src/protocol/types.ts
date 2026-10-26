@@ -59,6 +59,17 @@ export type ClientCommand =
 	 */
 	| { command: "session.set_profile"; sessionId: string; profile: string }
 	/**
+	 * Moves the session to another backend from the next turn: the conversation is summarized (as a compaction does),
+	 * the new backend starts with `model` (absent: the profile's orchestrator entry, then the backend's default) and
+	 * gets the summary with its first prompt, the old backend is closed and the summary is saved to memory as a
+	 * compaction summary is. Detail and the prompt cache are lost. Held while a turn runs, like `session.set_model`.
+	 * Answers the session's configuration plus `backendChange` (`from`, `summarized`: true when a summary carried the
+	 * history). Fails with `summary_failed`, `summary_unsupported` (the current backend cannot summarize), `same_backend`,
+	 * `backend_start_failed`, `missing_api_key` or `keychain_error` (the server cannot create the backend); the session
+	 * keeps its old backend untouched then. An unknown backend name is `invalid_command`.
+	 */
+	| { command: "session.set_backend"; sessionId: string; backend: BackendName; model?: string }
+	/**
 	 * What a client can offer: `backends` (`name`, `models`), `efforts`, `modes`, and what `profiles.list` answers
 	 * (`profiles`, `active`, and with `cwd`, `effective`).
 	 */
