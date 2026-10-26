@@ -934,6 +934,18 @@ describe("RpcServer review", () => {
 		expect(events.filter((event) => event.type === "turn_finished")).toHaveLength(1);
 	});
 
+	it("reviews against the git ref session.review names", async () => {
+		const h = await serve([], { review: true });
+		const sessionId = await h.begin();
+		const response = await h.answerOf(h.send({ command: "session.review", sessionId, ref: "no-such-ref" }));
+		expect(response.ok).toBe(true);
+		const refused = await h.eventOf("error");
+		expect(refused.event).toMatchObject({
+			code: "review_unavailable",
+			message: 'Unknown git ref "no-such-ref": there is nothing to review against.',
+		});
+	});
+
 	it("asks for consent and continues on session.review_consent, which rejects unknown ids", async () => {
 		const h = await serve([HIGH_TURN, [change("src/auth.ts", "export const a = 2;\n"), { event: finished }]], {
 			review: true,

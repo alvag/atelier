@@ -68,7 +68,7 @@ const commandSchema = z.discriminatedUnion("command", [
 	z.object({ command: z.literal("session.send"), sessionId, prompt: z.string().min(1) }),
 	z.object({ command: z.literal("session.interrupt"), sessionId }),
 	z.object({ command: z.literal("session.approve"), sessionId, callId: z.string().min(1), approved: z.boolean() }),
-	z.object({ command: z.literal("session.review"), sessionId }),
+	z.object({ command: z.literal("session.review"), sessionId, ref: z.string().min(1).optional() }),
 	z.object({
 		command: z.literal("session.review_consent"),
 		sessionId,

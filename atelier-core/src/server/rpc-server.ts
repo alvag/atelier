@@ -267,7 +267,8 @@ export class RpcServer {
 				const entry = this.#session(message.sessionId);
 				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
 				const turnId = this.#createId();
-				this.#runTurn(message.sessionId, entry, () => entry.session.review(turnId)).catch((error: unknown) =>
+				const ref = message.ref;
+				this.#runTurn(message.sessionId, entry, () => entry.session.review(turnId, ref)).catch((error: unknown) =>
 					process.stderr.write(`atelier-core: review turn ${turnId} stopped: ${describeError(error)}\n`),
 				);
 				return { turnId };

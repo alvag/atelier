@@ -42,8 +42,8 @@ export type ClientCommand =
 	| { command: "session.send"; sessionId: string; prompt: string }
 	| { command: "session.interrupt"; sessionId: string }
 	| { command: "session.approve"; sessionId: string; callId: string; approved: boolean }
-	/** Reviews the current uncommitted change at any risk; answers like session.send. */
-	| { command: "session.review"; sessionId: string }
+	/** Reviews the current uncommitted change at any risk, against HEAD or the git ref `ref` names; answers like session.send. */
+	| { command: "session.review"; sessionId: string; ref?: string }
 	| { command: "session.review_consent"; sessionId: string; reviewId: string; answer: "granted" | "declined" }
 	/** Undoes the correction an escalated review left in the worktree (that review of the session, or the repository's latest escalated one); answers like session.send. */
 	| { command: "session.undo_correction"; sessionId: string; reviewId?: string }
