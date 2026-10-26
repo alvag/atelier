@@ -31,6 +31,8 @@ export type TurnItem =
 			truncated?: boolean;
 			/** What the sandbox blocked in the call, as short causes. */
 			blocked?: string[];
+			/** What the `auto` classifier decided about the call; the reason is model text. */
+			classified?: { decision: "allow" | "deny" | "undecided"; reason: string };
 			/** A task call's subagent: its work, shown under the call. */
 			subagent?: Subagent;
 	  }
@@ -488,6 +490,12 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					: item,
 			);
 		}
+		case "permission_classified":
+			return items.map((item) =>
+				item.kind === "tool" && item.callId === event.callId
+					? { ...item, classified: { decision: event.decision, reason: event.reason } }
+					: item,
+			);
 		case "approval_requested":
 			return [
 				...items,

@@ -198,6 +198,24 @@ describe("App", () => {
 		);
 	});
 
+	it("explains auto in a tooltip on its option, in the toolbar and in the status bar", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({
+			type: "session_started",
+			backend: "claude-code",
+			model: "opus",
+			authSource: "subscription",
+			permissionMode: "normal",
+		});
+		await within(screen.getByRole("status")).findByLabelText("session mode");
+		const autos = screen.getAllByRole("option", { name: "auto" });
+		expect(autos).toHaveLength(2);
+		for (const option of autos)
+			expect(option.getAttribute("title")).toBe("auto: a classifier model decides what normal would ask");
+		expect(screen.getAllByRole("option", { name: "normal" })[0]?.hasAttribute("title")).toBe(false);
+	});
+
 	it("shows the session's mode in the status bar and changes it with session.set_mode", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");
@@ -336,6 +354,50 @@ describe("App", () => {
 			"main · 3K tokens · 1 request · $0.0500",
 			"lenses · 500 tokens · 3 requests",
 		]);
+	});
+
+	it("lists the classifier's cost as its own phase", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		const part = (input: number) => ({ input, output: 0, cacheRead: 0, cacheWrite: 0 });
+		fake.emit({
+			type: "turn_finished",
+			stopReason: "end_turn",
+			usage: part(3200),
+			phases: {
+				main: { usage: part(3000), requests: 1 },
+				classifier: { usage: part(200), requests: 2, costUsd: 0.001 },
+			},
+		});
+		const usage = await screen.findByTestId("usage");
+		expect([...usage.querySelectorAll(".phases li")].map((li) => li.textContent)).toEqual([
+			"main · 3K tokens · 1 request",
+			"classifier · 200 tokens · 2 requests · $0.0010",
+		]);
+	});
+
+	it("shows what the classifier decided on the tool row, its reason as plain text", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "ls" } });
+		fake.emit({ type: "permission_classified", callId: "c1", decision: "allow", reason: "reads <b>only</b>" });
+		fake.emit({ type: "tool_call_started", callId: "c2", tool: "bash", input: { command: "rm x" } });
+		fake.emit({ type: "permission_classified", callId: "c2", decision: "deny", reason: "not asked for" });
+		fake.emit({ type: "tool_call_started", callId: "c3", tool: "bash", input: { command: "make" } });
+		fake.emit({
+			type: "permission_classified",
+			callId: "c3",
+			decision: "undecided",
+			reason: "classifier unavailable: timeout",
+		});
+		await waitFor(() => expect(screen.getAllByTestId("tool-row")).toHaveLength(3));
+		const [allowed, denied, undecided] = screen.getAllByTestId("tool-row");
+		expect(allowed?.textContent).toContain("auto: allowed — reads <b>only</b>");
+		expect(allowed?.querySelector("b")).toBeNull();
+		expect(denied?.textContent).toContain("auto: denied — not asked for");
+		expect(denied?.querySelector(".warning")?.textContent).toContain("auto: denied");
+		expect(allowed?.querySelector(".warning")).toBeNull();
+		expect(undecided?.textContent).toContain("auto: undecided — classifier unavailable: timeout; asking you");
 	});
 
 	it("lists no phases for a turn with only the main agent, which the total already says", async () => {
@@ -514,7 +576,7 @@ describe("App", () => {
 		const unsandboxed = await screen.findByText("bash: not sandboxed");
 		expect(unsandboxed.className).toContain("warning");
 		expect(unsandboxed.getAttribute("title")).toBe(
-			"sandbox not available on this platform: every command asks for approval in normal and auto mode",
+			"sandbox not available on this platform: every command asks for approval in normal mode, and goes to the classifier in auto mode",
 		);
 	});
 
@@ -546,7 +608,7 @@ describe("App", () => {
 		const off = await screen.findByText("bash: NOT SANDBOXED (turned off)");
 		expect(off.className).toContain("warning");
 		expect(off.getAttribute("title")).toBe(
-			"sandbox turned off for this session: every command asks for approval in normal and auto mode",
+			"sandbox turned off for this session: every command asks for approval in normal mode, and goes to the classifier in auto mode",
 		);
 		fake.emit({ type: "sandbox_status", sandboxed: false, reason: "sandbox turned off for this session" });
 		expect(screen.getAllByText(/^bash:/)).toHaveLength(1);
@@ -558,7 +620,7 @@ describe("App", () => {
 		fake.emit({ type: "sandbox_warning", reason: "sandbox turned off for this session" });
 		expect(
 			await screen.findByText(
-				"bash runs without a sandbox (sandbox turned off for this session): every command asks for approval in normal and auto mode",
+				"bash runs without a sandbox (sandbox turned off for this session): every command asks for approval in normal mode, and goes to the classifier in auto mode",
 			),
 		).toBeTruthy();
 

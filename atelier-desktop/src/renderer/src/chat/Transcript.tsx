@@ -4,7 +4,21 @@ import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
 import type { Subagent, Turn, TurnItem } from "./reducer.ts";
 
-export const UNSANDBOXED_EFFECT = "every command asks for approval in normal and auto mode";
+export const UNSANDBOXED_EFFECT =
+	"every command asks for approval in normal mode, and goes to the classifier in auto mode";
+
+/** What the auto-mode classifier decided; its reason comes from a model, so hidden characters are shown. */
+function classifiedLine({ decision, reason }: NonNullable<Extract<TurnItem, { kind: "tool" }>["classified"]>): string {
+	const text = visibleText(reason).text;
+	switch (decision) {
+		case "allow":
+			return `auto: allowed — ${text}`;
+		case "deny":
+			return `auto: denied — ${text}`;
+		case "undecided":
+			return `auto: undecided — ${text}; asking you`;
+	}
+}
 
 const numbers = new Intl.NumberFormat("en-US");
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
@@ -25,6 +39,11 @@ function ToolRow({ item }: { item: Extract<TurnItem, { kind: "tool" }> }) {
 			<span className="tool-name">{item.tool}</span>
 			<span className="tool-summary">{item.summary ?? JSON.stringify(item.input)}</span>
 			{item.truncated ? <span className="tool-note">truncated</span> : null}
+			{item.classified ? (
+				<div className={item.classified.decision === "deny" ? "tool-classified warning" : "tool-classified"}>
+					{classifiedLine(item.classified)}
+				</div>
+			) : null}
 			{item.blocked?.map((cause) => (
 				<div key={cause} className="tool-blocked">
 					sandbox blocked: {cause}

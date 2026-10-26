@@ -456,6 +456,35 @@ describe("reduceChat: review", () => {
 		]);
 	});
 
+	it("attaches the classifier's decision to the tool row its callId names, in the turn and in a subagent", () => {
+		const child = (body: Record<string, unknown>) =>
+			event({ ...body, parentCallId: "c1", agent: "worker" } as unknown as AtelierEventBody);
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "x" },
+			{ type: "turn_accepted", turnId: "t1" },
+			event({ type: "tool_call_started", callId: "c1", tool: "task", input: { agent: "worker", prompt: "p" } }),
+			event({ type: "tool_call_started", callId: "c2", tool: "bash", input: { command: "ls" } }),
+			event({ type: "tool_call_started", callId: "c3", tool: "bash", input: { command: "rm x" } }),
+			event({ type: "permission_classified", callId: "c2", decision: "allow", reason: "reads only" }),
+			event({ type: "permission_classified", callId: "c3", decision: "undecided", reason: "paused", paused: true }),
+			event({ type: "tool_call_finished", callId: "c2", ok: true, summary: "ls (exit 0)", truncated: false }),
+			child({ type: "tool_call_started", callId: "r1", tool: "bash", input: { command: "curl x" } }),
+			child({ type: "permission_classified", callId: "r1", decision: "deny", reason: "not asked for" }),
+		]);
+		const tools = state.turns[0]?.items.filter((item) => item.kind === "tool") ?? [];
+		const classified = (callId: string) => {
+			const row = tools.find((item) => item.kind === "tool" && item.callId === callId);
+			return row?.kind === "tool" ? row.classified : undefined;
+		};
+		expect(classified("c2")).toEqual({ decision: "allow", reason: "reads only" });
+		expect(classified("c3")).toEqual({ decision: "undecided", reason: "paused" });
+		expect(classified("c1")).toBeUndefined();
+		const task = tools.find((item) => item.kind === "tool" && item.callId === "c1");
+		const nested = task?.kind === "tool" ? task.subagent?.items[0] : undefined;
+		expect(nested?.kind === "tool" && nested.classified).toEqual({ decision: "deny", reason: "not asked for" });
+	});
+
 	it("adds a review block with the risk, and a consent card that adopts the review id", () => {
 		const state = run([...opened, event(assessed), event(consent)]);
 		expect(items(state)).toEqual([

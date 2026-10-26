@@ -109,6 +109,16 @@ main {
 	white-space: nowrap;
 }
 
+.tool-classified {
+	flex-basis: 100%;
+	padding-left: 20px;
+	color: var(--at-muted);
+}
+
+.tool-classified.warning {
+	color: var(--at-warning);
+}
+
 .tool-blocked {
 	flex-basis: 100%;
 	padding-left: 20px;

@@ -7,6 +7,9 @@ import { Transcript, UNSANDBOXED_EFFECT } from "./chat/Transcript.tsx";
 import { useChat } from "./chat/use-chat.ts";
 
 const MODES: readonly PermissionMode[] = ["normal", "auto", "yolo"];
+const MODE_HINTS: Partial<Record<PermissionMode, string>> = {
+	auto: "auto: a classifier model decides what normal would ask",
+};
 
 /** The first model of each backend is its default. */
 const MODELS: Record<BackendName, readonly string[]> = {
@@ -141,7 +144,9 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 					>
 						<option value="">default</option>
 						{MODES.map((name) => (
-							<option key={name}>{name}</option>
+							<option key={name} title={MODE_HINTS[name]}>
+								{name}
+							</option>
 						))}
 					</select>
 				</label>
@@ -209,7 +214,9 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 						onChange={(event) => void chat.setMode(event.target.value as PermissionMode)}
 					>
 						{MODES.map((name) => (
-							<option key={name}>{name}</option>
+							<option key={name} title={MODE_HINTS[name]}>
+								{name}
+							</option>
 						))}
 					</select>
 				) : null}
