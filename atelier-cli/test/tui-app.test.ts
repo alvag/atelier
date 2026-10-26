@@ -49,7 +49,7 @@ const until = async (condition: () => boolean) => {
 };
 
 /** The core in this process, over the protocol's own encoding: what the TUI sends is what a server receives. */
-function inProcessCore(backend: FakeBackend, saveSessions: boolean) {
+function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: FakeBackend[]) {
 	const commands: ClientCommand[] = [];
 	const envs: Record<string, string>[] = [];
 	let closed = false;
@@ -74,7 +74,11 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean) {
 					else waiting?.reject(new Error(message.error.message));
 				}
 			},
-			createBackend: () => backend,
+			// The session's own backend first, then one for each subagent.
+			createBackend: (() => {
+				let created = 0;
+				return () => (created++ === 0 ? backend : (children.shift() ?? new FakeBackend([])));
+			})(),
 			review: env.ATELIER_REVIEW !== "off",
 			noSandbox: env.ATELIER_SANDBOX === "off",
 			tools,
@@ -150,10 +154,10 @@ function fakeTerminal() {
 	};
 }
 
-function harness(turns: FakeStep[][], options: { saveSessions?: boolean } = {}) {
+function harness(turns: FakeStep[][], options: { saveSessions?: boolean; children?: FakeBackend[] } = {}) {
 	const backend = new FakeBackend(turns);
 	let terminate: ((signal: number) => void) | undefined;
-	const core = inProcessCore(backend, options.saveSessions ?? false);
+	const core = inProcessCore(backend, options.saveSessions ?? false, options.children ?? []);
 	const screen = fakeTerminal();
 	let stderr = "";
 	const io = {
@@ -233,6 +237,37 @@ describe("TUI", { timeout: 20_000 }, () => {
 		await until(() => h.backend.toolResults.length === 2);
 		expect(h.backend.toolResults[1]?.output).toContain("second");
 		await until(() => h.screen.screen().includes("$1.00"));
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("asks the approval a subagent needs, and gives it the answer", async () => {
+		const worker = new FakeBackend([
+			[
+				{ toolCall: { tool: "bash", input: { command: "echo childcmd" } } },
+				{ event: { type: "text_delta", text: "ran it" } },
+				{ event: finished },
+			],
+		]);
+		const h = harness(
+			[[{ toolCall: { tool: "task", input: { agent: "worker", prompt: "do" } } }, { event: finished }]],
+			{
+				children: [worker],
+			},
+		);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Run this command? (asked by worker)"));
+		expect(h.screen.screen()).toContain("echo childcmd");
+		h.screen.type("\x1b[A");
+		h.screen.type("\r");
+		await until(() => worker.toolResults.length === 1);
+		expect(worker.toolResults[0]?.output).toContain("childcmd\n");
+		// The worker's card says $0.50 first; the main turn's end says $0.5000.
+		await until(() => h.screen.screen().includes("$0.5000"));
+		expect(h.screen.screen()).toContain("└ worker · 1 tool");
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});

@@ -62,6 +62,10 @@ const shown = (text: string) => visibleText(text);
 const isMode = (word: string | undefined): word is PermissionMode =>
 	word === "normal" || word === "auto" || word === "yolo";
 
+/** ` (asked by worker)` for a subagent's question; the main agent's says nothing. */
+const asker = (event: AtelierEvent) =>
+	event.parentCallId === undefined ? "" : ` (asked by ${event.agent ?? "a subagent"})`;
+
 /** The question an approval asks, worded as the CLI's yes/no question. */
 function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_requested" }>): {
 	title: string;
@@ -74,7 +78,7 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 			? ["warning: the path contains invisible or control characters, shown as markers."]
 			: [];
 		return {
-			title: `${event.tool === "edit" ? "Edit" : "Write"} a file outside the working directory?`,
+			title: `${event.tool === "edit" ? "Edit" : "Write"} a file outside the working directory?${asker(event)}`,
 			lines: [path.text, ...warning],
 		};
 	}
@@ -85,7 +89,7 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 			? ["warning: the command contains invisible or control characters, shown as markers."]
 			: [];
 	return {
-		title: reason ? `Run this command OUTSIDE the sandbox?${guard}` : `Run this command?${guard}`,
+		title: `${reason ? "Run this command OUTSIDE the sandbox?" : "Run this command?"}${guard}${asker(event)}`,
 		lines: [command.text, ...(reason ? [`reason: ${reason.text}`] : []), ...warning],
 	};
 }
@@ -272,39 +276,38 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if (id !== sessionId) return;
 		footer.state = footerAfter(footer.state, event);
 		conversation.event(event);
-		if (event.parentCallId === undefined) {
-			if (event.type === "approval_requested")
-				ask(
-					{
-						...approvalQuestion(event),
-						choices: [
-							{ value: "allow", label: "Allow" },
-							{ value: "deny", label: "Deny" },
-						],
-						initial: "deny",
-						cancel: "deny",
-					},
-					(value) =>
-						void request({ command: "session.approve", sessionId, callId: event.callId, approved: value === "allow" }),
-				);
-			else if (event.type === "review_consent_requested")
-				ask(
-					{
-						title: "Review this change?",
-						lines: consentQuestion(event),
-						choices: [
-							{ value: "granted", label: "Review" },
-							{ value: "declined", label: "Do not review" },
-						],
-						initial: "declined",
-						cancel: "declined",
-					},
-					(answer) => void request({ command: "session.review_consent", sessionId, reviewId: event.reviewId, answer }),
-				);
-			else if (event.type === "turn_finished") {
-				dropQuestions();
-				setBusy(false);
-			}
+		// A subagent asks the same user through the same session: its questions are asked like the main agent's.
+		if (event.type === "approval_requested")
+			ask(
+				{
+					...approvalQuestion(event),
+					choices: [
+						{ value: "allow", label: "Allow" },
+						{ value: "deny", label: "Deny" },
+					],
+					initial: "deny",
+					cancel: "deny",
+				},
+				(value) =>
+					void request({ command: "session.approve", sessionId, callId: event.callId, approved: value === "allow" }),
+			);
+		else if (event.type === "review_consent_requested")
+			ask(
+				{
+					title: "Review this change?",
+					lines: consentQuestion(event),
+					choices: [
+						{ value: "granted", label: "Review" },
+						{ value: "declined", label: "Do not review" },
+					],
+					initial: "declined",
+					cancel: "declined",
+				},
+				(answer) => void request({ command: "session.review_consent", sessionId, reviewId: event.reviewId, answer }),
+			);
+		else if (event.type === "turn_finished" && event.parentCallId === undefined) {
+			dropQuestions();
+			setBusy(false);
 		}
 		tui.requestRender();
 	};
