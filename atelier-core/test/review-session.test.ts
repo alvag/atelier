@@ -133,6 +133,8 @@ class RoleBackend implements AgentBackend {
 	/** What the tool calls a role made through `probes` answered, in order. */
 	readonly probed: { ok: boolean; output: string }[] = [];
 	interrupts = 0;
+	/** Each role says `session_started` first, with its model (or `role-default`) and its thinking level as the effort. */
+	announce = false;
 	readonly #reply: (role: string, prompt: string) => Reply;
 	readonly #probes: (role: string, prompt: string) => ToolCall[];
 
@@ -164,6 +166,14 @@ class RoleBackend implements AgentBackend {
 					...(options.model === undefined ? {} : { model: options.model }),
 					...(options.thinking === undefined ? {} : { thinking: options.thinking }),
 				});
+				if (backend.announce)
+					yield {
+						type: "session_started",
+						backend: "fake",
+						model: options.model ?? "role-default",
+						authSource: "none",
+						...(options.thinking === undefined ? {} : { effort: "low" }),
+					};
 				for (const probe of probes(role, prompt)) {
 					const result = await options.executeTool(probe);
 					probed.push({ ok: result.ok, output: result.output });
@@ -2084,6 +2094,39 @@ describe("the turn's cost by phase", () => {
 		expect(last?.usage).toEqual(total.usage);
 		expect(last?.requests).toBe(total.requests);
 		expect(last?.costUsd).toBeCloseTo(total.costUsd, 10);
+	});
+
+	it("says who ran each part: the role, its backend, its model and its effort, from each one's session_started", async () => {
+		const started: FakeStep = {
+			event: { type: "session_started", backend: "fake", model: "main-model", authSource: "none", effort: "high" },
+		};
+		const turns = [
+			[started, change("src/auth.ts", "export const a = 1;\n"), text("done"), spent(100, 3, 0.03)],
+			[call("risk", { items: [2], reason: "guards the approval" }), spent(10, 1, 0.01)],
+			[change("a.ts", "base\nfixed\n"), spent(20, 2, 0.02)],
+			[change("src/auth.ts", "export const a = 2;\n"), spent(30, 1, 0.005)],
+		];
+		const roles = new RoleBackend(verifying(vreport([vdefect()]), vreport()));
+		roles.announce = true;
+		const s = await start({ turns, roles, sandbox, extra: { model: "main-model" } });
+		const last = closing(await s.send("make the approval need a keypress"));
+
+		const orchestrator = { role: "orchestrator", backend: "fake", model: "main-model", effort: "high" };
+		// The roles take the session's model and no level: their session_started says no effort.
+		const role = (name: string) => ({ role: name, backend: "fake", model: "main-model" });
+		const agents = Object.fromEntries(Object.entries(last?.phases ?? {}).map(([phase, part]) => [phase, part.agents]));
+		expect(agents).toEqual({
+			main: [orchestrator],
+			declare: [orchestrator],
+			verify: [role("verifier"), orchestrator],
+			lenses: expect.arrayContaining([role("review-risk"), role("review-reliability")]),
+			refuter: [role("review-refuter")],
+			correction: [orchestrator],
+			validator: [role("review-validator")],
+		});
+		// Each lens is one run, said once.
+		const lenses = last?.phases?.lenses?.agents ?? [];
+		expect(new Set(lenses.map((agent) => agent.role)).size).toBe(lenses.length);
 	});
 
 	it("has only the main part when nothing follows the agent's turn", async () => {

@@ -8,6 +8,7 @@ export type {
 	FeatureTask,
 	JsonValue,
 	Phase,
+	PhaseAgent,
 	PhaseSpent,
 	RefusalCause,
 	RiskDeclaration,

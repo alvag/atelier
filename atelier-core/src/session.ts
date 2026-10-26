@@ -9,6 +9,7 @@ import {
 	type AtelierEventBody,
 	describeError,
 	errorEvent,
+	type PhaseAgent,
 	type SubagentTag,
 	ZERO_USAGE,
 } from "./events.ts";
@@ -36,7 +37,7 @@ import { loadProjectInstructions, type ProjectInstructions } from "./project-ins
 import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
-import { addPhaseSpent, addPhases, onePhase } from "./spent.ts";
+import { addPhaseSpent, addPhases, onePhase, phaseAgent } from "./spent.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
 import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
 import {
@@ -133,6 +134,8 @@ export class Session {
 	/** The summary request's model and level, from the compaction entry; none on a backend that compacts on its own. */
 	readonly #compaction: { model?: string; thinking?: ThinkingLevel } | undefined;
 	#backendSession: BackendSession | undefined;
+	/** The main agent as its backend's `session_started` described it: what the turn's parts say it ran with. */
+	#mainAgent: PhaseAgent | undefined;
 	#turn: Channel<TurnEvent> | undefined;
 	/** The subagent running right now, so interrupting or closing reaches it. */
 	#child: Session | undefined;
@@ -321,6 +324,7 @@ export class Session {
 					if (event.type === "turn_finished") finish ??= event;
 					else {
 						if (event.type === "error") failed = true;
+						if (event.type === "session_started") this.#mainAgent = phaseAgent("orchestrator", event);
 						turn.push(this.#withOrchestrator(event));
 					}
 				}
@@ -335,6 +339,7 @@ export class Session {
 					stopReason: failed ? "error" : "incomplete",
 					usage: { ...ZERO_USAGE },
 				},
+				this.#mainAgent,
 			);
 			// A change left by a turn that finished well is assessed before the turn ends; its cost joins the turn's.
 			const clean = !failed && finish !== undefined && !signal.aborted && !NOT_REVIEWED.has(finish.stopReason);
@@ -499,6 +504,7 @@ export class Session {
 							ok = !NOT_REVIEWED.has(event.stopReason);
 						} else {
 							if (event.type === "error") failed = true;
+							if (event.type === "session_started") this.#mainAgent = phaseAgent("orchestrator", event);
 							turn.push(event);
 						}
 					}
@@ -506,8 +512,10 @@ export class Session {
 					failed = true;
 					turn.push(errorEvent("backend_error", describeError(error)));
 				}
+				const agent = this.#mainAgent;
 				return {
 					ok: ok && !failed,
+					...(agent === undefined ? {} : { agents: [agent] }),
 					usage,
 					...(costUsd === undefined ? {} : { costUsd }),
 					...(requests === undefined ? {} : { requests }),
@@ -805,8 +813,9 @@ const NOT_REVIEWED = new Set(["error", "interrupted", "incomplete"]);
 /** The main agent's own closing event, with what it cost as the turn's `main` part. */
 function withMainPhase(
 	ended: Extract<AtelierEventBody, { type: "turn_finished" }>,
+	agent: PhaseAgent | undefined,
 ): Extract<AtelierEventBody, { type: "turn_finished" }> {
-	return { ...ended, phases: onePhase("main", ended) };
+	return { ...ended, phases: onePhase("main", agent === undefined ? ended : { ...ended, agents: [agent] }) };
 }
 
 /** The turn's closing event with the review's usage, cost and parts added. */

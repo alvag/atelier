@@ -4,6 +4,7 @@ import {
 	describeError,
 	errorEvent,
 	excerpt,
+	type PhaseAgent,
 	type PhaseSpent,
 	type Refusal,
 	type ReviewFinding,
@@ -18,7 +19,7 @@ import type { ProfileBackend, Role, RoleBackendFactory, RoleSettings, ThinkingLe
 import { roleStartMessage } from "../profiles/index.ts";
 import { DECLARE_RISK_REQUEST } from "../prompt.ts";
 import type { Session, SessionOptions } from "../session.ts";
-import { addPhaseSpent, addPhases, onePhase } from "../spent.ts";
+import { addPhaseSpent, addPhases, onePhase, phaseAgent } from "../spent.ts";
 import { createBashTool, grepTool, readTool, sandbox } from "../tools/index.ts";
 import type { Sandbox } from "../tools/sandbox.ts";
 import type { ToolDefinition } from "../tools/types.ts";
@@ -81,8 +82,8 @@ export interface ReviewHost {
 	feature?: string;
 	signal: AbortSignal;
 	push(event: AtelierEventBody & SubagentTag): void;
-	/** One turn of the main agent inside this turn. */
-	correct(message: string): Promise<{ ok: boolean; usage: Usage; costUsd?: number; requests?: number }>;
+	/** One turn of the main agent inside this turn; `agents`: the main agent, once its backend described it. */
+	correct(message: string): Promise<{ ok: boolean } & PhaseSpent>;
 	startChild(options: SessionOptions): Promise<Session>;
 	createId(): string;
 }
@@ -436,11 +437,17 @@ export class SessionReview {
 			if (more !== undefined) requests = (requests ?? 0) + more;
 		};
 		const declaration = [...this.#requests.escalations];
+		// Who ran: the verifier rounds and the main agent's corrections, in order.
+		let ran: PhaseSpent = { usage: ZERO_USAGE };
+		const saw = <T extends PhaseSpent>(run: T): T => {
+			ran = addPhaseSpent(ran, { usage: ZERO_USAGE, ...(run.agents === undefined ? {} : { agents: run.agents }) });
+			return run;
+		};
 		const result = await verify(
 			{ candidate, declaration, count },
 			{
-				runVerifier: (call) => this.#runVerifier(host, declaration, call, count),
-				correct: (message) => host.correct(message),
+				runVerifier: async (call) => saw(await this.#runVerifier(host, declaration, call, count)),
+				correct: async (message) => saw(await host.correct(message)),
 				freeze: () => freezeCandidate(host.cwd, freezing),
 				push: (event) => host.push(event),
 				createId: host.createId,
@@ -449,7 +456,11 @@ export class SessionReview {
 		);
 		return {
 			candidate: result.candidate,
-			spent: asPhase("verify", { ...result.cost, ...(requests === undefined ? {} : { requests }) }),
+			spent: asPhase("verify", {
+				...result.cost,
+				...(requests === undefined ? {} : { requests }),
+				...(ran.agents === undefined ? {} : { agents: ran.agents }),
+			}),
 		};
 	}
 
@@ -582,7 +593,7 @@ export class SessionReview {
 		host: ReviewHost,
 		tag: SubagentTag,
 		options: SessionOptions,
-		role: string,
+		role: RoleName | "verifier",
 		prompt: string,
 		count: (requests: number | undefined) => void,
 		signal: AbortSignal | undefined = host.signal,
@@ -608,10 +619,12 @@ export class SessionReview {
 			let usage: Usage = ZERO_USAGE;
 			let costUsd: number | undefined;
 			let requests: number | undefined;
+			let agent: PhaseAgent | undefined;
 			for await (const event of child.send(prompt)) {
 				const { seq: _seq, turnId: _turnId, ...body } = event;
 				host.push({ ...body, ...tag });
-				if (event.type === "text_delta") report += event.text;
+				if (event.type === "session_started") agent = phaseAgent(role === "verifier" ? role : `review-${role}`, event);
+				else if (event.type === "text_delta") report += event.text;
 				else if (event.type === "tool_call_started") report = "";
 				else if (event.type === "error") failure ??= `${event.code}: ${event.message}`;
 				else if (event.type === "turn_finished") {
@@ -626,6 +639,7 @@ export class SessionReview {
 				usage,
 				...(costUsd === undefined ? {} : { costUsd }),
 				...(requests === undefined ? {} : { requests }),
+				...(agent === undefined ? {} : { agents: [agent] }),
 			};
 			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined)
 				return failedRole(
@@ -635,13 +649,7 @@ export class SessionReview {
 				);
 			if (report.trim() === "")
 				return failedRole("The role returned no reply.", { cause: "role_failed", observed: "no reply" }, spent);
-			return {
-				ok: true,
-				text: report,
-				usage,
-				...(costUsd === undefined ? {} : { costUsd }),
-				...(requests === undefined ? {} : { requests }),
-			};
+			return { ok: true, text: report, ...spent };
 		} finally {
 			signal?.removeEventListener("abort", stop);
 			this.#children.delete(child);
@@ -665,7 +673,7 @@ function startFailure(plain: string, role: Role, settings: RoleSettings, error: 
 function failedRole(
 	error: string,
 	refusal: Refusal = { cause: "role_failed", observed: excerpt(error) },
-	spent: { usage: Usage; costUsd?: number; requests?: number } = { usage: ZERO_USAGE },
+	spent: PhaseSpent = { usage: ZERO_USAGE },
 ): RoleResult {
 	return { ok: false, error, ...refusal, ...spent };
 }

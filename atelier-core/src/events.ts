@@ -65,11 +65,23 @@ export type ReviewStep =
 export const TURN_PHASES = ["main", "declare", "verify", "lenses", "refuter", "correction", "validator"] as const;
 export type TurnPhase = (typeof TURN_PHASES)[number];
 
-/** What one part of a turn cost; `requests` and `costUsd` are absent when its backends do not report them. */
+/** One agent that ran in a part of a turn: its profile role, and the backend, model and effort its `session_started` said. */
+export interface PhaseAgent {
+	role: string;
+	backend: string;
+	model: string;
+	effort?: Effort | "off" | "unsupported";
+}
+
+/**
+ * What one part of a turn cost; `requests` and `costUsd` are absent when its backends do not report them.
+ * `agents`: who ran in it, each once, in the order they first ran; absent when none said `session_started`.
+ */
 export interface PhaseSpent {
 	usage: Usage;
 	requests?: number;
 	costUsd?: number;
+	agents?: PhaseAgent[];
 }
 
 /** A turn's cost by part; a part that did not run is absent. */

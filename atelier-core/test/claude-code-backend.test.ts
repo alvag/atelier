@@ -281,7 +281,13 @@ describe("ClaudeCodeBackend turns", () => {
 				stopReason: "end_turn",
 				usage: { input: 10, output: 2, cacheRead: 7, cacheWrite: 1 },
 				costUsd: 0.03,
-				phases: { main: { usage: { input: 10, output: 2, cacheRead: 7, cacheWrite: 1 }, costUsd: 0.03 } },
+				phases: {
+					main: {
+						usage: { input: 10, output: 2, cacheRead: 7, cacheWrite: 1 },
+						costUsd: 0.03,
+						agents: [{ role: "orchestrator", backend: "claude-code", model: "claude-opus-5-5" }],
+					},
+				},
 				durationMs: expect.any(Number),
 			},
 		]);

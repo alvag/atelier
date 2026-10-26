@@ -1,4 +1,4 @@
-import { describeError, excerpt, type Refusal, type Usage, ZERO_USAGE } from "../events.ts";
+import { describeError, excerpt, type PhaseAgent, type Refusal, type Usage, ZERO_USAGE } from "../events.ts";
 import { type Candidate, type FreezeResult, holdsCommits } from "./candidate.ts";
 import { type Finding, isBlocking, parseFindings } from "./findings.ts";
 import { runGit } from "./git.ts";
@@ -10,8 +10,15 @@ import { commitInstruction, parseResults, parseVerdicts, REFUTER_INSTRUCTION, VA
 export type RoleName = Lens | "refuter" | "validator";
 
 export type RoleResult =
-	| { ok: true; text: string; usage: Usage; costUsd?: number; requests?: number }
-	| ({ ok: false; error: string; usage: Usage; costUsd?: number; requests?: number } & Partial<Refusal>);
+	| { ok: true; text: string; usage: Usage; costUsd?: number; requests?: number; agents?: PhaseAgent[] }
+	| ({
+			ok: false;
+			error: string;
+			usage: Usage;
+			costUsd?: number;
+			requests?: number;
+			agents?: PhaseAgent[];
+	  } & Partial<Refusal>);
 
 export interface ReviewDeps {
 	/** Runs one read-only subagent over `tree` and returns its final message. */
