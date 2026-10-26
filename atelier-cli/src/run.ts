@@ -127,7 +127,18 @@ export async function run(
 	}
 
 	// The profile is resolved once, here, and the session keeps it. Without a home there are no profile files to read.
-	const profile = io.home === undefined ? undefined : await freezeProfile({ cwd: args.cwd, home: io.home });
+	if (args.profile !== undefined && io.home === undefined) {
+		io.stderr("error: --profile needs a home directory to read ~/.atelier/profiles.json from.\n");
+		return EXIT_FAILED;
+	}
+	const profile =
+		io.home === undefined
+			? undefined
+			: await freezeProfile({
+					cwd: args.cwd,
+					home: io.home,
+					...(args.profile === undefined ? {} : { choice: args.profile }),
+				});
 	const kind = sessionBackend(profile, args.explicitBackend, args.backend);
 	let backend: AgentBackend;
 	try {

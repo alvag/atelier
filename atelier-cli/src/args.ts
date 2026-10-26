@@ -15,6 +15,8 @@ export interface CliArgs {
 	backend: BackendName;
 	/** Present only when --backend was given: it wins over the backend the orchestrator's profile entry names. */
 	explicitBackend?: BackendName;
+	/** The profile chosen with --profile: the first layer of the resolution. */
+	profile?: string;
 	cwd: string;
 	help: boolean;
 	version: boolean;
@@ -38,6 +40,9 @@ Options:
                          ANTHROPIC_API_KEY
       --model <name>     Model to use (default: opus on claude-code,
                          claude-sonnet-5-5 on anthropic-api)
+      --profile <name>   Agent profile from ~/.atelier/profiles.json for this session,
+                         over the local pin, the repository's and the active one;
+                         --model and --backend still replace the main agent's
       --cwd <dir>        Working directory (default: current directory)
       --no-review        Do not review or verify changes (see below)
       --no-sandbox       Run bash without the macOS sandbox: every command asks, --yes
@@ -83,6 +88,7 @@ export function parseCliArgs(
 	}
 	const { values, positionals } = parsed;
 	if (values.model !== undefined && values.model.trim() === "") throw new UsageError("--model needs a value.");
+	if (values.profile !== undefined && values.profile.trim() === "") throw new UsageError("--profile needs a value.");
 	const backend = values.backend ?? DEFAULT_BACKEND;
 	if (!isBackendName(backend)) throw new UsageError(`--backend must be ${BACKEND_NAMES.join(" or ")}.`);
 	const prompt = positionals.length > 0 ? positionals.join(" ") : undefined;
@@ -93,6 +99,7 @@ export function parseCliArgs(
 		...(values.model === undefined ? {} : { model: values.model }),
 		backend,
 		...(values.backend === undefined ? {} : { explicitBackend: backend }),
+		...(values.profile === undefined ? {} : { profile: values.profile }),
 		cwd: resolve(baseDir, values.cwd ?? "."),
 		help: values.help ?? false,
 		version: values.version ?? false,
@@ -110,6 +117,7 @@ function parse(argv: readonly string[]) {
 			yes: { type: "boolean", short: "y" },
 			model: { type: "string" },
 			backend: { type: "string" },
+			profile: { type: "string" },
 			cwd: { type: "string" },
 			help: { type: "boolean", short: "h" },
 			version: { type: "boolean", short: "v" },

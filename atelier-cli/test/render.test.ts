@@ -117,6 +117,41 @@ describe("Renderer", () => {
 		});
 	});
 
+	it("says the effort and the frozen profile, with its origin and what it sets for each role", () => {
+		const { stdout } = render([
+			{
+				type: "session_started",
+				backend: "anthropic-api",
+				model: "claude-opus-5-5",
+				authSource: "api_key",
+				effort: "high",
+				profile: {
+					name: "cheap",
+					origin: "local-pin",
+					roles: {
+						explorer: { thinking: "low" },
+						verifier: { backend: "claude-code", model: "claude-sonnet-5-5", thinking: "medium" },
+					},
+				},
+			},
+		]);
+		expect(stdout).toBe(
+			[
+				"atelier · anthropic-api · claude-opus-5-5 · api_key · effort high",
+				"profile cheap (local-pin) · explorer thinking low · verifier claude-code/claude-sonnet-5-5 thinking medium",
+				"",
+			].join("\n"),
+		);
+	});
+
+	it("says the default profile only by its origin, and nothing without a profile", () => {
+		const started = { type: "session_started", backend: "anthropic-api", model: "m", authSource: "api_key" } as const;
+		expect(render([{ ...started, profile: { origin: "default", roles: {} } }]).stdout).toBe(
+			"atelier · anthropic-api · m · api_key\nprofile default\n",
+		);
+		expect(render([started]).stdout).toBe("atelier · anthropic-api · m · api_key\n");
+	});
+
 	it("warns when the session is not using a subscription", () => {
 		const { stderr } = render([{ type: "session_started", backend: "claude-code", model: "m", authSource: "api_key" }]);
 		expect(stderr).toBe("warning: not using a Claude subscription (auth: api_key); usage may be billed separately.\n");

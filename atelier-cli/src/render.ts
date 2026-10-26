@@ -65,6 +65,24 @@ function compactionFailedLine(event: Extract<AtelierEvent, { type: "compaction_f
 	return `compaction failed: ${event.error ?? "no reason given"}`;
 }
 
+/** The main agent's header: backend, model, authentication and, when a level was asked, its effort. */
+function startedLine(event: Extract<AtelierEvent, { type: "session_started" }>): string {
+	const effort = event.effort === undefined ? "" : ` · effort ${event.effort}`;
+	return `atelier · ${event.backend} · ${event.model} · ${event.authSource}${effort}`;
+}
+
+/** `profile cheap (local-pin) · verifier claude-code/claude-sonnet-5-5 thinking medium`; the default profile by its origin alone. */
+function profileLine(profile: NonNullable<Extract<AtelierEvent, { type: "session_started" }>["profile"]>): string {
+	const head = profile.name === undefined ? `profile ${profile.origin}` : `profile ${profile.name} (${profile.origin})`;
+	const roles = Object.entries(profile.roles).map(([role, { backend, model, thinking }]) => {
+		const parts = [role];
+		if (model !== undefined) parts.push(backend === undefined ? model : `${backend}/${model}`);
+		if (thinking !== undefined) parts.push(`thinking ${thinking}`);
+		return parts.join(" ");
+	});
+	return [head, ...roles].join(" · ");
+}
+
 /** The turn's cost by part, under its tokens line; undefined when the turn had a single part, which the total already says. */
 function phasesLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): string | undefined {
 	const phases = Object.entries(event.phases ?? {}) as [TurnPhase, PhaseSpent][];
@@ -344,7 +362,8 @@ export class Renderer {
 		}
 		switch (event.type) {
 			case "session_started":
-				this.#line(this.#style("dim", `atelier · ${event.backend} · ${event.model} · ${event.authSource}`));
+				this.#line(this.#style("dim", startedLine(event)));
+				if (event.profile !== undefined) this.#line(this.#style("dim", profileLine(event.profile)));
 				// anthropic-api is billed to the API key by choice; only an unexpected bill deserves a warning.
 				if (event.authSource !== "subscription" && event.backend !== "anthropic-api")
 					this.#warn(

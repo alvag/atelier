@@ -37,6 +37,13 @@ describe("parseCliArgs", () => {
 		expect(parseCliArgs(["x"], "/h").backend).toBe("claude-code");
 	});
 
+	it("reads --profile, which needs a value, and documents it", () => {
+		expect(parseCliArgs(["--profile", "cheap", "x"], "/h").profile).toBe("cheap");
+		expect(parseCliArgs(["x"], "/h")).not.toHaveProperty("profile");
+		expect(() => parseCliArgs(["--profile", " ", "x"], "/h")).toThrow(new UsageError("--profile needs a value."));
+		expect(USAGE).toContain("--profile <name>");
+	});
+
 	it("reviews changes unless --no-review or ATELIER_REVIEW=off", () => {
 		expect(parseCliArgs(["x"], "/h").review).toBe(true);
 		expect(parseCliArgs(["--no-review", "x"], "/h").review).toBe(false);

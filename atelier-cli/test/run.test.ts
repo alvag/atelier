@@ -1186,6 +1186,38 @@ describe("agent profiles", () => {
 		expect(h.backend.startOptions).toMatchObject({ model: "sonnet", thinking: "high" });
 	});
 
+	it("takes --profile over the active one, with --model still replacing the orchestrator's model", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-cli-home-"));
+		try {
+			await mkdir(join(home, ".atelier"));
+			const q = { orchestrator: { model: "anthropic-api/claude-opus-5-5", thinking: "low" } };
+			await writeFile(
+				join(home, ".atelier", "profiles.json"),
+				JSON.stringify({ kind: "atelier.agent_model_profiles", version: 1, active: "p", profiles: { p: {}, q } }),
+			);
+			const onApi = { type: "session_started", backend: "anthropic-api", model: "sonnet", authSource: "api_key" };
+			const h = harness([[{ event: onApi as AtelierEventBody }, { event: finished }]], { home });
+			const names: string[] = [];
+			const code = await run(["--profile", "q", "--model", "sonnet", "x"], h.io, (name) => {
+				names.push(name);
+				return h.backend;
+			});
+			expect(code).toBe(0);
+			expect(names).toEqual(["anthropic-api"]);
+			expect(h.backend.startOptions).toMatchObject({ model: "sonnet", thinking: "low" });
+			expect(h.out()).toContain("profile q (explicit)\n");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses --profile when there is no home to read profiles from", async () => {
+		const h = harness([[{ event: finished }]]);
+		const code = await run(["--profile", "q", "x"], h.io, () => h.backend);
+		expect(code).toBe(1);
+		expect(h.err()).toBe("error: --profile needs a home directory to read ~/.atelier/profiles.json from.\n");
+	});
+
 	it("prints what the profile files dropped as warnings and still runs", async () => {
 		const { h, code } = await start(["x"], { verifer: { model: "x" } });
 		expect(code).toBe(0);
