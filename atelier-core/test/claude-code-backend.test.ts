@@ -48,17 +48,24 @@ const result = (totalCost: number) =>
 		usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 7, cache_creation_input_tokens: 1 },
 	});
 
+/** In a scripted reply: Claude Code runs its Stop hooks, with the effort it applied to the turn. */
+interface StopHook {
+	stopEffort: string | undefined;
+}
+const stop = (level?: string): StopHook => ({ stopEffort: level });
+
 /** Fake SDK query: emits `boot` at start, then plays one scripted reply per user message. */
 function fakeQuery(
 	boot: SDKMessage[],
-	replies: (SDKMessage | Error)[][],
+	replies: (SDKMessage | Error | StopHook)[][],
 	account: Record<string, unknown> = SUBSCRIPTION,
 ) {
-	const calls: { options: Options; prompts: string[]; interrupts: number; closed: boolean } = {
+	const calls: { options: Options; prompts: string[]; interrupts: number; closed: boolean; hookOutputs: unknown[] } = {
 		options: {},
 		prompts: [],
 		interrupts: 0,
 		closed: false,
+		hookOutputs: [],
 	};
 	const query: QueryFunction = ({ prompt, options }) => {
 		calls.options = options;
@@ -68,6 +75,18 @@ function fakeQuery(
 				calls.prompts.push(message.message.content as string);
 				for (const item of replies.shift() ?? []) {
 					if (item instanceof Error) throw item;
+					if ("stopEffort" in item) {
+						const input = {
+							hook_event_name: "Stop",
+							session_id: "s",
+							stop_hook_active: false,
+							...(item.stopEffort === undefined ? {} : { effort: { level: item.stopEffort } }),
+						};
+						for (const matcher of options.hooks?.Stop ?? [])
+							for (const hook of matcher.hooks)
+								calls.hookOutputs.push(await hook(input as never, undefined, { signal: new AbortController().signal }));
+						continue;
+					}
 					yield item;
 				}
 			}
@@ -297,6 +316,64 @@ describe("ClaudeCodeBackend turns", () => {
 				durationMs: expect.any(Number),
 			},
 		]);
+	});
+
+	it("names in the main phase the effort Claude Code applied, from its Stop hook, when no level was asked", async () => {
+		const { query, calls } = fakeQuery(
+			[init],
+			[
+				[text("a"), stop("high"), result(0.03)],
+				[stop("max"), result(0.05)],
+			],
+		);
+		const session = await Session.start({ backend: new ClaudeCodeBackend({ query, env: {} }), cwd: "/w", tools: [] });
+		const first = await collect(session.send("one"));
+		const second = await collect(session.send("two"));
+
+		expect(first.map((event) => event.type)).toEqual(["session_started", "text_delta", "turn_finished"]);
+		expect(first[0]).not.toHaveProperty("effort");
+		const orchestrator = { role: "orchestrator", backend: "claude-code", model: "claude-opus-5-5" };
+		expect(first.at(-1)?.phases).toMatchObject({ main: { agents: [{ ...orchestrator, effectiveEffort: "high" }] } });
+		expect(second.at(-1)?.phases).toMatchObject({ main: { agents: [{ ...orchestrator, effectiveEffort: "max" }] } });
+		// The hook only reads.
+		expect(calls.hookOutputs).toEqual([{}, {}]);
+	});
+
+	it("says no effective effort when Claude Code reports none or one it does not know", async () => {
+		const { query } = fakeQuery(
+			[init],
+			[
+				[stop(), result(0.01)],
+				[stop("turbo"), result(0.02)],
+			],
+		);
+		const session = await Session.start({ backend: new ClaudeCodeBackend({ query, env: {} }), cwd: "/w", tools: [] });
+		for (const prompt of ["one", "two"]) {
+			const finished = (await collect(session.send(prompt))).at(-1);
+			expect(finished?.phases).toEqual({
+				main: expect.objectContaining({
+					agents: [{ role: "orchestrator", backend: "claude-code", model: "claude-opus-5-5" }],
+				}),
+			});
+		}
+	});
+
+	it("does not read the applied effort when Atelier asked a level", async () => {
+		const { query, calls } = fakeQuery([init], [[stop("high"), result(0.03)]]);
+		const session = await Session.start({
+			backend: new ClaudeCodeBackend({ query, env: {} }),
+			cwd: "/w",
+			tools: [],
+			thinking: "medium",
+		});
+		const finished = (await collect(session.send("one"))).at(-1);
+
+		expect(calls.options.hooks?.Stop).toBeUndefined();
+		expect(finished?.phases).toEqual({
+			main: expect.objectContaining({
+				agents: [{ role: "orchestrator", backend: "claude-code", model: "claude-opus-5-5", effort: "medium" }],
+			}),
+		});
 	});
 
 	it("reuses one SDK query across turns and reports per-turn cost", async () => {
@@ -558,7 +635,7 @@ describe("ClaudeCodeBackend compaction", () => {
 			tools: [],
 			executeTool: async () => ({ ok: true, output: "" }),
 		});
-		expect(without.calls.options.hooks).toBeUndefined();
+		expect(without.calls.options.hooks?.PostCompact).toBeUndefined();
 	});
 
 	it("sends a bare /compact without instructions and no state when the core has none", async () => {
@@ -728,7 +805,7 @@ describe("ClaudeCodeBackend subagent compaction", () => {
 		expect(child.find((e) => e.type === "compaction_started")).toMatchObject({ reason: "threshold" });
 		expect(outcome).toMatchObject({ ok: true, output: "the report" });
 		// No PostCompact hook: Claude Code never hands the child's summary to the core.
-		expect(calls.options.hooks).toBeUndefined();
+		expect(calls.options.hooks?.PostCompact).toBeUndefined();
 		expect(memory.saved).toEqual([]);
 	});
 

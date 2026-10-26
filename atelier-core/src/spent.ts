@@ -1,5 +1,6 @@
 import {
 	type AtelierEventBody,
+	type Effort,
 	type PhaseAgent,
 	type PhaseSpent,
 	TURN_PHASES,
@@ -58,6 +59,15 @@ export function phaseAgent(role: string, started: Extract<AtelierEventBody, { ty
 	};
 }
 
+/** The agent with the effort its backend applied, only when no level was asked and the backend says one. */
+export function withEffectiveEffort(
+	agent: PhaseAgent | undefined,
+	effective: Effort | undefined,
+): PhaseAgent | undefined {
+	if (agent === undefined || effective === undefined || agent.effort !== undefined) return agent;
+	return { ...agent, effectiveEffort: effective };
+}
+
 /** Both lists, each agent once, in the order they first ran. */
 function addAgents(a: PhaseAgent[] | undefined, b: PhaseAgent[] | undefined): PhaseAgent[] | undefined {
 	if (a === undefined) return b;
@@ -68,7 +78,13 @@ function addAgents(a: PhaseAgent[] | undefined, b: PhaseAgent[] | undefined): Ph
 }
 
 function sameAgent(a: PhaseAgent, b: PhaseAgent): boolean {
-	return a.role === b.role && a.backend === b.backend && a.model === b.model && a.effort === b.effort;
+	return (
+		a.role === b.role &&
+		a.backend === b.backend &&
+		a.model === b.model &&
+		a.effort === b.effort &&
+		a.effectiveEffort === b.effectiveEffort
+	);
 }
 
 function addUsage(a: Usage, b: Usage): Usage {

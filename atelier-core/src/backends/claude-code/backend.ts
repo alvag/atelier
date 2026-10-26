@@ -10,7 +10,14 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentBackend, BackendSession, BackendStartOptions, ToolExecutor } from "../../backend.ts";
 import { Channel } from "../../channel.ts";
-import { type AtelierEventBody, describeError, errorEvent, type JsonValue } from "../../events.ts";
+import {
+	type AtelierEventBody,
+	describeError,
+	EFFORTS,
+	type Effort,
+	errorEvent,
+	type JsonValue,
+} from "../../events.ts";
 import { type ThinkingSend, thinkingToSend } from "../../pricing.ts";
 import type { ToolDefinition } from "../../tools/types.ts";
 import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./map.ts";
@@ -115,6 +122,12 @@ export class ClaudeCodeBackend implements AgentBackend {
 		const run = this.#options.query ?? (sdkQuery as QueryFunction);
 		const model = start.model ?? DEFAULT_MODEL;
 		const sent = thinkingToSend(model, start.thinking, "claude-code");
+		// Claude Code tells the effort it applied only to hooks inside a turn; read it when Atelier asked none.
+		const applied: AppliedEffort = {};
+		const hooks: Options["hooks"] = {
+			...(start.compacted === undefined ? {} : { PostCompact: [{ hooks: [summaryHook(start.compacted)] }] }),
+			...(sent === undefined ? { Stop: [{ hooks: [effortHook(applied)] }] } : {}),
+		};
 		const query = run({
 			prompt: input,
 			options: {
@@ -134,9 +147,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 				includePartialMessages: true,
 				...(start.maxRequestsPerTurn === undefined ? {} : { maxTurns: start.maxRequestsPerTurn }),
 				persistSession: false,
-				...(start.compacted === undefined
-					? {}
-					: { hooks: { PostCompact: [{ hooks: [summaryHook(start.compacted)] }] } }),
+				...(Object.keys(hooks).length === 0 ? {} : { hooks }),
 				env: childEnv(this.#options),
 				...(this.#options.pathToClaudeCodeExecutable === undefined
 					? {}
@@ -154,6 +165,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 			observe,
 			this.#options.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS,
 			sent?.report,
+			applied,
 			start.compactionState,
 		);
 	}
@@ -166,6 +178,24 @@ function summaryHook(compacted: (summary: string) => void): HookCallback {
 			compacted(input.compact_summary);
 		return {};
 	};
+}
+
+/** The effort Claude Code applied to the current turn, as its hooks report it. */
+interface AppliedEffort {
+	level?: Effort;
+}
+
+/** Records the effort of the main thread's turn from the Stop hook; the hook changes nothing. */
+function effortHook(applied: AppliedEffort): HookCallback {
+	return async (input) => {
+		const level = input.effort?.level;
+		if (input.hook_event_name === "Stop" && input.agent_id === undefined && isEffort(level)) applied.level = level;
+		return {};
+	};
+}
+
+function isEffort(level: string | undefined): level is Effort {
+	return (EFFORTS as readonly (string | undefined)[]).includes(level);
 }
 
 /** Resolves to a subscription only when the account confirms one on Anthropic's own API. */
@@ -199,6 +229,7 @@ class ClaudeCodeSession implements BackendSession {
 	readonly #compactionState: (() => string | undefined) | undefined;
 	/** What `session_started` says about the effort. */
 	readonly #effort: ThinkingSend["report"] | undefined;
+	readonly #applied: AppliedEffort;
 	/** Claude Code compacted; the core's state goes with the next prompt. */
 	#stateDue = false;
 
@@ -208,6 +239,7 @@ class ClaudeCodeSession implements BackendSession {
 		observe: (message: SDKMessage) => void,
 		interruptGraceMs: number,
 		effort: ThinkingSend["report"] | undefined,
+		applied: AppliedEffort,
 		compactionState?: () => string | undefined,
 	) {
 		this.#query = query;
@@ -215,6 +247,7 @@ class ClaudeCodeSession implements BackendSession {
 		this.#interruptGraceMs = interruptGraceMs;
 		this.#compactionState = compactionState;
 		this.#effort = effort;
+		this.#applied = applied;
 		void this.#read(observe);
 	}
 
@@ -290,6 +323,7 @@ class ClaudeCodeSession implements BackendSession {
 			return;
 		}
 		const turn = new Channel<AtelierEventBody>();
+		delete this.#applied.level;
 		for (const event of early) turn.push(event);
 		this.#turn = turn;
 		this.#input.push({
@@ -311,6 +345,10 @@ class ClaudeCodeSession implements BackendSession {
 			this.#closing = true;
 			this.#query.close();
 		}, this.#interruptGraceMs);
+	}
+
+	effectiveEffort(): Effort | undefined {
+		return this.#applied.level;
 	}
 
 	async close(): Promise<void> {

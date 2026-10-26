@@ -145,6 +145,8 @@ export interface Finished {
 	phases?: TurnPhases;
 	/** The session's model when the turn finished, so a later session with another model does not relabel it. */
 	model?: string;
+	/** The session's backend when the turn finished: the phases name another backend only. */
+	backend?: string;
 }
 
 export interface Turn {
@@ -320,7 +322,11 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 				...updateTurn(state, event.turnId, (turn) => ({
 					...turn,
 					items: endReviews(closeConsents(turn.items)),
-					finished: { ...finishedOf(event), ...(state.model === undefined ? {} : { model: state.model }) },
+					finished: {
+						...finishedOf(event),
+						...(state.model === undefined ? {} : { model: state.model }),
+						...(state.backend === undefined ? {} : { backend: state.backend }),
+					},
 				})),
 				busy: false,
 				...(event.context === undefined ? {} : { context: event.context }),

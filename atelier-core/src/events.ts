@@ -74,12 +74,16 @@ export const TURN_PHASES = [
 ] as const;
 export type TurnPhase = (typeof TURN_PHASES)[number];
 
-/** One agent that ran in a part of a turn: its profile role, and the backend, model and effort its `session_started` said. */
+/**
+ * One agent that ran in a part of a turn: its profile role, and the backend, model and effort its `session_started` said.
+ * `effectiveEffort`: the effort its backend says it applied when no level was asked (Claude Code's default, for one).
+ */
 export interface PhaseAgent {
 	role: string;
 	backend: string;
 	model: string;
 	effort?: Effort | "off" | "unsupported";
+	effectiveEffort?: Effort;
 }
 
 /**

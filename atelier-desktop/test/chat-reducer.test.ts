@@ -62,7 +62,7 @@ describe("reduceChat", () => {
 					},
 					{ kind: "text", text: "Done." },
 				],
-				finished: { stopReason: "end_turn", usage, costUsd: 0.07, model: "claude-opus-5-5" },
+				finished: { stopReason: "end_turn", usage, costUsd: 0.07, model: "claude-opus-5-5", backend: "claude-code" },
 			},
 		]);
 	});
@@ -84,6 +84,7 @@ describe("reduceChat", () => {
 			costUsd: 0.01,
 			requests: 2,
 			model: "claude-sonnet-5-5",
+			backend: "anthropic-api",
 		});
 	});
 

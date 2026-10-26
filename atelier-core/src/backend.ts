@@ -1,4 +1,4 @@
-import type { AtelierEventBody, JsonValue } from "./events.ts";
+import type { AtelierEventBody, Effort, JsonValue } from "./events.ts";
 import type { ThinkingLevel } from "./profiles/index.ts";
 import type { ToolDefinition } from "./tools/types.ts";
 
@@ -47,6 +47,8 @@ export interface BackendSession {
 	compact?(instructions?: string): AsyncIterable<AtelierEventBody>;
 	interrupt(): Promise<void>;
 	close(): Promise<void>;
+	/** The effort the backend applied to the last turn when no level was asked, when it reports one. */
+	effectiveEffort?(): Effort | undefined;
 }
 
 export interface AgentBackend {

@@ -356,6 +356,42 @@ describe("App", () => {
 		]);
 	});
 
+	it("says who ran in each phase, with the effort asked or the one the backend applied", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({
+			type: "session_started",
+			backend: "claude-code",
+			model: "claude-opus-5-5",
+			authSource: "subscription",
+		});
+		const part = (input: number) => ({ input, output: 0, cacheRead: 0, cacheWrite: 0 });
+		fake.emit({
+			type: "turn_finished",
+			stopReason: "end_turn",
+			usage: part(3200),
+			phases: {
+				main: {
+					usage: part(3000),
+					requests: 1,
+					agents: [
+						{ role: "orchestrator", backend: "claude-code", model: "claude-opus-5-5", effectiveEffort: "xhigh" },
+					],
+				},
+				verify: {
+					usage: part(200),
+					requests: 1,
+					agents: [{ role: "verifier", backend: "codex", model: "gpt-5.5", effort: "medium" }],
+				},
+			},
+		});
+		const usage = await screen.findByTestId("usage");
+		expect([...usage.querySelectorAll(".phases li")].map((li) => li.textContent)).toEqual([
+			"main · 3K tokens · 1 request · on claude-opus-5-5 effective xhigh",
+			"verify · 200 tokens · 1 request · on codex/gpt-5.5 medium",
+		]);
+	});
+
 	it("lists the classifier's cost as its own phase", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

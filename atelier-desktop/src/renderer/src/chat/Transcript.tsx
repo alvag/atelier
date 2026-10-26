@@ -1,4 +1,4 @@
-import { cacheHitRate, describeRefusal } from "@atelier/core/protocol";
+import { cacheHitRate, describeRefusal, type PhaseAgent } from "@atelier/core/protocol";
 import { visibleText } from "@atelier/core/text";
 import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
@@ -374,13 +374,22 @@ function UsageSummary({ finished, model }: { finished: NonNullable<Turn["finishe
 		<details className="usage" data-testid="usage">
 			<summary>{head.join(" · ")}</summary>
 			<TokenLine finished={finished} />
-			<PhaseList phases={finished.phases} />
+			<PhaseList phases={finished.phases} backend={finished.backend} />
 		</details>
 	);
 }
 
-/** One line per part of the turn: its tokens, requests and cost. A single part is the total, already shown. */
-function PhaseList({ phases }: { phases: NonNullable<Turn["finished"]>["phases"] }) {
+/**
+ * One line per part of the turn: its tokens, requests, cost and who ran in it. A single part is the total, already
+ * shown.
+ */
+function PhaseList({
+	phases,
+	backend,
+}: {
+	phases: NonNullable<Turn["finished"]>["phases"];
+	backend?: string | undefined;
+}) {
 	const entries = Object.entries(phases ?? {});
 	if (entries.length < 2) return null;
 	return (
@@ -390,10 +399,25 @@ function PhaseList({ phases }: { phases: NonNullable<Turn["finished"]>["phases"]
 				const parts = [phase, `${compact.format(input + output + cacheRead + cacheWrite)} tokens`];
 				if (spent.requests !== undefined) parts.push(`${spent.requests} request${spent.requests === 1 ? "" : "s"}`);
 				if (spent.costUsd !== undefined) parts.push(`$${spent.costUsd.toFixed(4)}`);
+				const agents = phaseAgents(spent.agents ?? [], backend);
+				if (agents !== "") parts.push(`on ${agents}`);
 				return <li key={phase}>{parts.join(" · ")}</li>;
 			})}
 		</ul>
 	);
+}
+
+/**
+ * `codex/gpt-5.5 medium, claude-haiku-5-5`: each distinct model and effort once, the backend only when it is not the
+ * session's; the effort the backend applied when none was asked shows as `effective high`.
+ */
+function phaseAgents(agents: PhaseAgent[], sessionBackend: string | undefined): string {
+	const described = agents.map(({ backend, model, effort, effectiveEffort }) => {
+		const who = backend === sessionBackend ? model : `${backend}/${model}`;
+		if (effort !== undefined) return `${who} ${effort}`;
+		return effectiveEffort === undefined ? who : `${who} effective ${effectiveEffort}`;
+	});
+	return [...new Set(described)].join(", ");
 }
 
 function TokenLine({ finished }: { finished: NonNullable<Turn["finished"]> }) {

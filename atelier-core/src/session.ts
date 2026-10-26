@@ -47,7 +47,7 @@ import { loadProjectInstructions, type ProjectInstructions } from "./project-ins
 import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
-import { addPhaseSpent, addPhases, onePhase, phaseAgent } from "./spent.ts";
+import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
 import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
 import {
@@ -377,7 +377,7 @@ export class Session {
 					stopReason: failed ? "error" : "incomplete",
 					usage: { ...ZERO_USAGE },
 				},
-				this.#mainAgent,
+				withEffectiveEffort(this.#mainAgent, backendSession.effectiveEffort?.()),
 			);
 			// A change left by a turn that finished well is assessed before the turn ends; its cost joins the turn's.
 			const clean = !failed && finish !== undefined && !signal.aborted && !NOT_REVIEWED.has(finish.stopReason);
@@ -573,7 +573,7 @@ export class Session {
 					failed = true;
 					turn.push(errorEvent("backend_error", describeError(error)));
 				}
-				const agent = this.#mainAgent;
+				const agent = withEffectiveEffort(this.#mainAgent, backendSession.effectiveEffort?.());
 				return {
 					ok: ok && !failed,
 					...(agent === undefined ? {} : { agents: [agent] }),

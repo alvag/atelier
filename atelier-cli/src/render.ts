@@ -104,11 +104,15 @@ function phasesLine(
 	return `phases: ${phases.map(part).join(" · ")}`;
 }
 
-/** `codex/gpt-5.5 medium, claude-haiku-5-5`: each distinct model and effort once, the backend only when it is not the session's. */
+/**
+ * `codex/gpt-5.5 medium, claude-haiku-5-5`: each distinct model and effort once, the backend only when it is not the
+ * session's; the effort the backend applied when none was asked shows as `effective high`.
+ */
 function phaseAgents(agents: PhaseAgent[], sessionBackend: string | undefined): string {
-	const described = agents.map(({ backend, model, effort }) => {
+	const described = agents.map(({ backend, model, effort, effectiveEffort }) => {
 		const who = backend === sessionBackend ? model : `${backend}/${model}`;
-		return effort === undefined ? who : `${who} ${effort}`;
+		if (effort !== undefined) return `${who} ${effort}`;
+		return effectiveEffort === undefined ? who : `${who} effective ${effectiveEffort}`;
 	});
 	return [...new Set(described)].join(", ");
 }

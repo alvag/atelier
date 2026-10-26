@@ -293,6 +293,35 @@ describe("Renderer", () => {
 		);
 	});
 
+	it("says on the phases line the effort the backend applied when no level was asked, apart from an asked one", () => {
+		const part = (input: number) => ({ input, output: 1, cacheRead: 0, cacheWrite: 0 });
+		const { stdout } = render([
+			{ type: "session_started", backend: "claude-code", model: "claude-opus-5-5", authSource: "subscription" },
+			{
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				phases: {
+					main: {
+						usage: part(1000),
+						requests: 1,
+						agents: [
+							{ role: "orchestrator", backend: "claude-code", model: "claude-opus-5-5", effectiveEffort: "xhigh" },
+						],
+					},
+					verify: {
+						usage: part(150),
+						requests: 1,
+						agents: [{ role: "verifier", backend: "claude-code", model: "claude-sonnet-5-5", effort: "medium" }],
+					},
+				},
+			},
+		]);
+		expect(stdout.split("\n").find((line) => line.startsWith("phases:"))).toBe(
+			"phases: main 1 req on claude-opus-5-5 effective xhigh · verify 1 req on claude-sonnet-5-5 medium",
+		);
+	});
+
 	it("indents a subagent's work under a header, without failing the parent's turn", () => {
 		const child = (body: Record<string, unknown>) =>
 			({ ...body, parentCallId: "c1", agent: "explorer" }) as unknown as AtelierEventBody;
