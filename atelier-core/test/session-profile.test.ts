@@ -237,7 +237,7 @@ describe("Session.setProfile refusals", () => {
 		await expect(session.setProfile(other)).rejects.toMatchObject({
 			code: "profile_backend_change",
 			message:
-				'Profile "p" runs the orchestrator on anthropic-api, but this session runs on fake; the backend of an open session does not change with the profile.',
+				'Profile "p" runs the orchestrator on anthropic-api, but this session runs on fake; the backend of an open session does not change with the profile. To move the session to another backend use session.set_backend, then set the profile.',
 		});
 		expect(backend.configured).toEqual([]);
 		expect(session.configuration()).toMatchObject({

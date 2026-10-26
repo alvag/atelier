@@ -59,10 +59,12 @@ export type ReviewStep =
 	| { type: "validator_finished"; resolved: number; unresolved: number };
 
 /**
- * The parts of a turn, in the order they run: the main agent, the permission classifier of `auto`, the request to
- * declare the risk, the verifier and its correction, and the review's lenses, refuter, correction and validator.
+ * The parts of a turn, in the order they run: the summary that handed the conversation to a new backend, the main
+ * agent, the permission classifier of `auto`, the request to declare the risk, the verifier and its correction, and
+ * the review's lenses, refuter, correction and validator.
  */
 export const TURN_PHASES = [
+	"handoff",
 	"main",
 	"classifier",
 	"declare",
@@ -191,6 +193,14 @@ export interface ProfileRoleEntry {
 	thinking?: string;
 }
 
+/** What a backend change did to the history, for the clients to say. */
+export interface BackendChange {
+	/** The backend the session left. */
+	from: string;
+	/** A summary of the conversation went to the new backend; false when there was nothing yet to carry. */
+	summarized: boolean;
+}
+
 /**
  * The profile a session froze at start: its name (absent for the default profile), the layer it came from
  * (`explicit`, `local-pin`, `repo`, `active`, `default`) and what it sets for each role but the orchestrator,
@@ -223,6 +233,8 @@ export type AtelierEventBody =
 	 * run with, sent in the turn where the change took effect (the next turn after a change made between turns).
 	 * `thinking`: the level asked for, in the profiles' names (`off`, `minimal`, `low` ... `max`); `model` is absent
 	 * while the backend's default one runs and nothing changed it.
+	 * `backendChange`: set when the backend changed (`session.set_backend`): the one it left, and whether a summary of
+	 * the conversation carried the history over (the new backend has the summary, not the messages).
 	 */
 	| {
 			type: "session_configured";
@@ -231,6 +243,7 @@ export type AtelierEventBody =
 			thinking?: string;
 			permissionMode: "normal" | "auto" | "yolo";
 			profile?: SessionProfile;
+			backendChange?: BackendChange;
 	  }
 	| { type: "text_delta"; text: string }
 	| { type: "thinking_delta"; text: string }

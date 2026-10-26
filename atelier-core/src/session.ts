@@ -2,11 +2,21 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentBackend, BackendSession, SessionChange, ToolCall, ToolCallResult } from "./backend.ts";
+import type {
+	AgentBackend,
+	BackendSession,
+	BackendStartOptions,
+	BackendSummary,
+	SessionChange,
+	ToolCall,
+	ToolCallResult,
+} from "./backend.ts";
 import { Channel } from "./channel.ts";
+import { COMPACTED_HEADER } from "./compaction/compactor.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
+	type BackendChange,
 	describeError,
 	errorEvent,
 	type PhaseAgent,
@@ -153,6 +163,8 @@ export interface SessionConfiguration {
 	profile?: SessionProfile;
 	/** A turn is running: the model and level above wait for it to end. */
 	pending: boolean;
+	/** Only in the answer to `setBackend`: what the change did to the history. */
+	backendChange?: BackendChange;
 }
 
 /** What a caller changes in the main agent: the model, the thinking level, or both. */
@@ -191,6 +203,8 @@ export class Session {
 	#pending: MainChange | undefined;
 	/** A profile asked while a turn runs: held with `#pending`, and applied after it. */
 	#pendingProfile: FrozenProfile | undefined;
+	/** A backend asked while a turn runs: held with `#pending`, and switched to after the turn. */
+	#pendingBackend: { backend: AgentBackend; model?: string } | undefined;
 	/** The model and the level were chosen by the user (at start or with `configure`): a profile does not change them. */
 	#explicitModel: boolean;
 	#explicitThinking: boolean;
@@ -206,6 +220,20 @@ export class Session {
 	/** The summary request's model and level, from the compaction entry; none on a backend that compacts on its own. */
 	#compaction: { model?: string; thinking?: ThinkingLevel } | undefined;
 	#backendSession: BackendSession | undefined;
+	/** The system prompt every backend of this session starts with. */
+	#systemPrompt = "";
+	/** A turn ran: there is a conversation for another backend to take over. */
+	#hadTurn = false;
+	/** The summary a new backend took over, until a turn of its own: a second change before one passes it on again. */
+	#carried: string | undefined;
+	/** The summary in the form compaction carries it, given to the new backend with its first prompt. */
+	#handoff: string | undefined;
+	/** What the summaries of backend changes cost, added to the next `turn_finished` as the `handoff` part. */
+	#handoffSpent: PhaseSpent | undefined;
+	/** What the last backend change did to the history, said once in `session_configured`. */
+	#backendChange: BackendChange | undefined;
+	/** Events from outside a turn (a summary that was not saved), said at the start of the next one. */
+	#notices: AtelierEventBody[] = [];
 	/** The main agent as its backend's `session_started` described it: what the turn's parts say it ran with. */
 	#mainAgent: PhaseAgent | undefined;
 	#turn: Channel<TurnEvent> | undefined;
@@ -312,32 +340,45 @@ export class Session {
 		}
 		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-session-"));
 		session.#scratchDir = scratchDir;
+		session.#systemPrompt = [
+			options.systemPromptAppend ?? "",
+			options.odd ? ODD_RULES : "",
+			options.memory ? MEMORY_RULES : "",
+			options.review ? RISK_RULES : "",
+			session.#instructions?.text ?? "",
+		]
+			.filter((part) => part !== "")
+			.join("\n\n");
 		try {
-			session.#backendSession = await options.backend.start({
-				cwd: options.cwd,
-				...(session.#model === undefined ? {} : { model: session.#model }),
-				...(session.#thinking === undefined ? {} : { thinking: session.#thinking }),
-				...(session.#compaction === undefined ? {} : { compaction: session.#compaction }),
-				systemPromptAppend: [
-					options.systemPromptAppend ?? "",
-					options.odd ? ODD_RULES : "",
-					options.memory ? MEMORY_RULES : "",
-					options.review ? RISK_RULES : "",
-					session.#instructions?.text ?? "",
-				]
-					.filter((part) => part !== "")
-					.join("\n\n"),
-				tools: session.#options.tools,
-				executeTool: (call) => session.#executeTool(call),
-				compactionState: () => session.#compactionState(),
-				...(options.memory ? { compacted: (summary: string) => session.#archive(summary) } : {}),
-				...(options.maxRequestsPerTurn === undefined ? {} : { maxRequestsPerTurn: options.maxRequestsPerTurn }),
-			});
+			session.#backendSession = await options.backend.start(
+				session.#startOptions(session.#model, session.#thinking, session.#compaction),
+			);
 		} catch (error) {
 			await rm(scratchDir, { recursive: true, force: true });
 			throw error;
 		}
 		return session;
+	}
+
+	/** What every backend of this session starts with: the folder, tools, prompt and the core's callbacks. */
+	#startOptions(
+		model: string | undefined,
+		thinking: ThinkingLevel | undefined,
+		compaction: { model?: string; thinking?: ThinkingLevel } | undefined,
+	): BackendStartOptions {
+		const options = this.#options;
+		return {
+			cwd: options.cwd,
+			...(model === undefined ? {} : { model }),
+			...(thinking === undefined ? {} : { thinking }),
+			...(compaction === undefined ? {} : { compaction }),
+			systemPromptAppend: this.#systemPrompt,
+			tools: options.tools,
+			executeTool: (call) => this.#executeTool(call),
+			compactionState: () => this.#compactionState(),
+			...(options.memory ? { compacted: (summary: string) => this.#archive(summary) } : {}),
+			...(options.maxRequestsPerTurn === undefined ? {} : { maxRequestsPerTurn: options.maxRequestsPerTurn }),
+		};
 	}
 
 	/** Whether `bash` runs in the sandbox, asked without running a command; undefined when the session has no such `bash`. */
@@ -404,6 +445,13 @@ export class Session {
 					turn.push(errorEvent("permission_mode_invalid", this.#options.permissionModeProblem, true));
 				if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
 			}
+			// A backend that took the conversation over by a summary gets it with its first prompt.
+			if (this.#handoff !== undefined) {
+				sent = `${this.#handoff}\n\n${sent}`;
+				this.#handoff = undefined;
+				this.#carried = undefined;
+			}
+			this.#hadTurn = true;
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }> | undefined;
 			let failed = false;
 			this.#lastMessage = "";
@@ -507,8 +555,8 @@ export class Session {
 		let seq = 0;
 		const stamp = (body: TurnEvent): AtelierEvent => ({ ...body, seq: ++seq, turnId });
 
-		const backendSession = this.#backendSession;
-		if (this.#closed || !backendSession) {
+		const opening = this.#backendSession;
+		if (this.#closed || !opening) {
 			yield stamp(errorEvent("session_closed", "The session is closed."));
 			yield stamp({ type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } });
 			return;
@@ -528,14 +576,18 @@ export class Session {
 		const abort = new AbortController();
 		this.#abort = abort;
 		const started = performance.now();
+		// A backend change made just before this turn replaces the session this turn runs on.
+		let backendSession: BackendSession = opening;
 		const pump = (async () => {
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }>;
 			try {
 				// The change made just before this turn reaches the backend before the turn's prompt does.
 				if (this.#changing > 0) await this.#changes;
 				// A change that arrived as the last turn was ending is applied before this one starts.
-				if (this.#pending !== undefined) await this.#applyPending(turn);
+				if (this.#pending !== undefined || this.#pendingBackend !== undefined) await this.#applyPending(turn);
+				backendSession = this.#backendSession ?? backendSession;
 				this.#announceConfiguration(turn);
+				this.#sayNotices(turn);
 				if (this.#announced) this.#sayProfileNotices(turn);
 				// Not awaited without a profile: a session without one starts its turn on the same tick as always.
 				if (this.#options.profile) await this.#noticeProfileChanges(turn, this.#options.profile);
@@ -547,7 +599,7 @@ export class Session {
 			await Promise.all(this.#archiving);
 			// A change asked during the turn lands now, between this turn and the next.
 			await this.#applyPending(turn);
-			finish = this.#withClassifier(finish);
+			finish = this.#withHandoff(this.#withClassifier(finish));
 			turn.push({ ...finish, durationMs: Math.round(performance.now() - started) });
 			turn.close();
 		})();
@@ -557,7 +609,7 @@ export class Session {
 		} finally {
 			if (!turn.closed) {
 				this.#abort?.abort();
-				await backendSession.interrupt().catch(() => {});
+				await (this.#backendSession ?? backendSession).interrupt().catch(() => {});
 			}
 			await pump;
 			this.#turn = undefined;
@@ -591,8 +643,13 @@ export class Session {
 				"configure_unsupported",
 				`The ${this.#options.backend.id} backend cannot change the model or the effort of an open session.`,
 			);
-		if (this.#turn) this.#pending = { ...this.#pending, ...change };
-		else {
+		if (this.#turn) {
+			// A model chosen while a backend change waits belongs to the backend that is coming.
+			const held = this.#pendingBackend;
+			if (held !== undefined && change.model !== undefined) held.model = change.model;
+			const { model: _model, ...level } = change;
+			this.#pending = { ...this.#pending, ...(held === undefined ? change : level) };
+		} else {
 			this.#changing++;
 			const applying = this.#changes.then(() => this.#apply(change));
 			this.#changes = applying.catch(() => {}).finally(() => this.#changing--);
@@ -612,10 +669,11 @@ export class Session {
 		const backendSession = this.#backendSession;
 		if (this.#closed || !backendSession) throw new ConfigureError("session_closed", "The session is closed.");
 		const named = orchestratorBackend(profile);
-		if (named !== undefined && named !== this.#options.backend.id)
+		const running = this.#pendingBackend?.backend.id ?? this.#options.backend.id;
+		if (named !== undefined && named !== running)
 			throw new ConfigureError(
 				"profile_backend_change",
-				`Profile "${profile.resolved.name ?? "default"}" runs the orchestrator on ${named}, but this session runs on ${this.#options.backend.id}; the backend of an open session does not change with the profile.`,
+				`Profile "${profile.resolved.name ?? "default"}" runs the orchestrator on ${named}, but this session runs on ${running}; the backend of an open session does not change with the profile. To move the session to another backend use session.set_backend, then set the profile.`,
 			);
 		if (!backendSession.configure && Object.keys(this.#planProfile(profile, this.#pending)).length > 0)
 			throw new ConfigureError(
@@ -653,17 +711,118 @@ export class Session {
 	/** The configuration the next turn runs with, and whether a held change is part of it. */
 	configuration(): SessionConfiguration {
 		const held = this.#pendingProfile && this.#planProfile(this.#pendingProfile, this.#pending);
-		const model = this.#pending?.model ?? held?.model ?? this.#model;
+		const coming = this.#pendingBackend;
+		const model = coming ? coming.model : (this.#pending?.model ?? held?.model ?? this.#model);
 		const thinking = this.#pending?.thinking ?? held?.thinking ?? this.#thinking;
 		const profile = this.#pendingProfile ?? this.#options.profile;
 		return {
-			backend: this.#options.backend.id,
+			backend: coming?.backend.id ?? this.#options.backend.id,
 			...(model === undefined ? {} : { model }),
 			...(thinking === undefined ? {} : { thinking }),
 			permissionMode: this.#options.permissionMode ?? "normal",
 			...(profile === undefined ? {} : { profile: profileSummary(profile) }),
-			pending: this.#pending !== undefined || this.#pendingProfile !== undefined,
+			pending: this.#pending !== undefined || this.#pendingProfile !== undefined || coming !== undefined,
 		};
+	}
+
+	/**
+	 * Moves the session to `backend` from the next turn on. The conversation is summarized by the backend it leaves
+	 * (a compaction's summary), the new backend starts with `model` (absent: the profile's orchestrator entry, then its
+	 * default) and gets the summary with its first prompt, the old backend is closed, and the summary is saved to memory
+	 * as a compaction summary is. Detail and the prompt cache are lost. Between turns the change is made now; while a
+	 * turn runs it is held and made when the turn ends. Rejects with a `ConfigureError` when the summary cannot be had,
+	 * the old backend cannot summarize or the new one does not start; the session keeps its old backend untouched then.
+	 */
+	async setBackend(backend: AgentBackend, model?: string): Promise<SessionConfiguration> {
+		const backendSession = this.#backendSession;
+		if (this.#closed || !backendSession) throw new ConfigureError("session_closed", "The session is closed.");
+		const from = this.#options.backend.id;
+		if (backend.id === from) {
+			if (this.#pendingBackend === undefined)
+				throw new ConfigureError(
+					"same_backend",
+					`The session already runs on ${from}; session.set_model changes its model.`,
+				);
+			// Asking for the backend it runs on takes back a change that was waiting.
+			this.#pendingBackend = undefined;
+			return this.configuration();
+		}
+		if (this.#turn) {
+			if (!backendSession.summarize) throw summaryUnsupported(from);
+			this.#pendingBackend = { backend, ...(model === undefined ? {} : { model }) };
+			return { ...this.configuration(), backendChange: { from, summarized: true } };
+		}
+		this.#changing++;
+		const applying = this.#changes.then(() => this.#switch(backend, model));
+		this.#changes = applying.catch(() => {}).finally(() => this.#changing--);
+		const backendChange = await applying;
+		return { ...this.configuration(), backendChange };
+	}
+
+	/** The summary, the new backend, the swap and the old backend's close, in that order; any failure before the swap changes nothing. */
+	async #switch(next: AgentBackend, requested: string | undefined): Promise<BackendChange> {
+		const old = this.#backendSession;
+		if (this.#closed || !old) throw new ConfigureError("session_closed", "The session is closed.");
+		const from = this.#options.backend.id;
+		let summary: BackendSummary | undefined;
+		if (this.#carried !== undefined) summary = { text: this.#carried, usage: { ...ZERO_USAGE } };
+		else if (this.#hadTurn) {
+			if (!old.summarize) throw summaryUnsupported(from);
+			const failed = (reason: string) =>
+				new ConfigureError(
+					"summary_failed",
+					`The summary of the conversation could not be made, so the session stays on ${from}: ${reason}`,
+				);
+			try {
+				summary = await old.summarize();
+			} catch (error) {
+				throw failed(describeError(error));
+			}
+			this.#chargeHandoff(summary);
+			if (summary.text.trim() === "") throw failed("the summary is empty.");
+		}
+		const profile = this.#options.profile;
+		const entry = roleSettings(profile, "orchestrator", undefined);
+		const model = requested ?? (orchestratorBackend(profile) === next.id ? entry.model : undefined);
+		const compaction = compactionSettings(profile, next.id);
+		let started: BackendSession;
+		try {
+			started = await next.start(this.#startOptions(model, this.#thinking, compaction.compaction));
+		} catch (error) {
+			throw new ConfigureError(
+				"backend_start_failed",
+				`${next.id} could not start, so the session stays on ${from}: ${describeError(error)}`,
+			);
+		}
+		this.#backendSession = started;
+		this.#options.backend = next;
+		this.#model = model;
+		this.#explicitModel = requested !== undefined;
+		this.#compaction = compaction.compaction;
+		if (compaction.notice !== undefined) this.#profileNotices.push(compaction.notice);
+		this.#mainAgent = undefined;
+		this.#backendChange = { from, summarized: summary !== undefined };
+		this.#unannounced = true;
+		if (summary !== undefined) {
+			const state = this.#compactionState();
+			this.#handoff = [`${COMPACTED_HEADER}\n\n<summary>\n${summary.text}\n</summary>`, state]
+				.filter((part) => part !== undefined)
+				.join("\n\n");
+			if (this.#carried === undefined) await this.#saveSummary(summary.text);
+			this.#carried = summary.text;
+		}
+		await old.close().catch(() => {});
+		return this.#backendChange;
+	}
+
+	/** The summary's cost joins the next `turn_finished`, also when the change then failed: it was spent. */
+	#chargeHandoff({ usage, requests, costUsd }: BackendSummary): void {
+		const spent: PhaseSpent = {
+			usage,
+			...(requests === undefined ? {} : { requests }),
+			...(costUsd === undefined ? {} : { costUsd }),
+		};
+		this.#handoffSpent = this.#handoffSpent ? addPhaseSpent(this.#handoffSpent, spent) : spent;
 	}
 
 	/**
@@ -726,8 +885,20 @@ export class Session {
 	async #applyPending(turn: Channel<TurnEvent>): Promise<void> {
 		const change = this.#pending;
 		const profile = this.#pendingProfile;
+		const backend = this.#pendingBackend;
 		this.#pending = undefined;
 		this.#pendingProfile = undefined;
+		this.#pendingBackend = undefined;
+		// The backend comes first: the model, the level and the profile are for the one that runs from now on.
+		if (backend !== undefined) {
+			try {
+				await this.#switch(backend.backend, backend.model);
+			} catch (error) {
+				turn.push(
+					errorEvent(error instanceof ConfigureError ? error.code : "configure_failed", describeError(error), true),
+				);
+			}
+		}
 		if (change !== undefined || profile !== undefined) {
 			try {
 				await this.#apply(change, profile);
@@ -743,7 +914,24 @@ export class Session {
 		if (!this.#unannounced) return;
 		this.#unannounced = false;
 		const { pending: _pending, ...configuration } = this.configuration();
-		turn.push({ type: "session_configured", ...configuration });
+		const backendChange = this.#backendChange;
+		this.#backendChange = undefined;
+		turn.push({
+			type: "session_configured",
+			...configuration,
+			...(backendChange === undefined ? {} : { backendChange }),
+		});
+	}
+
+	/** Says what happened outside a turn, now that there is one. */
+	#sayNotices(turn: Channel<TurnEvent>): void {
+		for (const notice of this.#notices.splice(0)) turn.push(notice);
+	}
+
+	/** In the turn running, or in the next one when none runs. */
+	#say(event: AtelierEventBody): void {
+		if (this.#turn) this.#turn.push(event);
+		else this.#notices.push(event);
 	}
 
 	/** `session_started` says the session's permission mode. */
@@ -1042,6 +1230,16 @@ export class Session {
 		return addSpent(ended, { ...spent, phases: onePhase("classifier", spent) });
 	}
 
+	/** The turn's closing event with what the summaries of backend changes cost as the `handoff` part, added to the totals. */
+	#withHandoff(
+		ended: Extract<AtelierEventBody, { type: "turn_finished" }>,
+	): Extract<AtelierEventBody, { type: "turn_finished" }> {
+		const spent = this.#handoffSpent;
+		if (spent === undefined) return ended;
+		this.#handoffSpent = undefined;
+		return addSpent(ended, { ...spent, phases: onePhase("handoff", spent) });
+	}
+
 	/** What the tool says about the call; a tool without a gate only has the command to approve. */
 	async #gate(tool: ToolDefinition, input: unknown, context: ToolContext): Promise<ToolGate> {
 		if (tool.gate) return tool.gate(input, context);
@@ -1148,7 +1346,7 @@ export class Session {
 		if (!memory) return;
 		const secret = findSecret(summary);
 		if (secret) {
-			this.#turn?.push(
+			this.#say(
 				errorEvent(
 					"memory_summary_skipped",
 					`The compaction summary was not saved to memory: it contains what looks like ${secret}.`,
@@ -1165,7 +1363,7 @@ export class Session {
 				topicKey: this.#summaryKey,
 			});
 			if (warning !== undefined)
-				this.#turn?.push(
+				this.#say(
 					errorEvent(
 						"memory_summary_warning",
 						`The compaction summary was saved to memory with a warning: ${warning}`,
@@ -1173,7 +1371,7 @@ export class Session {
 					),
 				);
 		} catch (error) {
-			this.#turn?.push(
+			this.#say(
 				errorEvent(
 					"memory_summary_failed",
 					`The compaction summary was not saved to memory: ${describeError(error)}`,
@@ -1223,6 +1421,13 @@ export class Session {
 			);
 		}
 	}
+}
+
+function summaryUnsupported(backend: string): ConfigureError {
+	return new ConfigureError(
+		"summary_unsupported",
+		`The ${backend} backend cannot summarize its conversation, so the session cannot leave it.`,
+	);
 }
 
 /** YYYY-MM-DD in the local time zone. */
