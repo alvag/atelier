@@ -284,8 +284,6 @@ export async function run(
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
 		...(args.noSandbox ? { noSandbox: true } : {}),
 		approve: async ({ command, reason, tool }) => {
-			// The events emitted just before the question (the classifier's `undecided`) are still on their way to the renderer.
-			await new Promise((resolve) => setImmediate(resolve));
 			// The command and the reason come from the model: show escape sequences and bidi controls instead of letting the terminal run them.
 			const shown = visibleText(command);
 			const why = reason === undefined ? undefined : visibleText(reason);

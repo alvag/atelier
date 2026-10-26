@@ -545,6 +545,7 @@ export class Session {
 			...(feature === undefined ? {} : { feature: resolve(this.#options.cwd, feature) }),
 			signal,
 			push: (event) => turn.push(event),
+			delivered: () => turn.drained(signal),
 			correct: async (message) => {
 				let usage = ZERO_USAGE;
 				let costUsd: number | undefined;
@@ -662,7 +663,9 @@ export class Session {
 					...(reason === undefined ? {} : { reason }),
 					...(asking === undefined ? {} : { tool: asking }),
 				};
-				const approved = (await this.#options.approve?.(request)) ?? false;
+				// The client must have read everything before the question; a turn nobody reads anymore is not asked.
+				const delivered = (await this.#turn?.drained(signal)) ?? false;
+				const approved = delivered && ((await this.#options.approve?.(request)) ?? false);
 				if (!approved) return fail(approval.denial ?? "The user denied this command.");
 				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
 			}

@@ -178,6 +178,62 @@ describe("Session", () => {
 			expect(events[1]).toMatchObject({ callId: "c1", command: "rm x" });
 		});
 
+		it("calls approve only after the consumer took every event emitted before the question", async () => {
+			const log: string[] = [];
+			const { session } = await start(turn, {
+				tools: [shellTool([])],
+				approve: async () => {
+					log.push("approve");
+					return true;
+				},
+			});
+			for await (const event of session.send("x")) {
+				log.push(event.type);
+				// A slow consumer: the producer is ahead of it while it waits.
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			expect(log).toEqual([
+				"tool_call_started",
+				"approval_requested",
+				"approve",
+				"tool_call_finished",
+				"turn_finished",
+			]);
+		});
+
+		it("ends the turn when the client stops reading before the question", async () => {
+			const approvals: unknown[] = [];
+			const { session } = await start(turn, {
+				tools: [shellTool([])],
+				approve: async (request) => {
+					approvals.push(request);
+					return true;
+				},
+			});
+			for await (const _event of session.send("x")) break;
+			expect(approvals).toEqual([]);
+			expect(session.busy).toBe(false);
+		});
+
+		it("finishes an interrupted turn whose question is waiting for the consumer", async () => {
+			const approvals: unknown[] = [];
+			const { session } = await start(turn, {
+				tools: [shellTool([])],
+				approve: async (request) => {
+					approvals.push(request);
+					return true;
+				},
+			});
+			const events: AtelierEvent[] = [];
+			for await (const event of session.send("x")) {
+				events.push(event);
+				if (event.type === "tool_call_started") await session.interrupt();
+			}
+			expect(approvals).toEqual([]);
+			expect(events.at(-1)).toMatchObject({ type: "turn_finished" });
+			expect(session.busy).toBe(false);
+		});
+
 		it("does not run a denied command and tells the model", async () => {
 			const executed: string[] = [];
 			const { backend, session } = await start(turn, { tools: [shellTool(executed)], approve: async () => false });

@@ -82,6 +82,8 @@ export interface ReviewHost {
 	feature?: string;
 	signal: AbortSignal;
 	push(event: AtelierEventBody & SubagentTag): void;
+	/** True once the client has read everything pushed so far; false when it never will (the turn was closed or interrupted). */
+	delivered(): Promise<boolean>;
 	/** One turn of the main agent inside this turn; `agents`: the main agent, once its backend described it. */
 	correct(message: string): Promise<{ ok: boolean } & PhaseSpent>;
 	startChild(options: SessionOptions): Promise<Session>;
@@ -310,6 +312,7 @@ export class SessionReview {
 				...lensesReasonOf(assessment),
 			};
 			host.push({ type: "review_consent_requested", ...request });
+			if (!(await host.delivered())) return paid(none);
 			const answer = await untilAborted(host.signal, consent(request)).catch((error: unknown) => {
 				host.push(errorEvent("review_consent_failed", describeError(error), true));
 				return "aborted" as const;
