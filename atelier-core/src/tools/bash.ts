@@ -4,7 +4,7 @@ import { closeSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { findDestructiveCommand } from "./destructive-guard.ts";
+import { findConfirmCommands, findDestructiveCommand } from "./destructive-guard.ts";
 import { MAX_BYTES, takeTail } from "./limits.ts";
 import {
 	SANDBOX_OFF,
@@ -145,6 +145,14 @@ function refusal(rule: string, command: string): { output: string; summary: stri
 	return { output: `Refused: ${rule} — ${command}`, summary: `Refused: ${rule} — ${firstLine(command)}` };
 }
 
+/** What the approval of a command carries when the guard's confirm category matches it; nothing when it does not. */
+function confirmation(command: string): { confirm?: string; yoloWaived?: true } {
+	const matches = findConfirmCommands(command);
+	if (matches.length === 0) return {};
+	const confirm = [...new Set(matches.map(({ rule }) => rule))].join(", ");
+	return { confirm, ...(matches.every((match) => match.yoloWaived) ? { yoloWaived: true as const } : {}) };
+}
+
 /** The causes shown for one command; the rest are counted. */
 const MAX_CAUSES = 5;
 
@@ -205,17 +213,19 @@ export function createBashTool({
 		async gate({ command, unsandboxed, reason }, { cwd, sandboxOff }) {
 			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
 			if (rule !== undefined) return { refusal: refusal(rule, command) };
+			// The verifier's copy is thrown away, so nothing there is worth asking about.
+			const confirmed = withoutApproval ? {} : confirmation(command);
 			if (unsandboxed) {
 				if (policy === "verifier") return { refusal: refusal(VERIFIER_UNSANDBOXED, command) };
 				if (reason === undefined || reason.trim() === "")
 					throw new ToolInputError("reason is required with unsandboxed: say why this command must leave the sandbox.");
-				return { approval: { command, reason: reason.trim() } };
+				return { approval: { command, reason: reason.trim(), ...confirmed } };
 			}
 			if (withoutApproval) return {};
-			// The sandbox contains the command: no mode asks about it.
 			const status = await statusFor(sandbox, sandboxOff);
-			if (status.available) return {};
-			return { approval: { command }, warning: status.reason };
+			// The sandbox contains the command, so no mode asks about it, unless the guard's confirm category does.
+			if (status.available) return confirmed.confirm === undefined ? {} : { approval: { command, ...confirmed } };
+			return { approval: { command, ...confirmed }, warning: status.reason };
 		},
 		async execute({ command, timeoutSec, unsandboxed }, { cwd, signal, scratchDir, sandboxOff }) {
 			// The session asks the gate first; this keeps a direct call from running what the guard refuses.

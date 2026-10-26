@@ -453,6 +453,28 @@ function commandRule(name: string, args: readonly string[], context: GuardContex
 	return undefined;
 }
 
+/** The command lines a command runs itself: `sh -c`, `eval`, `find -exec`. */
+function nestedCommands(name: string, args: readonly string[]): string[] {
+	const nested: string[] = [];
+	if (["sh", "bash", "zsh", "dash"].includes(name)) {
+		const flag = args.findIndex((arg) => /^-[a-z]*c[a-z]*$/.test(arg));
+		const payload = flag >= 0 ? args[flag + 1] : undefined;
+		if (payload) nested.push(payload);
+	}
+	if (name === "eval") nested.push((args[0] === "--" ? args.slice(1) : args).join(" "));
+	if (FIND_NAMES.includes(name)) {
+		for (let at = 0; at < args.length; at++) {
+			if (!FIND_EXEC.has(args[at] ?? "")) continue;
+			const rest = args.slice(at + 1);
+			const stop = rest.findIndex((arg) => arg === ";" || arg === "+");
+			nested.push((stop < 0 ? rest : rest.slice(0, stop)).join(" "));
+			if (stop < 0) break;
+			at += stop + 1;
+		}
+	}
+	return nested;
+}
+
 /** The rule a command breaks, or undefined when the guard does not recognize it as destructive. */
 export function findDestructiveCommand(command: string, context: GuardContext, depth = 0): string | undefined {
 	if (depth > MAX_DEPTH) return undefined;
@@ -472,24 +494,7 @@ export function findDestructiveCommand(command: string, context: GuardContext, d
 			if (first === undefined) continue;
 			const name = executable(first.value);
 			const args = segment.slice(cursor + 1).map((token) => token.value);
-			// Commands that run another command line: `sh -c`, `eval`, `find -exec`.
-			const nested: string[] = [];
-			if (["sh", "bash", "zsh", "dash"].includes(name)) {
-				const flag = args.findIndex((arg) => /^-[a-z]*c[a-z]*$/.test(arg));
-				const payload = flag >= 0 ? args[flag + 1] : undefined;
-				if (payload) nested.push(payload);
-			}
-			if (name === "eval") nested.push((args[0] === "--" ? args.slice(1) : args).join(" "));
-			if (FIND_NAMES.includes(name)) {
-				for (let at = 0; at < args.length; at++) {
-					if (!FIND_EXEC.has(args[at] ?? "")) continue;
-					const rest = args.slice(at + 1);
-					const stop = rest.findIndex((arg) => arg === ";" || arg === "+");
-					nested.push((stop < 0 ? rest : rest.slice(0, stop)).join(" "));
-					if (stop < 0) break;
-					at += stop + 1;
-				}
-			}
+			const nested = nestedCommands(name, args);
 			// The broadest removal wins between a command and the command lines it runs.
 			const found: string[] = [];
 			for (const payload of nested) {
@@ -506,4 +511,203 @@ export function findDestructiveCommand(command: string, context: GuardContext, d
 		if (found) return found;
 	}
 	return undefined;
+}
+
+/**
+ * The commands `bash` asks the user about in every mode, even inside the sandbox: they delete or publish
+ * work that cannot be taken back from the project. It follows gentle-shell's confirm list. Unlike the rules
+ * above these are never refused. Recognition is by command position (segments, wrappers, `sh -c`, `eval`,
+ * `find -exec`, `$(...)`), so prose that mentions a command, a `grep "git push"` or an `echo`, is never one.
+ */
+export interface ConfirmMatch {
+	rule: string;
+	/** `yolo` runs it without asking: a plain `git push` or `git rebase`, the reversible delivery. */
+	yoloWaived: boolean;
+}
+
+const DATABASE_CLIENTS = new Set(["psql", "mysql", "mariadb", "sqlite3"]);
+
+/** Whether SQL text drops or truncates, or deletes every row of a table (no `WHERE`, or one that is always true). */
+function sqlDestroys(sql: string): boolean {
+	// Quoted identifiers become non-keyword atoms; comments and strings go, so a table named "where" is no predicate.
+	const code = sql.replace(
+		/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[(?:\]\]|[^\]])*\]/g,
+		(raw) => (/^["`[]/.test(raw) ? "identifier" : " "),
+	);
+	return code.split(";").some((statement) => {
+		if (/^\s*(?:DROP\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW)\b|TRUNCATE\s+(?:TABLE\s+)?\S)/i.test(statement))
+			return true;
+		if (!/^\s*DELETE\s+FROM\s+\S/i.test(statement)) return false;
+		return !/\bWHERE\b/i.test(statement) || /\bWHERE\s+(?:1\s*=\s*1|TRUE)\s*$/i.test(statement.trim());
+	});
+}
+
+/** The SQL a database client command is given: its arguments, a heredoc body, or what `echo`/`printf` pipe into it. */
+function sqlPayloads(
+	command: string,
+	head: Token,
+	args: readonly string[],
+	piped: readonly Token[] | undefined,
+): string[] {
+	const payloads = args.map((arg) => arg.replace(/^(?:--command|--execute)=/, ""));
+	const heredoc = command
+		.slice(head.index)
+		.match(/^[^\n]*<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n([\s\S]*?)\n\2(?=\n|$)/);
+	if (heredoc?.[3] !== undefined) payloads.push(heredoc[3]);
+	if (piped && ["echo", "printf"].includes(executable(piped[0]?.value ?? "")))
+		payloads.push(
+			piped
+				.slice(1)
+				.map((token) => token.value)
+				.join(" ")
+				.replace(/^%s\s*/, ""),
+		);
+	return payloads;
+}
+
+/** The git subcommand and what follows it, past the global options that take a value. */
+function gitAction(args: readonly string[]): { action: string | undefined; flags: string[]; at: number } {
+	let at = 0;
+	while (args[at]?.startsWith("-")) {
+		const flag = args[at++];
+		if (["-C", "-c", "--git-dir", "--work-tree", "--namespace"].includes(flag ?? "")) at++;
+	}
+	return { action: args[at], flags: args.slice(at + 1), at };
+}
+
+function deletesBranchByForce(flags: readonly string[]): boolean {
+	if (flags.some((arg) => /^-[a-zA-Z]*D/.test(arg))) return true;
+	const force = flags.some((arg) => /^--force(?:-with-lease|=|$)/.test(arg) || /^-[a-zA-Z]*f/.test(arg));
+	return force && flags.some((arg) => arg === "--delete" || /^-[a-zA-Z]*d/.test(arg));
+}
+
+// What `yolo` waives, following gentle-shell's list: a push or rebase is eligible only as a plain word list or
+// from this set of options. Everything that deletes or rewrites a remote ref (`--delete`, `:dst` and `+src`
+// refspecs, `--mirror`, `--prune`, `--all`, any force spelling), runs code (`--receive-pack`, `--exec`) or
+// redirects (`--repo`, `-o`) is absent, so it asks like any other confirmation.
+/** Output redirections that write nothing: to stdout or stderr, or to /dev/null. */
+const QUIET_REDIRECT = String.raw`[12]?>&[12]|(?:[12]?|&)>>?\s*/dev/null(?![^\s;&|])`;
+const PUSH_WAIVED = new RegExp(
+	String.raw`^push(?:\s+(?:${QUIET_REDIRECT}|-u|--set-upstream|-q|--quiet|-v|--verbose|--tags|--follow-tags|--no-verify|--porcelain|[A-Za-z0-9_][A-Za-z0-9_./-]*(?::[A-Za-z0-9_][A-Za-z0-9_./-]*)?))*\s*$`,
+);
+const REBASE_WAIVED = new RegExp(
+	String.raw`^rebase(?:\s+(?:${QUIET_REDIRECT}|--onto\s+[A-Za-z0-9_][A-Za-z0-9_./~^-]*|--continue|--abort|--skip|--autostash|--no-autostash|[A-Za-z0-9_][A-Za-z0-9_./~^-]*))*\s*$`,
+);
+/** A read-only filter that may follow a waived command in a pipe; git's output carries text the remote controls. */
+const FILTER_WAIVED = new RegExp(
+	String.raw`^(?:tail|head|cat|grep|wc)(?:\s+(?:${QUIET_REDIRECT}|[A-Za-z0-9_.,:=+/%@-]+|'[^'\n]*'|"[^"$\x60\\\n]*"))*\s*$`,
+);
+const PLAIN_PREFIX_WORD = /^(?:[A-Za-z_][A-Za-z_0-9]*=[^\s'"`$]*|env|-i|command)$/;
+const PLAIN_PATH = /^[^\s'"`$;&|-][^\s'"`$;&|]*$/;
+
+interface Part {
+	tokens: Token[];
+	/** The operator that ends it; empty for the last one. */
+	separator: string;
+}
+
+function splitParts(tokens: readonly Token[]): Part[] {
+	const parts: Part[] = [];
+	let start = 0;
+	for (let end = 0; end <= tokens.length; end++) {
+		if (end < tokens.length && !tokens[end]?.operator) continue;
+		parts.push({ tokens: tokens.slice(start, end), separator: tokens[end]?.value ?? "" });
+		start = end + 1;
+	}
+	return parts;
+}
+
+/** Whether what runs after a push or rebase part keeps it reversible: no background job, and a pipe only into read-only filters. */
+function endsPlainly(parts: readonly Part[], at: number): boolean {
+	let last = at;
+	while (parts[last]?.separator === "|") {
+		const filter = parts[last + 1]?.tokens ?? [];
+		if (!FILTER_WAIVED.test(filter.map((token) => token.raw).join(" "))) return false;
+		last++;
+	}
+	return ["", ";", "&&", "||", "\n"].includes(parts[last]?.separator ?? "");
+}
+
+/** Whether a `git push` or `git rebase` part is the plain form `yolo` waives: a bare `git` (or `git -C <path>`), unwrapped, with eligible words. */
+function isWaivablePart(
+	parts: readonly Part[],
+	at: number,
+	segment: readonly Token[],
+	cursor: number,
+	gitFlags: number,
+	action: "push" | "rebase",
+): boolean {
+	if (!segment.slice(0, cursor).every((token) => token.raw === token.value && PLAIN_PREFIX_WORD.test(token.value)))
+		return false;
+	const rest = segment.slice(cursor + 1);
+	const globals = rest.slice(0, gitFlags);
+	if (
+		globals.length > 0 &&
+		!(globals.length === 2 && globals[0]?.raw === "-C" && PLAIN_PATH.test(globals[1]?.raw ?? ""))
+	)
+		return false;
+	const words = rest.slice(gitFlags).map((token) => token.raw);
+	if (!(action === "push" ? PUSH_WAIVED : REBASE_WAIVED).test(words.join(" "))) return false;
+	return endsPlainly(parts, at);
+}
+
+/** The confirm rules a simple command matches, given its name and arguments. */
+function segmentConfirmations(
+	command: string,
+	parts: readonly Part[],
+	at: number,
+	queued: boolean,
+	{ segment, cursor }: { segment: readonly Token[]; cursor: number },
+): ConfirmMatch[] {
+	const first = segment[cursor];
+	if (first === undefined) return [];
+	const name = executable(first.value);
+	const args = segment.slice(cursor + 1).map((token) => token.value);
+	const found: ConfirmMatch[] = [];
+	const add = (rule: string, yoloWaived = false) => found.push({ rule, yoloWaived });
+	if (name === "rm" && args.some((arg) => RECURSIVE_RM.test(arg))) add("recursive removal");
+	if (FIND_NAMES.includes(name)) {
+		const deletes = args.some((arg) => arg === "-delete");
+		const execRm = args.some((arg, index) => FIND_EXEC.has(arg) && runsRm(execCommand(args, index + 1).words));
+		if (deletes || execRm) add("find deletion");
+	}
+	if (DATABASE_CLIENTS.has(name)) {
+		const piped = parts[at - 1]?.separator === "|" ? parts[at - 1]?.tokens : undefined;
+		if (sqlPayloads(command, first, args, piped).some(sqlDestroys)) add("SQL deletion");
+	}
+	if (name === "npm" && args.find((arg) => !arg.startsWith("-")) === "publish") add("npm publish");
+	if (name === "git") {
+		const { action, flags, at: gitFlags } = gitAction(args);
+		// Only the segment the part itself starts can be waived; what a wrapper or `env -S` adds never is.
+		const plain = !queued;
+		if (action === "push" || action === "rebase")
+			add(`git ${action}`, plain && isWaivablePart(parts, at, segment, cursor, gitFlags, action));
+		if (action === "branch" && deletesBranchByForce(flags)) add("forced branch deletion");
+	}
+	return found;
+}
+
+/** Every confirm rule `command` matches, one entry per match, in the order they appear. */
+export function findConfirmCommands(command: string, depth = 0): ConfirmMatch[] {
+	if (depth > MAX_DEPTH) return [];
+	const text = blankHeredocs(command);
+	const parts = splitParts(tokenize(text));
+	const matches: ConfirmMatch[] = [];
+	// What another command line runs is never waived: `sh -c 'git push'` hides what the shell does.
+	const nested = (payload: string) =>
+		findConfirmCommands(payload, depth + 1).map(({ rule }) => ({ rule, yoloWaived: false }));
+	parts.forEach((part, at) => {
+		const queue = [part.tokens];
+		for (let item = 0; item < queue.length; item++) {
+			const resolved = head(queue[item] as Token[]);
+			queue.push(...resolved.extra);
+			const first = resolved.segment[resolved.cursor];
+			if (first === undefined) continue;
+			const args = resolved.segment.slice(resolved.cursor + 1).map((token) => token.value);
+			for (const payload of nestedCommands(executable(first.value), args)) matches.push(...nested(payload));
+			matches.push(...segmentConfirmations(command, parts, at, item > 0, resolved));
+		}
+	});
+	for (const body of substitutionBodies(text)) matches.push(...nested(body));
+	return matches;
 }

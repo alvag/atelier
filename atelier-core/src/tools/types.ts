@@ -21,7 +21,7 @@ export interface ToolGate {
 	refusal?: { output: string; summary: string };
 	/**
 	 * The call reaches what the sandbox does not contain (a command outside it, any command without it, a file
-	 * outside the usual places): `normal` and `auto` ask the user, `yolo` does not. `reason` is the model's own.
+	 * outside the usual places): `normal` and `auto` ask the user, `yolo` does not. A `confirm` rule asks in every mode. `reason` is the model's own.
 	 */
 	approval?: {
 		command: string;
@@ -30,6 +30,13 @@ export interface ToolGate {
 		tool?: string;
 		/** A real path that stays allowed for the rest of the session once the user approves. */
 		grant?: string;
+		/**
+		 * The guard's confirm rule the command matches (`recursive removal`, `git push`, ...): asked in every mode, and
+		 * `auto` does not send it to the classifier. `yolo` skips it only when `yoloWaived` says every match is reversible
+		 * delivery (a plain push or rebase).
+		 */
+		confirm?: string;
+		yoloWaived?: boolean;
 		/** What the model is told when the user denies, or there is nobody to ask. */
 		denial?: string;
 	};
