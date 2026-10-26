@@ -1,7 +1,14 @@
 import { z } from "zod";
 import { PERMISSION_MODES } from "../modes.ts";
 import { THINKING_LEVELS } from "../thinking.ts";
-import { BACKEND_NAMES, type ClientMessage, MAX_COMPACT_INSTRUCTIONS_BYTES, type ServerMessage } from "./types.ts";
+import {
+	BACKEND_NAMES,
+	type ClientMessage,
+	isSavedSessionId,
+	MAX_COMPACT_INSTRUCTIONS_BYTES,
+	MAX_SESSION_NAME_CHARS,
+	type ServerMessage,
+} from "./types.ts";
 
 /**
  * Splits a stream of text into lines on "\n" only (other Unicode line
@@ -36,6 +43,13 @@ export function encodeMessage(message: ClientMessage | ServerMessage): string {
 
 const id = z.string().min(1);
 const sessionId = z.string().min(1);
+/** A saved session's id names a file: only the characters of the ids the core makes. */
+const savedId = z
+	.string()
+	.refine(isSavedSessionId, { message: "must be a saved session id (letters, digits, - and _)" });
+const savedName = z.string().refine((name) => name.trim() !== "" && name.trim().length <= MAX_SESSION_NAME_CHARS, {
+	message: `must have 1 to ${MAX_SESSION_NAME_CHARS} characters`,
+});
 
 const commandSchema = z.discriminatedUnion("command", [
 	z.object({
@@ -48,6 +62,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		review: z.boolean().optional(),
 		noSandbox: z.boolean().optional(),
 		profile: z.string().min(1).optional(),
+		noSession: z.boolean().optional(),
 	}),
 	z.object({ command: z.literal("profiles.list"), cwd: z.string().min(1).optional() }),
 	z.object({ command: z.literal("session.send"), sessionId, prompt: z.string().min(1) }),
@@ -82,6 +97,10 @@ const commandSchema = z.discriminatedUnion("command", [
 		model: z.string().min(1).optional(),
 	}),
 	z.object({ command: z.literal("options.list"), cwd: z.string().min(1).optional() }),
+	z.object({ command: z.literal("sessions.list"), cwd: z.string().min(1) }),
+	z.object({ command: z.literal("session.resume"), sessionId: savedId, cwd: z.string().min(1) }),
+	z.object({ command: z.literal("session.rename"), sessionId: savedId, cwd: z.string().min(1), name: savedName }),
+	z.object({ command: z.literal("session.delete"), sessionId: savedId, cwd: z.string().min(1) }),
 	z.object({ command: z.literal("session.close"), sessionId }),
 	z.object({ command: z.literal("shutdown") }),
 ]);

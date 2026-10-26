@@ -956,3 +956,72 @@ describe("ClaudeCodeBackend subagent compaction", () => {
 		});
 	});
 });
+
+describe("ClaudeCodeBackend saved sessions", () => {
+	const saved = { cwd: "/w", systemPromptAppend: "", tools: [], executeTool: async () => ({ ok: true, output: "" }) };
+
+	it("keeps its session on disk only when the session is saved", async () => {
+		const plain = fakeQuery([], []);
+		await new ClaudeCodeBackend({ query: plain.query, env: {} }).start(saved);
+		expect(plain.calls.options.persistSession).toBe(false);
+		expect(plain.calls.options).not.toHaveProperty("resume");
+
+		const kept = fakeQuery([], []);
+		await new ClaudeCodeBackend({ query: kept.query, env: {} }).start({ ...saved, persist: true });
+		expect(kept.calls.options.persistSession).toBe(true);
+		expect(kept.calls.options).not.toHaveProperty("resume");
+	});
+
+	it("reports the session id its messages name as the state to resume", async () => {
+		const { query } = fakeQuery([init], [[text("hi"), result(0.01)]]);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start({ ...saved, persist: true });
+		expect(session.resumeState?.()).toBeUndefined();
+		for await (const _ of session.send("go")) {
+		}
+		expect(session.resumeState?.()).toEqual({ sessionId: "s" });
+		await session.close();
+	});
+
+	it("resumes the saved Claude Code session, which it first checks Claude Code still has", async () => {
+		const { query, calls } = fakeQuery([], []);
+		const looked: unknown[] = [];
+		const backend = new ClaudeCodeBackend({
+			query,
+			env: {},
+			sessionExists: async (id, cwd) => {
+				looked.push([id, cwd]);
+				return true;
+			},
+		});
+		const session = await backend.start({ ...saved, persist: true, resume: { sessionId: "cc-7" } });
+		expect(looked).toEqual([["cc-7", "/w"]]);
+		expect(calls.options.resume).toBe("cc-7");
+		expect(calls.options.persistSession).toBe(true);
+		// Until Claude Code names a session, the one resumed is the state.
+		expect(session.resumeState?.()).toEqual({ sessionId: "cc-7" });
+		await session.close();
+	});
+
+	it("fails to start, without opening a query, when Claude Code has lost the session", async () => {
+		const { query, calls } = fakeQuery([], []);
+		const backend = new ClaudeCodeBackend({ query, env: {}, sessionExists: async () => false });
+		await expect(backend.start({ ...saved, resume: { sessionId: "gone" } })).rejects.toThrow(
+			"Claude Code has no session gone for /w",
+		);
+		expect(calls.options).toEqual({});
+		const failing = new ClaudeCodeBackend({
+			query,
+			env: {},
+			sessionExists: async () => {
+				throw new Error("disk");
+			},
+		});
+		await expect(failing.start({ ...saved, resume: { sessionId: "gone" } })).rejects.toThrow("has no session gone");
+	});
+
+	it("does not take the state of another backend", async () => {
+		const { query } = fakeQuery([], []);
+		const backend = new ClaudeCodeBackend({ query, env: {}, sessionExists: async () => true });
+		await expect(backend.start({ ...saved, resume: { messages: [] } })).rejects.toThrow("not a Claude Code session");
+	});
+});

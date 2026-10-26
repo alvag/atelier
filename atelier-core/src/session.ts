@@ -7,6 +7,7 @@ import type {
 	BackendSession,
 	BackendStartOptions,
 	BackendSummary,
+	ResumeState,
 	SessionChange,
 	ToolCall,
 	ToolCallResult,
@@ -62,6 +63,8 @@ import { loadProjectInstructions, type ProjectInstructions } from "./project-ins
 import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
+import type { SavedConfig } from "./sessions/format.ts";
+import type { SessionRecorder } from "./sessions/recorder.ts";
 import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
 import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
@@ -151,6 +154,13 @@ export interface SessionOptions {
 	projectInstructions?: { home: string };
 	/** Turns on RDD: the risk tool, the assessment at the end of each turn and `Session.review`. Never given to subagents. */
 	review?: ReviewOptions;
+	/**
+	 * Saves the session as it runs: its configuration, prompts, events and what the backend needs to resume. Never given
+	 * to subagents or review roles. Recording is best effort: a failed write is reported in the next turn, once.
+	 */
+	record?: SessionRecorder;
+	/** The backend resumes this saved conversation instead of starting an empty one; start rejects when it cannot. */
+	resume?: ResumeState;
 }
 
 /** What the main agent runs with, as `Session.configure` and the `session_configured` event say it. */
@@ -246,6 +256,13 @@ export class Session {
 	/** The instruction files read at start; reported with the first turn. */
 	#instructions: ProjectInstructions | undefined;
 	#announced = false;
+	/** The configuration the session started with was saved. */
+	#recordedConfig = false;
+	/** What the backend that ran the turn answered at its end, until the turn's last event is saved. */
+	#endState: ResumeState | undefined;
+	#endBackend = "";
+	/** The first failed write was reported; the ones after it are not. */
+	#saveFailureSaid = false;
 	/** The sandbox warning was already said in this turn. */
 	#warned = false;
 	/** The user's prompt of the turn running now, verbatim: what the classifier judges an action against. */
@@ -350,9 +367,10 @@ export class Session {
 			.filter((part) => part !== "")
 			.join("\n\n");
 		try {
-			session.#backendSession = await options.backend.start(
-				session.#startOptions(session.#model, session.#thinking, session.#compaction),
-			);
+			session.#backendSession = await options.backend.start({
+				...session.#startOptions(session.#model, session.#thinking, session.#compaction),
+				...(options.resume === undefined ? {} : { resume: options.resume }),
+			});
 		} catch (error) {
 			await rm(scratchDir, { recursive: true, force: true });
 			throw error;
@@ -378,6 +396,7 @@ export class Session {
 			compactionState: () => this.#compactionState(),
 			...(options.memory ? { compacted: (summary: string) => this.#archive(summary) } : {}),
 			...(options.maxRequestsPerTurn === undefined ? {} : { maxRequestsPerTurn: options.maxRequestsPerTurn }),
+			...(options.record === undefined ? {} : { persist: true }),
 		};
 	}
 
@@ -414,7 +433,7 @@ export class Session {
 
 	/** Runs one turn. `turnId` lets a caller know the id before the first event (the RPC server answers with it). */
 	async *send(prompt: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
-		yield* this.#stream(turnId, async (turn, signal, backendSession) => {
+		yield* this.#stream(turnId, prompt, async (turn, signal, backendSession) => {
 			// The user's words reach the feature log as the turn starts, without delaying the backend;
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
 			this.#turnPrompt = prompt;
@@ -491,7 +510,7 @@ export class Session {
 	 * A turn like `send`, with one `turn_finished`.
 	 */
 	async *review(turnId: string = this.#createId(), base?: string): AsyncGenerator<AtelierEvent> {
-		yield* this.#stream(turnId, async (turn, signal, backendSession) => {
+		yield* this.#stream(turnId, undefined, async (turn, signal, backendSession) => {
 			if (!this.#review) {
 				turn.push(errorEvent("review_unavailable", "Review is off for this session.", true));
 				return { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
@@ -508,7 +527,7 @@ export class Session {
 	 * call and no review follow it.
 	 */
 	async *undoCorrection(reviewId?: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
-		yield* this.#stream(turnId, async (turn) => {
+		yield* this.#stream(turnId, undefined, async (turn) => {
 			if (!this.#review) {
 				turn.push(errorEvent("review_unavailable", "Review is off for this session.", true));
 				return { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
@@ -520,7 +539,7 @@ export class Session {
 
 	/** Summarizes the older history now. A turn like `send`, with one `turn_finished`; no review follows it. */
 	async *compact(instructions?: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
-		yield* this.#stream(turnId, async (turn, _signal, backendSession) => {
+		yield* this.#stream(turnId, undefined, async (turn, _signal, backendSession) => {
 			if (!backendSession.compact) {
 				turn.push(errorEvent("compaction_unavailable", "This backend cannot compact its context.", true));
 				return { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
@@ -546,6 +565,8 @@ export class Session {
 	/** The turn machinery `send`, `review`, `undoCorrection` and `compact` share: closed/busy rules, the channel, and exactly one `turn_finished`. */
 	async *#stream(
 		turnId: string,
+		/** The user's prompt when the turn answers one: the saved transcript starts the turn with it. */
+		prompt: string | undefined,
 		work: (
 			turn: Channel<TurnEvent>,
 			signal: AbortSignal,
@@ -569,6 +590,7 @@ export class Session {
 
 		const turn = new Channel<TurnEvent>();
 		this.#turn = turn;
+		this.#recordStart(prompt, turnId);
 		this.#warned = false;
 		this.#turnPrompt = undefined;
 		this.#classifier = { consecutive: 0, denials: 0, failures: 0 };
@@ -597,6 +619,9 @@ export class Session {
 				finish = { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
 			}
 			await Promise.all(this.#archiving);
+			// The state of the backend that ran the turn, before a change made at its end can replace the backend.
+			if (this.#options.record) this.#endState = this.#backendSession?.resumeState?.();
+			this.#endBackend = this.#options.backend.id;
 			// A change asked during the turn lands now, between this turn and the next.
 			await this.#applyPending(turn);
 			finish = this.#withHandoff(this.#withClassifier(finish));
@@ -605,7 +630,15 @@ export class Session {
 		})();
 
 		try {
-			for await (const body of turn) yield stamp(body);
+			for await (const body of turn) {
+				const event = stamp(body);
+				// The state goes after the turn's events and before its end, which is the last line of the turn.
+				if (event.type === "turn_finished") this.#options.record?.state(this.#endBackend, this.#endState);
+				this.#options.record?.event(event);
+				// The file holds the turn before a client hears it ended.
+				if (event.type === "turn_finished") await this.#recordFlush();
+				yield event;
+			}
 		} finally {
 			if (!turn.closed) {
 				this.#abort?.abort();
@@ -614,6 +647,36 @@ export class Session {
 			await pump;
 			this.#turn = undefined;
 			this.#abort = undefined;
+		}
+	}
+
+	/** The first turn saves the configuration it starts with; every turn saves its prompt. */
+	#recordStart(prompt: string | undefined, turnId: string): void {
+		const record = this.#options.record;
+		if (!record) return;
+		if (!this.#recordedConfig) {
+			this.#recordedConfig = true;
+			const { backend, model, thinking, permissionMode, profile } = this.configuration();
+			record.config({
+				backend: backend as SavedConfig["backend"],
+				...(model === undefined ? {} : { model }),
+				...(thinking === undefined ? {} : { thinking }),
+				mode: permissionMode,
+				...(profile?.name === undefined ? {} : { profile: profile.name }),
+			});
+		}
+		if (prompt !== undefined) record.prompt(turnId, prompt);
+	}
+
+	/** Waits for the saved entries; a write that failed is said in the next turn. */
+	async #recordFlush(): Promise<void> {
+		const record = this.#options.record;
+		if (!record) return;
+		await record.flush();
+		const failure = record.takeFailure();
+		if (failure !== undefined && !this.#saveFailureSaid) {
+			this.#saveFailureSaid = true;
+			this.#notices.push(errorEvent("session_not_saved", `The session could not be saved: ${failure}`, true));
 		}
 	}
 
@@ -1023,6 +1086,7 @@ export class Session {
 				.then(() => this.#review?.close())
 				.then(() => this.#odd?.close())
 				.then(() => Promise.all(this.#archiving))
+				.then(() => this.#options.record?.flush())
 				.then(() => this.#options.memory?.close().catch(() => {}))
 				.then(() => this.#backendSession?.close())
 				.finally(() => (scratchDir === undefined ? undefined : rm(scratchDir, { recursive: true, force: true })));

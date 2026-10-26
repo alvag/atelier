@@ -74,6 +74,11 @@ describe("decodeClientMessage", () => {
 				model: "opus",
 			},
 		],
+		[{ type: "command", id: "k1", command: "session.start", cwd: "/w", noSession: true }],
+		[{ type: "command", id: "k2", command: "sessions.list", cwd: "/w" }],
+		[{ type: "command", id: "k3", command: "session.resume", sessionId: "7f1c-AB_9", cwd: "/w" }],
+		[{ type: "command", id: "k4", command: "session.rename", sessionId: "abc", cwd: "/w", name: "the fix" }],
+		[{ type: "command", id: "k5", command: "session.delete", sessionId: "abc", cwd: "/w" }],
 		[{ type: "command", id: "h4", command: "options.list" }],
 		[{ type: "command", id: "h5", command: "options.list", cwd: "/w" }],
 		[
@@ -117,6 +122,18 @@ describe("decodeClientMessage", () => {
 		[{ command: "session.set_backend", sessionId: "s1", backend: "claude-code", model: "" }],
 		[{ command: "session.set_backend", backend: "claude-code" }],
 		[{ command: "options.list", cwd: "" }],
+		[{ command: "session.start", cwd: "/w", noSession: "yes" }],
+		[{ command: "sessions.list" }],
+		[{ command: "sessions.list", cwd: "" }],
+		[{ command: "session.resume", cwd: "/w" }],
+		[{ command: "session.resume", sessionId: "abc" }],
+		[{ command: "session.resume", sessionId: "../../etc/passwd", cwd: "/w" }],
+		[{ command: "session.resume", sessionId: "a/b", cwd: "/w" }],
+		[{ command: "session.delete", sessionId: "", cwd: "/w" }],
+		[{ command: "session.delete", sessionId: "..", cwd: "/w" }],
+		[{ command: "session.rename", sessionId: "abc", cwd: "/w" }],
+		[{ command: "session.rename", sessionId: "abc", cwd: "/w", name: "  " }],
+		[{ command: "session.rename", sessionId: "abc", cwd: "/w", name: "x".repeat(201) }],
 	])("rejects %j, keeping its id", (command) => {
 		const result = decodeClientMessage(JSON.stringify({ type: "command", id: "m3", ...command }));
 		expect(result).toMatchObject({ ok: false, id: "m3" });

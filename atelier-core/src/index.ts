@@ -2,6 +2,7 @@ export type {
 	AgentBackend,
 	BackendSession,
 	BackendStartOptions,
+	ResumeState,
 	SessionChange,
 	ToolCall,
 	ToolCallResult,
@@ -103,6 +104,19 @@ export {
 	type SessionOptions,
 	type SubagentOptions,
 } from "./session.ts";
+export {
+	folderKey,
+	type LoadedSession,
+	type SavedConfig,
+	type SavedEntry,
+	type SavedSessionInfo,
+	SESSION_KIND,
+	SESSION_VERSION,
+	SessionFileError,
+	type SessionHeader,
+	SessionRecorder,
+	SessionStore,
+} from "./sessions/index.ts";
 export {
 	BUILTIN_AGENTS,
 	boundReport,

@@ -3,6 +3,7 @@ import type {
 	BackendSession,
 	BackendStartOptions,
 	BackendSummary,
+	ResumeState,
 	SessionChange,
 	ToolCall,
 	ToolCallResult,
@@ -40,6 +41,8 @@ export class FakeBackend implements AgentBackend {
 		costUsd: 0.01,
 		requests: 1,
 	};
+	/** What `resumeState` answers: the state a saved session would carry after the turns so far. */
+	resumeState: ResumeState | undefined;
 	/** Makes `start` fail with this message. */
 	startError: string | undefined;
 	interrupts = 0;
@@ -76,6 +79,7 @@ export class FakeBackend implements AgentBackend {
 						},
 					}
 				: {}),
+			resumeState: () => backend.resumeState,
 			async *send(prompt: string): AsyncIterable<AtelierEventBody> {
 				backend.prompts.push(prompt);
 				backend.calls.push("send");

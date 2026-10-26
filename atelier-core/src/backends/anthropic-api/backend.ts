@@ -4,6 +4,7 @@ import type {
 	BackendSession,
 	BackendStartOptions,
 	BackendSummary,
+	ResumeState,
 	SessionChange,
 	ToolExecutor,
 } from "../../backend.ts";
@@ -228,7 +229,7 @@ export class AnthropicApiBackend implements AgentBackend {
 			...(sent?.thinking === undefined ? {} : { thinking: sent.thinking }),
 			system: systemPrompt(start.cwd, start.systemPromptAppend),
 			tools: Object.freeze(toAnthropicTools(start.tools)),
-			messages: [],
+			messages: savedMessages(start.resume),
 		};
 		// The summary request has its own model and level when the profile's compaction entry sets them.
 		const summary =
@@ -258,6 +259,24 @@ export class AnthropicApiBackend implements AgentBackend {
 			start.thinking,
 		);
 	}
+}
+
+/** The history a saved session resumes with; rejects what is not a conversation the API would take. */
+function savedMessages(resume: ResumeState | undefined): StoredMessage[] {
+	if (resume === undefined) return [];
+	if (!("messages" in resume)) throw new Error("The saved state is not an anthropic-api history.");
+	const messages = structuredClone(resume.messages) as unknown[];
+	const readable = messages.every((message) => {
+		const candidate = message as { role?: unknown; content?: unknown } | null;
+		return (
+			typeof candidate === "object" &&
+			candidate !== null &&
+			(candidate.role === "user" || candidate.role === "assistant") &&
+			(typeof candidate.content === "string" || Array.isArray(candidate.content))
+		);
+	});
+	if (!readable) throw new Error("The saved history holds a message that is not a user or assistant message.");
+	return messages as StoredMessage[];
 }
 
 /** The model's input window from the models API, once per session; any failure falls back to the default. */
@@ -333,6 +352,10 @@ class AnthropicApiSession implements BackendSession {
 		this.#compactionState = compactionState;
 		this.#compacted = compacted;
 		this.#summary = summary;
+	}
+
+	resumeState(): ResumeState | undefined {
+		return this.#state.messages.length === 0 ? undefined : { messages: this.#state.messages as unknown as JsonValue[] };
 	}
 
 	async *send(prompt: string): AsyncIterable<AtelierEventBody> {

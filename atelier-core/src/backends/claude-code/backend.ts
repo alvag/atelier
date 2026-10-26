@@ -1,6 +1,7 @@
 import {
 	type AccountInfo,
 	createSdkMcpServer,
+	getSessionInfo,
 	type HookCallback,
 	type Options,
 	type SDKMessage,
@@ -13,6 +14,7 @@ import type {
 	BackendSession,
 	BackendStartOptions,
 	BackendSummary,
+	ResumeState,
 	SessionChange,
 	ToolExecutor,
 } from "../../backend.ts";
@@ -60,6 +62,8 @@ export interface ClaudeCodeBackendOptions {
 	interruptGraceMs?: number;
 	/** Receives every raw SDK message; used to record fixtures. */
 	onSdkMessage?: (message: SDKMessage) => void;
+	/** Whether Claude Code still has the session `sessionId` for the folder; injected in tests, the SDK's lookup by default. */
+	sessionExists?: (sessionId: string, cwd: string) => Promise<boolean>;
 }
 
 /**
@@ -128,6 +132,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 	}
 
 	async start(start: BackendStartOptions): Promise<BackendSession> {
+		const resumed = await this.#resumable(start);
 		const bridge = createToolBridge(start.tools, start.executeTool);
 		const server = createSdkMcpServer({ name: MCP_SERVER_NAME, version: "0.0.0", tools: bridge.definitions });
 		const input = new Channel<SDKUserMessage>();
@@ -160,7 +165,8 @@ export class ClaudeCodeBackend implements AgentBackend {
 				systemPrompt: { type: "preset", preset: "claude_code", append: start.systemPromptAppend },
 				includePartialMessages: true,
 				...(start.maxRequestsPerTurn === undefined ? {} : { maxTurns: start.maxRequestsPerTurn }),
-				persistSession: false,
+				persistSession: start.persist === true,
+				...(resumed === undefined ? {} : { resume: resumed }),
 				...(Object.keys(hooks).length === 0 ? {} : { hooks }),
 				env: childEnv(this.#options),
 				...(this.#options.pathToClaudeCodeExecutable === undefined
@@ -184,8 +190,26 @@ export class ClaudeCodeBackend implements AgentBackend {
 			model,
 			start.thinking,
 			tap,
+			resumed,
 		);
 	}
+
+	/** The Claude Code session to resume, checked now: a query only fails on a session it does not have when its first prompt is sent. */
+	async #resumable(start: BackendStartOptions): Promise<string | undefined> {
+		const state = start.resume;
+		if (state === undefined) return undefined;
+		if (!("sessionId" in state)) throw new Error("The saved state is not a Claude Code session.");
+		const exists = this.#options.sessionExists ?? defaultSessionExists;
+		if (!(await exists(state.sessionId, start.cwd).catch(() => false)))
+			throw new Error(
+				`Claude Code has no session ${state.sessionId} for ${start.cwd}; it keeps sessions under ~/.claude/projects and may have removed it.`,
+			);
+		return state.sessionId;
+	}
+}
+
+async function defaultSessionExists(sessionId: string, cwd: string): Promise<boolean> {
+	return (await getSessionInfo(sessionId, { dir: cwd })) !== undefined;
 }
 
 /** Where the next compaction summary goes while `summarize` waits for it, instead of to the core's `compacted`. */
@@ -258,6 +282,8 @@ class ClaudeCodeSession implements BackendSession {
 	#model: string;
 	#thinking: SessionChange["thinking"];
 	readonly #tap: SummaryTap;
+	/** The Claude Code session the SDK messages name: what `resumeState` hands on. */
+	#sessionId: string | undefined;
 
 	constructor(
 		query: SdkQuery,
@@ -270,7 +296,9 @@ class ClaudeCodeSession implements BackendSession {
 		model: string,
 		thinking: SessionChange["thinking"],
 		tap: SummaryTap,
+		sessionId: string | undefined,
 	) {
+		this.#sessionId = sessionId;
 		this.#tap = tap;
 		this.#model = model;
 		this.#thinking = thinking;
@@ -287,6 +315,7 @@ class ClaudeCodeSession implements BackendSession {
 		try {
 			for await (const message of this.#query) {
 				observe(message);
+				if (typeof message.session_id === "string" && message.session_id !== "") this.#sessionId = message.session_id;
 				if (message.type === "system" && message.subtype === "compact_boundary") this.#stateDue = true;
 				const events = mapSdkMessage(message, this.#context);
 				for (const event of events) {
@@ -405,6 +434,10 @@ class ClaudeCodeSession implements BackendSession {
 			this.#closing = true;
 			this.#query.close();
 		}, this.#interruptGraceMs);
+	}
+
+	resumeState(): ResumeState | undefined {
+		return this.#sessionId === undefined ? undefined : { sessionId: this.#sessionId };
 	}
 
 	effectiveEffort(): Effort | undefined {

@@ -36,6 +36,7 @@ import {
 	Session,
 	type SessionConfiguration,
 } from "../session.ts";
+import { type LoadedSession, SessionFileError, type SessionRecorder, SessionStore } from "../sessions/index.ts";
 import { BUILTIN_AGENTS, type SubagentDefinition } from "../subagents/definitions.ts";
 import { THINKING_LEVELS } from "../thinking.ts";
 import { loadSandboxAdditions, SandboxConfigError } from "../tools/sandbox-config.ts";
@@ -60,6 +61,11 @@ export interface RpcServerOptions {
 	review?: boolean;
 	/** Every session runs `bash` without the sandbox (`serve` passes `!sandboxEnabled(process.env)`). */
 	noSandbox?: boolean;
+	/**
+	 * Saves the sessions it starts under `home` and serves `sessions.list`, `session.resume`, `session.rename` and
+	 * `session.delete`. On by default when there is a `home`; `serve` turns it off for the echo backend.
+	 */
+	sessions?: boolean;
 	/** Where a folder's profile pins are; defaults to asking git. Tests make it slow. */
 	pinPlaces?: (cwd: string) => Promise<PinPlaces>;
 	onShutdown?: () => void;
@@ -84,6 +90,8 @@ interface ServerSession {
 	session: Session;
 	/** The folder the session works in: where its profile pins are. */
 	cwd: string;
+	/** The recorder of the saved session; its file is not resumed or deleted while this session runs. */
+	recorder?: SessionRecorder;
 	/** Approval questions waiting for session.approve, by callId. */
 	approvals: Map<string, (approved: boolean) => void>;
 	/** Review questions waiting for session.review_consent, by reviewId. */
@@ -91,6 +99,25 @@ interface ServerSession {
 }
 
 type Result = { [key: string]: JsonValue };
+
+/** What `#start` needs, from `session.start` or from a saved session. */
+interface StartRequest {
+	cwd: string;
+	model?: string | undefined;
+	/** Absent: the saved session's, else the orchestrator's backend in the profile, then the default. */
+	backend?: BackendName | undefined;
+	/** Absent means the server's default; an explicit true the server cannot honor is refused, never dropped. */
+	review?: boolean | undefined;
+	noSandbox: boolean;
+	/** The client's profile: the first layer of the resolution. */
+	profile?: string | undefined;
+	/** Absent: the saved session's, else the saved default mode. */
+	mode?: PermissionMode | undefined;
+	/** The session is not saved. */
+	noSession?: boolean | undefined;
+	/** Starts from this saved session and goes on writing its file. */
+	resumed?: { loaded: LoadedSession; store: SessionStore } | undefined;
+}
 
 const MAX_REMEMBERED_IDS = 10_000;
 
@@ -107,11 +134,15 @@ export class RpcServer {
 	readonly #sessions = new Map<string, ServerSession>();
 	/** Recently used command ids, to reject reuse; bounded to the last MAX_REMEMBERED_IDS. */
 	readonly #usedIds = new Set<string>();
+	/** Files of saved sessions this server writes: one writer per file. */
+	readonly #writing = new Set<string>();
+	readonly #store: SessionStore | undefined;
 	#stopping = false;
 
 	constructor(options: RpcServerOptions) {
 		this.#options = options;
 		this.#createId = options.createId ?? randomUUID;
+		if (options.home !== undefined && options.sessions !== false) this.#store = new SessionStore(options.home);
 	}
 
 	/** Greets, serves until the input ends or shutdown, then closes every session. */
@@ -186,18 +217,40 @@ export class RpcServer {
 
 	async #execute(message: ClientMessage): Promise<Result> {
 		switch (message.command) {
-			case "session.start":
-				return {
-					sessionId: await this.#start(
-						message.cwd,
-						message.model,
-						message.backend,
-						message.review,
-						message.noSandbox === true || this.#options.noSandbox === true,
-						message.profile,
-						message.mode,
-					),
-				};
+			case "session.start": {
+				const started = await this.#start({
+					cwd: message.cwd,
+					model: message.model,
+					backend: message.backend,
+					review: message.review,
+					noSandbox: message.noSandbox === true || this.#options.noSandbox === true,
+					profile: message.profile,
+					mode: message.mode,
+					noSession: message.noSession === true,
+				});
+				return { sessionId: started.sessionId, ...(started.savedId === undefined ? {} : { savedId: started.savedId }) };
+			}
+			case "sessions.list":
+				return this.#saved(async (store) => ({
+					sessions: JSON.parse(JSON.stringify(await store.list(message.cwd))) as JsonValue[],
+				}));
+			case "session.resume":
+				return this.#resume(message.cwd, message.sessionId);
+			case "session.rename":
+				return this.#saved(async (store) => {
+					await store.rename(message.cwd, message.sessionId, message.name);
+					return {};
+				});
+			case "session.delete":
+				return this.#saved(async (store) => {
+					if (this.#writing.has(store.path(message.cwd, message.sessionId)))
+						throw new CommandError(
+							"session_in_use",
+							`Session ${message.sessionId} is running in this server; close it first.`,
+						);
+					await store.delete(message.cwd, message.sessionId);
+					return {};
+				});
 			case "profiles.list":
 				return this.#profiles(message.cwd);
 			case "session.send": {
@@ -285,6 +338,7 @@ export class RpcServer {
 				denyAll(entry);
 				declineAll(entry);
 				await entry.session.close();
+				this.#release(entry);
 				return {};
 			}
 			case "shutdown":
@@ -387,19 +441,51 @@ export class RpcServer {
 		return (this.#options.pinPlaces ?? pinPlaces)(cwd);
 	}
 
-	async #start(
-		cwd: string,
-		model: string | undefined,
-		/** Absent: the orchestrator's backend in the profile, then the default. */
-		requestedBackend: BackendName | undefined,
-		/** Absent means the server's default; an explicit true the server cannot honor is refused, never dropped. */
-		requested: boolean | undefined,
-		noSandbox: boolean,
-		/** The client's profile: the first layer of the resolution. */
-		choice: string | undefined,
-		/** Absent: the default in `~/.atelier/permission-mode.json`. */
-		requestedMode: PermissionMode | undefined,
-	): Promise<string> {
+	/** Runs a saved-session command; a file problem is answered with its own code. */
+	async #saved(run: (store: SessionStore) => Promise<Result>): Promise<Result> {
+		const store = this.#store;
+		if (store === undefined)
+			throw new CommandError("sessions_unavailable", "This server does not save sessions: it has no home directory.");
+		try {
+			return await run(store);
+		} catch (error) {
+			if (error instanceof SessionFileError) throw new CommandError(error.code, error.message);
+			throw error;
+		}
+	}
+
+	/** Starts a session from a saved one and answers what a client needs to show it again. */
+	async #resume(cwd: string, savedId: string): Promise<Result> {
+		return this.#saved(async (store) => {
+			const loaded = await store.load(cwd, savedId);
+			const started = await this.#start({
+				cwd,
+				noSandbox: this.#options.noSandbox === true,
+				resumed: { loaded, store },
+			});
+			return {
+				sessionId: started.sessionId,
+				savedId,
+				...(loaded.name === undefined ? {} : { name: loaded.name }),
+				createdAt: loaded.header.createdAt,
+				configuration: configurationResult(started.session.configuration()),
+				entries: loaded.entries as unknown as JsonValue[],
+			};
+		});
+	}
+
+	#release(entry: ServerSession): void {
+		if (entry.recorder) this.#writing.delete(entry.recorder.path);
+	}
+
+	async #start(request: StartRequest): Promise<{ sessionId: string; session: Session; savedId?: string }> {
+		const { cwd, resumed, noSandbox, review: requested } = request;
+		const saved = resumed?.loaded;
+		// A saved session restores what it ran with; what the client asks for wins.
+		const model = request.model ?? saved?.config.model;
+		const requestedBackend = request.backend ?? saved?.config.backend;
+		const choice = request.profile ?? saved?.config.profile;
+		const requestedMode = request.mode ?? saved?.config.mode;
 		if (this.#stopping) throw new CommandError("shutting_down", "The server is shutting down.");
 		// A chosen profile the server cannot read is refused, never dropped.
 		if (choice !== undefined && this.#options.home === undefined)
@@ -440,6 +526,13 @@ export class RpcServer {
 			requestedMode === undefined
 				? await readDefaultPermissionMode(this.#options.home ?? homedir())
 				: { mode: requestedMode };
+		// One writer per saved session: a second resume of the same file would interleave with the first.
+		let recorder: SessionRecorder | undefined;
+		if (resumed) recorder = resumed.store.continue(cwd, resumed.loaded);
+		else if (this.#store && !request.noSession) recorder = this.#store.create(cwd);
+		if (recorder && this.#writing.has(recorder.path))
+			throw new CommandError("session_in_use", `Session ${recorder.id} is already running in this server.`);
+		if (recorder) this.#writing.add(recorder.path);
 		const approvals = new Map<string, (approved: boolean) => void>();
 		const consents = new Map<string, (answer: "granted" | "declined") => void>();
 		// Memory is optional: a session that cannot connect it starts anyway and says why.
@@ -463,6 +556,9 @@ export class RpcServer {
 				permissionMode: modeRead.mode,
 				...(modeRead.problem === undefined ? {} : { permissionModeProblem: modeRead.problem }),
 				...(model === undefined ? {} : { model }),
+				...(saved?.config.thinking === undefined ? {} : { thinking: saved.config.thinking }),
+				...(saved?.resume === undefined ? {} : { resume: saved.resume }),
+				...(recorder === undefined ? {} : { record: recorder }),
 				tools: this.#options.tools,
 				systemPromptAppend: this.#options.systemPromptAppend,
 				...(noSandbox ? { noSandbox: true } : {}),
@@ -488,6 +584,7 @@ export class RpcServer {
 				},
 			});
 		} catch (error) {
+			if (recorder) this.#writing.delete(recorder.path);
 			await memory?.close().catch(() => {});
 			// A backend the profile chose for the orchestrator fails naming the role and the backend.
 			const named = requestedBackend === undefined ? orchestratorBackend(profile) : undefined;
@@ -497,15 +594,27 @@ export class RpcServer {
 				throw new CommandError("session_start_failed", roleStartMessage("orchestrator", named, error));
 			if (error instanceof MissingApiKeyError || error instanceof KeychainError)
 				throw new CommandError(error.code, error.message);
+			if (saved)
+				throw new CommandError(
+					"session_resume_failed",
+					`Could not resume session ${saved.header.id}: ${describeError(error)}`,
+				);
 			throw new CommandError("session_start_failed", describeError(error));
 		}
 		if (this.#stopping) {
 			await session.close();
+			if (recorder) this.#writing.delete(recorder.path);
 			throw new CommandError("shutting_down", "The server is shutting down.");
 		}
 		const sessionId = this.#createId();
-		this.#sessions.set(sessionId, { session, cwd, approvals, consents });
-		return sessionId;
+		this.#sessions.set(sessionId, {
+			session,
+			cwd,
+			approvals,
+			consents,
+			...(recorder === undefined ? {} : { recorder }),
+		});
+		return { sessionId, session, ...(recorder === undefined ? {} : { savedId: recorder.id }) };
 	}
 
 	/** Forwards one turn's events: a prompt, a review or a compaction. */
@@ -526,6 +635,7 @@ export class RpcServer {
 			declineAll(entry);
 		}
 		await Promise.allSettled(entries.map((entry) => entry.session.close()));
+		for (const entry of entries) this.#release(entry);
 	}
 }
 

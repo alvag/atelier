@@ -1390,3 +1390,52 @@ describe("AnthropicApiBackend compaction entry", () => {
 		expect((turn as { costUsd: number }).costUsd).toBeLessThan((summaryCost as number) + mainCost * 1.5);
 	});
 });
+
+describe("AnthropicApiBackend saved sessions", () => {
+	const history = [
+		{ role: "user", content: [{ type: "text", text: "earlier question" }] },
+		{ role: "assistant", content: [{ type: "text", text: "earlier answer" }], effort: "high" },
+	] as never;
+
+	it("answers no state before the first message, then its whole history", async () => {
+		const { session } = await start([{ blocks: [{ type: "text", text: "Hello" }] }]);
+		expect(session.resumeState?.()).toBeUndefined();
+		await collect(session.send("Hi"));
+		const state = session.resumeState?.();
+		expect(state).toMatchObject({ messages: [{ role: "user" }, { role: "assistant" }] });
+		expect(JSON.parse(JSON.stringify(state))).toEqual(state);
+	});
+
+	it("sends the saved history before the new prompt and keeps the effort an answer was asked with", async () => {
+		const { session, api } = await start([{ blocks: [{ type: "text", text: "Again" }] }], undefined, {}, undefined, {
+			resume: { messages: history },
+		});
+		await collect(session.send("next"));
+		expect(withoutBreakpoints(messagesOf(api.bodies[0]))).toEqual([
+			{ role: "user", content: [{ type: "text", text: "earlier question" }] },
+			{ role: "assistant", content: [{ type: "text", text: "earlier answer" }] },
+			{ role: "user", content: [{ type: "text", text: "next" }] },
+		]);
+		const state = session.resumeState?.() as { messages: unknown[] };
+		expect(state.messages).toHaveLength(4);
+		expect(state.messages[1]).toMatchObject({ effort: "high" });
+	});
+
+	it("does not change the saved state it was given when it goes on", async () => {
+		const given = JSON.parse(JSON.stringify(history));
+		const { session } = await start([{ blocks: [{ type: "text", text: "Again" }] }], undefined, {}, undefined, {
+			resume: { messages: given },
+		});
+		await collect(session.send("next"));
+		expect(given).toEqual(JSON.parse(JSON.stringify(history)));
+	});
+
+	it("refuses a state that is not an anthropic-api history", async () => {
+		await expect(start([], undefined, {}, undefined, { resume: { sessionId: "cc" } })).rejects.toThrow(
+			"not an anthropic-api history",
+		);
+		await expect(
+			start([], undefined, {}, undefined, { resume: { messages: [{ role: "system", content: "x" }] } }),
+		).rejects.toThrow("not a user or assistant message");
+	});
+});

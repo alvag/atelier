@@ -18,6 +18,12 @@ export interface ToolCallResult {
 
 export type ToolExecutor = (call: ToolCall, signal?: AbortSignal) => Promise<ToolCallResult>;
 
+/**
+ * What a backend needs to carry its conversation into another process: the messages of `anthropic-api`, whose history
+ * is Atelier's own, or the id of the session Claude Code keeps on disk for `claude-code`.
+ */
+export type ResumeState = { messages: JsonValue[] } | { sessionId: string };
+
 export interface BackendStartOptions {
 	cwd: string;
 	model?: string;
@@ -38,6 +44,10 @@ export interface BackendStartOptions {
 	compaction?: { model?: string; thinking?: ThinkingLevel };
 	/** Caps the model requests of one turn; backends without such a cap ignore it. */
 	maxRequestsPerTurn?: number;
+	/** The conversation resumes from this state; start rejects when the backend cannot find or read it. */
+	resume?: ResumeState;
+	/** The session is saved, so the backend keeps what it needs to resume it (Claude Code writes its own session file). */
+	persist?: boolean;
 }
 
 /** What a session changes in its backend while it is open; an absent field stays as it is. */
@@ -75,6 +85,8 @@ export interface BackendSession {
 	 * absent when the backend cannot, and the session then refuses the change. A rejection leaves the backend as it was.
 	 */
 	configure?(change: SessionChange): Promise<void>;
+	/** What `resume` needs to continue the conversation as it stands; undefined while there is none. Absent when the backend cannot resume. */
+	resumeState?(): ResumeState | undefined;
 	interrupt(): Promise<void>;
 	close(): Promise<void>;
 	/** The effort the backend applied to the last turn when no level was asked, when it reports one. */

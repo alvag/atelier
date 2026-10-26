@@ -885,6 +885,8 @@ describe("RpcServer review", () => {
 			tools: [changeTool],
 			systemPromptAppend: "",
 			home: cwd,
+			// The home is the repository under review: saved sessions would be changes in it.
+			sessions: false,
 			...wire,
 		});
 		const done = server.run();

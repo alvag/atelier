@@ -8,6 +8,12 @@ export const PROTOCOL_VERSION = 6;
 /** Limit of the instructions a client may give `session.compact`. */
 export const MAX_COMPACT_INSTRUCTIONS_BYTES = 2000;
 
+/** The longest name `session.rename` takes. */
+export const MAX_SESSION_NAME_CHARS = 200;
+
+/** What a saved session's id looks like: it names a file, so nothing that could leave the folder. */
+export const isSavedSessionId = (value: string): boolean => /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+
 export const BACKEND_NAMES = ["claude-code", "anthropic-api"] as const;
 /** claude-code uses the Claude subscription; anthropic-api runs Atelier's own loop on an API key. */
 export type BackendName = (typeof BACKEND_NAMES)[number];
@@ -28,6 +34,8 @@ export type ClientCommand =
 			noSandbox?: boolean;
 			/** The profile chosen for this session: the first layer of the resolution. */
 			profile?: string;
+			/** Does not save the session (the CLI's `--no-session`); without it the server saves it when it has a home directory. */
+			noSession?: boolean;
 	  }
 	/** The profiles in `~/.atelier/profiles.json`, its `active`, and with `cwd`, the profile a session there would take without a choice. */
 	| { command: "profiles.list"; cwd?: string }
@@ -74,6 +82,25 @@ export type ClientCommand =
 	 * (`profiles`, `active`, and with `cwd`, `effective`).
 	 */
 	| { command: "options.list"; cwd?: string }
+	/**
+	 * The sessions saved for the folder `cwd`, newest first (by the last write): `id`, `name`, `createdAt`, `updatedAt`,
+	 * `turns`, `lastPrompt` (one line, at most 80 characters), `backend`, `model` and `resumable`; a file that cannot be
+	 * resumed (a newer format, corruption) is listed with `resumable: false` and its `problem`. Answers `{ sessions }`.
+	 */
+	| { command: "sessions.list"; cwd: string }
+	/**
+	 * Starts a session from the saved session `sessionId` of the folder `cwd`: its backend, model, thinking level and mode
+	 * come back, the profile is frozen again by name as at start, and the backend resumes (Claude Code with its session
+	 * id, anthropic-api with the saved history). Answers like `session.start` (`sessionId`, `savedId`) plus `name`,
+	 * `createdAt`, `configuration` and `entries`: the saved transcript to show again, in order. Fails with `not_found`,
+	 * `unsupported_version`, `corrupt`, `session_in_use` (this server already runs it) or `session_resume_failed`
+	 * (the backend could not resume, as when Claude Code lost the session); nothing is started then.
+	 */
+	| { command: "session.resume"; sessionId: string; cwd: string }
+	/** Names a saved session of the folder `cwd` (1 to 200 characters); appended to its file, never rewriting it. Answers `{}`. */
+	| { command: "session.rename"; sessionId: string; cwd: string; name: string }
+	/** Deletes a saved session's file; refused with `session_in_use` while this server runs it. Answers `{}`. */
+	| { command: "session.delete"; sessionId: string; cwd: string }
 	| { command: "session.close"; sessionId: string }
 	| { command: "shutdown" };
 
