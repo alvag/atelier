@@ -39,12 +39,31 @@ export function findSecret(text: string): string | undefined {
 /** A private key block from its BEGIN line through its END line, or to the end of the text when it has none. */
 const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|[\s\S]*$)/g;
 
+/** Names whose value is a credential when one is assigned to them (`DB_PASSWORD=…`, `api_key: …`). */
+const SECRET_NAME =
+	"[A-Za-z0-9_.-]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIAL)[A-Za-z0-9_.-]*";
+
+/** Credentials told by where they stand, not by their shape: group 1 (the name) stays, the value is replaced. */
+const VALUE_MASKS: RegExp[] = [
+	// The whole value of an Authorization header, whatever its scheme (Bearer, Basic, Token...).
+	/\b(Authorization["']?\s*[:=]\s*["']?)(?:(?:Bearer|Basic|Token|Digest)\s+)?[^\s"',;]+/gi,
+	/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi,
+	new RegExp(`\\b(${SECRET_NAME}["']?\\s*[:=]\\s*)(?:"[^"\\n]*"|'[^'\\n]*'|[^\\s"',;]+)`, "gi"),
+	// A password in a URL: scheme://user:password@host.
+	/\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:)[^\s@/]+(?=@)/gi,
+];
+
 /**
- * The text with every credential it holds replaced by `[REDACTED]`: a private key whole, body included, the other
- * shapes where they match; one still found across words is left to `findSecret`.
+ * The text with every credential it can tell replaced by `[REDACTED]`, best effort: a private key whole, body
+ * included; the value of an Authorization header, of a bearer token, of a name like `*PASSWORD*`, `*SECRET*` or
+ * `*TOKEN*` it is assigned to (an AWS secret access key among them) and of a password in a URL; and the shapes
+ * `findSecret` knows. One still found across words is left to `findSecret`.
  */
 export function maskSecrets(text: string): string {
-	const unkeyed = text.replace(PRIVATE_KEY_BLOCK, "[REDACTED]");
+	const unkeyed = VALUE_MASKS.reduce(
+		(masked, pattern) => masked.replace(pattern, (_match, name: string) => `${name}[REDACTED]`),
+		text.replace(PRIVATE_KEY_BLOCK, "[REDACTED]"),
+	);
 	return SECRETS.reduce(
 		(masked, secret) => masked.replace(new RegExp(secret.pattern.source, "g"), "[REDACTED]"),
 		unkeyed,

@@ -695,6 +695,28 @@ describe("user prompts", () => {
 		expect(memory.prompts).toEqual(["here is my key:\n[REDACTED]\nwhy fails?", "cut short:\n[REDACTED]"]);
 	});
 
+	it("masks only the value of credentials told by where they stand, and leaves prose alone", async () => {
+		const prompts = [
+			"curl -H 'Authorization: Basic dXNlcjpodW50ZXIy' https://api.test",
+			"curl -H 'authorization: bearer abcdefgh12345678' x",
+			"config: { api_key: \"sk live 1234\", client_secret: 's3cr3t value' }",
+			"GITHUB_TOKEN: ghx-short\nexport PGPASSWD=hunter2",
+			"clone https://ana:hunter2@git.example.com/repo.git",
+			"the token expires; rotate the password weekly; Basic idea",
+		];
+		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
+		for (const prompt of prompts) await send(prompt);
+		await s.close();
+		expect(memory.prompts).toEqual([
+			"curl -H 'Authorization: [REDACTED]' https://api.test",
+			"curl -H 'authorization: [REDACTED]' x",
+			"config: { api_key: [REDACTED], client_secret: [REDACTED] }",
+			"GITHUB_TOKEN: [REDACTED]\nexport PGPASSWD=[REDACTED]",
+			"clone https://ana:[REDACTED]@git.example.com/repo.git",
+			"the token expires; rotate the password weekly; Basic idea",
+		]);
+	});
+
 	it("warns once when saving prompts fails, and the turns go on", async () => {
 		const memory = new FakeMemory("proj");
 		let attempts = 0;
@@ -925,5 +947,21 @@ describe("memory rules in the prompt", () => {
 		const plain = new FakeBackend([]);
 		await (await Session.start({ backend: plain, cwd, tools, systemPromptAppend: "BASE" })).close();
 		expect(plain.startOptions?.systemPromptAppend).toBe("BASE");
+	});
+});
+
+describe("independent recovery/privacy regressions", () => {
+	it.each([
+		"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature",
+		"DB_PASSWORD=correct-horse-battery-staple",
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	])("does not persist credentials in a human prompt: %s (S2)", async (secret) => {
+		const r = await session([[{ event: finished }]]);
+		try {
+			await r.send(secret);
+			expect(r.memory.prompts.join("\n")).not.toContain(secret.split(/[ =]/).at(-1));
+		} finally {
+			await r.session.close();
+		}
 	});
 });

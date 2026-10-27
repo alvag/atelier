@@ -2,7 +2,7 @@
 
 Coding-agent orchestrator with two first-class clients, a terminal UI and a desktop app, on top of one headless core.
 - Runs on your Claude subscription through Claude Code, or on its own loop with an Anthropic API key.
-- Delegates to subagents, keeps large work in feature documents following Organic Driven Development (ODD), and remembers across sessions with [Engram](https://github.com/Gentleman-Programming/engram) when it is installed, your prompts included (credentials masked; `ATELIER_MEMORY_PROMPTS=off` or the [settings](docs/cli.md#settings) keep them out).
+- Delegates to subagents, keeps large work in feature documents following Organic Driven Development (ODD), and remembers across sessions with [Engram](https://github.com/Gentleman-Programming/engram) when it is installed, your prompts included (the credentials it recognizes are masked, best effort; see [memory](docs/architecture.md); `ATELIER_MEMORY_PROMPTS=off` or the [settings](docs/cli.md#settings) keep them out).
 - Reviews the changes of every turn with receipts and verifies high-risk ones independently.
 - Runs `bash` inside the macOS sandbox and asks before anything the sandbox cannot make safe.
 
