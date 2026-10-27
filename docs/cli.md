@@ -5,10 +5,11 @@ The `atelier` command: options, output, the interactive TUI and the line-by-line
 ## Options and output
 
 ```bash
-pnpm install
-pnpm atelier "add email validation to src/user.ts and run the tests"   # one turn
-pnpm atelier                                                          # interactive; /exit or Ctrl+D to quit
+atelier "add email validation to src/user.ts and run the tests"   # one turn
+atelier                                                          # interactive; /exit or Ctrl+D to quit
 ```
+
+In a clone of the repository, `pnpm atelier` runs the clone's own CLI the same way.
 
 | Option                             | Effect                                                                                                                                                                                                                                                                                               |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -28,6 +29,14 @@ pnpm atelier                                                          # interact
 Output starts with the main agent's header, `atelier · <backend> · <model> · <auth>`, plus `· effort <level>` when a thinking level was asked and `· mode <mode>` when the mode is not `normal`, and a line with the session's profile (repeated with every header): `profile cheap (local-pin) · verifier claude-code/claude-sonnet-5-5 thinking medium`, its name, the layer it came from and what it sets for each role but the main agent, or `profile default` when none applies. Then streamed text, one line per tool call (`▸ edit src/user.ts (1 edit) ✓`) and the turn's tokens: input, output, cache reads and writes, the share of the prompt served from the cache (`cacheRead / (input + cacheRead + cacheWrite)`), the number of model requests and the cost. A `cache miss` line says why the prompt cache could not be reused. When the backend reports it, the tokens line also says how full the context is (`context 45,000 / 200,000 (23%)`). A turn with more than one part (the main agent plus the risk declaration, the verifier or a review) gets a compact line under it with each part's cost and requests, or its tokens when neither is known, and, when the part says who ran in it, `on` and each distinct model with its effort, prefixed by its backend only when it is not the session's: `phases: main $0.0400 (1 req) on claude-opus-5-5 high · verify $0.0021 on codex/gpt-5.5 medium · lenses 2 req on claude-sonnet-5-5 medium, claude-haiku-5-5`. When no level was asked and the backend says the effort it applied, the model shows it as `effective`: `main 1 req on claude-opus-5-5 effective xhigh`. In the interactive session, `/compact [instructions]` summarizes the older history now; `/mode` prints the session's permission mode, `/mode <mode>` changes it for this session and `/mode default <mode>` saves the default for new sessions (see [Permission modes](sandbox.md#permission-modes)). On `claude-code`, a warning appears when the session is not using a Claude subscription.
 
 Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
+## Subcommands
+
+A subcommand is the first word, exactly and unquoted; anything else is a prompt, so `atelier "update the readme"` is a prompt. A subcommand takes no session options (`--model`, `--mode`, `--cwd`...): with one, or with extra words, it is a usage error (exit 2) that prints its usage.
+- `atelier update [vX.Y.Z]` moves a copy installed with `install.sh` to the newest release, or to the one given (older too): `git fetch --tags`, a detached checkout of the tag, then `pnpm install --frozen-lockfile --prod` (the full install, and a rebuild of the desktop, when the desktop is installed). It prints `Updated atelier v0.1.0 → v0.2.0`, or `atelier is already at v0.2.0`. It refuses, changing nothing, a development clone (`error: atelier update only updates a copy installed with install.sh; <dir> is a development clone (use git there).`), a copy with local changes and a release that does not exist (listing the ones that do). If the install fails it goes back to the previous release and says how to retry; if only the desktop rebuild fails, the CLI stays updated and the message gives the build command to retry.
+- `atelier desktop` opens the desktop app in the same version as the CLI and returns at once (`Opened Atelier desktop 0.1.0`). In an installed copy without the desktop, the first time it runs the full install and `pnpm -C atelier-desktop build` (Electron, about 200 MB), then records it; it builds again when the build is missing. In a clone it only builds, with the dependencies the clone has.
+
+The installed copy is marked by `.git/atelier-install` (key=value lines, `desktop=0` or `desktop=1`), written by `install.sh`.
+
 ## Interactive TUI
 
 Without a prompt, when stdin and stdout are both terminals, the session runs in a terminal interface built on [pi-tui](https://github.com/earendil-works/pi) (see [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)). It uses the terminal's main screen, so the transcript stays in its scrollback. The core runs as a separate process (`atelier-core serve`) and the TUI speaks the protocol with it, as the desktop does; `--no-sandbox` and `--no-review` reach it as `ATELIER_SANDBOX=off` and `ATELIER_REVIEW=off`, and `--continue`/`--resume` go through `sessions.list` and `session.resume`, then `--mode`, `--profile` and `--model` are applied to the resumed session.

@@ -21,5 +21,5 @@ A pnpm monorepo: `atelier-core` (sessions, backends, tools, review), `atelier-cl
 
 ## Boundaries
 
-- Never edit `../atelier-stable/`: it is the stable copy of Atelier that runs the agent. Changes are tried with `pnpm atelier` or `pnpm desktop` inside this repo.
+- Never edit the installed copy in `~/.atelier/app/`: it is the released Atelier that runs the agent. Changes are tried with `pnpm atelier` or `pnpm desktop` inside this repo.
 - `bash` is not sandboxed: no commands outside this repo, no installs, and no network access unless the user asks for them.

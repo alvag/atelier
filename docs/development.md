@@ -12,35 +12,25 @@ Packages, checks, measurement scripts, and how to work on Atelier with Atelier.
 
 ## Working on Atelier with Atelier
 
-Changing Atelier with the Atelier you are changing breaks the tool in the middle of the work. Keep a stable copy as the tool and the repository as the workpiece:
+Changing Atelier with the Atelier you are changing breaks the tool in the middle of the work. The installed copy is the tool and a clone of the repository is the workpiece:
 
 ```
-atelier/          the workpiece: feat/* branches, where the agent edits
-atelier-stable/   the tool: a worktree pinned to a stable-* tag, never edited
+~/.atelier/app/   the tool: installed with install.sh, pinned to a vX.Y.Z release, never edited
+atelier/          the workpiece: your clone, feat/* branches, where the agent edits
 ```
 
 ```bash
-# once: pin the copy that works today
-git tag -a stable-m8 -m "Stable Atelier"
-git worktree add --detach ../atelier-stable stable-m8
-pnpm -C ../atelier-stable install
-
-# use it on the workpiece (or on any other project)
-alias atelier-stable='node /path/to/atelier-stable/atelier-cli/src/main.ts'
-atelier-stable --cwd /path/to/atelier
-pnpm -C ../atelier-stable desktop   # the desktop starts the stable copy's own core
+cd atelier && pnpm install
+atelier                 # the installed release works on the clone
+pnpm atelier            # the clone's own CLI, in another terminal, to try a change for real
+pnpm desktop            # the clone's desktop, with hot reload
 ```
 
-- `edit` and `write` ask for approval before changing or creating any file outside `--cwd`, and the question shows the path: do not approve a path inside `atelier-stable/` (`read` and `grep` can read it freely). The stable copy is protected by that question, not by a rule: `normal` and `auto` ask it, `yolo` does not. Do not use `yolo` when the workpiece is Atelier itself.
-- To try a change for real, run the workpiece's CLI (`pnpm atelier` inside `atelier/`) in another terminal; the stable copy stays in charge of the work.
+- The agent never writes `~/.atelier/`: `edit`, `write` and the `bash` sandbox refuse it, so the tool cannot change itself.
 - Memory (Engram resolves the project from the working directory), review receipts (in the workpiece's `.git`) and the API key are shared on purpose.
+- `atelier update` refuses a clone (it only moves a copy installed with `install.sh`); in the clone, use git.
 
-Promote only what is verified: once a branch is merged into `main` with `pnpm check`, the desktop smoke and a real run green, tag it and move the copy. To go back, check out the previous tag.
-
-```bash
-git tag -a stable-m9 -m "Stable Atelier"
-git -C ../atelier-stable checkout --detach stable-m9 && pnpm -C ../atelier-stable install
-```
+Release only what is verified: once a branch is merged into `main` with `pnpm check`, the desktop smoke and a real run green, release it (see "Versioning" below) and run `atelier update`. To go back, `atelier update <previous version>`.
 
 ## Checks and measurements
 

@@ -22,18 +22,30 @@ Coding-agent orchestrator with two first-class clients, a terminal UI and a desk
 ## Install
 
 ```bash
-git clone https://github.com/alvag/atelier.git
-cd atelier
-pnpm install
+curl -fsSL https://raw.githubusercontent.com/alvag/atelier/main/install.sh | sh
 ```
+
+It needs git, Node 22.19+ and pnpm. It clones the newest release (`vX.Y.Z`) into `~/.atelier/app`, installs what the CLI needs and puts an `atelier` command in `~/.local/bin` (it tells you if that folder is not on your `PATH`). To install the desktop app too (Electron, about 200 MB), pass `--desktop`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alvag/atelier/main/install.sh | sh -s -- --desktop
+```
+
+| Command                 | Effect                                                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| `atelier update`        | Move to the newest release and reinstall its dependencies (and rebuild the desktop if it is installed). |
+| `atelier update v0.1.0` | Move to that release, newer or older.                                                                   |
+| `atelier desktop`       | Open the desktop app of the same version; the first time it installs and builds it.                     |
+
+`atelier update` only touches a copy installed this way, and refuses one with local changes. To work on Atelier itself, clone the repository and run it with `pnpm install` and `pnpm atelier` (see [development](docs/development.md)).
 
 ## Usage
 
 ```bash
-pnpm atelier                                                          # interactive session in the current directory
-pnpm atelier "add email validation to src/user.ts and run the tests"   # one turn, then exit
-pnpm atelier --cwd ~/code/my-app                                      # work on another directory
-pnpm atelier --continue                                               # resume the newest session of the directory
+atelier                                                          # interactive session in the current directory
+atelier "add email validation to src/user.ts and run the tests"   # one turn, then exit
+atelier --cwd ~/code/my-app                                      # work on another directory
+atelier --continue                                               # resume the newest session of the directory
 ```
 
 | Option                             | Effect                                                                                   |
@@ -93,10 +105,10 @@ Some commands are always refused (`rm -rf /`, `git reset --hard`, force pushesâ€
 ## Desktop app
 
 ```bash
-pnpm desktop
+atelier desktop
 ```
 
-Open a folder, pick a backend, a model, a profile and a permission mode, and chat. Tool calls, approvals, subagents, reviews and the cost of each turn show in the conversation. More: [desktop](docs/desktop.md).
+The first time it installs Electron (about 200 MB) and builds the app, unless `install.sh --desktop` already did. Open a folder, pick a backend, a model, a profile and a permission mode, and chat. Tool calls, approvals, subagents, reviews and the cost of each turn show in the conversation. More: [desktop](docs/desktop.md).
 
 ## Configuration
 

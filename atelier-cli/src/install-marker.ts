@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** The repository this CLI runs from: src/ sits two levels below it. */
-export const OWN_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+export const OWN_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 /** A command that failed, named as the user would type it. */
 export class CommandError extends Error {
