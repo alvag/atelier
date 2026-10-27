@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import type { AtelierEvent, JsonValue } from "../events.ts";
+import type { AtelierEvent, JsonValue, QueuedMessage } from "../events.ts";
 import { decodeServerMessage, encodeMessage, LineSplitter } from "../protocol/codec.ts";
 import { type ClientCommand, PROTOCOL_VERSION, type ServerMessage } from "../protocol/types.ts";
 
@@ -38,7 +38,11 @@ type ResultFor<C extends ClientCommand> = C extends { command: "session.start" }
 	? { sessionId: string }
 	: C extends { command: "session.send" }
 		? { turnId: string }
-		: Record<string, never>;
+		: C extends { command: "session.queue" }
+			? { id: string; turnId?: string }
+			: C extends { command: "session.unqueue" }
+				? { messages: QueuedMessage[] }
+				: Record<string, never>;
 
 interface Pending {
 	resolve: (result: { [key: string]: JsonValue }) => void;

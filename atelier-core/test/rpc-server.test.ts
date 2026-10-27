@@ -375,6 +375,91 @@ describe("RpcServer", () => {
 		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
 	});
 
+	describe("queued messages", () => {
+		/** A first turn that runs until `release` is called, then the turns after it. */
+		const held = (after: FakeStep[][]) => {
+			const gate: { release?: () => void } = {};
+			const first: FakeStep[] = [
+				{ run: () => new Promise<void>((resolve) => (gate.release = resolve)) },
+				{ event: finished },
+			];
+			return { gate, turns: [[first, ...after]] };
+		};
+		const resultOf = (response: ServerMessage) => (response as unknown as { result: Record<string, unknown> }).result;
+
+		it("runs each follow-up as a turn of its own once the running one ends, starting with queued_message", async () => {
+			const { gate, turns } = held([[{ event: finished }], [{ event: finished }]]);
+			const h = harness(turns);
+			const sessionId = await h.start();
+			await h.responseTo(h.send({ command: "session.send", sessionId, prompt: "one" }));
+			await until(() => gate.release !== undefined);
+			const two = resultOf(
+				await h.responseTo(h.send({ command: "session.queue", sessionId, kind: "follow_up", text: "two" })),
+			);
+			await h.responseTo(h.send({ command: "session.queue", sessionId, kind: "follow_up", text: "three" }));
+			expect(two.id).toEqual(expect.any(String));
+			expect(two.turnId).toBeUndefined();
+			await until(() => h.events(sessionId).some((e) => e.type === "queue_update" && e.messages.length === 2));
+			gate.release?.();
+			await until(() => h.events(sessionId).filter((e) => e.type === "turn_finished").length === 3);
+			expect(h.backends[0]?.prompts).toEqual(["one", "two", "three"]);
+			const events = h.events(sessionId);
+			const firsts = events.filter((e) => e.seq === 1);
+			expect(firsts.slice(1)).toEqual([
+				expect.objectContaining({ type: "queued_message", id: two.id, kind: "follow_up", text: "two" }),
+				expect.objectContaining({ type: "queued_message", kind: "follow_up", text: "three" }),
+			]);
+		});
+
+		it("starts a turn at once for a message queued while nothing runs", async () => {
+			const h = harness([[[{ event: finished }]]]);
+			const sessionId = await h.start();
+			const result = resultOf(
+				await h.responseTo(h.send({ command: "session.queue", sessionId, kind: "steer", text: "now" })),
+			);
+			expect(result).toEqual({ id: expect.any(String), turnId: expect.any(String) });
+			await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
+			expect(h.backends[0]?.prompts).toEqual(["now"]);
+			expect(h.events(sessionId)[0]).toMatchObject({ type: "queued_message", turnId: result.turnId, text: "now" });
+		});
+
+		it("edits and takes back queued messages, and refuses one that is not queued", async () => {
+			const { gate, turns } = held([]);
+			const h = harness(turns);
+			const sessionId = await h.start();
+			await h.responseTo(h.send({ command: "session.send", sessionId, prompt: "one" }));
+			await until(() => gate.release !== undefined);
+			const { id } = resultOf(
+				await h.responseTo(h.send({ command: "session.queue", sessionId, kind: "follow_up", text: "tow" })),
+			);
+			await h.responseTo(h.send({ command: "session.queue", sessionId, kind: "steer", text: "x" }));
+			const edited = await h.responseTo(
+				h.send({ command: "session.queue_edit", sessionId, messageId: id, text: "two" }),
+			);
+			expect(edited).toMatchObject({ ok: true, result: {} });
+			const missing = await h.responseTo(
+				h.send({ command: "session.queue_edit", sessionId, messageId: "nope", text: "y" }),
+			);
+			expect(missing).toMatchObject({ ok: false, error: { code: "not_queued" } });
+			const one = resultOf(await h.responseTo(h.send({ command: "session.unqueue", sessionId, messageId: id })));
+			expect(one.messages).toEqual([{ id, kind: "follow_up", text: "two" }]);
+			const rest = resultOf(await h.responseTo(h.send({ command: "session.unqueue", sessionId })));
+			expect(rest.messages).toEqual([expect.objectContaining({ kind: "steer", text: "x" })]);
+			gate.release?.();
+			await until(() => h.events(sessionId).some((e) => e.type === "turn_finished"));
+			expect(h.backends[0]?.prompts).toEqual(["one"]);
+		});
+
+		it("refuses an unknown kind and an empty text", async () => {
+			const h = harness([]);
+			const sessionId = await h.start();
+			const kind = await h.responseTo(h.send({ command: "session.queue", sessionId, kind: "later", text: "x" }));
+			const empty = await h.responseTo(h.send({ command: "session.queue", sessionId, kind: "steer", text: "" }));
+			expect(kind).toMatchObject({ ok: false, error: { code: "invalid_command" } });
+			expect(empty).toMatchObject({ ok: false, error: { code: "invalid_command" } });
+		});
+	});
+
 	describe("approvals", () => {
 		const turn: FakeStep[][][] = [
 			[[{ toolCall: { tool: "shell", input: { command: "rm x" }, callId: "k1" } }, { event: finished }]],

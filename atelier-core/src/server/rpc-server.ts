@@ -271,6 +271,28 @@ export class RpcServer {
 				);
 				return { turnId };
 			}
+			case "session.queue": {
+				const entry = this.#session(message.sessionId);
+				const { id } = entry.session.queue(message.kind, message.text);
+				if (entry.session.busy) return { id };
+				// Nothing runs to queue it behind: it starts its turn now.
+				const turnId = this.#createId();
+				this.#runQueued(message.sessionId, entry, turnId);
+				return { id, turnId };
+			}
+			case "session.queue_edit": {
+				const entry = this.#session(message.sessionId);
+				if (!entry.session.editQueued(message.messageId, message.text))
+					throw new CommandError(
+						"not_queued",
+						`No queued message ${message.messageId}; it may have been sent already.`,
+					);
+				return {};
+			}
+			case "session.unqueue": {
+				const entry = this.#session(message.sessionId);
+				return { messages: entry.session.unqueue(message.messageId).map((queued) => ({ ...queued })) };
+			}
 			case "session.review": {
 				const entry = this.#session(message.sessionId);
 				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
@@ -660,7 +682,7 @@ export class RpcServer {
 		return { sessionId, session, ...(recorder === undefined ? {} : { savedId: recorder.id }) };
 	}
 
-	/** Forwards one turn's events: a prompt, a review or a compaction. */
+	/** Forwards one turn's events: a prompt, a review or a compaction; then runs what was queued meanwhile. */
 	async #runTurn(sessionId: string, entry: ServerSession, turn: () => AsyncIterable<AtelierEvent>): Promise<void> {
 		try {
 			for await (const event of turn()) this.#send({ type: "event", sessionId, event });
@@ -668,6 +690,17 @@ export class RpcServer {
 			denyAll(entry);
 			entry.consents.clear();
 		}
+		// A turn that was interrupted or failed has given its queue back, so nothing follows it.
+		if (this.#sessions.get(sessionId) === entry && !entry.session.busy) this.#runQueued(sessionId, entry);
+	}
+
+	/** Runs the next queued message of the session as a turn, when there is one. */
+	#runQueued(sessionId: string, entry: ServerSession, turnId: string = this.#createId()): void {
+		const next = entry.session.nextQueued(turnId);
+		if (!next) return;
+		this.#runTurn(sessionId, entry, () => next).catch((error: unknown) =>
+			process.stderr.write(`atelier-core: queued turn ${turnId} stopped: ${describeError(error)}\n`),
+		);
 	}
 
 	async #closeAll(): Promise<void> {

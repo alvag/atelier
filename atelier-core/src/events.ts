@@ -230,11 +230,11 @@ export type McpServerStatus = {
 export type QueueKind = "steer" | "follow_up";
 
 /** A message the user queued while a turn runs, until it enters the conversation. */
-export interface QueuedMessage {
+export type QueuedMessage = {
 	id: string;
 	kind: QueueKind;
 	text: string;
-}
+};
 
 export type AtelierEventBody =
 	/**

@@ -1,4 +1,4 @@
-import type { AtelierEvent, JsonValue } from "../events.ts";
+import type { AtelierEvent, JsonValue, QueueKind } from "../events.ts";
 import type { ReviewConsentAnswer } from "../review/session-review.ts";
 import type { PermissionMode } from "../session.ts";
 import type { ThinkingLevel } from "../thinking.ts";
@@ -46,6 +46,16 @@ export type ClientCommand =
 	| { command: "profiles.list"; cwd?: string }
 	| { command: "session.send"; sessionId: string; prompt: string }
 	| { command: "session.interrupt"; sessionId: string }
+	/**
+	 * Queues a message while a turn runs: a `steer` enters the running turn with its next tool result, a `follow_up`
+	 * runs as a turn of its own after it (see `queue_update` and `queued_message`). Answers `{ id }`; when no turn runs,
+	 * the message starts one at once and the answer adds its `turnId`.
+	 */
+	| { command: "session.queue"; sessionId: string; kind: QueueKind; text: string }
+	/** Changes a queued message's text; fails with `not_queued` once it entered the conversation or left the queue. Answers `{}`. */
+	| { command: "session.queue_edit"; sessionId: string; messageId: string; text: string }
+	/** Takes the queued message `messageId` off the queue, or all of them without one; answers `{ messages }`, what it took. */
+	| { command: "session.unqueue"; sessionId: string; messageId?: string }
 	| { command: "session.approve"; sessionId: string; callId: string; approved: boolean }
 	/** Reviews the current uncommitted change at any risk, against HEAD or the git ref `ref` names; answers like session.send. */
 	| { command: "session.review"; sessionId: string; ref?: string }
