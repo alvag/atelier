@@ -34,7 +34,13 @@ import {
 	type Usage,
 	ZERO_USAGE,
 } from "../../events.ts";
-import { costOfRequest, type ThinkingOff, type ThinkingSend, thinkingToSend } from "../../pricing.ts";
+import {
+	costOfRequest,
+	summarizesThinking,
+	type ThinkingOff,
+	type ThinkingSend,
+	thinkingToSend,
+} from "../../pricing.ts";
 import { UsageMeter } from "../../usage-meter.ts";
 import { systemPrompt } from "./system-prompt.ts";
 import { toAnthropicTools } from "./tool-schema.ts";
@@ -79,7 +85,7 @@ interface CompactionConfig {
 export type StoredMessage = Anthropic.MessageParam & { effort?: Effort | "off" };
 
 /** What the summary request changes in the request state: the model and how it thinks. */
-export type SummaryRequestState = Pick<RequestState, "model" | "effort" | "thinking">;
+export type SummaryRequestState = Pick<RequestState, "model" | "effort" | "thinking" | "summarizeThinking">;
 
 /** The summary request's model and level: the compaction entry's, and the session's where the entry sets none. */
 function summaryRequest(
@@ -93,6 +99,7 @@ function summaryRequest(
 		model: summaryModel,
 		...(sent?.effort === undefined ? {} : { effort: sent.effort }),
 		...(sent?.thinking === undefined ? {} : { thinking: sent.thinking }),
+		...(summarizesThinking(summaryModel, sent) ? { summarizeThinking: true as const } : {}),
 	};
 }
 
@@ -146,6 +153,8 @@ export interface RequestState {
 	effort?: Effort;
 	/** Sent as `thinking`, to turn thinking off; absent when none was asked or the model cannot turn it off. */
 	thinking?: ThinkingOff;
+	/** Sent as adaptive thinking with `display: "summarized"`, so the thinking text is streamed; never with `thinking`. */
+	summarizeThinking?: true;
 	system: string;
 	tools: readonly Anthropic.Tool[];
 	/** Stored history: it only grows and never carries cache breakpoints. */
@@ -171,6 +180,7 @@ export function buildRequest(state: RequestState): Anthropic.MessageCreateParams
 		...(tools.length === 0 ? {} : { tools }),
 		...(state.effort === undefined ? {} : { output_config: { effort: state.effort } }),
 		...(state.thinking === undefined ? {} : { thinking: { type: state.thinking } }),
+		...(state.summarizeThinking ? { thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
 		messages: state.messages.map((message, index) =>
 			index === state.messages.length - 1 ? withBreakpoint(toParam(message)) : toParam(message),
 		),
@@ -227,6 +237,7 @@ export class AnthropicApiBackend implements AgentBackend {
 			maxTokens: this.#options.maxTokens ?? DEFAULT_MAX_TOKENS,
 			...(sent?.effort === undefined ? {} : { effort: sent.effort }),
 			...(sent?.thinking === undefined ? {} : { thinking: sent.thinking }),
+			...(summarizesThinking(model, sent) ? { summarizeThinking: true as const } : {}),
 			system: systemPrompt(start.cwd, start.systemPromptAppend),
 			tools: Object.freeze(toAnthropicTools(start.tools)),
 			messages: savedMessages(start.resume),
@@ -464,8 +475,10 @@ class AnthropicApiSession implements BackendSession {
 		const sent = thinkingToSend(model, thinking, BACKEND_ID);
 		delete state.effort;
 		delete state.thinking;
+		delete state.summarizeThinking;
 		if (sent?.effort !== undefined) state.effort = sent.effort;
 		if (sent?.thinking !== undefined) state.thinking = sent.thinking;
+		if (summarizesThinking(model, sent)) state.summarizeThinking = true;
 		this.#effort = sent?.report;
 		this.#thinking = thinking;
 		// A new entry replaces the summary request's model and level; none makes it the session's own request.
@@ -651,7 +664,7 @@ class AnthropicApiSession implements BackendSession {
 	/** The state the summary request is built from: the session's, with the compaction entry's model and level. */
 	#summaryState(): RequestState {
 		if (this.#summary === undefined) return this.#state;
-		const { effort: _effort, thinking: _thinking, ...rest } = this.#state;
+		const { effort: _effort, thinking: _thinking, summarizeThinking: _summarize, ...rest } = this.#state;
 		return { ...rest, ...this.#summary };
 	}
 

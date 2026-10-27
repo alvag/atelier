@@ -357,7 +357,7 @@ describe("AnthropicApiBackend", () => {
 		await collect(session.send("b"));
 		expect(api.bodies[0]?.thinking).toEqual({ type: "disabled" });
 		expect(api.bodies[0]).not.toHaveProperty("output_config");
-		expect(api.bodies[1]).not.toHaveProperty("thinking");
+		expect(api.bodies[1]?.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(api.bodies[1]?.output_config).toEqual({ effort: "medium" });
 	});
 
@@ -430,16 +430,24 @@ describe("AnthropicApiBackend", () => {
 		);
 		const events = await collect(session.send("Hi"));
 		expect(events[0]).toMatchObject({ type: "session_started", model: "claude-opus-5-5", effort: "unsupported" });
-		expect(api.bodies[0]).not.toHaveProperty("thinking");
+		expect(api.bodies[0]?.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(api.bodies[0]).not.toHaveProperty("output_config");
 	});
 
-	it("sends no thinking and no effort field when no level was asked", async () => {
+	it("sends no effort field when no level was asked, and asks for the thinking summarized", async () => {
 		const { session, api } = await start([{ blocks: [{ type: "text", text: "ok" }] }]);
 		const events = await collect(session.send("Hi"));
 		expect(events[0]).not.toHaveProperty("effort");
-		expect(api.bodies[0]).not.toHaveProperty("thinking");
+		expect(api.bodies[0]?.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(api.bodies[0]).not.toHaveProperty("output_config");
+	});
+
+	it("asks for no thinking on a model where it is off by default, which adaptive would turn on", async () => {
+		const { session, api } = await start([{ blocks: [{ type: "text", text: "ok" }] }], undefined, {
+			model: "claude-opus-4-6",
+		});
+		await collect(session.send("Hi"));
+		expect(api.bodies[0]).not.toHaveProperty("thinking");
 	});
 
 	it("runs tools in order across several requests and keeps the history valid", async () => {
