@@ -504,7 +504,9 @@ export class Renderer {
 							event.declaration?.kind === "none" ? ` · declared none: ${event.declaration.reason}` : ""
 						}${event.lensesReason === undefined ? "" : ` · lenses chosen: ${event.lensesReason}`}${
 							event.since === undefined ? "" : ` · since ${event.since}`
-						}${event.baseNote === undefined ? "" : ` · ${event.baseNote}`}`,
+						}${event.baseNote === undefined ? "" : ` · ${event.baseNote}`}${
+							event.consent === "session" ? " · allowed for this session" : ""
+						}`,
 					),
 				);
 				return;

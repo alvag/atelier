@@ -527,6 +527,23 @@ describe("Renderer", () => {
 			);
 		});
 
+		it("says on the risk line that the session's reviews were allowed", () => {
+			const { stdout } = render([
+				{
+					type: "review_assessed",
+					tree: "t",
+					level: "high",
+					reasons: ["path: src/auth.ts (auth)"],
+					files: ["src/auth.ts"],
+					changedLines: 1,
+					lenses: ["risk"],
+					reviewDue: true,
+					consent: "session",
+				},
+			]);
+			expect(stdout).toBe("◇ review high · 1 lens (path: src/auth.ts (auth)) · allowed for this session\n");
+		});
+
 		it("shows a declared none on the risk line, and a missing declaration through its reason", () => {
 			const base = { type: "review_assessed" as const, tree: "t", files: ["a.ts"], changedLines: 1, reviewDue: false };
 			const { stdout } = render([

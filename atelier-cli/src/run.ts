@@ -18,7 +18,7 @@ import {
 	orchestratorBackend,
 	PERMISSION_MODES,
 	type PermissionMode,
-	type ReviewConsentRequest,
+	type ReviewConsentAnswer,
 	readDefaultPermissionMode,
 	roleStartMessage,
 	SandboxConfigError,
@@ -96,6 +96,9 @@ const SIGNAL_EXIT = 128;
 const FORCE_EXIT_MS = 3000;
 const PROMPT = "> ";
 const ANSWER_PROMPT = "[y/N] ";
+const CONSENT_QUESTION =
+	"Review this high-risk change? y: review this change · N: skip this time · a: review all this session\n";
+const CONSENT_PROMPT = "[y/N/a] ";
 const BRACKETED_PASTE_ON = "\x1b[?2004h";
 const BRACKETED_PASTE_OFF = "\x1b[?2004l";
 const YES_DEPRECATED =
@@ -273,40 +276,38 @@ export async function run(
 		restoreTerminal();
 		io.exit?.(code);
 	};
-	/** Cancels a pending yes/no question, answering no. */
+	/** Cancels a pending question, answering its default. */
 	let cancelApproval: (() => void) | undefined;
-	/** Asks a yes/no question on the terminal; only "y" or "yes" is a yes, and Ctrl+C is a no. */
-	const askYesNo = async (question: string): Promise<boolean> => {
+	/** Asks a question on the terminal and gives the typed answer, trimmed; undefined on Ctrl+C, a paste or end of input. */
+	const askLine = async (question: string, prompt: string): Promise<string | undefined> => {
 		renderer.endLine();
 		// Only an answer typed after the question counts: an early line, such as the rest of a pasted prompt, could say yes.
 		const early = lines.discardTyped();
 		if (early > 0) renderer.write(`ignored ${early} ${early === 1 ? "line" : "lines"} typed before this question\n`);
-		renderer.write(`${question}${ANSWER_PROMPT}`);
+		renderer.write(`${question}${prompt}`);
 		const cancelled = new Promise<undefined>((resolve) => {
 			cancelApproval = () => resolve(undefined);
 		});
-		const read = lines.next(ANSWER_PROMPT.length);
+		const read = lines.next(prompt.length);
 		const answer = await Promise.race([read.then((line) => ({ line })), cancelled]);
 		cancelApproval = undefined;
 		if (answer === undefined) {
 			lines.abandon();
 			renderer.write("\n");
-			return false;
+			return undefined;
 		}
 		renderer.write("\n");
 		// A paste can say "y" without anyone having decided anything: only typed text answers.
 		if (lines.pasted()) {
 			renderer.write("pasted text does not answer this question\n");
-			return false;
+			return undefined;
 		}
-		return /^y(es)?$/i.test(answer.line?.trim() ?? "");
+		return answer.line?.trim();
 	};
-	const consent = async ({
-		level,
-		reasons,
-		lenses,
-		lensesReason,
-	}: ReviewConsentRequest): Promise<"granted" | "declined"> => {
+	/** Asks a yes/no question on the terminal; only "y" or "yes" is a yes, and Ctrl+C is a no. */
+	const askYesNo = async (question: string): Promise<boolean> =>
+		/^y(es)?$/i.test((await askLine(question, ANSWER_PROMPT)) ?? "");
+	const consent = async (): Promise<ReviewConsentAnswer> => {
 		if (!io.isTTY) {
 			renderer.endLine();
 			io.stderr("review skipped: there is no terminal to ask; use /review in an interactive session to review it\n");
@@ -314,13 +315,11 @@ export async function run(
 		}
 		// Let the risk line, which the same turn queued just before this question, print first.
 		await new Promise((resolve) => setImmediate(resolve));
-		// Reasons come from file paths and contents: show control characters instead of letting the terminal run them.
-		const shown = reasons.map((reason) => visibleText(reason).text).join("; ");
-		const why = lensesReason === undefined ? "" : ` (${visibleText(lensesReason).text})`;
-		const answer = await askYesNo(
-			`Review this change?\n  risk: ${level}\n  reasons: ${shown}\n  lenses: ${lenses.join(", ")}${why}\n`,
-		);
-		return answer ? "granted" : "declined";
+		// Why it is asked is on the risk line just printed: the question says only what each answer does.
+		const answer = (await askLine(CONSENT_QUESTION, CONSENT_PROMPT)) ?? "";
+		if (/^y(es)?$/i.test(answer)) return "granted";
+		if (/^a(ll)?$/i.test(answer)) return "granted_for_session";
+		return "declined";
 	};
 	// On a raw terminal, take the terminal over before the session starts, so what is typed meanwhile is known to be early.
 	if (setRawMode) {

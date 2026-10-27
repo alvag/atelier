@@ -139,14 +139,8 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 	};
 }
 
-function consentQuestion(event: Extract<AtelierEvent, { type: "review_consent_requested" }>): string[] {
-	const why = event.lensesReason === undefined ? "" : ` (${shown(event.lensesReason).text})`;
-	return [
-		`risk: ${shown(event.level).text}`,
-		`reasons: ${event.reasons.map((reason) => shown(reason).text).join("; ")}`,
-		`lenses: ${event.lenses.map((lens) => shown(lens).text).join(", ")}${why}`,
-	];
-}
+/** The review question: why it is asked is in the review block just above it. */
+const CONSENT_TITLE = "Review this high-risk change?";
 
 /** The fixed line under the editor. */
 class Footer implements Component {
@@ -498,18 +492,23 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (event.type === "review_consent_requested")
 			ask(
 				{
-					title: "Review this change?",
-					lines: consentQuestion(event),
+					title: CONSENT_TITLE,
+					lines: [],
 					choices: [
-						{ value: "granted", label: "Review" },
-						{ value: "declined", label: "Do not review" },
+						{ value: "granted", label: "Review this change", description: "only this one" },
+						{ value: "declined", label: "Skip this time", description: "the next one asks again" },
+						{
+							value: "granted_for_session",
+							label: "Review all this session",
+							description: "this one and later ones, without asking",
+						},
 					],
-					initial: "declined",
+					initial: "granted",
 					cancel: "declined",
 				},
 				(answer) => void request({ command: "session.review_consent", sessionId, reviewId: event.reviewId, answer }),
 				false,
-				{ kind: "question", message: "Review this change?" },
+				{ kind: "question", message: CONSENT_TITLE },
 			);
 		else if (event.type === "turn_finished" && event.parentCallId === undefined) {
 			dropQuestions();

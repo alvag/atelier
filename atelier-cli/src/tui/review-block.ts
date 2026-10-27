@@ -46,6 +46,7 @@ function assessedLines(assessed: Assessed | undefined, paint: Paint): string[] {
 	];
 	if (assessed.lenses.length > 0) parts.push(`lenses ${assessed.lenses.map(shown).join(", ")}`);
 	if (!assessed.reviewDue) parts.push("no review due");
+	if (assessed.consent === "session") parts.push("allowed for this session");
 	const lines = [`${paint("cyan", "◇")} ${parts.join(" · ")}`];
 	const more = (text: string) => lines.push(paint("dim", `  ${text}`));
 	if (assessed.reasons.length > 0) more(`why: ${assessed.reasons.map(shown).join("; ")}`);

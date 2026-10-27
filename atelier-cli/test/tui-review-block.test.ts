@@ -103,6 +103,13 @@ describe("review block", () => {
 		);
 	});
 
+	it("says the review runs without asking when the user allowed the session's reviews", () => {
+		const state = after([{ ...bare, reasons: [], consent: "session" }]);
+		expect(text(lines(state))).toBe(
+			" ◇ review high · 12 lines in 2 files · lenses risk, reliability · allowed for this session",
+		);
+	});
+
 	it("lists every step, then the result with the follow-ups, the cost and the receipt", () => {
 		const state = after([
 			{ ...bare, reasons: [], declaration: { kind: "none", reason: "docs only" }, since: "1234567" },

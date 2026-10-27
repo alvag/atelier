@@ -108,7 +108,7 @@ function harness(
 			: {}),
 		stdout: (s: string) => {
 			stdout += s;
-			const answer = s.endsWith("[y/N] ") ? answers.shift() : undefined;
+			const answer = /\[y\/N(\/a)?\] $/.test(s) ? answers.shift() : undefined;
 			if (answer !== undefined) setImmediate(() => stdin.write(`${answer}\n`));
 		},
 		stderr: (s: string) => {
@@ -662,34 +662,41 @@ async function repoWithChange(path: string) {
 }
 
 describe("run: review", () => {
+	const CONSENT_QUESTION =
+		"Review this high-risk change? y: review this change · N: skip this time · a: review all this session\n";
 	const declared: FakeStep = { toolCall: { tool: "risk", input: { none: true, reason: "test" }, callId: "c-risk" } };
 	const mainTurn: FakeStep[] = [declared, { event: { type: "text_delta", text: "done" } }, { event: finished }];
 	const noFindings: FakeStep[] = [{ event: { type: "text_delta", text: '{"findings": []}' } }, { event: finished }];
 	const lenses = (n: number) => Array.from({ length: n }, () => noFindings);
 	const reviewLines = (out: string) => out.split("\n").filter((line) => line.includes("review"));
 
-	it("asks on a terminal, shows level, reasons and lenses, and reviews when the answer is yes", async () => {
+	it("asks on a terminal with the question and its answers only, and reviews when the answer is yes", async () => {
 		await repoWithChange("src/auth.ts");
 		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, answers: ["y"] });
 		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
-		expect(h.out()).toContain(
-			"Review this change?\n  risk: high\n  reasons: path: src/auth.ts (auth)\n  lenses: risk, resilience, readability, reliability\n[y/N] ",
-		);
+		expect(h.out()).toContain(`${CONSENT_QUESTION}[y/N/a] `);
+		expect(h.out()).not.toContain("  reasons: ");
 		expect(h.backend.prompts).toHaveLength(5);
 		expect(h.out()).toMatch(/✓ review approved · receipt \.git\/atelier\/reviews\/[0-9a-f]+-[A-Za-z0-9_.-]+\.json\n/);
 	});
 
-	it("asks with the lenses the agent chose and why, and runs only those", async () => {
+	it("runs only the lenses the agent chose", async () => {
 		await repoWithChange("src/auth.ts");
 		const input = { none: true, reason: "test", lenses: ["readability"], lensesReason: "renames the output" };
 		const chose: FakeStep = { toolCall: { tool: "risk", input, callId: "c-risk" } };
 		const turn: FakeStep[] = [chose, { event: { type: "text_delta", text: "done" } }, { event: finished }];
 		const h = harness([turn, ...lenses(2)], { isTTY: true, answers: ["y"] });
 		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
-		expect(h.out()).toContain(
-			"Review this change?\n  risk: high\n  reasons: path: src/auth.ts (auth)\n  lenses: risk, readability (renames the output)\n[y/N] ",
-		);
 		expect(h.backend.prompts).toHaveLength(3);
+		expect(h.out()).toContain("✓ review approved");
+	});
+
+	// The core's tests show that the session's later high-risk changes are then reviewed without asking.
+	it("reviews when the answer is a", async () => {
+		await repoWithChange("src/auth.ts");
+		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, answers: ["a"] });
+		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toHaveLength(5);
 		expect(h.out()).toContain("✓ review approved");
 	});
 
@@ -697,7 +704,7 @@ describe("run: review", () => {
 		await repoWithChange("src/auth.ts");
 		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: ["y"], answers: [""], keepStdinOpen: true });
 		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
-		expect(h.out()).toContain("ignored 1 line typed before this question\nReview this change?");
+		expect(h.out()).toContain("ignored 1 line typed before this question\nReview this high-risk change?");
 		expect(h.backend.prompts).toHaveLength(1);
 		expect(reviewLines(h.out())).toContain("◇ review declined");
 	});
@@ -707,7 +714,7 @@ describe("run: review", () => {
 		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: ["n"] });
 		await run(["change it"], h.io, h.createBackend);
 		expect(h.out().indexOf("◇ review high · 4 lenses")).toBeGreaterThan(-1);
-		expect(h.out().indexOf("◇ review high · 4 lenses")).toBeLessThan(h.out().indexOf("Review this change?"));
+		expect(h.out().indexOf("◇ review high · 4 lenses")).toBeLessThan(h.out().indexOf("Review this high-risk change?"));
 	});
 
 	it("does not review when the answer is no, and says declined", async () => {
@@ -740,7 +747,7 @@ describe("run: review", () => {
 		const h = harness([mainTurn, ...lenses(4)], { isTTY: true, input: [], keepStdinOpen: true });
 		const pending = run(["change it"], h.io, h.createBackend);
 		// Waits for the question itself: a fixed delay raced the turn under load.
-		await vi.waitFor(() => expect(h.out()).toContain("Review this change?"), { timeout: 5000 });
+		await vi.waitFor(() => expect(h.out()).toContain("Review this high-risk change?"), { timeout: 5000 });
 		h.ctrlC();
 		expect(await pending).toBe(130);
 		expect(h.backend.prompts).toHaveLength(1);

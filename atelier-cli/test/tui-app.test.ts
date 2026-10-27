@@ -665,7 +665,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
-	it("shows the strings of a review question with markers for control characters", async () => {
+	it("asks a review question with the question and three answers only, starting on Review", async () => {
 		const h = harness([]);
 		const stub = stubCore();
 		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
@@ -674,16 +674,26 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		stub.emit({
 			type: "review_consent_requested",
 			reviewId: "r1",
-			level: "hi\x1b[31mgh",
-			reasons: ["re\x1b[31mason"],
-			lenses: ["le\x1b[31mns"],
-			lensesReason: "wh\x1b[31my",
+			level: "high",
+			reasons: ["path: src/auth.ts (auth)"],
+			lenses: ["risk"],
+			lensesReason: "guards",
 		});
-		await until(() => h.screen.screen().includes("Review this change?"));
+		await until(() => h.screen.screen().includes("Review this high-risk change?"));
 		const screen = h.screen.screen();
-		expect(screen).toContain("risk: hi␛[31mgh");
-		expect(screen).toContain("reasons: re␛[31mason");
-		expect(screen).toContain("lenses: le␛[31mns (wh␛[31my)");
+		expect(screen).toContain("→ Review this change");
+		expect(screen).toContain("Skip this time");
+		expect(screen).toContain("Review all this session");
+		expect(screen).not.toContain("src/auth.ts");
+		expect(screen).not.toContain("guards");
+		h.screen.type("\x1b[B");
+		h.screen.type("\x1b[B");
+		h.screen.type("\r");
+		await until(() => stub.log.commands.some((command) => command.command === "session.review_consent"));
+		expect(stub.log.commands.find((command) => command.command === "session.review_consent")).toMatchObject({
+			reviewId: "r1",
+			answer: "granted_for_session",
+		});
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});
@@ -1180,9 +1190,9 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
 			stub.emit({ type: "review_consent_requested", reviewId: "r1", level: "high", reasons: [], lenses: [] });
-			await until(() => h.screen.screen().includes("Review this change?"));
+			await until(() => h.screen.screen().includes("Review this high-risk change?"));
 			expect(h.screen.statuses.at(-1)).toEqual(
-				atelier("blocked", { kind: "question", message: "Review this change?" }),
+				atelier("blocked", { kind: "question", message: "Review this high-risk change?" }),
 			);
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
