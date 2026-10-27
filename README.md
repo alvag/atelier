@@ -341,3 +341,7 @@ node atelier-core/scripts/measure-compaction.ts --backend anthropic-api   # forc
 ```
 
 `ATELIER_RECORD_SDK=<file.jsonl>` appends every raw SDK message during a real run; that is how `atelier-core/test/fixtures/claude-code/` is recorded.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Third-party software Atelier builds on is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
