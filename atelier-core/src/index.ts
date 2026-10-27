@@ -116,6 +116,7 @@ export {
 export {
 	folderKey,
 	type LoadedSession,
+	readSessionStats,
 	type SavedConfig,
 	type SavedEntry,
 	type SavedSessionInfo,
@@ -124,7 +125,12 @@ export {
 	SessionFileError,
 	type SessionHeader,
 	SessionRecorder,
+	type SessionStats,
 	SessionStore,
+	type SkippedSession,
+	type StatsOptions,
+	type StatsRow,
+	type StatsSpend,
 } from "./sessions/index.ts";
 export { loadSkills, MAX_SKILLS_BYTES, type Skill, type Skills, type SkillWarning, skillsPrompt } from "./skills.ts";
 export {

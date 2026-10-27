@@ -9,6 +9,14 @@ export {
 } from "./format.ts";
 export { SessionRecorder } from "./recorder.ts";
 export {
+	readSessionStats,
+	type SessionStats,
+	type SkippedSession,
+	type StatsOptions,
+	type StatsRow,
+	type StatsSpend,
+} from "./stats.ts";
+export {
 	LAST_PROMPT_CHARS,
 	type LoadedSession,
 	type SavedSessionInfo,
