@@ -566,6 +566,33 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
+	it("shows the feature's tasks over the editor, unfolded with Ctrl+T, and the review while it runs", async () => {
+		const h = harness([]);
+		const stub = stubCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		stub.emit({
+			type: "feature_changed",
+			name: "m14",
+			path: "odd/tasks/m14.md",
+			title: "M14",
+			tasks: [
+				{ id: "T1", title: "Hot model", specs: [], status: "done" },
+				{ id: "T2", title: "Hot profile", specs: [], status: "in_progress" },
+			],
+		});
+		await until(() => h.screen.screen().includes("◆ M14 · 1/2 done · now T2 Hot profile · Ctrl+T tasks"));
+		expect(h.screen.screen()).toContain("T2 1/2");
+		h.screen.type("\x14");
+		await until(() => h.screen.screen().includes("✓ T1 Hot model"));
+		expect(h.screen.screen()).toContain("▸ T2 Hot profile");
+		stub.emit({ type: "review_progress", reviewId: "r1", step: { type: "lens_started", lens: "risk" } });
+		await until(() => h.screen.screen().includes("◇ review · risk …"));
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
 	it("shows the strings of a review question with markers for control characters", async () => {
 		const h = harness([]);
 		const stub = stubCore();

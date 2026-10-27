@@ -1,6 +1,7 @@
-import { type AtelierEvent, visibleText } from "@atelier/core";
+import { type AtelierEvent, type ReviewStep, visibleText } from "@atelier/core";
 import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
+import { reviewSummary, verificationLines } from "./odd.ts";
 import { markdownTheme, type Paint } from "./style.ts";
 import { AgentGroup, type CardView, ToolCard } from "./tool-card.ts";
 
@@ -33,8 +34,9 @@ function configuredLine(event: Extract<AtelierEvent, { type: "session_configured
 
 /**
  * The transcript: each prompt, the agent's text as Markdown, each tool call as a folded card with the subagent it
- * ran, the verifier's and the review roles' work grouped under one line each, and the rest of the events as the
- * CLI's own lines.
+ * ran, the verifier's and the review roles' work grouped under one line each, the verifier's verdict on each
+ * requirement, a review's steps summed up before its verdict, and the rest of the events as the CLI's own lines. The
+ * phase is left to the footer.
  */
 export class Conversation extends Container {
 	readonly view: CardView = { expanded: false };
@@ -50,6 +52,8 @@ export class Conversation extends Container {
 	/** The header last shown: it is repeated only when it changes. */
 	#header: string | undefined;
 	#backend: string | undefined;
+	/** The steps of each review so far, summed up when it finishes. */
+	readonly #reviews = new Map<string, ReviewStep[]>();
 
 	constructor(paint: Paint, cwd: string) {
 		super();
@@ -94,6 +98,20 @@ export class Conversation extends Container {
 			case "thinking_delta":
 			case "approval_requested":
 			case "review_consent_requested":
+			case "phase_changed":
+				return;
+			case "review_progress":
+				this.#reviews.set(event.reviewId, [...(this.#reviews.get(event.reviewId) ?? []), event.step]);
+				return;
+			case "review_finished": {
+				const summary = reviewSummary(this.#reviews.get(event.reviewId) ?? []);
+				this.#reviews.delete(event.reviewId);
+				if (summary !== undefined) this.note(summary);
+				this.#rendered(event);
+				return;
+			}
+			case "verification_round":
+				this.#rendered(event, verificationLines(event, this.#paint));
 				return;
 			case "tool_call_started": {
 				const card = new ToolCard(event.tool, event.input, this.view, this.#paint);
@@ -155,11 +173,11 @@ export class Conversation extends Container {
 		group.add(event);
 	}
 
-	/** The CLI's line for an event, as a block of its own. */
-	#rendered(event: AtelierEvent): void {
+	/** The CLI's line for an event, and the `more` lines after it (already shown with markers), as a block of its own. */
+	#rendered(event: AtelierEvent, more: string[] = []): void {
 		this.#renderer.render(event);
 		this.#renderer.endLine();
-		const text = shown(this.#notes.trimEnd());
+		const text = [shown(this.#notes.trimEnd()), ...more].filter((line) => line !== "").join("\n");
 		this.#notes = "";
 		if (text !== "") this.#add(new Text(text, 1, 0));
 	}

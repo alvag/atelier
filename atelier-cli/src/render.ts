@@ -155,7 +155,7 @@ function undecided(event: Extract<AtelierEvent, { type: "verification_finished" 
 	return `${plural(event.openDefects.length, "open defect")}${reason}`;
 }
 
-function stepText(step: ReviewStep): string {
+export function stepText(step: ReviewStep): string {
 	switch (step.type) {
 		case "lens_started":
 			return `lens ${step.lens}`;
