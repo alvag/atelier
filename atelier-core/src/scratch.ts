@@ -51,7 +51,7 @@ export async function createScratchDir(kind: ScratchKind, options: ScratchOption
 		await rm(root, { recursive: true, force: true });
 		throw error;
 	}
-	sweepOnce();
+	sweepOnce(options.tmpRoot);
 	return scratchAt(root);
 }
 
@@ -65,7 +65,7 @@ export function createScratchDirSync(kind: ScratchKind, options: ScratchOptions 
 		rmSync(root, { recursive: true, force: true });
 		throw error;
 	}
-	sweepOnce();
+	sweepOnce(options.tmpRoot);
 	return scratchAt(root);
 }
 
@@ -75,12 +75,16 @@ function scratchAt(root: string): ScratchDir {
 
 let swept = false;
 
-/** Once per process, after the caller goes on: the sweep never delays it, and its failures are left for the next process. */
-function sweepOnce(): void {
-	if (swept) return;
+/**
+ * Once per process, in the folder the first directory went in, after the
+ * caller goes on: the sweep never delays it, and its failures are left for the
+ * next process. `ATELIER_SCRATCH_SWEEP=off` stops it.
+ */
+function sweepOnce(tmpRoot: string | undefined): void {
+	if (swept || process.env.ATELIER_SCRATCH_SWEEP === "off") return;
 	swept = true;
 	setImmediate(() => {
-		sweepStaleScratch().catch(() => {});
+		sweepStaleScratch(tmpRoot === undefined ? {} : { tmpRoot }).catch(() => {});
 	}).unref();
 }
 
@@ -96,7 +100,11 @@ export interface SweepOptions extends ScratchOptions {
 	processes?: ProcessReader;
 }
 
-const systemProcesses: ProcessReader = { isAlive, startedAt: processStart };
+/** This process's own start is known exactly, so its directories never depend on `ps`. */
+const systemProcesses: ProcessReader = {
+	isAlive,
+	startedAt: (pid) => (pid === self.pid ? Promise.resolve(self.startedAt) : processStart(pid)),
+};
 
 /**
  * Deletes the directories in the folder whose owner is dead, and returns them.
@@ -113,6 +121,8 @@ export async function sweepStaleScratch(options: SweepOptions = {}): Promise<str
 		const dir = join(root, name);
 		try {
 			if (!(await isStale(dir, options.processes ?? systemProcesses))) continue;
+			// The owner file goes last: a deletion that fails part-way still tells the next sweep whose it was.
+			await rm(join(dir, WORK), { recursive: true, force: true });
 			await rm(dir, { recursive: true, force: true });
 			removed.push(dir);
 		} catch {
@@ -132,7 +142,7 @@ async function isStale(dir: string, processes: ProcessReader): Promise<boolean> 
 		text = await readFile(join(dir, OWNER_FILE), "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
-		return Date.now() - info.mtimeMs > OWNERLESS_AGE_MS;
+		return Date.now() - (await lastChange(dir, info.mtimeMs)) > OWNERLESS_AGE_MS;
 	}
 	const owner = parseOwner(text);
 	if (owner === undefined) return false;
@@ -140,6 +150,16 @@ async function isStale(dir: string, processes: ProcessReader): Promise<boolean> 
 	const started = await processes.startedAt(owner.pid);
 	// A process that started after the directory was made reuses the pid of its dead owner.
 	return started !== undefined && started > owner.startedAt + REUSED_PID_MARGIN_MS;
+}
+
+/** The newest change of the directory or of what is right inside it: a file written into keeps the directory's own time. */
+async function lastChange(dir: string, dirMtimeMs: number): Promise<number> {
+	let newest = dirMtimeMs;
+	for (const name of await readdir(dir)) {
+		const info = await lstat(join(dir, name)).catch(() => undefined);
+		if (info !== undefined) newest = Math.max(newest, info.mtimeMs);
+	}
+	return newest;
 }
 
 function parseOwner(text: string): Owner | undefined {
@@ -163,9 +183,15 @@ function isAlive(pid: number): boolean {
 	}
 }
 
-/** From the time `ps` says the process has run, `[[dd-]hh:]mm:ss`; undefined where there is no `ps`. */
+/**
+ * From the time `ps` says the process has run, `[[dd-]hh:]mm:ss`; undefined
+ * where there is no `ps`. The clock is read before `ps` runs, so a slow `ps` or
+ * a busy event loop make the start look earlier, never later: the errors keep a
+ * directory, and only the whole second `ps` cuts off makes it up to 1 s later.
+ */
 function processStart(pid: number): Promise<number | undefined> {
 	if (process.platform === "win32") return Promise.resolve(undefined);
+	const asked = Date.now();
 	return new Promise((resolve) => {
 		execFile(
 			"ps",
@@ -173,7 +199,7 @@ function processStart(pid: number): Promise<number | undefined> {
 			{ env: { ...process.env, LC_ALL: "C" }, timeout: PS_TIMEOUT_MS },
 			(error, stdout) => {
 				const seconds = error ? undefined : elapsedSeconds(stdout.trim());
-				resolve(seconds === undefined ? undefined : Date.now() - seconds * 1000);
+				resolve(seconds === undefined ? undefined : asked - seconds * 1000);
 			},
 		);
 	});

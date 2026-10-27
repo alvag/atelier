@@ -97,13 +97,6 @@ describe("createWorkspace", () => {
 		process.env.TMPDIR = tmp;
 		try {
 			await write("src/a.ts", "export const a = 2;\n");
-			const frozen = await freezeCandidate(repo);
-			if (!frozen.ok) throw new Error(frozen.reason);
-			expect(git("ls-tree", "-r", "--name-only", frozen.candidate.tree).split("\n").filter(Boolean).sort()).toEqual([
-				".gitignore",
-				"run.sh",
-				"src/a.ts",
-			]);
 			const workspace = await workspaceOf();
 			expect((await readdir(workspace.dir)).sort()).toEqual(["base", "candidate"]);
 			const diff = spawnSync("git", ["diff", "--no-index", "--name-only", "base", "candidate"], {
@@ -118,6 +111,39 @@ describe("createWorkspace", () => {
 		} finally {
 			if (previous === undefined) delete process.env.TMPDIR;
 			else process.env.TMPDIR = previous;
+		}
+	});
+
+	it("gives git only its temporary index in the freeze's directory, which is gone afterwards", async () => {
+		const previous = { TMPDIR: process.env.TMPDIR, PATH: process.env.PATH };
+		const tmp = join(root, "tmp");
+		const bin = join(root, "bin");
+		const seen = join(root, "seen.log");
+		await mkdir(tmp);
+		await mkdir(bin);
+		const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+		// What git finds next to the index it is given, each time the freeze runs it with one.
+		await writeFile(
+			join(bin, "git"),
+			`#!/bin/sh\nif [ -n "$GIT_INDEX_FILE" ]; then ls -A "$(dirname "$GIT_INDEX_FILE")" | tr '\\n' ' ' >> '${seen}'; echo >> '${seen}'; fi\nexec '${realGit}' "$@"\n`,
+		);
+		await chmod(join(bin, "git"), 0o755);
+		process.env.TMPDIR = tmp;
+		process.env.PATH = `${bin}:${previous.PATH ?? ""}`;
+		try {
+			await write("src/a.ts", "export const a = 2;\n");
+			const frozen = await freezeCandidate(repo);
+			if (!frozen.ok) throw new Error(frozen.reason);
+			const listings = (await readFile(seen, "utf8")).trim().split("\n");
+			expect(listings.length).toBeGreaterThan(0);
+			for (const listing of listings) expect(listing.trim().split(" ").filter(Boolean)).not.toContain(".atelier-owner");
+			expect(listings.at(-1)?.trim()).toBe("index");
+			expect(await readdir(tmp)).toEqual([]);
+		} finally {
+			for (const [key, value] of Object.entries(previous)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
 		}
 	});
 
