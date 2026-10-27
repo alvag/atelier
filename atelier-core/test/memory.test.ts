@@ -105,8 +105,40 @@ async function engramAnswering(answer: Record<string, unknown>, isError = false,
 	await server.connect(serverSide);
 	const client = new Client({ name: "atelier", version: "0.0.0" });
 	await client.connect(clientSide);
-	return { memory: new EngramMemory(client, "proj", savesPrompts), calls, args };
+	return { memory: new EngramMemory(client, "proj", { prompts: savesPrompts, sessions: true }), calls, args };
 }
+
+describe("EngramMemory session", () => {
+	it("registers the session, names it in every write and ends it", async () => {
+		const { memory, calls, args } = await engramAnswering({ id: 5 }, false, true);
+		await memory.begin("atelier-1", "/work");
+		await memory.save({ title: "A", type: "decision", content: "alpha" });
+		await memory.savePrompt("fix it");
+		await memory.summary("## Goal");
+		await memory.end();
+		await memory.close();
+		expect(calls).toEqual([
+			"mem_session_start",
+			"mem_save",
+			"mem_save_prompt",
+			"mem_session_summary",
+			"mem_session_end",
+		]);
+		expect(args[0]).toEqual({ id: "atelier-1", directory: "/work" });
+		for (const written of args.slice(1, 4)) expect(written.session_id).toBe("atelier-1");
+		expect(args[4]).toEqual({ id: "atelier-1" });
+	});
+
+	it("writes without a session when Engram refused it, and has nothing to end", async () => {
+		const { memory, calls, args } = await engramAnswering({ error: "no" }, true, true);
+		await expect(memory.begin("atelier-1", "/work")).rejects.toThrow(/mem_session_start/);
+		await memory.savePrompt("fix it").catch(() => {});
+		await memory.end();
+		await memory.close();
+		expect(calls).toEqual(["mem_session_start", "mem_save_prompt"]);
+		expect(args[1]).toEqual({ content: "fix it" });
+	});
+});
 
 describe("EngramMemory savePrompt", () => {
 	it("sends the prompt as it is given, or nothing when prompts are off", async () => {
@@ -222,6 +254,13 @@ describe.skipIf(!engramInstalled)("EngramMemory against the real binary (tempora
 
 	it("saves a prompt", async () => {
 		await expect(memory.savePrompt("remember the parser")).resolves.toBeUndefined();
+	});
+
+	it("registers a session, saves under it and ends it", async () => {
+		await memory.begin("atelier-test-session", project);
+		await memory.savePrompt("inside the session");
+		await memory.save({ title: "In session", type: "discovery", content: "**What**: saved under the session" });
+		await expect(memory.end()).resolves.toBeUndefined();
 	});
 
 	it("never wrote outside the temporary data dir", async () => {

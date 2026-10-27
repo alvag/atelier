@@ -353,8 +353,10 @@ export class Session {
 	#closed = false;
 	#closing: Promise<void> | undefined;
 	#scratch: ScratchDir | undefined;
+	/** The session as memory knows it: its registration and its summary key. */
+	readonly #memoryId = randomUUID();
 	/** Every compaction summary of this session updates the same memory. */
-	readonly #summaryKey = `session/${randomUUID()}/summary`;
+	readonly #summaryKey = `session/${this.#memoryId}/summary`;
 	/** Summaries and prompts being saved to memory; the turn that started them waits for them before it finishes. */
 	readonly #memoryWrites = new Set<Promise<void>>();
 	/** Saving the user's prompts failed once and was said; later failures are not. */
@@ -426,6 +428,7 @@ export class Session {
 		}
 		const session = new Session(options);
 		session.#memoryContext = memoryContext;
+		if (options.memory) await session.#beginMemory(options.memory);
 		if (options.projectInstructions) {
 			const instructions = await loadProjectInstructions(options.cwd, options.projectInstructions.home);
 			if (instructions.files.length > 0 || instructions.dropped.length > 0) session.#instructions = instructions;
@@ -1298,6 +1301,8 @@ export class Session {
 				.then(() => this.#odd?.close())
 				.then(() => Promise.all(this.#memoryWrites))
 				.then(() => this.#options.record?.flush())
+				// Nobody is left to hear that ending the memory session failed.
+				.then(() => this.#options.memory?.end().catch(() => {}))
 				.then(() => this.#options.memory?.close().catch(() => {}))
 				.then(() => this.#options.mcp?.close().catch(() => {}))
 				.then(() => this.#backendSession?.close())
@@ -1699,6 +1704,21 @@ export class Session {
 			signal?.removeEventListener("abort", stop);
 			this.#child = undefined;
 			await child.close();
+		}
+	}
+
+	/** Registers the session in memory, once; a failure is said in the first turn, and memory goes on without it. */
+	async #beginMemory(memory: MemoryPort): Promise<void> {
+		try {
+			await memory.begin(`atelier-${this.#memoryId}`, this.#options.cwd);
+		} catch (error) {
+			this.#notices.push(
+				errorEvent(
+					"memory_session_failed",
+					`Memory did not register this session; it is saved without one: ${describeError(error)}`,
+					true,
+				),
+			);
 		}
 	}
 

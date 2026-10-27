@@ -49,6 +49,12 @@ export interface EngramOptions {
 	prompts?: boolean;
 }
 
+/** The optional tools this Engram has and the user allows. */
+interface EngramFeatures {
+	prompts?: boolean;
+	sessions?: boolean;
+}
+
 const projectResponse = z.object({ project: z.string().min(1) });
 const saveResponse = z.object({ id: z.number().int(), candidate_detection_status: z.string().optional() });
 /** Engram saved the memory but could not look for the ones it may conflict with; saving again would not help. */
@@ -81,7 +87,10 @@ export async function connectEngram(options: EngramOptions): Promise<EngramMemor
 		if (missing.length > 0) throw new MemoryUnavailableError(`Engram ${version} lacks ${missing.join(", ")}.`);
 		const memory = new EngramMemory(client, "");
 		const { project } = await memory.call("mem_current_project", {}, projectResponse);
-		return new EngramMemory(client, project, options.prompts !== false && tools.has("mem_save_prompt"));
+		return new EngramMemory(client, project, {
+			prompts: options.prompts !== false && tools.has("mem_save_prompt"),
+			sessions: tools.has("mem_session_start") && tools.has("mem_session_end"),
+		});
 	} catch (error) {
 		await client.close().catch(() => {});
 		if (error instanceof MemoryUnavailableError) throw error;
@@ -92,12 +101,14 @@ export async function connectEngram(options: EngramOptions): Promise<EngramMemor
 export class EngramMemory implements MemoryPort {
 	readonly project: string;
 	readonly #client: Client;
-	readonly #savesPrompts: boolean;
+	readonly #features: EngramFeatures;
+	/** The session Engram registered; every write names it. */
+	#sessionId: string | undefined;
 
-	constructor(client: Client, project: string, savesPrompts = false) {
+	constructor(client: Client, project: string, features: EngramFeatures = {}) {
 		this.#client = client;
 		this.project = project;
-		this.#savesPrompts = savesPrompts;
+		this.#features = features;
 	}
 
 	async context(maxBytes: number): Promise<string> {
@@ -138,6 +149,7 @@ export class EngramMemory implements MemoryPort {
 				// Atelier never sends the user's prompt along with a memory.
 				capture_prompt: false,
 				...(entry.topicKey === undefined ? {} : { topic_key: entry.topicKey }),
+				...this.#session(),
 			},
 			saveResponse,
 		);
@@ -146,12 +158,29 @@ export class EngramMemory implements MemoryPort {
 	}
 
 	async summary(text: string): Promise<void> {
-		await this.call("mem_session_summary", { content: text }, z.object({}).passthrough());
+		await this.call("mem_session_summary", { content: text, ...this.#session() }, z.object({}).passthrough());
 	}
 
 	async savePrompt(text: string): Promise<void> {
-		if (!this.#savesPrompts) return;
-		await this.call("mem_save_prompt", { content: text }, z.object({}).passthrough());
+		if (!this.#features.prompts) return;
+		await this.call("mem_save_prompt", { content: text, ...this.#session() }, z.object({}).passthrough());
+	}
+
+	async begin(id: string, directory: string): Promise<void> {
+		if (!this.#features.sessions) return;
+		await this.call("mem_session_start", { id, directory }, z.object({}).passthrough());
+		this.#sessionId = id;
+	}
+
+	async end(): Promise<void> {
+		const id = this.#sessionId;
+		if (id === undefined) return;
+		this.#sessionId = undefined;
+		await this.call("mem_session_end", { id }, z.object({}).passthrough());
+	}
+
+	#session(): { session_id?: string } {
+		return this.#sessionId === undefined ? {} : { session_id: this.#sessionId };
 	}
 
 	/** Closing stdin ends the Engram process. */

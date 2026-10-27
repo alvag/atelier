@@ -56,6 +56,10 @@ export interface MemoryPort {
 	summary(text: string): Promise<void>;
 	/** Keeps what the user asked, already masked and cut by the core; does nothing where the service or the user says no. */
 	savePrompt(text: string): Promise<void>;
+	/** Registers the session, so the writes that follow belong to it; where it fails, they are saved without one. */
+	begin(id: string, directory: string): Promise<void>;
+	/** Marks the registered session as finished; nothing without one. */
+	end(): Promise<void>;
 	close(): Promise<void>;
 }
 
@@ -82,6 +86,8 @@ export class FakeMemory implements MemoryPort {
 	readonly saved: NewMemory[] = [];
 	readonly summaries: string[] = [];
 	readonly prompts: string[] = [];
+	readonly began: { id: string; directory: string }[] = [];
+	ended = 0;
 	closed = false;
 
 	constructor(project = "fake") {
@@ -137,6 +143,14 @@ export class FakeMemory implements MemoryPort {
 
 	async savePrompt(text: string): Promise<void> {
 		this.prompts.push(text);
+	}
+
+	async begin(id: string, directory: string): Promise<void> {
+		this.began.push({ id, directory });
+	}
+
+	async end(): Promise<void> {
+		this.ended++;
 	}
 
 	async close(): Promise<void> {

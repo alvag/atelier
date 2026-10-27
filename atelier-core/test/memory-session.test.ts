@@ -617,6 +617,46 @@ describe("compaction summary", () => {
 	});
 });
 
+describe("memory session", () => {
+	it("registers the session in its folder at start and ends it once on close", async () => {
+		const memory = new FakeMemory("proj");
+		const backend = new FakeBackend([]);
+		const s = await Session.start({ backend, cwd, tools, memory });
+		expect(memory.began).toEqual([{ id: expect.stringMatching(/^atelier-/), directory: cwd }]);
+		expect(memory.ended).toBe(0);
+		await s.close();
+		await s.close();
+		expect(memory.ended).toBe(1);
+		expect(memory.closed).toBe(true);
+	});
+
+	it("goes on without a registered session when memory refuses it, and says so in the first turn", async () => {
+		const memory = new FakeMemory("proj");
+		memory.begin = async () => {
+			throw new MemoryError("Engram mem_session_start failed: closed");
+		};
+		memory.end = async () => {
+			throw new MemoryError("Engram mem_session_end failed: closed");
+		};
+		const { session: s, send } = await session([[{ event: finished }], [{ event: finished }]], {}, memory);
+		const first = await send("one");
+		const second = await send("two");
+		await s.close();
+		expect(first.filter((e) => e.type === "error")).toEqual([
+			expect.objectContaining({
+				code: "memory_session_failed",
+				message:
+					"Memory did not register this session; it is saved without one: Engram mem_session_start failed: closed",
+				recoverable: true,
+			}),
+		]);
+		expect(first).toContainEqual(expect.objectContaining({ type: "memory_status", available: true }));
+		expect(second.filter((e) => e.type === "error")).toEqual([]);
+		expect(memory.prompts).toEqual(["one", "two"]);
+		expect(memory.closed).toBe(true);
+	});
+});
+
 describe("user prompts", () => {
 	it("saves each prompt and each steer that enters, with credentials masked and cut to 2000 characters", async () => {
 		let steer = () => {};
