@@ -73,7 +73,7 @@ export interface CliIO {
 	 * Runs an interactive session in the TUI, with the core as a separate process; given only when stdin and stdout are
 	 * both terminals. Without it, or with a prompt, the CLI prints line by line and runs the session itself.
 	 */
-	tui?: Pick<TuiOptions, "terminal" | "connect">;
+	tui?: Pick<TuiOptions, "terminal" | "connect" | "answerGuardMs">;
 	/** The repository the CLI runs from, which `atelier update` updates; derived from the CLI's own location when absent. */
 	appRoot?: string;
 	/** Starts Electron for `atelier desktop` without waiting for it; tests pass their own, so none is launched. */

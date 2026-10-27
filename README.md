@@ -83,16 +83,16 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 ### Keys
 
-| Key       | Effect                                                               |
-| --------- | -------------------------------------------------------------------- |
-| Enter     | Send the prompt.                                                     |
-| Up / Down | Prompt history; move in lists and questions.                         |
-| Esc       | Interrupt the running turn; in a question or a list, deny or cancel. |
-| Ctrl+C    | Interrupt the turn; with none running, clear the editor or quit.     |
-| Ctrl+D    | Quit, on an empty editor.                                            |
-| Ctrl+O    | Expand or fold every tool, subagent and verification card.           |
-| Ctrl+T    | Open or fold the active feature's tasks.                             |
-| Shift+Tab | Switch the permission mode between `normal` and `auto`.              |
+| Key       | Effect                                                                                          |
+| --------- | ----------------------------------------------------------------------------------------------- |
+| Enter     | Send the prompt.                                                                                |
+| Up / Down | Prompt history; move in lists and questions.                                                    |
+| Esc       | Interrupt the running turn; in a question or a list, deny or cancel.                            |
+| Ctrl+C    | Interrupt the turn; with none running, clear the editor or quit.                                |
+| Ctrl+D    | Quit, on an empty editor.                                                                       |
+| Ctrl+O    | Expand or fold every tool, subagent and verification card, or the whole command of an approval. |
+| Ctrl+T    | Open or fold the active feature's tasks.                                                        |
+| Shift+Tab | Switch the permission mode between `normal` and `auto`.                                         |
 
 ### Permission modes
 

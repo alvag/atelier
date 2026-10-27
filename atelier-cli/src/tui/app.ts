@@ -27,7 +27,7 @@ import {
 import type { CliArgs } from "../args.ts";
 import { savedTranscript } from "../transcript.ts";
 import { Conversation } from "./conversation.ts";
-import { type Choice, ChoiceDialog } from "./dialog.ts";
+import { type Choice, ChoiceDialog, type Folded } from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
 import { type FooterState, footerAfter, footerLine, footerWithConfiguration, footerWithMode } from "./footer.ts";
 import { ProgramStatusReporter, settledState } from "./program-status.ts";
@@ -61,6 +61,8 @@ export interface TuiOptions {
 	onTerminate?: (handler: (signal: number) => void) => () => void;
 	/** How long closing the session may take before the core is closed anyway (default 3000 ms). */
 	closeTimeoutMs?: number;
+	/** How long an approval ignores keys after it appears, so one typed before it does not answer it (default 400 ms). */
+	answerGuardMs?: number;
 }
 
 const EXIT_OK = 0;
@@ -68,6 +70,7 @@ const EXIT_FAILED = 1;
 const EXIT_INTERRUPTED = 130;
 const SIGNAL_EXIT = 128;
 const CLOSE_TIMEOUT_MS = 3000;
+const ANSWER_GUARD_MS = 400;
 
 const COMMANDS = [
 	{ name: "model", description: "Change the model from the next turn [name]" },
@@ -105,6 +108,7 @@ type Blocked = { kind: "permission" | "question"; message: string };
 function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_requested" }>): {
 	title: string;
 	lines: string[];
+	folded?: Folded;
 } {
 	const command = shown(event.command);
 	if (event.tool === "edit" || event.tool === "write") {
@@ -123,9 +127,13 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 		command.hadHidden || reason?.hadHidden
 			? ["warning: the command contains invisible or control characters, shown as markers."]
 			: [];
+	const lines = [command.text, ...(reason ? [`reason: ${reason.text}`] : []), ...warning];
+	// Folded, the command's first line; the rest, the reason included, opens with Ctrl+O. A warning always shows.
+	const [first = "", ...rest] = command.text.split("\n");
 	return {
 		title: `${reason ? "Run this command OUTSIDE the sandbox?" : "Run this command?"}${guard}${asker(event)}`,
-		lines: [command.text, ...(reason ? [`reason: ${reason.text}`] : []), ...warning],
+		lines,
+		folded: { lines: [first, ...warning], hidden: rest.length + (reason ? 1 : 0) },
 	};
 }
 
@@ -356,7 +364,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		finish = resolve;
 	});
 	/** Questions waiting for an answer, the first one on screen. */
-	const questions: { dialog: Component; cancel: () => void; local: boolean; blocked?: Blocked | undefined }[] = [];
+	const questions: {
+		dialog: ChoiceDialog<string>;
+		cancel: () => void;
+		local: boolean;
+		blocked?: Blocked | undefined;
+	}[] = [];
 	const programStatus = new ProgramStatusReporter(options.terminal);
 	/** What the terminal is told while a turn runs: blocked when the core's own question is on screen. */
 	const reportRunning = () => {
@@ -380,12 +393,22 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const first = questions[0];
 		if (first) {
 			dialogs.addChild(first.dialog);
+			first.dialog.reveal();
 			tui.setFocus(first.dialog);
 		} else tui.setFocus(editor);
 		tui.requestRender();
 	};
 	const ask = <T extends string>(
-		question: { title: string; lines: string[]; choices: Choice<T>[]; initial: T; cancel: T; rows?: number },
+		question: {
+			title: string;
+			lines: string[];
+			choices: Choice<T>[];
+			initial: T;
+			cancel: T;
+			rows?: number;
+			folded?: Folded;
+			guardMs?: number;
+		},
 		answer: (value: T) => void,
 		local = false,
 		blocked?: Blocked,
@@ -459,8 +482,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 						{ value: "allow", label: "Allow" },
 						{ value: "deny", label: "Deny" },
 					],
-					initial: "deny",
+					initial: "allow",
 					cancel: "deny",
+					guardMs: options.answerGuardMs ?? ANSWER_GUARD_MS,
 				},
 				(value) =>
 					void request({ command: "session.approve", sessionId, callId: event.callId, approved: value === "allow" }),
@@ -816,7 +840,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			return { consume: true };
 		}
 		if (matchesKey(data, "ctrl+o")) {
-			conversation.toggleCards();
+			// An open question with folded lines takes Ctrl+O; otherwise it opens or folds the cards.
+			if (!questions[0]?.dialog.toggle()) conversation.toggleCards();
 			tui.requestRender(true);
 			return { consume: true };
 		}

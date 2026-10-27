@@ -182,7 +182,7 @@ function harness(
 		home,
 		color: false,
 		tools,
-		tui: { terminal: screen.terminal, connect: core.connect },
+		tui: { terminal: screen.terminal, connect: core.connect, ...({ answerGuardMs: 0 } as { answerGuardMs?: number }) },
 		onTerminate: (handler: (signal: number) => void) => {
 			terminate = handler;
 			return () => {
@@ -224,7 +224,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(h.backend.closed).toBe(true);
 	});
 
-	it("asks an approval in a dialog that starts on Deny, and allows what is chosen", async () => {
+	it("asks an approval in a dialog that starts on Allow, and denies what is chosen", async () => {
 		const h = harness([
 			[{ toolCall: { tool: "bash", input: { command: "echo first" } } }, { event: finished }],
 			[{ toolCall: { tool: "bash", input: { command: "echo second" } } }, { event: finished }],
@@ -237,17 +237,66 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(h.screen.screen()).toContain("echo first");
 		h.screen.type("\r");
 		await until(() => h.backend.toolResults.length === 1);
-		expect(h.backend.toolResults[0]?.output).toBe("The user denied this command.");
+		expect(h.backend.toolResults[0]?.output).toContain("first");
 		await until(() => h.screen.screen().includes("$0.50"));
 
 		h.screen.type("two");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("echo second"));
-		h.screen.type("\x1b[A");
+		h.screen.type("\x1b[B");
 		h.screen.type("\r");
 		await until(() => h.backend.toolResults.length === 2);
-		expect(h.backend.toolResults[1]?.output).toContain("second");
+		expect(h.backend.toolResults[1]?.output).toBe("The user denied this command.");
 		await until(() => h.screen.screen().includes("$1.00"));
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("shows a long command's first line in the approval, and all of it with Ctrl+O", async () => {
+		const h = harness([
+			[{ toolCall: { tool: "bash", input: { command: "echo one\necho two\necho three" } } }, { event: finished }],
+		]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Run this command?"));
+		const dialog = () => h.screen.screen().slice(h.screen.screen().lastIndexOf("Run this command?"));
+		expect(dialog()).toContain("echo one … 2 more lines (Ctrl+O)");
+		expect(dialog()).not.toContain("echo three");
+		h.screen.type("\x0f");
+		await until(() => dialog().includes("echo three"));
+		expect(dialog()).toContain("echo two");
+		expect(dialog()).not.toContain("more lines");
+		h.screen.type("\x0f");
+		await until(() => !dialog().includes("echo three"));
+		h.screen.type("\r");
+		await until(() => h.backend.toolResults.length === 1);
+		expect(h.backend.toolResults[0]?.output).toContain("three");
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("ignores the keys typed just as an approval appears", async () => {
+		const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo hi" } } }, { event: finished }]]);
+		h.io.tui = { ...h.io.tui, answerGuardMs: 300 };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Run this command?"));
+		const shownAt = Date.now();
+		h.screen.type("\r");
+		h.screen.type("\x1b[B");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(h.backend.toolResults).toEqual([]);
+		await new Promise((resolve) => setTimeout(resolve, Math.max(0, 300 - (Date.now() - shownAt))));
+		// The Down typed too early did not move the answer: Enter takes Allow.
+		h.screen.type("\r");
+		await until(() => h.backend.toolResults.length === 1);
+		expect(h.backend.toolResults[0]?.output).toContain("hi");
+		await until(() => h.screen.screen().includes("$0.50"));
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});
@@ -272,7 +321,6 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("Run this command? (asked by worker)"));
 		expect(h.screen.screen()).toContain("echo childcmd");
-		h.screen.type("\x1b[A");
 		h.screen.type("\r");
 		await until(() => worker.toolResults.length === 1);
 		expect(worker.toolResults[0]?.output).toContain("childcmd\n");
@@ -290,12 +338,10 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("go");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("Run this command?"));
-		h.screen.type("\x1b[A");
 		h.screen.type("\x1b[200~\r\x1b[201~");
 		await new Promise((resolve) => setTimeout(resolve, 30));
 		expect(h.backend.toolResults).toEqual([]);
 		h.screen.type("\r");
-
 		await until(() => h.backend.toolResults.length === 1);
 		expect(h.backend.toolResults[0]?.output).toContain("hi");
 		await until(() => h.screen.screen().includes("$0.50"));
@@ -495,10 +541,10 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		for (const chunk of chunks) h.screen.type(chunk);
 		await new Promise((resolve) => setTimeout(resolve, 30));
 		expect(h.backend.toolResults).toEqual([]);
-		// Deny is still the selected answer.
+		// Allow is still the selected answer.
 		h.screen.type("\r");
 		await until(() => h.backend.toolResults.length === 1);
-		expect(h.backend.toolResults[0]?.output).toBe("The user denied this command.");
+		expect(h.backend.toolResults[0]?.output).toContain("hi");
 		await until(() => h.screen.screen().includes("$0.50"));
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
@@ -513,6 +559,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		await until(() => h.screen.screen().includes("Run this command?"));
 		h.screen.type("\x1b[200~x\x1b[B");
 		h.screen.type("\r\x1b[201~");
+		h.screen.type("\x1b[B");
 		h.screen.type("\x1b[A");
 		h.screen.type("\r");
 		await until(() => h.backend.toolResults.length === 1);

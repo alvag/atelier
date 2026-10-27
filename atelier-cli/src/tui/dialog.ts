@@ -25,9 +25,17 @@ export interface Choice<T extends string> {
 	description?: string;
 }
 
+/** What a folded question shows: lines of one row each, and how many lines of the whole question it leaves out. */
+export interface Folded {
+	lines: readonly string[];
+	hidden: number;
+}
+
 /**
  * A question with a list of answers, in a frame: `┌ title ─┐`, the question's lines, then the choices. The answer
  * selected at first is `initial`; Esc gives `cancel`. Text pasted into it answers nothing: only keys move or choose.
+ * With `folded`, it shows that short form until `toggle()` opens the whole question. With `guardMs`, the keys that
+ * arrive that long after `reveal()` are dropped, so a key typed before the question appeared does not answer it.
  */
 export class ChoiceDialog<T extends string> implements Component, Focusable {
 	focused = false;
@@ -35,6 +43,10 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 	readonly #lines: readonly string[];
 	readonly #list: SelectList;
 	readonly #paint: Paint;
+	readonly #folded: Folded | undefined;
+	#open = false;
+	readonly #guardMs: number;
+	#revealedAt: number | undefined;
 	/** Between a paste's start marker and its end marker, which may arrive in different chunks of input. */
 	#pasting = false;
 	/** The end of a chunk that may be the start of a marker, kept until the next chunk says. */
@@ -49,6 +61,8 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 			cancel: T;
 			/** How many choices are shown at once; all of them by default. */
 			rows?: number;
+			folded?: Folded;
+			guardMs?: number;
 		},
 		paint: Paint,
 		answer: (value: T) => void,
@@ -56,6 +70,8 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 		this.#title = options.title;
 		this.#lines = options.lines;
 		this.#paint = paint;
+		this.#folded = options.folded;
+		this.#guardMs = options.guardMs ?? 0;
 		const items = options.choices.map(({ value, label, description }) => ({
 			value,
 			label,
@@ -71,6 +87,22 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 		const values = new Set<string>(options.choices.map((choice) => choice.value));
 		this.#list.onSelect = (item) => answer(values.has(item.value) ? (item.value as T) : options.cancel);
 		this.#list.onCancel = () => answer(options.cancel);
+	}
+
+	/** Starts the guard: called when the question is put on screen. */
+	reveal(now = Date.now()): void {
+		this.#revealedAt ??= now;
+	}
+
+	/** Opens the whole question, or folds it again; false when there is nothing folded. */
+	toggle(): boolean {
+		if (this.#folded === undefined) return false;
+		this.#open = !this.#open;
+		return true;
+	}
+
+	#guarded(): boolean {
+		return this.#revealedAt !== undefined && Date.now() - this.#revealedAt < this.#guardMs;
 	}
 
 	handleInput(data: string): void {
@@ -101,7 +133,7 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 			rest = rest.slice(start + PASTE_START.length);
 			this.#pasting = true;
 		}
-		if (keys !== "") this.#list.handleInput(keys);
+		if (keys !== "" && !this.#guarded()) this.#list.handleInput(keys);
 	}
 
 	invalidate(): void {
@@ -118,7 +150,10 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 			const cut = truncateToWidth(line, inner, "…", true);
 			return `${paint("yellow", "│")} ${cut} ${paint("yellow", "│")}`;
 		};
-		const body = this.#lines.flatMap((line) => wrapTextWithAnsi(line, inner));
+		const body =
+			this.#folded !== undefined && !this.#open
+				? foldedRows(this.#folded, inner)
+				: this.#lines.flatMap((line) => wrapTextWithAnsi(line, inner));
 		return [
 			truncateToWidth(top, width),
 			...body.map(row),
@@ -126,4 +161,19 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
 		];
 	}
+}
+
+/** The folded lines, one row each; the last one says what is left out and that Ctrl+O shows it. */
+function foldedRows(folded: Folded, width: number): string[] {
+	const cut = folded.lines.some((line) => visibleWidth(line) > width);
+	const note =
+		folded.hidden > 0
+			? ` … ${folded.hidden} more ${folded.hidden === 1 ? "line" : "lines"} (Ctrl+O)`
+			: cut
+				? " (Ctrl+O)"
+				: "";
+	return folded.lines.map((line, index) => {
+		if (index !== folded.lines.length - 1 || note === "") return truncateToWidth(line, width, "…");
+		return truncateToWidth(line, Math.max(1, width - visibleWidth(note)), "…") + note;
+	});
 }
