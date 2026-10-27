@@ -48,6 +48,11 @@ export interface ToolGate {
 		classifierTool?: string;
 		/** What the model is told when the user denies, or there is nobody to ask. */
 		denial?: string;
+		/**
+		 * What an answer may remember so the same call is not asked again: `bash` rules (`open`, `npm install`).
+		 * `always` is false when one runs arbitrary code (an interpreter or a launcher): it is allowed for the session only.
+		 */
+		remember?: { rules: string[]; always: boolean };
 	};
 	/** Said once per turn, before the first question: why the call runs without the protection it normally has. */
 	warning?: string;

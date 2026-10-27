@@ -66,7 +66,9 @@ describe("bash and the user's rules", () => {
 		const covered = await tool.execute({ command: "echo -n covered" }, { cwd, bashRules: ["echo"] });
 		expect(covered.ok).toBe(true);
 		expect(covered.output).toContain("covered");
-		expect(covered.output).toContain("[ran outside the sandbox: the user allows echo]");
+		expect(covered.output).toContain(
+			"[ran outside the sandbox: the user allows echo there without asking; do not set unsandboxed for it]",
+		);
 		expect(wrapped).toEqual([]);
 		await tool.execute({ command: "echo inside" }, { cwd, bashRules: ["ls"] });
 		expect(wrapped).toEqual(["echo inside"]);

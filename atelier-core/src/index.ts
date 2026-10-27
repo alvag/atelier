@@ -116,6 +116,7 @@ export { ALLOW_ROOT_VALUE, checkRoot, type RootCheck } from "./root.ts";
 export { EchoBackend } from "./server/echo-backend.ts";
 export { RpcServer, type RpcServerOptions, reviewEnabled } from "./server/rpc-server.ts";
 export {
+	type ApprovalAnswer,
 	type ApprovalRequest,
 	type PermissionMode,
 	Session,

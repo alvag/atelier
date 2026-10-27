@@ -52,6 +52,7 @@ import {
 	parseDecision,
 	pauseReason,
 } from "./permission-classifier.ts";
+import { type PermissionRuleScope, type PermissionRules, PermissionRulesError } from "./permission-rules.ts";
 import { thinkingToSend } from "./pricing.ts";
 import {
 	compactionSettings,
@@ -97,6 +98,13 @@ const PARENT_ONLY = new Set([
 	MCP_CALL_TOOL,
 ]);
 
+/** Tells the agent which commands run outside the sandbox on their own, so it asks to leave it only when needed. */
+async function rulesPrompt(rules: PermissionRules | undefined): Promise<string> {
+	const bash = rules === undefined ? [] : (await rules.current()).bash;
+	if (bash.length === 0) return "";
+	return `The user allows these bash commands outside the sandbox without asking: ${bash.join(", ")}. They run there on their own: do not set unsandboxed for them.`;
+}
+
 export interface ApprovalRequest {
 	callId: string;
 	command: string;
@@ -106,7 +114,15 @@ export interface ApprovalRequest {
 	tool?: string;
 	/** The guard's confirm rule the command matches (`recursive removal`, `git push`, ...); `bash` only. */
 	confirm?: string;
+	/**
+	 * What "Allow in this session" and "Allow always" would remember (`rules`, shown to the user); `always` is false when
+	 * only the session may keep them. Absent when the answer can only allow or deny.
+	 */
+	remember?: { rules: string[]; always: boolean };
 }
+
+/** The user's answer: allow or deny this call, or allow it and remember its rules for the session or always. */
+export type ApprovalAnswer = boolean | { remember: PermissionRuleScope };
 
 /** What `auto` decides with: a backend for the classifier's separate model call. Never given to children. */
 export interface PermissionClassifierOptions {
@@ -148,7 +164,12 @@ export interface SessionOptions {
 	/** Turns the sandbox off for this session (`--no-sandbox`): `bash` runs unsandboxed, every command asks, and the verifier gets no `bash`. */
 	noSandbox?: boolean;
 	/** Asks the user; without it, calls that need approval are denied. */
-	approve?: (request: ApprovalRequest) => Promise<boolean>;
+	approve?: (request: ApprovalRequest) => Promise<ApprovalAnswer>;
+	/**
+	 * The rules the user allowed, which spare the questions they cover: the session's in memory and the saved ones.
+	 * Without it nothing is remembered and questions offer only Allow and Deny. Subagents share the parent's.
+	 */
+	permissionRules?: PermissionRules;
 	createId?: () => string;
 	/** Enables the task tool. Children get no subagents: they do not delegate. */
 	subagents?: SubagentOptions;
@@ -294,6 +315,8 @@ export class Session {
 	#saveFailureSaid = false;
 	/** The sandbox warning was already said in this turn. */
 	#warned = false;
+	/** The broken rules file was already said in this session. */
+	#rulesProblemSaid = false;
 	/** The user's prompt of the turn running now, verbatim: what the classifier judges an action against. */
 	#turnPrompt: string | undefined;
 	/** The last `send` turn that finished: the rest the classifier knows of the conversation. */
@@ -405,6 +428,7 @@ export class Session {
 			session.#instructions?.text ?? "",
 			skillsPrompt(session.#skills?.skills ?? []),
 			options.mcp ? mcpPromptBlock(options.mcp) : "",
+			await rulesPrompt(options.permissionRules),
 		]
 			.filter((part) => part !== "")
 			.join("\n\n");
@@ -1296,6 +1320,7 @@ export class Session {
 				callId,
 				...(this.#options.noSandbox ? { sandboxOff: true } : {}),
 				approvedPaths: this.#approvedPaths,
+				bashRules: await this.#currentRules(emit),
 			};
 			const gate = await this.#gate(tool, call.input, context);
 			if (gate.refusal) {
@@ -1321,19 +1346,26 @@ export class Session {
 				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
 			} else if (approval) {
 				const { command, reason, tool: asking, confirm } = approval;
+				const remember = this.#options.permissionRules === undefined ? undefined : approval.remember;
 				const question = {
 					command,
 					...(reason === undefined ? {} : { reason }),
 					...(asking === undefined ? {} : { tool: asking }),
 					...(confirm === undefined ? {} : { confirm }),
+					...(remember === undefined ? {} : { remember }),
 				};
 				emit({ type: "approval_requested", callId, ...question });
 				const request = { callId, ...question };
 				// The client must have read everything before the question; a turn nobody reads anymore is not asked.
 				const delivered = (await this.#turn?.drained(signal)) ?? false;
-				const approved = delivered && ((await this.#options.approve?.(request)) ?? false);
-				if (!approved) return fail(approval.denial ?? "The user denied this command.");
+				const answer = delivered ? ((await this.#options.approve?.(request)) ?? false) : false;
+				if (answer === false) return fail(approval.denial ?? "The user denied this command.");
 				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
+				if (answer !== true && remember !== undefined) {
+					await this.#remember(remember, answer.remember, emit);
+					// The call itself runs as the rule now says: outside the sandbox, with `~/.atelier` unwritable.
+					context.bashRules = await this.#currentRules(emit);
+				}
 			}
 			const outcome = await tool.execute(call.input, context);
 			emit({
@@ -1484,6 +1516,48 @@ export class Session {
 		return addSpent(ended, { ...spent, phases: onePhase("handoff", spent) });
 	}
 
+	/** The `bash` rules in force now; a broken saved file is said once, as a recoverable error, and counts as none. */
+	async #currentRules(emit: (event: AtelierEventBody) => void): Promise<string[]> {
+		const rules = this.#options.permissionRules;
+		if (rules === undefined) return [];
+		const current = await rules.current();
+		if (current.problem !== undefined && !this.#rulesProblemSaid) {
+			this.#rulesProblemSaid = true;
+			emit(errorEvent("permission_rules_invalid", current.problem, true));
+		}
+		return current.bash;
+	}
+
+	/** Keeps the answer's rules; what cannot be saved always (a launcher, a broken file) is kept for the session, and said. */
+	async #remember(
+		{ rules, always }: { rules: string[]; always: boolean },
+		scope: PermissionRuleScope,
+		emit: (event: AtelierEventBody) => void,
+	): Promise<void> {
+		const store = this.#options.permissionRules;
+		if (store === undefined) return;
+		const kept = rules.map((value) => ({ kind: "bash" as const, value }));
+		if (scope === "always") {
+			try {
+				if (!always)
+					throw new PermissionRulesError(`${rules.join(", ")} runs arbitrary code: it is never allowed always`);
+				await store.allow(kept, "always");
+				return;
+			} catch (error) {
+				emit(
+					errorEvent(
+						"permission_rules_not_saved",
+						`Not saved: ${describeError(error)}; allowed for this session`,
+						true,
+					),
+				);
+			}
+		}
+		await store.allow(kept, "session").catch((error: unknown) => {
+			emit(errorEvent("permission_rules_not_saved", `Not kept: ${describeError(error)}`, true));
+		});
+	}
+
 	/** What the tool says about the call; a tool without a gate only has the command to approve. */
 	async #gate(tool: ToolDefinition, input: unknown, context: ToolContext): Promise<ToolGate> {
 		if (tool.gate) return tool.gate(input, context);
@@ -1528,6 +1602,7 @@ export class Session {
 				// The mode is not passed on: the child runs in normal.
 				...(this.#options.noSandbox ? { noSandbox: true } : {}),
 				...(this.#options.approve === undefined ? {} : { approve: this.#options.approve }),
+				...(this.#options.permissionRules === undefined ? {} : { permissionRules: this.#options.permissionRules }),
 				createId: this.#createId,
 			});
 		} catch (error) {

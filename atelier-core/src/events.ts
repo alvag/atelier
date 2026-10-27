@@ -290,7 +290,16 @@ export type AtelierEventBody =
 	 * `reason`: the agent asked to run the command outside the sandbox, and says why. `confirm`: the guard rule
 	 * (`recursive removal`, `git push`, ...) that makes the command ask in every mode, also inside the sandbox.
 	 */
-	| { type: "approval_requested"; callId: string; command: string; reason?: string; tool?: string; confirm?: string }
+	| {
+			type: "approval_requested";
+			callId: string;
+			command: string;
+			reason?: string;
+			tool?: string;
+			confirm?: string;
+			/** What "Allow in this session" and "Allow always" would remember; absent when only Allow and Deny are offered. */
+			remember?: { rules: string[]; always: boolean };
+	  }
 	/**
 	 * `auto`: what the permission classifier decided about the call, before it runs or is refused. `undecided`: the
 	 * classifier failed or is paused (`reason` says why) and the user is asked as in `normal`; `paused` is set while paused.

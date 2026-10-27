@@ -168,6 +168,16 @@ function coveredByRules(
 	return sandbox.outsideAvailable();
 }
 
+/** What an answer to the command's question may remember: its rules, unless the guard asks about it or it has none. */
+function rememberOffer(
+	command: string,
+	confirm: string | undefined,
+): { remember?: { rules: string[]; always: boolean } } {
+	if (confirm !== undefined) return {};
+	const { rules, always } = commandRules(command);
+	return rules === undefined ? {} : { remember: { rules, always } };
+}
+
 /** The causes shown for one command; the rest are counted. */
 const MAX_CAUSES = 5;
 
@@ -220,7 +230,7 @@ export function createBashTool({
 				.boolean()
 				.optional()
 				.describe(
-					"Run this one command outside the sandbox, only when it cannot work inside it (for example to install dependencies). The user is asked unless the session runs in yolo mode; give the reason.",
+					"Run this one command outside the sandbox, only when it cannot work inside it (for example to install dependencies). The user is asked unless the session runs in yolo mode; give the reason. A command the user's rules allow runs outside the sandbox without it.",
 				),
 			reason: z.string().optional().describe("Required with unsandboxed: why this command must leave the sandbox"),
 		},
@@ -235,13 +245,18 @@ export function createBashTool({
 				if (policy === "verifier") return { refusal: refusal(VERIFIER_UNSANDBOXED, command) };
 				if (reason === undefined || reason.trim() === "")
 					throw new ToolInputError("reason is required with unsandboxed: say why this command must leave the sandbox.");
-				return { approval: { command, reason: reason.trim(), ...confirmed } };
+				return {
+					approval: { command, reason: reason.trim(), ...confirmed, ...rememberOffer(command, confirmed.confirm) },
+				};
 			}
 			if (withoutApproval) return {};
 			const status = await statusFor(sandbox, sandboxOff);
 			// The sandbox contains the command, so no mode asks about it, unless the guard's confirm category does.
 			if (status.available) return confirmed.confirm === undefined ? {} : { approval: { command, ...confirmed } };
-			return { approval: { command, ...confirmed }, warning: status.reason };
+			return {
+				approval: { command, ...confirmed, ...rememberOffer(command, confirmed.confirm) },
+				warning: status.reason,
+			};
 		},
 		async execute({ command, timeoutSec, unsandboxed }, { cwd, signal, scratchDir, sandboxOff, bashRules }) {
 			// The session asks the gate first; this keeps a direct call from running what the guard refuses.
@@ -352,7 +367,7 @@ export function createBashTool({
 			const label = stopped === "timeout" ? "timed out" : stopped === "aborted" ? "aborted" : `exit ${code ?? "?"}`;
 			return {
 				ok,
-				output: `${header}${text}${text ? "\n\n" : ""}${status}${blocked.map((cause) => `\n[sandbox blocked: ${cause}]`).join("")}${covered ? `\n[ran outside the sandbox: the user allows ${(commandRules(command).rules ?? []).join(", ")}]` : ""}`,
+				output: `${header}${text}${text ? "\n\n" : ""}${status}${blocked.map((cause) => `\n[sandbox blocked: ${cause}]`).join("")}${covered ? `\n[ran outside the sandbox: the user allows ${(commandRules(command).rules ?? []).join(", ")} there without asking; do not set unsandboxed for it]` : ""}`,
 				summary: `${firstLine(command)} (${label})`,
 				truncated,
 				...(fullOutputPath === undefined ? {} : { fullOutputPath }),
