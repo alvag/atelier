@@ -94,7 +94,8 @@ async function readSkill(
 	try {
 		data = frontmatter(await readFile(file, "utf8"));
 	} catch (error) {
-		const reason = (error instanceof Error ? error.message : String(error)).split("\n")[0];
+		// The parser's first line, without the colon that introduces its excerpt of the file.
+		const reason = (error instanceof Error ? error.message : String(error)).split("\n")[0]?.replace(/:\s*$/, "");
 		warn(`invalid frontmatter: ${reason}; not loaded`);
 		return undefined;
 	}

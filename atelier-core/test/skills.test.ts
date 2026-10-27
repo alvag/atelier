@@ -84,7 +84,7 @@ describe("loadSkills", () => {
 		expect(loaded.skills).toEqual([]);
 		const at = (name: string) => join(root, "work/.agents/skills", name, "SKILL.md");
 		expect(loaded.warnings).toEqual([
-			{ path: at("broken"), message: expect.stringMatching(/^invalid frontmatter: .+; not loaded$/) },
+			{ path: at("broken"), message: expect.stringMatching(/^invalid frontmatter: .+[^:]; not loaded$/) },
 			{ path: at("empty"), message: "no description; not loaded" },
 			{ path: at("open"), message: "invalid frontmatter: no closing ---; not loaded" },
 			{ path: at("plain"), message: "no description; not loaded" },
