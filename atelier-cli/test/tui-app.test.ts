@@ -1851,6 +1851,45 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(herdr.calls.at(-1)?.method).toBe("pane.release_agent");
 		});
 
+		it.each([
+			["a word longer than the row", "x".repeat(300)],
+			["two-byte characters", "ñ".repeat(300)],
+			["three-byte characters", "漢".repeat(300)],
+		])("keeps each summary token within Herdr's limits for %s", async (_name, title) => {
+			const herdr = await fakeHerdr();
+			await writeFile(join(cwd, "session.json"), JSON.stringify({ sidebar_width: 125 }));
+			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
+			reporter?.activity({ id: "T1", title });
+			reporter?.report("working");
+			const metadata = () => herdr.calls.find((call) => call.method === "pane.report_metadata");
+			await until(() => metadata() !== undefined);
+			await reporter?.release();
+			await herdr.close();
+			const { summary, summary2 } = (metadata() as HerdrCall).params.tokens as { summary: string; summary2: string };
+			for (const token of [summary, summary2]) {
+				expect([...token].length).toBeLessThanOrEqual(80);
+				expect(Buffer.byteLength(token)).toBeLessThanOrEqual(128);
+			}
+			// With no space after the ID, the first row breaks inside the word.
+			expect(summary.startsWith(`◐ T1 ${title.slice(0, 1)}`)).toBe(true);
+			expect(summary2.endsWith("…")).toBe(true);
+		});
+
+		it("breaks a long word inside the first row at the default width", async () => {
+			const herdr = await fakeHerdr();
+			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
+			reporter?.activity({ id: "T1", title: "x".repeat(60) });
+			reporter?.report("working");
+			const metadata = () => herdr.calls.find((call) => call.method === "pane.report_metadata");
+			await until(() => metadata() !== undefined);
+			await reporter?.release();
+			await herdr.close();
+			expect(metadata()?.params.tokens).toEqual({
+				summary: `◐ T1 ${"x".repeat(19)}`,
+				summary2: `${"x".repeat(23)}…`,
+			});
+		});
+
 		it("refreshes the summary while the turn runs, 24 columns wide without Herdr's session file", async () => {
 			const herdr = await fakeHerdr();
 			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path), { refreshMs: 20 });

@@ -42,27 +42,42 @@ const BIDI = /[؜‎‏‪-‮⁦-⁩]/g;
 /** The text without control or bidi characters, its spaces collapsed. */
 const plain = (text: string) => text.replace(BIDI, "").replace(CONTROL, " ").replace(/\s+/g, " ").trim();
 
-/** The longest start of `text` that fits `width` columns, TOKEN_CHARS characters and TOKEN_BYTES bytes. */
-function fitting(text: string, width: number): string {
+const ELLIPSIS = "…";
+
+/**
+ * The longest start of `text` that fits `width` columns, TOKEN_CHARS characters and TOKEN_BYTES bytes, with room left
+ * in all three for `reserved`, the text that will follow it.
+ */
+function fitting(text: string, width: number, reserved = ""): string {
+	const columns = width - visibleWidth(reserved);
+	const chars = TOKEN_CHARS - [...reserved].length;
+	const bytes = TOKEN_BYTES - Buffer.byteLength(reserved);
 	let cut = "";
 	for (const { segment } of new Intl.Segmenter().segment(text)) {
 		const next = cut + segment;
-		if (visibleWidth(next) > width || [...next].length > TOKEN_CHARS || Buffer.byteLength(next) > TOKEN_BYTES) break;
+		if (visibleWidth(next) > columns || [...next].length > chars || Buffer.byteLength(next) > bytes) break;
 		cut = next;
 	}
 	return cut;
 }
 
-/** `◐ <ID> <title>` in two sidebar rows at most: the first breaks between words, the second ends in `…` when cut. */
+/**
+ * `◐ <ID> <title>` in two sidebar rows at most: the first breaks between words of the title, or inside its first word
+ * when that does not fit; the second ends in `…` when cut.
+ */
 export function summaryRows(activity: Activity, width: number): [string, string | null] {
-	const text = plain(`◐ ${activity.id} ${activity.title}`);
+	const head = plain(`◐ ${activity.id}`);
+	const text = plain(`${head} ${activity.title}`);
 	let first = fitting(text, width);
-	if (first.length < text.length && text[first.length] !== " " && first.lastIndexOf(" ") > 0)
-		first = first.slice(0, first.lastIndexOf(" "));
+	const space = first.lastIndexOf(" ");
+	if (first.length < text.length && text[first.length] !== " " && space > head.length) first = first.slice(0, space);
 	const rest = text.slice(first.length).trim();
 	if (rest === "") return [first.trimEnd(), null];
 	const second = fitting(rest, width);
-	return [first.trimEnd(), second.length < rest.length ? `${fitting(rest, width - 1).trimEnd()}…` : second];
+	return [
+		first.trimEnd(),
+		second.length < rest.length ? `${fitting(rest, width, ELLIPSIS).trimEnd()}${ELLIPSIS}` : second,
+	];
 }
 
 /** The width of a sidebar row, from the `session.json` Herdr keeps next to its socket. */
