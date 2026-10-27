@@ -709,35 +709,6 @@ describe("App", () => {
 		expect(screen.queryByText(/outside the sandbox/)).toBeNull();
 	});
 
-	it("asks a web_fetch approval with the URL alone, control characters as markers", async () => {
-		const fake = fakeBridge();
-		await openFolderAndSend(fake, "x");
-		fake.emit({ type: "tool_call_started", callId: "c1", tool: "web_fetch", input: { url: "https://example.com/a" } });
-		fake.emit({
-			type: "approval_requested",
-			callId: "c1",
-			command: "web_fetch https://example.com/a\u001b[2K\u202Ex",
-			tool: "web_fetch",
-		});
-		expect(await screen.findByText("Fetch this web page?")).toBeTruthy();
-		expect(screen.getByText("https://example.com/a␛[2K⟨U+202E⟩x")).toBeTruthy();
-		expect(screen.getByText(/shown below as markers/)).toBeTruthy();
-		expect(screen.queryByText(/Run this command/)).toBeNull();
-		fireEvent.click(screen.getByRole("button", { name: "Allow" }));
-		await waitFor(() => expect(fake.commands.at(-1)).toMatchObject({ command: "session.approve", approved: true }));
-	});
-
-	it("asks a web_search approval with the query alone", async () => {
-		const fake = fakeBridge();
-		await openFolderAndSend(fake, "x");
-		fake.emit({ type: "tool_call_started", callId: "c1", tool: "web_search", input: { query: "node streams" } });
-		fake.emit({ type: "approval_requested", callId: "c1", command: "web_search node streams", tool: "web_search" });
-		expect(await screen.findByText("Search the web?")).toBeTruthy();
-		expect(screen.getByText("node streams")).toBeTruthy();
-		expect(screen.queryByText(/Run this command/)).toBeNull();
-		expect(screen.queryByText(/shown below as markers/)).toBeNull();
-	});
-
 	it("shows an edit approval in the same card, with the path, and answers it", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

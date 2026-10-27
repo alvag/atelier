@@ -372,23 +372,6 @@ export async function run(
 				const verb = tool === "edit" ? "Edit" : "Write";
 				return askYesNo(`${verb} a file outside the working directory?\n  ${path.text}\n${note}`);
 			}
-			if (tool === "web_fetch" || tool === "web_search") {
-				// The command is `<tool> <url or query>`: the question shows that part alone.
-				const target = visibleText(command.slice(`${tool} `.length));
-				const noun = tool === "web_fetch" ? "URL" : "query";
-				if (!io.isTTY) {
-					renderer.endLine();
-					io.stderr(
-						`${tool} needs your approval to reach the network, but there is no terminal to ask (--mode yolo allows it): ${target.text}\n`,
-					);
-					return false;
-				}
-				const note = target.hadHidden
-					? `warning: the ${noun} contains invisible or control characters, shown as markers.\n`
-					: "";
-				const question = tool === "web_fetch" ? "Fetch this web page?" : "Search the web?";
-				return askYesNo(`${question}\n  ${target.text}\n${note}`);
-			}
 			if (!io.isTTY) {
 				renderer.endLine();
 				// The rule is the guard's own text; yolo does not allow it, except a plain push or rebase, which never gets here.

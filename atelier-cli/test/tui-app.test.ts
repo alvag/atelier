@@ -252,59 +252,6 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(130);
 	});
 
-	it.each([
-		[
-			"web_fetch",
-			{ url: "https://example.com/a\u001b[2Kb" },
-			"Fetch this web page?",
-			"https://example.com/a␛[2Kb",
-			"the URL",
-		],
-		["web_search", { query: "node\u202E streams" }, "Search the web?", "node⟨U+202E⟩ streams", "the query"],
-	])("asks a %s approval with its own question and %s shown with markers", async (tool, input, title, shown, what) => {
-		const h = harness([[{ toolCall: { tool, input } }, { event: finished }]]);
-		const code = run(["--no-session"], h.io, () => h.backend);
-		await until(h.screen.started);
-		h.screen.type("go");
-		h.screen.type("\r");
-		await until(() => h.screen.screen().includes(title));
-		expect(h.screen.screen()).toContain(shown);
-		expect(h.screen.screen()).toContain(`warning: ${what} contains invisible or control characters, shown as markers.`);
-		expect(h.screen.screen()).not.toContain("Run this command");
-		h.screen.type("\r");
-		await until(() => h.backend.toolResults.length === 1);
-		expect(h.backend.toolResults[0]?.ok).toBe(false);
-		await until(() => h.screen.screen().includes("$0.50"));
-		h.screen.type("\x03");
-		expect(await code).toBe(130);
-	});
-
-	it("keeps the subagent suffix on a web approval and reports the title as blocked", async () => {
-		const worker = new FakeBackend([
-			[{ toolCall: { tool: "web_search", input: { query: "q" } } }, { event: finished }],
-		]);
-		const h = harness(
-			[[{ toolCall: { tool: "task", input: { agent: "worker", prompt: "do" } } }, { event: finished }]],
-			{ children: [worker] },
-		);
-		const code = run(["--no-session"], h.io, () => h.backend);
-		await until(h.screen.started);
-		h.screen.type("go");
-		h.screen.type("\r");
-		await until(() => h.screen.screen().includes("Search the web? (asked by worker)"));
-		await until(() => h.screen.statuses.some((s) => s.state === "blocked"));
-		expect(h.screen.statuses.find((s) => s.state === "blocked")).toMatchObject({
-			kind: "permission",
-			message: "Search the web? (asked by worker)",
-		});
-		h.screen.type("\r");
-		await until(() => worker.toolResults.length === 1);
-		expect(worker.toolResults[0]?.ok).toBe(false);
-		await until(() => h.screen.screen().includes("$0.5000"));
-		h.screen.type("\x03");
-		expect(await code).toBe(130);
-	});
-
 	it("asks the approval a subagent needs, and gives it the answer", async () => {
 		const worker = new FakeBackend([
 			[

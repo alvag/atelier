@@ -60,27 +60,20 @@ function ApprovalCard({
 	item: Extract<TurnItem, { kind: "approval" }>;
 	onAnswer: (callId: string, approved: boolean) => void;
 }) {
-	const webTool = item.tool === "web_fetch" || item.tool === "web_search";
-	// A web tool's command is `<tool> <url or query>`: the card shows that part alone.
-	const command = visibleText(webTool ? item.command.slice(`${item.tool} `.length) : item.command);
+	const command = visibleText(item.command);
 	const fileTool = item.tool === "edit" || item.tool === "write";
 	// An edit's or a write's reason is the legend itself; only bash's says why it leaves the sandbox.
-	const reason = item.reason === undefined || fileTool || webTool ? undefined : visibleText(item.reason);
+	const reason = item.reason === undefined || fileTool ? undefined : visibleText(item.reason);
 	const guard = item.confirm === undefined ? "" : ` (guard: ${item.confirm})`;
-	const subject = item.tool === "web_fetch" ? "URL" : item.tool === "web_search" ? "query" : "command";
-	const title = webTool
-		? item.tool === "web_fetch"
-			? "Fetch this web page?"
-			: "Search the web?"
-		: fileTool
-			? `${item.tool === "edit" ? "Edit" : "Write"} a file outside the working directory?`
-			: `${reason ? "Run this command outside the sandbox?" : "Run this command?"}${guard}`;
+	const title = fileTool
+		? `${item.tool === "edit" ? "Edit" : "Write"} a file outside the working directory?`
+		: `${reason ? "Run this command outside the sandbox?" : "Run this command?"}${guard}`;
 	return (
 		<fieldset className="approval">
 			<legend>{title}</legend>
 			{command.hadHidden || reason?.hadHidden ? (
 				<div className="warning">
-					This {subject} contains invisible or control characters, shown below as markers. Check it carefully.
+					This command contains invisible or control characters, shown below as markers. Check it carefully.
 				</div>
 			) : null}
 			<pre>{command.text}</pre>

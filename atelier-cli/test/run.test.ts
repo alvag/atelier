@@ -283,42 +283,6 @@ describe("run", () => {
 		expect(h.out()).not.toContain("\u001b[2K");
 	});
 
-	describe("a web tool", () => {
-		it("asks to fetch a page with the URL alone, and shows control characters as markers", async () => {
-			const plain: FakeStep = { toolCall: { tool: "web_fetch", input: { url: "https://example.com/a" } } };
-			const h = harness([[plain, { event: finished }]], { isTTY: true, input: ["n"] });
-			await run(["x"], h.io, h.createBackend);
-			expect(h.out()).toContain("Fetch this web page?\n  https://example.com/a\n[y/N] ");
-			expect(h.out()).not.toContain("Run this command");
-			expect(h.backend.toolResults[0]?.ok).toBe(false);
-
-			const hidden: FakeStep = {
-				toolCall: { tool: "web_fetch", input: { url: "https://example.com/\u001b[2K\u202Ex" } },
-			};
-			const m = harness([[hidden, { event: finished }]], { isTTY: true, input: ["n"] });
-			await run(["x"], m.io, m.createBackend);
-			expect(m.out()).toContain("Fetch this web page?\n  https://example.com/␛[2K⟨U+202E⟩x\n");
-			expect(m.out()).toContain("warning: the URL contains invisible or control characters, shown as markers.");
-			expect(m.out().split("[y/N]")[0]).not.toContain("\u001b[2K");
-		});
-
-		it("asks to search the web with the query alone, and shows control characters as markers", async () => {
-			const plain: FakeStep = { toolCall: { tool: "web_search", input: { query: "node streams" } } };
-			const h = harness([[plain, { event: finished }]], { isTTY: true, input: ["n"] });
-			await run(["x"], h.io, h.createBackend);
-			expect(h.out()).toContain("Search the web?\n  node streams\n[y/N] ");
-			expect(h.out()).not.toContain("Run this command");
-			expect(h.backend.toolResults[0]?.ok).toBe(false);
-
-			const hidden: FakeStep = { toolCall: { tool: "web_search", input: { query: "a\u001b[2Kb\u202Ec" } } };
-			const m = harness([[hidden, { event: finished }]], { isTTY: true, input: ["n"] });
-			await run(["x"], m.io, m.createBackend);
-			expect(m.out()).toContain("Search the web?\n  a␛[2Kb⟨U+202E⟩c\n");
-			expect(m.out()).toContain("warning: the query contains invisible or control characters, shown as markers.");
-			expect(m.out().split("[y/N]")[0]).not.toContain("\u001b[2K");
-		});
-	});
-
 	it("runs an interactive session until end of input", async () => {
 		const h = harness(
 			[
