@@ -8,6 +8,7 @@ export type {
 	ContextUsage,
 	FeatureTask,
 	JsonValue,
+	McpServerStatus,
 	Phase,
 	PhaseAgent,
 	PhaseSpent,

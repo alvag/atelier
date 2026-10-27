@@ -356,3 +356,30 @@ a {
 .phase {
 	font-weight: 600;
 }
+
+.mcp-chip {
+	padding: 0 6px;
+	font: inherit;
+}
+
+.mcp-servers {
+	list-style: none;
+	margin: 8px 0 0;
+	padding: 0;
+}
+
+.mcp-server {
+	padding: 4px 0;
+}
+
+.mcp-tools {
+	color: var(--at-muted);
+	font-size: 12px;
+}
+
+.mcp-error,
+.mcp-stderr {
+	margin: 4px 0 0;
+	white-space: pre-wrap;
+	font-size: 12px;
+}

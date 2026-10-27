@@ -1,4 +1,4 @@
-import type { BackendName, ClientCommand, ReviewConsentAnswer } from "@atelier/core/protocol";
+import type { BackendName, ClientCommand, McpServerStatus, ReviewConsentAnswer } from "@atelier/core/protocol";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { AtelierBridge, CommandResult, HostMessage } from "../../../shared/bridge.ts";
 import { type ChatAction, type ChatState, initialChatState, type PermissionMode, reduceChat } from "./reducer.ts";
@@ -32,6 +32,8 @@ export interface Chat {
 	review(): Promise<void>;
 	/** Undoes the correction the escalated review `reviewId` left in the worktree. */
 	undoCorrection(reviewId: string): Promise<void>;
+	/** Asks the core for the session's MCP servers as they are now. */
+	refreshMcp(): Promise<void>;
 	restartCore(): Promise<void>;
 	pickFolder(): Promise<string | undefined>;
 }
@@ -181,6 +183,19 @@ export function useChat(bridge: AtelierBridge): Chat {
 			const result = await request({ command: "session.undo_correction", sessionId: session.id, reviewId });
 			if (result.ok && typeof result.result.turnId === "string")
 				dispatch({ type: "turn_accepted", turnId: result.result.turnId });
+		},
+		refreshMcp: async () => {
+			const session = stateRef.current.session;
+			if (!session) return;
+			const result = await request({ command: "session.mcp", sessionId: session.id });
+			if (!result.ok) return;
+			const { servers, problems } = result.result;
+			if (Array.isArray(servers) && Array.isArray(problems))
+				dispatch({
+					type: "mcp_answered",
+					servers: servers as unknown as McpServerStatus[],
+					problems: problems.filter((problem): problem is string => typeof problem === "string"),
+				});
 		},
 		restartCore: () => bridge.restartCore(),
 		pickFolder: () => bridge.pickFolder(),

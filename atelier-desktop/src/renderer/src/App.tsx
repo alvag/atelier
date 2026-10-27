@@ -8,6 +8,7 @@ import {
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import type { AtelierBridge } from "../../shared/bridge.ts";
 import { FeaturePanel } from "./chat/FeaturePanel.tsx";
+import { McpPanel, mcpChipLabel, mcpTroubled } from "./chat/McpPanel.tsx";
 import type { PermissionMode } from "./chat/reducer.ts";
 import { Transcript, UNSANDBOXED_EFFECT } from "./chat/Transcript.tsx";
 import { useChat } from "./chat/use-chat.ts";
@@ -69,6 +70,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 	/** Empty: no `mode` is sent, so the core uses the default it has saved. */
 	const [mode, setMode] = useState<PermissionMode | "">("");
 	const [draft, setDraft] = useState("");
+	const [mcpOpen, setMcpOpen] = useState(false);
 	const onAnswer = useCallback(
 		(callId: string, approved: boolean) => void chat.answerApproval(callId, approved),
 		[chat],
@@ -180,6 +182,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 					<Transcript turns={state.turns} onAnswer={onAnswer} onConsent={onConsent} onUndo={onUndo} />
 				</main>
 				{state.feature ? <FeaturePanel feature={state.feature} /> : null}
+				{mcpOpen && state.mcp ? <McpPanel mcp={state.mcp} /> : null}
 			</div>
 
 			<form className="composer" onSubmit={submit}>
@@ -250,6 +253,19 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 							no memory
 						</span>
 					)
+				) : null}
+				{state.mcp ? (
+					<button
+						type="button"
+						className={mcpTroubled(state.mcp) ? "mcp-chip warning" : "mcp-chip"}
+						title="MCP servers: connected / enabled"
+						onClick={() => {
+							if (!mcpOpen) void chat.refreshMcp();
+							setMcpOpen(!mcpOpen);
+						}}
+					>
+						{mcpChipLabel(state.mcp.servers)}
+					</button>
 				) : null}
 				{state.instructions && state.instructions.files.length > 0 ? (
 					<span title={state.instructions.files.join("\n")}>instructions: {state.instructions.files.length}</span>

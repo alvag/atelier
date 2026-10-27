@@ -62,6 +62,8 @@ The first turn of a session says the state of its servers with the `mcp_status` 
 
 `atelier mcp list` connects to every enabled server outside a session, prints its state, its tools, its error and the end of its stderr, each invalid entry and each problem of the file, and exits with 1 when an entry is invalid, the file has a problem or an enabled server is not connected. In a session, `/mcp` prints the same for the session's servers as they are now, without a turn, in the TUI and in the line-by-line CLI.
 
+The desktop shows `MCP <connected>/<enabled>` in the status bar and opens the same details in a side panel when you click it.
+
 Clients ask for the state at any time with the protocol command `session.mcp` (`sessionId`), answered with `{ servers, problems }` as `mcp_status` carries them, both empty for a session without MCP servers. The protocol is version 7 since this command and event.
 
 ### Secrets

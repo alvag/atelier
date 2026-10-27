@@ -5,6 +5,7 @@ import type {
 	ContextUsage,
 	FeatureTask,
 	JsonValue,
+	McpServerStatus,
 	Phase,
 	RefusalCause,
 	ReviewConsentAnswer,
@@ -192,6 +193,8 @@ export interface ChatState {
 	skills?: { skills: { name: string; path: string }[]; warnings: { path: string; message: string }[] };
 	/** Why changes cannot be reviewed in this session; absent when they can. */
 	review?: { available: false; reason?: string };
+	/** The session's MCP servers, as the latest `mcp_status` or `session.mcp` answer said; absent without servers. */
+	mcp?: { servers: McpServerStatus[]; problems: string[] };
 	/** The active ODD feature document, as the core last reported it. */
 	feature?: { name: string; path: string; title: string; tasks: FeatureTask[] };
 	turns: Turn[];
@@ -218,6 +221,8 @@ export type ChatAction =
 	| { type: "command_failed"; code: string; message: string }
 	/** The core answered `session.set_mode` with this mode. */
 	| { type: "mode_changed"; mode: PermissionMode }
+	/** The core answered `session.mcp`. */
+	| { type: "mcp_answered"; servers: McpServerStatus[]; problems: string[] }
 	| { type: "batch"; actions: ChatAction[] };
 
 export const initialChatState: ChatState = { core: { status: "starting" }, turns: [], busy: false };
@@ -248,6 +253,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 				feature: _feature,
 				phase: _phase,
 				memory: _memory,
+				mcp: _mcp,
 				sandbox: _sandbox,
 				instructions: _instructions,
 				skills: _skills,
@@ -292,6 +298,12 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 		}
 		case "mode_changed":
 			return { ...state, permissionMode: action.mode };
+		case "mcp_answered":
+			if (action.servers.length === 0 && action.problems.length === 0) {
+				const { mcp: _mcp, ...rest } = state;
+				return rest;
+			}
+			return { ...state, mcp: { servers: action.servers, problems: action.problems } };
 		case "event":
 			if (action.sessionId !== state.session?.id) return state;
 			return applyEvent(state, action.event);
@@ -359,6 +371,8 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 		}
 		case "phase_changed":
 			return { ...state, phase: event.phase };
+		case "mcp_status":
+			return { ...state, mcp: { servers: event.servers, problems: event.problems } };
 		case "memory_status":
 			return {
 				...state,

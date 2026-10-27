@@ -756,6 +756,50 @@ describe("App", () => {
 		expect(await screen.findByText("Allowed")).toBeTruthy();
 	});
 
+	it("shows the MCP servers in the status bar and opens their details, asking the core for them", async () => {
+		const fake = fakeBridge();
+		fake.answers["session.mcp"] = {
+			ok: true,
+			result: {
+				servers: [
+					{ name: "docs", transport: "http", state: "connected", tools: ["search", "read"] },
+					{
+						name: "ctx",
+						transport: "stdio",
+						state: "failed",
+						tools: [],
+						error: "spawn npx ENOENT",
+						stderr: "npm ERR! ***",
+					},
+				],
+				problems: [],
+			},
+		};
+		await openFolderAndSend(fake, "x");
+		fake.emit({
+			type: "mcp_status",
+			servers: [
+				{ name: "docs", transport: "http", state: "connecting", tools: [] },
+				{ name: "ctx", transport: "stdio", state: "failed", tools: [], error: "spawn npx ENOENT" },
+				{ name: "off", transport: "stdio", state: "disabled", tools: [] },
+			],
+			problems: [],
+		});
+		const chip = await screen.findByRole("button", { name: "MCP 0/2" });
+		expect(chip.className).toContain("warning");
+		fireEvent.click(chip);
+		await waitFor(() => expect(fake.commands.at(-1)).toEqual({ command: "session.mcp", sessionId: "s1" }));
+		const panel = await screen.findByRole("complementary", { name: "MCP servers" });
+		await within(panel).findByText("docs (http): connected, 2 tools");
+		expect(within(panel).getByText("search, read")).toBeTruthy();
+		expect(within(panel).getByText("ctx (stdio): failed")).toBeTruthy();
+		expect(within(panel).getByText("spawn npx ENOENT")).toBeTruthy();
+		expect(within(panel).getByText("npm ERR! ***")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "MCP 1/2" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "MCP 1/2" }));
+		expect(screen.queryByRole("complementary", { name: "MCP servers" })).toBeNull();
+	});
+
 	it("asks to call an MCP tool the classifier left to the user", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");
