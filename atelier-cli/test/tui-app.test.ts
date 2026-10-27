@@ -367,8 +367,12 @@ describe("TUI", { timeout: 20_000 }, () => {
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(() => h.screen.screen().includes("Atelier "));
 			expect(h.screen.raw()).toContain(ALT_ON);
-			const header = h.screen.screen();
-			expect(header).toMatch(new RegExp(`Atelier \\S+ · \\S*${basename(cwd)}`));
+			// The folder as far as the terminal's width goes: a long temporary directory is cut with an ellipsis.
+			const shownPath = h.screen.screen().match(/Atelier \S+ · (\S+)/)?.[1] ?? "";
+			const kept = shownPath.replace(/(?:\.\.\.|…)$/, "");
+			expect(kept.length).toBeGreaterThan(1);
+			if (kept === shownPath) expect(shownPath).toBe(cwd);
+			else expect(cwd.startsWith(kept)).toBe(true);
 			h.screen.type("hello");
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("$0.50"));
