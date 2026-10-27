@@ -117,6 +117,17 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 			lines: [path.text, ...warning],
 		};
 	}
+	if (event.tool === "web_fetch" || event.tool === "web_search") {
+		const target = shown(event.command.slice(`${event.tool} `.length));
+		const noun = event.tool === "web_fetch" ? "URL" : "query";
+		const warning = target.hadHidden
+			? [`warning: the ${noun} contains invisible or control characters, shown as markers.`]
+			: [];
+		return {
+			title: `${event.tool === "web_fetch" ? "Fetch this web page?" : "Search the web?"}${asker(event)}`,
+			lines: [target.text, ...warning],
+		};
+	}
 	const reason = event.reason === undefined ? undefined : shown(event.reason);
 	const guard = event.confirm === undefined ? "" : ` (guard: ${shown(event.confirm).text})`;
 	const warning =
