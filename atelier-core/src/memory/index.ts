@@ -3,4 +3,12 @@ export { connectEngram as connectMemory, ENGRAM_MIN_VERSION as MEMORY_MIN_VERSIO
 export * from "./port.ts";
 export { recoveryNotice, type SummaryOutcome } from "./recovery.ts";
 export { memoryPromptsEnabled } from "./settings.ts";
-export { CONTEXT_BYTES, createMemoryTool, findSecret, MEMORY_TOOL, maskSecrets, PROMPT_CHARS } from "./tool.ts";
+export {
+	CONTEXT_BYTES,
+	createMemoryTool,
+	findSecret,
+	MEMORY_TOOL,
+	maskSecrets,
+	PROMPT_CHARS,
+	promptForMemory,
+} from "./tool.ts";

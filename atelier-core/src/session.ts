@@ -36,8 +36,7 @@ import {
 	MEMORY_TOOL,
 	type MemoryPort,
 	MemoryUncertainError,
-	maskSecrets,
-	PROMPT_CHARS,
+	promptForMemory,
 	recoveryNotice,
 	SESSION_SUMMARY_TYPE,
 	type SummaryOutcome,
@@ -1733,17 +1732,17 @@ export class Session {
 	}
 
 	/**
-	 * Starts saving what the user wrote, credentials masked and cut to `PROMPT_CHARS`; one still found across words keeps
-	 * the prompt out. Never throws: the first failure is a recoverable error, said once per session.
+	 * Starts saving what the user wrote, as `promptForMemory` leaves it: masked, then cut; a credential still found
+	 * across words keeps the prompt out. Never throws: the first failure is a recoverable error, said once per session.
 	 */
 	#keepPrompt(text: string): void {
 		const memory = this.#options.memory;
 		if (!memory) return;
-		const masked = Array.from(maskSecrets(text)).slice(0, PROMPT_CHARS).join("");
-		if (masked.trim() === "" || findSecret(masked)) return;
+		const kept = promptForMemory(text);
+		if (kept === undefined) return;
 		this.#write(
 			Promise.resolve()
-				.then(() => memory.savePrompt(masked))
+				.then(() => memory.savePrompt(kept))
 				.catch((error) => {
 					if (this.#promptFailureSaid) return;
 					this.#promptFailureSaid = true;

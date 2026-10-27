@@ -717,6 +717,13 @@ describe("user prompts", () => {
 		]);
 	});
 
+	it("masks the whole prompt before cutting it, and never cuts inside a mask", async () => {
+		const { memory, session: s, send } = await session([[{ event: finished }]]);
+		await send(`${"x".repeat(1995)} sk-ant-api03-abcdefghijklmnopqrstuvwx and more`);
+		await s.close();
+		expect(memory.prompts).toEqual([`${"x".repeat(1995)} `]);
+	});
+
 	it("warns once when saving prompts fails, and the turns go on", async () => {
 		const memory = new FakeMemory("proj");
 		let attempts = 0;
@@ -960,6 +967,16 @@ describe("independent recovery/privacy regressions", () => {
 		try {
 			await r.send(secret);
 			expect(r.memory.prompts.join("\n")).not.toContain(secret.split(/[ =]/).at(-1));
+		} finally {
+			await r.session.close();
+		}
+	});
+
+	it("checks split credentials before truncation (S2)", async () => {
+		const r = await session([[{ event: finished }]]);
+		try {
+			await r.send(`${" ".repeat(1977)}sk-ant-api03-abcd efghijklmnopqrstuvwx`);
+			expect(r.memory.prompts).toEqual([]);
 		} finally {
 			await r.session.close();
 		}

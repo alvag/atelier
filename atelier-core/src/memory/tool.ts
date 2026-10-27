@@ -70,6 +70,24 @@ export function maskSecrets(text: string): string {
 	);
 }
 
+const MASK = "[REDACTED]";
+
+/**
+ * What memory keeps of a prompt: masked whole first, then cut to `PROMPT_CHARS` characters, never inside a mask, so
+ * the cut cannot leave part of a credential behind. Undefined when nothing is left, or when a credential is still
+ * found across words (then the prompt is not kept at all).
+ */
+export function promptForMemory(text: string): string | undefined {
+	const masked = maskSecrets(text);
+	if (masked.trim() === "" || findSecret(masked)) return undefined;
+	const chars = Array.from(masked);
+	if (chars.length <= PROMPT_CHARS) return masked;
+	let cut = chars.slice(0, PROMPT_CHARS).join("");
+	const open = cut.lastIndexOf("[");
+	if (open !== -1 && MASK.startsWith(cut.slice(open)) && cut.slice(open) !== MASK) cut = cut.slice(0, open);
+	return cut;
+}
+
 export function createMemoryTool(memory: MemoryPort): ToolDefinition {
 	return defineTool({
 		name: MEMORY_TOOL,
