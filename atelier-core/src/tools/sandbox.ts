@@ -578,7 +578,24 @@ export function outsideProfile(home: string, denyWrite: readonly string[] = [], 
 		for (const { base, real } of bases)
 			if (place === base || place.startsWith(`${base}/`)) places.add(real + place.slice(base.length));
 	const denied = [...places].map(seatbeltFilter).join(" ");
-	return `(version 1)\n(allow default)\n(deny file-write* ${denied})\n`;
+	return `(version 1)\n(allow default)\n(deny file-write* ${denied})\n(deny file-write-unlink file-write-create ${moveBlocking(places)})\n`;
+}
+
+/**
+ * What keeps a denied place from being moved away, written under another name and moved back, as the library does
+ * for the main sandbox: the place itself, the folder a glob is bounded by, and every folder above them, by name only.
+ */
+function moveBlocking(places: Iterable<string>): string {
+	const filters = new Set<string>();
+	for (const place of places) {
+		filters.add(seatbeltFilter(place));
+		const star = place.indexOf("*");
+		let folder = star < 0 ? place : dirname(place.slice(0, star + 1));
+		if (star >= 0) filters.add(`(literal ${JSON.stringify(folder)})`);
+		for (folder = dirname(folder); folder !== "/" && folder !== "."; folder = dirname(folder))
+			filters.add(`(literal ${JSON.stringify(folder)})`);
+	}
+	return [...filters].join(" ");
 }
 
 export interface WrapOptions {

@@ -788,6 +788,19 @@ describe.skipIf(!onMac)("the commands the user's rules cover", () => {
 		expect(await exists(join(cwd, ".env"))).toBe(false);
 		expect((await run(`touch ${join(cwd, "notes.txt")}`)).ok).toBe(true);
 	});
+
+	it("cannot move a protected place or a folder above it to write it under another name", async () => {
+		execFileSync("git", ["init", "-q"], { cwd });
+		const bypass = `mv ${join(cwd, ".git")} ${join(cwd, "g")} && echo x > ${join(cwd, "g", "hooks", "pre-commit")}; mv ${join(cwd, "g")} ${join(cwd, ".git")}`;
+		expect((await run(bypass)).ok).toBe(false);
+		expect(await exists(join(cwd, ".git", "hooks", "pre-commit"))).toBe(false);
+		expect(await exists(join(cwd, "g"))).toBe(false);
+		expect((await run(`mv ${cwd} ${join(base, "moved")}`)).ok).toBe(false);
+		expect(await exists(join(cwd, ".git"))).toBe(true);
+		// Ordinary files are still created, moved and removed.
+		const file = join(cwd, "a.txt");
+		expect((await run(`touch ${file} && mv ${file} ${join(cwd, "b.txt")} && rm ${join(cwd, "b.txt")}`)).ok).toBe(true);
+	});
 });
 
 describe("without a sandbox", () => {

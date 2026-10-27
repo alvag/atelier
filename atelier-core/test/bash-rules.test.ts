@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { createBashTool } from "../src/index.ts";
-import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
+import { outsideProfile, Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 
 /** The system temporary directory: commands need a working directory they can read. */
 const cwd = tmpdir();
@@ -85,5 +85,24 @@ describe("bash and the user's rules", () => {
 		expect(wrapped).toEqual([]);
 		await tool.execute({ command: "echo inside" }, { cwd, bashRules: ["ls"] });
 		expect(wrapped).toEqual(["echo inside"]);
+	});
+});
+
+describe("the profile of covered commands", () => {
+	it("keeps a denied place, the folder a glob is bounded by and every folder above them from being moved", () => {
+		const profile = outsideProfile("/h", ["/w/p/.git/hooks", "/w/p/**/*.pem"]);
+		const moves =
+			profile.split("\n").find((line) => line.startsWith("(deny file-write-unlink file-write-create")) ?? "";
+		for (const filter of [
+			'(subpath "/w/p/.git/hooks")',
+			'(subpath "/h/.atelier")',
+			'(literal "/w/p/.git")',
+			'(literal "/w/p")',
+			'(literal "/w")',
+			'(literal "/h")',
+		])
+			expect(moves).toContain(filter);
+		expect(moves).not.toContain('(literal "/")');
+		expect(moves).toContain("(regex #");
 	});
 });
