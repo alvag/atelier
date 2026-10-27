@@ -686,6 +686,15 @@ describe("user prompts", () => {
 		expect(memory.prompts).toEqual(["fix it with [REDACTED] please", "use the other file", "x".repeat(2000)]);
 	});
 
+	it("masks a pasted private key whole, its body and END line included, and to the end when it has no END", async () => {
+		const { memory, session: s, send } = await session([[{ event: finished }], [{ event: finished }]]);
+		const body = "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun";
+		await send(`here is my key:\n-----BEGIN RSA PRIVATE KEY-----\n${body}\n-----END RSA PRIVATE KEY-----\nwhy fails?`);
+		await send(`cut short:\n-----BEGIN PRIVATE KEY-----\n${body}\n${body}`);
+		await s.close();
+		expect(memory.prompts).toEqual(["here is my key:\n[REDACTED]\nwhy fails?", "cut short:\n[REDACTED]"]);
+	});
+
 	it("warns once when saving prompts fails, and the turns go on", async () => {
 		const memory = new FakeMemory("proj");
 		let attempts = 0;

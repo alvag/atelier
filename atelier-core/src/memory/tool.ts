@@ -36,9 +36,19 @@ export function findSecret(text: string): string | undefined {
 	)?.name;
 }
 
-/** The text with every credential it holds replaced by `[REDACTED]`; one still found across words is left to `findSecret`. */
+/** A private key block from its BEGIN line through its END line, or to the end of the text when it has none. */
+const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|[\s\S]*$)/g;
+
+/**
+ * The text with every credential it holds replaced by `[REDACTED]`: a private key whole, body included, the other
+ * shapes where they match; one still found across words is left to `findSecret`.
+ */
 export function maskSecrets(text: string): string {
-	return SECRETS.reduce((masked, secret) => masked.replace(new RegExp(secret.pattern.source, "g"), "[REDACTED]"), text);
+	const unkeyed = text.replace(PRIVATE_KEY_BLOCK, "[REDACTED]");
+	return SECRETS.reduce(
+		(masked, secret) => masked.replace(new RegExp(secret.pattern.source, "g"), "[REDACTED]"),
+		unkeyed,
+	);
 }
 
 export function createMemoryTool(memory: MemoryPort): ToolDefinition {
