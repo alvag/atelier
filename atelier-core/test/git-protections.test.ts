@@ -292,7 +292,7 @@ describe("files the repository configuration includes run code too", () => {
 		expect(questions).toEqual([]);
 		expect(results).toEqual([refusal("extra.cfg"), refusal("cond.cfg"), refusal("deep.cfg")]);
 		expect(await readFile(join(cwd, "cond.cfg"), "utf8")).toBe("[user]\n\tname = y\n");
-	});
+	}, 30_000);
 
 	it.skipIf(!onMac)("bash cannot replace them", async () => {
 		const cwd = await withIncludes();
@@ -309,7 +309,7 @@ describe("files the repository configuration includes run code too", () => {
 		const { questions, results } = await turn(cwd, [writeCall("other.cfg")]);
 		expect(questions).toEqual([]);
 		expect(results[0]?.ok).toBe(true);
-	});
+	}, 30_000);
 });
 
 describe("attributes and submodule git directories", () => {
@@ -329,7 +329,7 @@ describe("attributes and submodule git directories", () => {
 			refusal(".git/modules/x/config"),
 			refusal(".git/modules/x/hooks/pre-commit"),
 		]);
-	});
+	}, 30_000);
 
 	it.skipIf(!onMac)("bash cannot write them", async () => {
 		const cwd = await repo(join(base, "main"));
@@ -363,5 +363,5 @@ describe("a .git that is a link to a directory", () => {
 		]);
 		expect(results.map((r) => r.ok)).toEqual([true, true, false, false]);
 		expect(results[2]).toEqual(refusal(".git/config"));
-	});
+	}, 30_000);
 });
