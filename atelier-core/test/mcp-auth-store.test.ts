@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -61,6 +61,35 @@ it("says nothing once the file is 0600", async () => {
 	store.update(server, () => ({ tokens: { access_token: "kept-token-123", token_type: "Bearer" } }));
 	await chmod(file, 0o644);
 	store.get(server);
+	expect((await stat(file)).mode & 0o777).toBe(0o600);
+	expect(store.problem()).toBeUndefined();
+});
+
+it("says what the file is now, once it is gone", async () => {
+	const file = join(dir, "mcp-auth.json");
+	const store = new McpAuthStore(file);
+	store.update(server, () => ({ tokens: { access_token: "kept-token-123", token_type: "Bearer" } }));
+	await chmod(file, 0o644);
+	chmodFails.on = true;
+	store.get(server);
+	expect(store.problem()).toBeDefined();
+	await rm(file);
+	expect(store.get(server)).toBeUndefined();
+	expect(store.problem()).toBeUndefined();
+});
+
+it("sets a file readable by others to 0600 even when it does not parse, and still says when it cannot", async () => {
+	const file = join(dir, "mcp-auth.json");
+	await writeFile(file, "{ not json", { mode: 0o644 });
+	await chmod(file, 0o644);
+	chmodFails.on = true;
+	const store = new McpAuthStore(file);
+	expect(store.get(server)).toBeUndefined();
+	expect(store.problem()).toBe(
+		`${file} is not 0600 (it is 0644) and could not be set to it: EPERM: operation not permitted, chmod`,
+	);
+	chmodFails.on = false;
+	expect(store.get(server)).toBeUndefined();
 	expect((await stat(file)).mode & 0o777).toBe(0o600);
 	expect(store.problem()).toBeUndefined();
 });

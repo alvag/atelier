@@ -225,3 +225,40 @@ it("saves nothing from the final check's refresh once the sign-in is aborted", a
 	expect(calls).toBe(2);
 	expect(store.get(server)?.tokens).toBeUndefined();
 });
+
+it("cuts the final check when the sign-in times out, and saves nothing from its refresh", async () => {
+	let check: { provider?: McpOAuthProvider; signal?: AbortSignal } | undefined;
+	let calls = 0;
+	vi.spyOn(Client.prototype, "connect").mockImplementation(async (transport, options) => {
+		const auth = (transport as unknown as { _authProvider?: McpOAuthProvider })._authProvider;
+		calls++;
+		if (calls === 1 && auth) {
+			auth.state();
+			auth.saveCodeVerifier("verifier");
+			queueMicrotask(() =>
+				listeners[0]?.handler(
+					{ url: `/callback?code=code&state=${auth.expectedState}` },
+					{
+						writeHead() {
+							return this;
+						},
+						end() {},
+					},
+				),
+			);
+			throw new UnauthorizedError();
+		}
+		// The final check: its refresh does not answer before the sign-in times out.
+		check = {
+			...(auth === undefined ? {} : { provider: auth }),
+			...(options?.signal ? { signal: options.signal } : {}),
+		};
+		await new Promise(() => {});
+	});
+	vi.spyOn(StreamableHTTPClientTransport.prototype, "finishAuth").mockResolvedValue();
+	const store = new McpAuthStore(join(dir, "auth.json"));
+	await expect(loginMcpServer(server, store, { openBrowser: () => {}, timeoutMs: 50 })).rejects.toThrow("in 0 s");
+	expect(check?.signal?.aborted).toBe(true);
+	check?.provider?.saveTokens({ access_token: secret, token_type: "Bearer" });
+	expect(store.get(server)?.tokens).toBeUndefined();
+});
