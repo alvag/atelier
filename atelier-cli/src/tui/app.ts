@@ -366,7 +366,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		finish = resolve;
 	});
 	/** Questions waiting for an answer, the first one on screen. */
-	/** Follows every chunk of input, so a question put on screen knows whether a paste is still open. */
+	/** Follows every chunk of input, the editor's and the questions', so a paste stays one across them. */
 	const input = new PasteFilter();
 	const questions: {
 		dialog: ChoiceDialog<string>;
@@ -397,7 +397,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const first = questions[0];
 		if (first) {
 			dialogs.addChild(first.dialog);
-			first.dialog.reveal(input.pasting);
+			first.dialog.reveal();
 			tui.setFocus(first.dialog);
 		} else tui.setFocus(editor);
 		tui.requestRender();
@@ -419,7 +419,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	) => {
 		let answered = false;
 		const entry = {
-			dialog: new ChoiceDialog(question, paint, (value: T) => settle(value)),
+			dialog: new ChoiceDialog({ ...question, paste: input }, paint, (value: T) => settle(value)),
 			cancel: () => settle(question.cancel),
 			local,
 			blocked,
@@ -816,7 +816,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	// Ctrl+C interrupts a turn, then quits; with no turn it clears the editor, then quits. Esc interrupts a turn.
 	const removeKeys = tui.addInputListener((data) => {
-		input.feed(data);
+		// While a question is open, it reads the input through the same filter: a paste begun before it stays a paste.
+		if (questions.length === 0) input.feed(data);
 		if (matchesKey(data, "ctrl+c")) {
 			if (busy && !interrupted) interrupt();
 			else if (!busy && editor.getText() !== "") editor.setText("");

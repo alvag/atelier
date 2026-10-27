@@ -1072,6 +1072,26 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
+	it.each([2, 3, 4, 5])(
+		"never answers an approval with a paste whose start marker the approval cut after %i bytes",
+		async (cut) => {
+			const { h, code, approvals, ask, dialog } = await approvalCore();
+			h.screen.type("\x1b[200~".slice(0, cut));
+			ask("rm -r build");
+			await until(() => dialog().includes("rm -r build"));
+			h.screen.type(`${"\x1b[200~".slice(cut)}pasted text`);
+			h.screen.type("\r");
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			expect(approvals()).toEqual([]);
+			h.screen.type("\x1b[201~");
+			h.screen.type("\r");
+			await until(() => approvals().length === 1);
+			expect(approvals()[0]).toMatchObject({ approved: true });
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		},
+	);
+
 	it("counts every line of the reason among the lines a folded approval leaves out", async () => {
 		const { h, code, ask, dialog } = await approvalCore();
 		ask("echo safe", "first\nsecond\nthird");

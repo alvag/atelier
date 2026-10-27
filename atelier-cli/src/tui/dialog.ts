@@ -90,7 +90,7 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 	#open = false;
 	readonly #guardMs: number;
 	#revealedAt: number | undefined;
-	readonly #paste = new PasteFilter();
+	readonly #paste: PasteFilter;
 
 	constructor(
 		options: {
@@ -103,6 +103,8 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 			rows?: number;
 			folded?: Folded;
 			guardMs?: number;
+			/** The filter that followed the input before this question appeared; one of its own by default. */
+			paste?: PasteFilter;
 		},
 		paint: Paint,
 		answer: (value: T) => void,
@@ -112,6 +114,7 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 		this.#paint = paint;
 		this.#folded = options.folded;
 		this.#guardMs = options.guardMs ?? 0;
+		this.#paste = options.paste ?? new PasteFilter();
 		const items = options.choices.map(({ value, label, description }) => ({
 			value,
 			label,
@@ -129,14 +132,9 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 		this.#list.onCancel = () => answer(options.cancel);
 	}
 
-	/**
-	 * Starts the guard: called when the question is put on screen. `pasting` says a paste begun before it is still open
-	 * (in the editor, say), so the rest of that paste answers nothing either.
-	 */
-	reveal(pasting: boolean, now = Date.now()): void {
-		if (this.#revealedAt !== undefined) return;
-		this.#revealedAt = now;
-		if (pasting) this.#paste.pasting = true;
+	/** Starts the guard: called when the question is put on screen. */
+	reveal(now = Date.now()): void {
+		this.#revealedAt ??= now;
 	}
 
 	/** Opens the whole question, or folds it again; false when there is nothing folded. */
