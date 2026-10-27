@@ -91,17 +91,20 @@ export function profileLine(
 
 /**
  * The turn's cost by part, under its tokens line, with who ran in each part when it says so;
- * undefined when the turn had a single part, which the total already says.
+ * undefined when the turn had a single part, which the total already says. Without `prices`, each part's requests
+ * or tokens only.
  */
 export function phasesLine(
 	event: Extract<AtelierEvent, { type: "turn_finished" }>,
 	sessionBackend: string | undefined,
+	prices = true,
 ): string | undefined {
 	const phases = Object.entries(event.phases ?? {}) as [TurnPhase, PhaseSpent][];
 	if (phases.length < 2) return undefined;
 	const part = ([phase, spent]: [TurnPhase, PhaseSpent]) => {
 		const agents = phaseAgents(spent.agents ?? [], sessionBackend);
-		return agents === "" ? `${phase} ${phaseSpent(spent)}` : `${phase} ${phaseSpent(spent)} on ${agents}`;
+		const used = phaseSpent(spent, prices);
+		return agents === "" ? `${phase} ${used}` : `${phase} ${used} on ${agents}`;
 	};
 	return `phases: ${phases.map(part).join(" · ")}`;
 }
@@ -119,10 +122,10 @@ function phaseAgents(agents: PhaseAgent[], sessionBackend: string | undefined): 
 	return [...new Set(described)].join(", ");
 }
 
-/** `$0.0300 (3 req)`; the tokens only when neither the cost nor the requests are known. */
-function phaseSpent({ usage, requests, costUsd }: PhaseSpent): string {
+/** `$0.0300 (3 req)`, or `3 req` without `prices`; the tokens only when neither the cost nor the requests are known. */
+function phaseSpent({ usage, requests, costUsd }: PhaseSpent, prices: boolean): string {
 	const count = requests === undefined ? undefined : `${requests} req`;
-	if (costUsd !== undefined)
+	if (costUsd !== undefined && prices)
 		return count === undefined ? `$${costUsd.toFixed(4)}` : `$${costUsd.toFixed(4)} (${count})`;
 	return count ?? `${numbers.format(usage.input + usage.output)} tokens`;
 }

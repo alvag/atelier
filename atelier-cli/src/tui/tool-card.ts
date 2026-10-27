@@ -74,7 +74,6 @@ export class AgentActivity {
 	agent: string | undefined;
 	#model: string | undefined;
 	readonly #tools = new Map<string, { tool: string; summary?: string; ok?: boolean }>();
-	#costUsd: number | undefined;
 	#text = "";
 
 	constructor(agent?: string) {
@@ -98,18 +97,14 @@ export class AgentActivity {
 				if (call) Object.assign(call, { summary: event.summary, ok: event.ok });
 				return;
 			}
-			case "turn_finished":
-				if (event.costUsd !== undefined) this.#costUsd = (this.#costUsd ?? 0) + event.costUsd;
-				return;
 		}
 	}
 
-	/** `worker · claude-sonnet-5-5 · 3 tools · $0.04`. */
+	/** `worker · claude-sonnet-5-5 · 3 tools`; its cost is left to the footer and `/status`. */
 	summary(): string {
 		const parts = [shown(this.agent ?? "subagent")];
 		if (this.#model !== undefined) parts.push(shown(this.#model));
 		parts.push(plural(this.#tools.size, "tool"));
-		if (this.#costUsd !== undefined) parts.push(`$${this.#costUsd.toFixed(2)}`);
 		return parts.join(" · ");
 	}
 

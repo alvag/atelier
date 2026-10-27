@@ -90,19 +90,18 @@ function roundLines(round: Round, expanded: boolean, paint: Paint, openUnmet = f
 	return lines;
 }
 
-/** How the verification ended, with its cost, and the defects left to decide on. */
+/** How the verification ended, and the defects left to decide on; its cost is left to the footer and `/status`. */
 function finishedLines(finished: Finished, expanded: boolean, paint: Paint): string[] {
-	const cost = finished.costUsd === undefined ? "" : ` · $${finished.costUsd.toFixed(4)}`;
 	switch (finished.outcome) {
 		case "passed":
-			return [`${paint("green", "✓")} verify passed${cost}`];
+			return [`${paint("green", "✓")} verify passed`];
 		case "corrected":
-			return [`${paint("green", "✓")} verify passed after a correction · ${plural(finished.rounds, "round")}${cost}`];
+			return [`${paint("green", "✓")} verify passed after a correction · ${plural(finished.rounds, "round")}`];
 		case "failed":
-			return [paint("red", `✗ verify failed: ${shown(describeRefusal(finished))} · needs your decision${cost}`)];
+			return [paint("red", `✗ verify failed: ${shown(describeRefusal(finished))} · needs your decision`)];
 		case "needs_decision":
 			return [
-				paint("red", `✗ verify: needs your decision · ${shown(verificationUndecided(finished))}${cost}`),
+				paint("red", `✗ verify: needs your decision · ${shown(verificationUndecided(finished))}`),
 				// What is left to decide is shown open, as the line CLI shows it.
 				...finished.openDefects.flatMap((defect) => defectLines(defect, "  ", true, paint)),
 			];

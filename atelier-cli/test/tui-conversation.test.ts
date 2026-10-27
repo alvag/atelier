@@ -91,7 +91,8 @@ describe("Conversation", () => {
 			{ type: "tool_call_finished", callId: "task1", ok: true, summary: "worker (done)", truncated: false },
 		];
 		const folded = shown(bodies).text;
-		expect(folded).toContain("▸ task worker · done ✓\n   └ worker · claude-sonnet-5-5 · 1 tool · $0.04");
+		expect(folded).toContain("▸ task worker · done ✓\n   └ worker · claude-sonnet-5-5 · 1 tool");
+		expect(folded).not.toContain("$");
 		expect(folded).not.toContain("child text");
 		expect(folded).not.toContain("b.ts");
 		const open = shown(bodies, 80, true).text;
@@ -143,8 +144,9 @@ describe("Conversation", () => {
 			...role("review:risk", "risk-model", "Risk report.", 0.01),
 			...role("review:reliability", "reliability-model", "Reliability report.", 0.02),
 		]);
-		expect(text).toContain("review:risk · risk-model · 0 tools · $0.01");
-		expect(text).toContain("review:reliability · reliability-model · 0 tools · $0.02");
+		expect(text).toContain("review:risk · risk-model · 0 tools");
+		expect(text).toContain("review:reliability · reliability-model · 0 tools");
+		expect(text).not.toContain("$");
 		expect(text).not.toContain("Risk report.Reliability report.");
 	});
 
@@ -261,11 +263,32 @@ describe("Conversation", () => {
 		expect(text).not.toContain("skills: ");
 	});
 
-	it("says what a turn took", () => {
-		const { text } = shown([
-			{ type: "turn_finished", stopReason: "end_turn", usage, costUsd: 0.0421, requests: 3, durationMs: 12_300 },
-		]);
-		expect(text).toContain("◇ 12.3s · 3 requests · $0.0421");
+	it("says what a turn took and its phases, without prices", () => {
+		const agent = { role: "main", backend: "claude-code", model: "claude-opus-5-5", effort: "high" as const };
+		const { text } = shown(
+			[
+				{ type: "session_started", backend: "claude-code", model: "claude-opus-5-5", authSource: "subscription" },
+				{ type: "compaction_finished", ok: true, reason: "manual", tokensBefore: 9000, kept: 1, usage, costUsd: 0.01 },
+				{
+					type: "turn_finished",
+					stopReason: "end_turn",
+					usage,
+					costUsd: 0.0421,
+					requests: 3,
+					durationMs: 12_300,
+					phases: {
+						main: { usage, requests: 2, costUsd: 0.04, agents: [agent] },
+						verify: { usage, costUsd: 0.0021, agents: [{ ...agent, role: "verifier", backend: "codex" }] },
+					},
+				},
+			],
+			200,
+		);
+		expect(text).toContain("◇ context compacted: 9,000 tokens before · 1 message kept");
+		expect(text).toContain(
+			"◇ 12.3s · 3 requests\n phases: main 2 req on claude-opus-5-5 high · verify 1,285 tokens on codex/claude-opus-5-5 high",
+		);
+		expect(text).not.toContain("$");
 	});
 
 	it("never renders a line wider than the terminal", () => {

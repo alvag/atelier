@@ -132,7 +132,7 @@ describe("review block", () => {
 				"   · lens risk done · 2 findings",
 				"   · refuting 2 findings",
 				"   · 0 confirmed · 2 refuted",
-				" ✓ review approved · 1 follow-up · $0.0123",
+				" ✓ review approved · 1 follow-up",
 				"   receipt .atelier/receipts/r1.json",
 			].join("\n"),
 		);

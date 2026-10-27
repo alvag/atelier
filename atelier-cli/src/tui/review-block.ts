@@ -66,13 +66,12 @@ function assessedLines(assessed: Assessed | undefined, paint: Paint): string[] {
 const findingLine = (found: ReviewFinding) =>
 	`  ${shown(found.id)} ${shown(found.severity)} ${shown(found.line === undefined ? found.path : `${found.path}:${found.line}`)} — ${shown(found.claim)}`;
 
-/** The verdict, with the correction, the follow-ups left and the cost; the blocking findings; the receipt. */
+/** The verdict, with the correction and the follow-ups left; the blocking findings; the receipt. */
 function finishedLines(finished: Finished, paint: Paint, cwd: string | undefined): string[] {
 	const tail = [
 		...(finished.verdict === "approved" || finished.verdict === "escalated"
 			? [plural(finished.followUps.length, "follow-up")]
 			: []),
-		...(finished.costUsd === undefined ? [] : [`$${finished.costUsd.toFixed(4)}`]),
 	];
 	const withTail = (head: string) => [head, ...tail].join(" · ");
 	const lines: string[] = [];

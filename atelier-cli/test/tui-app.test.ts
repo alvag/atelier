@@ -514,8 +514,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("\r");
 		await until(() => worker.toolResults.length === 1);
 		expect(worker.toolResults[0]?.output).toContain("childcmd\n");
-		// The worker's card says $0.50 first; the main turn's end says $0.5000.
-		await until(() => h.screen.screen().includes("$0.5000"));
+		await until(() => h.screen.screen().includes("◇ "));
 		expect(h.screen.screen()).toContain("└ worker · 1 tool");
 		h.screen.type("\x03");
 		expect(await code).toBe(130);

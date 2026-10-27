@@ -126,7 +126,7 @@ describe("verify card", () => {
 		);
 		expect(shown).toContain(" ▾ verify · items 2, 6\n");
 		expect(shown).toContain("   round 1 · failed:");
-		expect(shown).toContain(" ✗ verify: needs your decision · 1 open defect · $0.0200");
+		expect(shown).toContain(" ✗ verify: needs your decision · 1 open defect");
 		expect(shown).toContain("   D1 major · yolo accepted\n     reproduce: atelier --mode yolo");
 	});
 
@@ -142,7 +142,7 @@ describe("verify card", () => {
 		expect(shown).toContain("     ✗ S2 unmet · Rejects yolo\n       evidence: yolo was accepted");
 		expect(shown).toContain("     ? S3 unverified · Documents it\n       evidence: no README change");
 		expect(shown).toContain(
-			" ✗ verify: needs your decision · 1 open defect · $0.0100\n   D1 major · yolo accepted\n     reproduce: atelier --mode yolo",
+			" ✗ verify: needs your decision · 1 open defect\n   D1 major · yolo accepted\n     reproduce: atelier --mode yolo",
 		);
 		// The rest stays folded: what was met, the earlier round and the defects of the rounds.
 		expect(shown).not.toContain("the test passes");
@@ -161,10 +161,10 @@ describe("verify card", () => {
 
 	it("says a passed and a corrected verification", () => {
 		expect(text(lines(after([started, finished({ outcome: "passed", rounds: 1 })]), false))).toContain(
-			" ✓ verify passed · $0.0100",
+			" ✓ verify passed",
 		);
 		expect(text(lines(after([started, finished()]), false))).toContain(
-			" ✓ verify passed after a correction · 2 rounds · $0.0100",
+			" ✓ verify passed after a correction · 2 rounds",
 		);
 	});
 

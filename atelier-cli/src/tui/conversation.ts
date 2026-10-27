@@ -8,12 +8,11 @@ import { VerifyCard } from "./verify-card.ts";
 
 const shown = (text: string) => visibleText(text).text;
 
-/** `◇ 12.3s · 3 requests · $0.0421`, what a turn took; the footer keeps the totals. */
+/** `◇ 12.3s · 3 requests`, what a turn took; its cost is left to the footer and `/status`. */
 function finishedLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): string {
 	const parts: string[] = [];
 	if (event.durationMs !== undefined) parts.push(`${(event.durationMs / 1000).toFixed(1)}s`);
 	if (event.requests !== undefined) parts.push(`${event.requests} request${event.requests === 1 ? "" : "s"}`);
-	if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
 	if (event.stopReason !== "end_turn") parts.push(event.stopReason);
 	return `◇ ${parts.length === 0 ? "done" : parts.join(" · ")}`;
 }
@@ -149,6 +148,12 @@ export class Conversation extends Container {
 			case "session_configured":
 				this.note(configuredLine(event));
 				return;
+			case "compaction_finished": {
+				// Prices are left to the footer and `/status`.
+				const { costUsd: _costUsd, ...unpriced } = event;
+				this.#rendered(unpriced);
+				return;
+			}
 			// What runs as usual goes to `/status`; what runs with less protection, or failed to load, stays in sight.
 			case "sandbox_status":
 				if (event.sandboxed) this.#status.set("bash", `bash: sandboxed (${shown(event.mechanism ?? "sandbox")})`);
@@ -172,7 +177,7 @@ export class Conversation extends Container {
 				this.#renderer.render(event);
 				this.#renderer.endLine();
 				this.#notes = "";
-				const phases = phasesLine(event, this.#backend);
+				const phases = phasesLine(event, this.#backend, false);
 				this.note(phases === undefined ? finishedLine(event) : `${finishedLine(event)}\n${phases}`);
 				return;
 			}
