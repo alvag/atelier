@@ -51,7 +51,10 @@ export async function runUpdate(options: UpdateOptions): Promise<number> {
 			if (!(error instanceof CommandError)) throw error;
 			// Back to where it was, so that asking for the same release again does the work again.
 			await exec("git", ["checkout", "--quiet", "--detach", previous]);
-			return fail(`${describeCommand(error)}\natelier stays at ${current}; retry with: atelier update ${target}`);
+			const retry = `${describeCommand(error)}\natelier stays at ${current}; retry with: atelier update ${target}`;
+			// The failed install may have left node_modules half way between both versions.
+			const repair = await reinstallDependencies(exec, marker.desktop, root, current);
+			return fail(repair === undefined ? retry : `${retry}\n${repair}`);
 		}
 		if (marker.desktop) {
 			try {
@@ -74,6 +77,27 @@ export async function runUpdate(options: UpdateOptions): Promise<number> {
 /** Full install when the desktop is there, because its build needs the dev dependencies; the CLI alone needs only production ones. */
 function installDependencies(exec: Exec, desktop: boolean): Promise<string> {
 	return desktop ? installFull(exec) : exec("pnpm", ["install", "--frozen-lockfile", "--prod"]);
+}
+
+/** Installs the dependencies again; undefined when it worked, else what failed and the command to repair it by hand. */
+async function reinstallDependencies(
+	exec: Exec,
+	desktop: boolean,
+	root: string,
+	current: string,
+): Promise<string | undefined> {
+	try {
+		await installDependencies(exec, desktop);
+		return undefined;
+	} catch (error) {
+		if (!(error instanceof CommandError)) throw error;
+		return `Reinstalling the dependencies of ${current} failed too: ${describeCommand(error)}\nRepair them with: cd ${shellQuote(root)} && ${error.command}`;
+	}
+}
+
+/** Single-quoted for a POSIX shell; a ' inside becomes '\''. */
+function shellQuote(text: string): string {
+	return `'${text.replaceAll("'", "'\\''")}'`;
 }
 
 /** The `vX.Y.Z` tag at HEAD, or the core's version and HEAD's short id when HEAD is not a release. */

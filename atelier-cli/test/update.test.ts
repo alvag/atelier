@@ -38,6 +38,16 @@ async function fakePnpm(): Promise<void> {
 	await chmod(file, 0o755);
 }
 
+/** A pnpm that records the release it ran at (tag.txt) and fails at `tag`. */
+async function failPnpmAt(tag: string): Promise<void> {
+	const file = join(fakes, "pnpm");
+	await writeFile(
+		file,
+		`#!/bin/sh\necho "$(cat tag.txt): $*" >> "${pnpmLog}"\nif [ "$(cat tag.txt)" = "${tag}" ]; then echo "boom" >&2; exit 7; fi\n`,
+	);
+	await chmod(file, 0o755);
+}
+
 async function pnpmCalls(): Promise<string[]> {
 	return (await readFile(pnpmLog, "utf8").catch(() => "")).split("\n").filter(Boolean);
 }
@@ -250,8 +260,8 @@ describe("atelier update", () => {
 		expect(git(install, "describe", "--tags", "--exact-match")).toBe("v0.9.0");
 	});
 
-	it("goes back to the previous version when pnpm fails, and says how to retry", async () => {
-		await writeFile(join(root, "pnpm-fails"), "");
+	it("goes back to the previous version when pnpm fails, reinstalls its dependencies and says how to retry", async () => {
+		await failPnpmAt("v0.9.0");
 		const before = head();
 
 		const c = cli(["update", "v0.9.0"]);
@@ -262,6 +272,37 @@ describe("atelier update", () => {
 		);
 		expect(c.out()).toBe("");
 		expect(head()).toBe(before);
+		expect(await pnpmCalls()).toEqual([
+			"v0.9.0: install --frozen-lockfile --prod",
+			"v0.1.0: install --frozen-lockfile --prod",
+		]);
+	});
+
+	it("reinstalls the full dependencies of the previous version when the desktop is installed", async () => {
+		await writeFile(join(install, marker), "desktop=1\n");
+		await failPnpmAt("v0.9.0");
+
+		const c = cli(["update", "v0.9.0"]);
+		expect(await c.code()).toBe(1);
+
+		expect(c.err()).toBe(
+			"error: pnpm install --frozen-lockfile failed (exit 7): boom\natelier stays at v0.1.0; retry with: atelier update v0.9.0\n",
+		);
+		expect(await pnpmCalls()).toEqual(["v0.9.0: install --frozen-lockfile", "v0.1.0: install --frozen-lockfile"]);
+	});
+
+	it("says how to repair the dependencies when reinstalling the previous version fails too", async () => {
+		await writeFile(join(root, "pnpm-fails"), "");
+		const before = head();
+
+		const c = cli(["update", "v0.9.0"]);
+		expect(await c.code()).toBe(1);
+
+		expect(c.err()).toBe(
+			`error: pnpm install --frozen-lockfile --prod failed (exit 7): boom\natelier stays at v0.1.0; retry with: atelier update v0.9.0\nReinstalling the dependencies of v0.1.0 failed too: pnpm install --frozen-lockfile --prod failed (exit 7): boom\nRepair them with: cd '${install}' && pnpm install --frozen-lockfile --prod\n`,
+		);
+		expect(head()).toBe(before);
+		expect(await pnpmCalls()).toHaveLength(2);
 	});
 
 	it("names the git command that failed", async () => {
