@@ -34,6 +34,7 @@ import {
 } from "@atelier/core";
 import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { runDesktop } from "./desktop.ts";
+import { OWN_ROOT, versionLabel } from "./install-marker.ts";
 import { Renderer } from "./render.ts";
 import { createTerminalReader, type LineReader } from "./terminal-input.ts";
 import { savedTranscript } from "./transcript.ts";
@@ -120,7 +121,7 @@ export async function run(
 		return EXIT_OK;
 	}
 	if (args.version) {
-		io.stdout(`atelier ${VERSION}\n`);
+		io.stdout(`atelier ${await versionLabel(io.appRoot ?? OWN_ROOT)}\n`);
 		return EXIT_OK;
 	}
 	if (args.subcommand?.name === "desktop")
@@ -134,6 +135,7 @@ export async function run(
 	if (args.subcommand?.name === "update")
 		return runUpdate({
 			...(args.subcommand.version === undefined ? {} : { version: args.subcommand.version }),
+			...(args.subcommand.main ? { main: true } : {}),
 			...(io.appRoot === undefined ? {} : { root: io.appRoot }),
 			env: io.env ?? process.env,
 			stdout: io.stdout,

@@ -316,13 +316,193 @@ describe("atelier update", () => {
 	});
 });
 
+/** Commits on the origin's main after the newest tag, as work between releases. */
+async function commitOnMain(name = "work"): Promise<string> {
+	await writeFile(join(origin, "tag.txt"), name);
+	git(origin, "add", ".");
+	git(origin, "commit", "--quiet", "-m", name);
+	return git(origin, "rev-parse", "HEAD");
+}
+
+const short = (commit: string) => commit.slice(0, 7);
+const markerText = () => readFile(join(install, marker), "utf8");
+
+describe("atelier update --main", () => {
+	it("moves to the commit of origin/main and prints its label", async () => {
+		const main = await commitOnMain();
+
+		const c = cli(["update", "--main"]);
+		expect(await c.code()).toBe(0);
+
+		expect(c.out()).toBe(`Updated atelier v0.1.0 → main (${short(main)})\n`);
+		expect(c.err()).toBe("");
+		expect(head()).toBe(main);
+		expect(git(install, "rev-parse", "--abbrev-ref", "HEAD")).toBe("HEAD");
+		expect(await pnpmCalls()).toEqual([`${await realRoot()}: install --frozen-lockfile --prod`]);
+	});
+
+	it("says it is already at main and touches nothing", async () => {
+		const main = await commitOnMain();
+		expect(await cli(["update", "--main"]).code()).toBe(0);
+		await rm(pnpmLog);
+
+		const c = cli(["update", "--main"]);
+		expect(await c.code()).toBe(0);
+
+		expect(c.out()).toBe(`atelier is already at main (${short(main)})\n`);
+		expect(head()).toBe(main);
+		expect(await pnpmCalls()).toEqual([]);
+	});
+
+	it("records the channel in the marker and keeps the other lines", async () => {
+		await writeFile(join(install, marker), "desktop=1\nsource=x\n");
+		await commitOnMain();
+
+		expect(await cli(["update", "--main"]).code()).toBe(0);
+
+		expect((await markerText()).split("\n").filter(Boolean).sort()).toEqual(["channel=main", "desktop=1", "source=x"]);
+		expect(await pnpmCalls()).toEqual([
+			`${await realRoot()}: install --frozen-lockfile`,
+			`${await realRoot()}: -C atelier-desktop build`,
+		]);
+	});
+
+	it("shows main in --version, and plain again after going back to a release", async () => {
+		const main = await commitOnMain();
+		expect(await cli(["update", "--main"]).code()).toBe(0);
+
+		const onMain = cli(["--version"]);
+		expect(await onMain.code()).toBe(0);
+		expect(onMain.out()).toBe(`atelier ${VERSION} (main ${short(main)})\n`);
+
+		const back = cli(["update"]);
+		expect(await back.code()).toBe(0);
+		expect(back.out()).toBe(`Updated atelier main (${short(main)}) → v0.9.0\n`);
+		expect(await markerText()).toBe("desktop=0\n");
+		const plain = cli(["--version"]);
+		expect(await plain.code()).toBe(0);
+		expect(plain.out()).toBe(`atelier ${VERSION}\n`);
+	});
+
+	it("drops the channel when a given release is the one it is already at", async () => {
+		const main = await commitOnMain();
+		expect(await cli(["update", "--main"]).code()).toBe(0);
+		git(origin, "tag", "v0.10.0");
+		expect(await cli(["update", "v0.10.0"]).code()).toBe(0);
+		expect(head()).toBe(main);
+		expect(await markerText()).toBe("desktop=0\n");
+	});
+
+	it("prints plain --version in a development clone", async () => {
+		await rm(join(install, marker));
+		const c = cli(["--version"]);
+		expect(await c.code()).toBe(0);
+		expect(c.out()).toBe(`atelier ${VERSION}\n`);
+	});
+
+	it("refuses a development clone without touching it", async () => {
+		await rm(join(install, marker));
+		await commitOnMain();
+		const before = head();
+
+		const c = cli(["update", "--main"]);
+		expect(await c.code()).toBe(1);
+
+		expect(c.err()).toBe(
+			`error: atelier update only updates a copy installed with install.sh; ${install} is a development clone (use git there).\n`,
+		);
+		expect(head()).toBe(before);
+		expect(await pnpmCalls()).toEqual([]);
+	});
+
+	it("refuses a worktree with local changes", async () => {
+		await commitOnMain();
+		await writeFile(join(install, "tag.txt"), "edited");
+		const before = head();
+
+		const c = cli(["update", "--main"]);
+		expect(await c.code()).toBe(1);
+
+		expect(c.err()).toBe(
+			`error: ${install} has local changes; commit or discard them before updating (git status shows them).\n`,
+		);
+		expect(head()).toBe(before);
+		expect(await markerText()).toBe("desktop=0\n");
+		expect(await pnpmCalls()).toEqual([]);
+	});
+
+	it("goes back when pnpm fails, reinstalls the previous dependencies and leaves the marker", async () => {
+		const main = await commitOnMain("main-work");
+		await failPnpmAt("main-work");
+		const before = head();
+
+		const c = cli(["update", "--main"]);
+		expect(await c.code()).toBe(1);
+
+		expect(c.err()).toBe(
+			"error: pnpm install --frozen-lockfile --prod failed (exit 7): boom\natelier stays at v0.1.0; retry with: atelier update --main\n",
+		);
+		expect(c.out()).toBe("");
+		expect(head()).toBe(before);
+		expect(head()).not.toBe(main);
+		expect(await markerText()).toBe("desktop=0\n");
+		expect(await pnpmCalls()).toEqual([
+			"main-work: install --frozen-lockfile --prod",
+			"v0.1.0: install --frozen-lockfile --prod",
+		]);
+	});
+
+	it("names main in the label of a copy that follows it, when HEAD is not a release", async () => {
+		const main = await commitOnMain();
+		expect(await cli(["update", "--main"]).code()).toBe(0);
+		await rm(pnpmLog);
+
+		const c = cli(["update", "v0.1.0"]);
+		expect(await c.code()).toBe(0);
+
+		expect(c.out()).toBe(`Updated atelier main (${short(main)}) → v0.1.0\n`);
+	});
+
+	it("rejects a version with --main", async () => {
+		const c = cli(["update", "--main", "v0.1.0"]);
+		expect(await c.code()).toBe(2);
+
+		expect(c.err()).toBe(
+			'error: Usage: atelier update [vX.Y.Z | --main]. To give a prompt that starts with "update", quote it: atelier "update v0.1.0"\nRun atelier --help for usage.\n',
+		);
+		expect(await pnpmCalls()).toEqual([]);
+	});
+
+	it("rejects --main without update", async () => {
+		const c = cli(["--main"]);
+		expect(await c.code()).toBe(2);
+
+		expect(c.err()).toBe("error: --main is only valid with atelier update.\nRun atelier --help for usage.\n");
+	});
+
+	it("rejects --main with another subcommand", async () => {
+		const c = cli(["desktop", "--main"]);
+		expect(await c.code()).toBe(2);
+
+		expect(c.err()).toBe("error: atelier desktop takes no session options (--main).\nRun atelier --help for usage.\n");
+	});
+
+	it("rejects --main with session options", async () => {
+		const c = cli(["update", "--main", "--model", "sonnet"]);
+		expect(await c.code()).toBe(2);
+
+		expect(c.err()).toBe("error: atelier update takes no session options (--model).\nRun atelier --help for usage.\n");
+		expect(await pnpmCalls()).toEqual([]);
+	});
+});
+
 describe("atelier update usage", () => {
 	it("rejects extra words and hints to quote a prompt", async () => {
 		const c = cli(["update", "the", "deps"]);
 		expect(await c.code()).toBe(2);
 
 		expect(c.err()).toBe(
-			'error: Usage: atelier update [vX.Y.Z]. To give a prompt that starts with "update", quote it: atelier "update the deps"\nRun atelier --help for usage.\n',
+			'error: Usage: atelier update [vX.Y.Z | --main]. To give a prompt that starts with "update", quote it: atelier "update the deps"\nRun atelier --help for usage.\n',
 		);
 		expect(await pnpmCalls()).toEqual([]);
 	});
@@ -331,14 +511,14 @@ describe("atelier update usage", () => {
 		const c = cli(["update", "0.2.0"]);
 		expect(await c.code()).toBe(2);
 
-		expect(c.err()).toContain("Usage: atelier update [vX.Y.Z]");
+		expect(c.err()).toContain("Usage: atelier update [vX.Y.Z | --main]");
 	});
 
 	it("rejects a version with a leading zero", async () => {
 		const c = cli(["update", "v01.2.3"]);
 		expect(await c.code()).toBe(2);
 
-		expect(c.err()).toContain("Usage: atelier update [vX.Y.Z]");
+		expect(c.err()).toContain("Usage: atelier update [vX.Y.Z | --main]");
 	});
 
 	it("rejects session options", async () => {

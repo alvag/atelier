@@ -39,7 +39,7 @@ export interface CliArgs {
 }
 
 export const USAGE = `Usage: atelier [options] [prompt]
-       atelier update [vX.Y.Z]
+       atelier update [vX.Y.Z | --main]
        atelier desktop
 
 Runs a coding agent in the working directory. With a prompt, runs one turn
@@ -85,9 +85,11 @@ usual, interactive or with a prompt. The profile is frozen again from the files 
 are now; --model, --backend (it must be the one saved), --mode and --profile win over
 the saved ones. The files hold what the agent saw, tool output included.
 
-atelier update [vX.Y.Z] moves a copy installed with install.sh to the newest release, or to
-the one named (to go back), and reinstalls its dependencies. It takes no options; to give a
-prompt that starts with "update", quote it: atelier "update the readme".
+atelier update [vX.Y.Z | --main] moves a copy installed with install.sh to the newest
+release, or to the one named (to go back), or with --main to the latest main of GitHub
+(atelier --version then shows it as 0.2.0 (main 20c5424)), and reinstalls its dependencies.
+A plain atelier update goes back to the newest release. It takes no other options; to give
+a prompt that starts with "update", quote it: atelier "update the readme".
 
 atelier desktop opens the desktop app, in the same version as the CLI. The first time in a
 copy installed with install.sh it installs Electron (about 200 MB) and builds the app; install.sh
@@ -151,12 +153,14 @@ export function parseCliArgs(
 		);
 	let subcommand: Subcommand | undefined;
 	try {
-		subcommand = parseSubcommand(positionals);
+		subcommand = parseSubcommand(positionals, values.main ?? false);
 	} catch (error) {
 		throw new UsageError(error instanceof Error ? error.message : String(error));
 	}
+	if (values.main && subcommand === undefined) throw new UsageError("--main is only valid with atelier update.");
 	if (subcommand !== undefined) {
-		const given = Object.keys(values).filter((name) => name !== "help" && name !== "version");
+		const allowed = subcommand.name === "update" ? ["help", "version", "main"] : ["help", "version"];
+		const given = Object.keys(values).filter((name) => !allowed.includes(name));
 		if (given.length > 0)
 			throw new UsageError(
 				`atelier ${subcommand.name} takes no session options (${given.map((name) => `--${name}`).join(", ")}).`,
@@ -203,6 +207,7 @@ function parse(argv: readonly string[]) {
 			continue: { type: "boolean" },
 			resume: { type: "string" },
 			"no-session": { type: "boolean" },
+			main: { type: "boolean" },
 		},
 	});
 }

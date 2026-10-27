@@ -627,7 +627,7 @@ describe("run", () => {
 		expect(await run(["--help"], help.io, help.createBackend)).toBe(0);
 		expect(help.out()).toContain("Usage: atelier [options] [prompt]");
 		expect(help.out()).toContain("--backend <name>");
-		expect(help.out()).toContain("atelier update [vX.Y.Z]");
+		expect(help.out()).toContain("atelier update [vX.Y.Z | --main]");
 		expect(help.out()).toContain("atelier desktop");
 		expect(help.out()).toContain("ATELIER_MEMORY=off");
 		expect(help.backend.startOptions).toBeUndefined();

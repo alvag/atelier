@@ -35,6 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/alvag/atelier/main/install.sh | sh 
 | ----------------------- | ------------------------------------------------------------------------------------------------------- |
 | `atelier update`        | Move to the newest release and reinstall its dependencies (and rebuild the desktop if it is installed). |
 | `atelier update v0.1.0` | Move to that release, newer or older.                                                                   |
+| `atelier update --main` | Move to the latest `main` (`atelier --version` shows it); `atelier update` goes back to a release.      |
 | `atelier desktop`       | Open the desktop app of the same version; the first time it installs and builds it.                     |
 
 `atelier update` only touches a copy installed this way, and refuses one with local changes. To work on Atelier itself, clone the repository and run it with `pnpm install` and `pnpm atelier` (see [development](docs/development.md)).

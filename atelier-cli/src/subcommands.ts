@@ -3,6 +3,8 @@ export interface Subcommand {
 	name: "update" | "desktop";
 	/** The version `atelier update` was asked for. */
 	version?: string;
+	/** `atelier update --main`: the latest main instead of a release. */
+	main?: true;
 }
 
 /** A stable release: strict semver, no prerelease, no leading zeros (install.sh applies the same rule). */
@@ -11,19 +13,23 @@ export const RELEASE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 interface SubcommandSpec {
 	usage: string;
 	/** Reads the words after the name; throws the problem as a message. */
-	parse(words: readonly string[], prompt: string): Subcommand;
+	parse(words: readonly string[], prompt: string, main: boolean): Subcommand;
 }
 
 const SPECS: Record<Subcommand["name"], SubcommandSpec> = {
 	update: {
-		usage: "atelier update [vX.Y.Z]",
-		parse(words, prompt) {
+		usage: "atelier update [vX.Y.Z | --main]",
+		parse(words, prompt, main) {
 			const [version, ...extra] = words;
-			if (extra.length > 0 || (version !== undefined && !RELEASE_TAG.test(version)))
+			if (extra.length > 0 || (version !== undefined && (main || !RELEASE_TAG.test(version))))
 				throw new Error(
 					`Usage: ${this.usage}. To give a prompt that starts with "update", quote it: atelier "${prompt}"`,
 				);
-			return { name: "update", ...(version === undefined ? {} : { version }) };
+			return {
+				name: "update",
+				...(version === undefined ? {} : { version }),
+				...(main ? { main: true as const } : {}),
+			};
 		},
 	},
 	desktop: {
@@ -39,8 +45,8 @@ const SPECS: Record<Subcommand["name"], SubcommandSpec> = {
 };
 
 /** The subcommand the positional words ask for, or undefined when they are a prompt. Throws a message on bad usage. */
-export function parseSubcommand(positionals: readonly string[]): Subcommand | undefined {
+export function parseSubcommand(positionals: readonly string[], main = false): Subcommand | undefined {
 	const [first, ...words] = positionals;
 	if (first === undefined || !Object.hasOwn(SPECS, first)) return undefined;
-	return SPECS[first as Subcommand["name"]].parse(words, positionals.join(" "));
+	return SPECS[first as Subcommand["name"]].parse(words, positionals.join(" "), main);
 }

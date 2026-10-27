@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { VERSION } from "@atelier/core";
 
 /** The repository this CLI runs from: src/ sits two levels below it. */
 export const OWN_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -27,11 +28,37 @@ export const describeCommand = (error: CommandError) =>
 
 const markerPath = (root: string) => join(root, ".git", "atelier-install");
 
+export interface InstallMarker {
+	desktop: boolean;
+	/** `main` when the copy follows the main branch instead of the releases. */
+	channel?: "main";
+}
+
 /** What install.sh wrote in `.git/atelier-install`; undefined when the file is not there. */
-export async function readMarker(root: string): Promise<{ desktop: boolean } | undefined> {
+export async function readMarker(root: string): Promise<InstallMarker | undefined> {
 	const text = await readFile(markerPath(root), "utf8").catch(() => undefined);
 	if (text === undefined) return undefined;
-	return { desktop: text.split("\n").includes("desktop=1") };
+	const lines = text.split("\n");
+	return {
+		desktop: lines.includes("desktop=1"),
+		...(lines.includes("channel=main") ? { channel: "main" as const } : {}),
+	};
+}
+
+/** Records that the copy follows main, or (undefined) the releases again, keeping the other lines of the marker. */
+export async function writeChannelMarker(root: string, channel: "main" | undefined): Promise<void> {
+	const text = await readFile(markerPath(root), "utf8");
+	const lines = text.split("\n").filter((line) => line !== "" && !line.startsWith("channel="));
+	await writeFile(
+		markerPath(root),
+		`${[...lines, ...(channel === undefined ? [] : [`channel=${channel}`])].join("\n")}\n`,
+	);
+}
+
+/** The commit HEAD points at, read from `.git/HEAD` without git; undefined unless HEAD is detached. */
+export async function readHeadCommit(root: string): Promise<string | undefined> {
+	const text = (await readFile(join(root, ".git", "HEAD"), "utf8").catch(() => "")).trim();
+	return /^[0-9a-f]{40}$/.test(text) ? text : undefined;
 }
 
 /** Records whether the desktop is installed, keeping the other lines of the marker. */
@@ -55,4 +82,11 @@ export function execute(
 			reject(new CommandError(`${file} ${args.join(" ")}`, status, detail));
 		});
 	});
+}
+
+/** The version `atelier --version` prints: with `(main <sha>)` in a copy that follows main. */
+export async function versionLabel(root: string): Promise<string> {
+	if ((await readMarker(root))?.channel !== "main") return VERSION;
+	const commit = await readHeadCommit(root);
+	return commit === undefined ? VERSION : `${VERSION} (main ${commit.slice(0, 7)})`;
 }
