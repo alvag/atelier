@@ -4,6 +4,7 @@ import { closeSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { commandRules, coveredBy } from "./command-rules.ts";
 import { findConfirmCommands, findDestructiveCommand } from "./destructive-guard.ts";
 import { MAX_BYTES, takeTail } from "./limits.ts";
 import {
@@ -153,6 +154,20 @@ function confirmation(command: string): { confirm?: string; yoloWaived?: true } 
 	return { confirm, ...(matches.every((match) => match.yoloWaived) ? { yoloWaived: true as const } : {}) };
 }
 
+/**
+ * Whether the user's rules cover the command, so it runs outside the sandbox without asking: never what the guard
+ * asks about, never the verifier's, and only where the profile that keeps `~/.atelier` unwritable runs.
+ */
+function coveredByRules(
+	command: string,
+	rules: readonly string[] | undefined,
+	{ withoutApproval, policy, sandbox }: { withoutApproval: boolean; policy: SandboxPolicyName; sandbox: Sandbox },
+): boolean {
+	if (withoutApproval || policy !== "agent" || rules === undefined || rules.length === 0) return false;
+	if (findConfirmCommands(command).length > 0 || !coveredBy(command, rules)) return false;
+	return sandbox.outsideAvailable();
+}
+
 /** The causes shown for one command; the rest are counted. */
 const MAX_CAUSES = 5;
 
@@ -210,9 +225,10 @@ export function createBashTool({
 			reason: z.string().optional().describe("Required with unsandboxed: why this command must leave the sandbox"),
 		},
 		approvalCommand: ({ command }) => (withoutApproval ? undefined : command),
-		async gate({ command, unsandboxed, reason }, { cwd, sandboxOff }) {
+		async gate({ command, unsandboxed, reason }, { cwd, sandboxOff, bashRules }) {
 			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
 			if (rule !== undefined) return { refusal: refusal(rule, command) };
+			if (coveredByRules(command, bashRules, { withoutApproval, policy, sandbox })) return {};
 			// The verifier's copy is thrown away, so nothing there is worth asking about.
 			const confirmed = withoutApproval ? {} : confirmation(command);
 			if (unsandboxed) {
@@ -227,7 +243,7 @@ export function createBashTool({
 			if (status.available) return confirmed.confirm === undefined ? {} : { approval: { command, ...confirmed } };
 			return { approval: { command, ...confirmed }, warning: status.reason };
 		},
-		async execute({ command, timeoutSec, unsandboxed }, { cwd, signal, scratchDir, sandboxOff }) {
+		async execute({ command, timeoutSec, unsandboxed }, { cwd, signal, scratchDir, sandboxOff, bashRules }) {
 			// The session asks the gate first; this keeps a direct call from running what the guard refuses.
 			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
 			if (rule !== undefined) return { ok: false, ...refusal(rule, command), truncated: false };
@@ -237,9 +253,12 @@ export function createBashTool({
 
 			if (unsandboxed && policy === "verifier")
 				return { ok: false, ...refusal(VERIFIER_UNSANDBOXED, command), truncated: false };
-			const sandboxStatus: SandboxStatus = unsandboxed
-				? { available: false, reason: "the agent asked to run this command outside the sandbox" }
-				: await statusFor(sandbox, sandboxOff);
+			const covered = coveredByRules(command, bashRules, { withoutApproval, policy, sandbox });
+			const sandboxStatus: SandboxStatus = covered
+				? { available: false, reason: "the user's rules allow this command outside the sandbox" }
+				: unsandboxed
+					? { available: false, reason: "the agent asked to run this command outside the sandbox" }
+					: await statusFor(sandbox, sandboxOff);
 			if (!sandboxStatus.available && policy === "verifier")
 				return {
 					ok: false,
@@ -270,7 +289,8 @@ export function createBashTool({
 				}
 			}
 
-			const child = spawn("bash", ["-c", script], {
+			const { file, args } = covered ? sandbox.outside(command) : { file: "bash", args: ["-c", script] };
+			const child = spawn(file, args, {
 				cwd,
 				// The verifier's own git and temporary directory; its caller's variables win.
 				env: commandEnv(
@@ -332,7 +352,7 @@ export function createBashTool({
 			const label = stopped === "timeout" ? "timed out" : stopped === "aborted" ? "aborted" : `exit ${code ?? "?"}`;
 			return {
 				ok,
-				output: `${header}${text}${text ? "\n\n" : ""}${status}${blocked.map((cause) => `\n[sandbox blocked: ${cause}]`).join("")}`,
+				output: `${header}${text}${text ? "\n\n" : ""}${status}${blocked.map((cause) => `\n[sandbox blocked: ${cause}]`).join("")}${covered ? `\n[ran outside the sandbox: the user allows ${(commandRules(command).rules ?? []).join(", ")}]` : ""}`,
 				summary: `${firstLine(command)} (${label})`,
 				truncated,
 				...(fullOutputPath === undefined ? {} : { fullOutputPath }),

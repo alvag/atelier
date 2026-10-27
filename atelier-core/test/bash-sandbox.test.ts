@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -740,6 +740,26 @@ describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 		} finally {
 			server.server.close();
 		}
+	});
+});
+
+describe.skipIf(!onMac)("the commands the user's rules cover", () => {
+	const run = (command: string) => createBashTool({ sandbox }).execute({ command }, { cwd, bashRules: ["touch"] });
+
+	it("run outside the sandbox, where the home is writable", async () => {
+		const result = await run(`touch ${home}/covered.txt`);
+		expect(result.ok).toBe(true);
+		expect(await exists(join(home, "covered.txt"))).toBe(true);
+	});
+
+	it("never write ~/.atelier, by a name the rules do not see or through a link", async () => {
+		await mkdir(join(home, ".atelier"));
+		await symlink(join(home, ".atelier"), join(outside, "link"));
+		const quoted = await run(`touch ${home}/.ate""lier/permissions.json`);
+		expect(quoted.ok).toBe(false);
+		const linked = await run(`touch ${outside}/link/permissions.json`);
+		expect(linked.ok).toBe(false);
+		expect(await exists(join(home, ".atelier", "permissions.json"))).toBe(false);
 	});
 });
 

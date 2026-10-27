@@ -522,6 +522,38 @@ export interface SandboxOptions {
 	tempDir?: string;
 	/** Defaults to the Node installation that runs this process. */
 	nodePrefix?: string;
+	/**
+	 * Whether the profile for the commands the user's rules cover can run; defaults to trying it once on macOS. With a
+	 * manager (tests) that profile wraps nothing, like the manager.
+	 */
+	outside?: () => boolean;
+}
+
+/** Whether `sandbox-exec` applies a profile here: not on another platform, nor inside another sandbox. */
+function sandboxExecWorks(): boolean {
+	if (process.platform !== "darwin") return false;
+	const probe = spawnSync("/usr/bin/sandbox-exec", ["-p", "(version 1)(allow default)", "/usr/bin/true"], {
+		stdio: "ignore",
+		timeout: 5000,
+	});
+	return probe.status === 0;
+}
+
+/**
+ * The profile a command the user's rules cover runs under: everything is allowed, as outside the sandbox, except
+ * writing `~/.atelier`, where the rules and the default mode live, by its name or by where a link leads.
+ */
+export function outsideProfile(home: string): string {
+	const atelier = join(home, ".atelier");
+	const places = new Set([atelier]);
+	for (const place of [atelier, home]) {
+		try {
+			const real = realpathSync(place);
+			places.add(place === home ? join(real, ".atelier") : real);
+		} catch {}
+	}
+	const denied = [...places].map((place) => `(subpath ${JSON.stringify(place)})`).join(" ");
+	return `(version 1)\n(allow default)\n(deny file-write* ${denied})\n`;
 }
 
 export interface WrapOptions {
@@ -647,6 +679,21 @@ export class Sandbox {
 			if (causes.length > 0 || Date.now() >= deadline) return causes;
 			await new Promise((resolve) => setTimeout(resolve, 25));
 		}
+	}
+
+	#outside: boolean | undefined;
+
+	/** Whether a command the user's rules cover can run under its profile; asked once. */
+	outsideAvailable(): boolean {
+		this.#outside ??= (this.#options.outside ?? sandboxExecWorks)();
+		return this.#outside;
+	}
+
+	/** The program and arguments that run `command` under the profile for covered commands. */
+	outside(command: string): { file: string; args: string[] } {
+		if (this.#options.manager) return { file: "bash", args: ["-c", command] };
+		const profile = outsideProfile(this.#options.home ?? homedir());
+		return { file: "/usr/bin/sandbox-exec", args: ["-p", profile, "bash", "-c", command] };
 	}
 
 	/** Call after each wrapped command has finished. */

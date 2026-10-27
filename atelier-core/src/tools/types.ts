@@ -13,6 +13,8 @@ export interface ToolContext {
 	sandboxOff?: boolean;
 	/** Real paths outside the usual places that the user approved for the rest of the session; `edit` and `write` write only those. */
 	approvedPaths?: ReadonlySet<string>;
+	/** The `bash` rules the user allowed (`open`, `npm install`): a command they cover runs outside the sandbox without asking. */
+	bashRules?: readonly string[];
 }
 
 /** What a tool says about a call before it runs. */
