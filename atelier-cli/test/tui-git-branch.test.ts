@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGitBranch } from "../src/tui/git-branch.ts";
 
 let base: string;
@@ -9,6 +9,7 @@ beforeEach(async () => {
 	base = await mkdtemp(join(tmpdir(), "atelier-branch-"));
 });
 afterEach(async () => {
+	vi.unstubAllEnvs();
 	await rm(base, { recursive: true, force: true });
 });
 
@@ -44,8 +45,21 @@ describe("git branch", () => {
 	});
 
 	it("is nothing outside a repository or with a HEAD it cannot read", async () => {
-		expect(await readGitBranch(base)).toBeUndefined();
-		await writeFile(join(base, ".git"), "not a gitdir line\n");
-		expect(await readGitBranch(base)).toBeUndefined();
+		// The checkout around `outside` stands for one the temporary directory may be in; the ceiling keeps it out of reach.
+		await repo(base, "ref: refs/heads/main");
+		const outside = join(base, "outside");
+		await mkdir(outside);
+		vi.stubEnv("GIT_CEILING_DIRECTORIES", base);
+		expect(await readGitBranch(outside)).toBeUndefined();
+		await writeFile(join(outside, ".git"), "not a gitdir line\n");
+		expect(await readGitBranch(outside)).toBeUndefined();
+	});
+
+	it("walks up past folders that are not ceilings", async () => {
+		await repo(base, "ref: refs/heads/main");
+		const deep = join(base, "inner", "deep");
+		await mkdir(deep, { recursive: true });
+		vi.stubEnv("GIT_CEILING_DIRECTORIES", `relative:${deep}`);
+		expect(await readGitBranch(deep)).toBe("main");
 	});
 });
