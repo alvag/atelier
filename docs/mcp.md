@@ -32,6 +32,24 @@ Servers are configured only by the user, in `~/.atelier/mcp.json`, which the age
 - Server names may contain only letters, digits, `_` and `-`; names that differ only in `-` and `_` are the same server, and the second one is refused.
 - An invalid entry, or a file that cannot be read, is reported and skipped without preventing the other servers from connecting.
 
+## How the agent uses them
+
+The agent never sees the servers' tools declared one by one: that list would change as servers connect and break the prompt cache, and it would differ between backends. It has two fixed tools instead, with the same behavior on `claude-code` and `anthropic-api`:
+- `mcp_search` (`query`, optional `server`, optional `limit`, 1 to 20, 5 by default) finds tools by the words of their name, their description and their server's name, best match first; `*` lists them all. Each match comes as `server/tool — description` and `input: <JSON schema>`. It waits for servers that are still connecting, and names the ones that are not reachable with their state and error.
+- `mcp_call` (`server`, `tool`, optional `arguments`) runs a tool. The model reads the text of the result, or its structured content as JSON when it has no text; other content is shown as `[<type> content omitted]`. A result the server marks as an error, or a failed call (`MCP call failed: <reason>`), comes back as a failed tool call. Its line in a client is `server › tool`.
+
+Both tools exist only when at least one server is enabled. The system prompt then lists the servers, from the configuration only, so it does not change during the session:
+
+```
+MCP servers the user configured. Their tools are not declared: find them with mcp_search and run them with mcp_call.
+- docs: Search and read the product documentation
+- filesystem: no description yet; mcp_search lists its tools
+```
+
+A server without `description` that sends instructions when it connects has the first line of them given once, before the next prompt, in a `<mcp_servers>` block.
+
+MCP calls do not ask for approval. Servers run outside the sandbox, with the user's permissions. Only the main agent has MCP: subagents and the review roles never get these tools, whatever their definition says. `ATELIER_MCP=off` runs sessions without MCP servers.
+
 ## Connections
 
 When a session starts, Atelier connects every enabled server in the background; the session does not wait for them. A server is `connecting`, `connected`, `failed` (with its error and, for a stdio server, the end of its stderr), `disabled` or `invalid` (an entry that could not be taken, with what is wrong). A server whose connection drops is shown as failed and reconnects on its next call. When a server announces that its tool list changed, Atelier reads it again.

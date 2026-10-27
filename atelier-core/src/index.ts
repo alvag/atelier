@@ -43,6 +43,13 @@ export {
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
 export {
+	McpManager,
+	type McpServerState,
+	type McpServerStatus,
+	mcpConfigFile,
+	openMcp,
+} from "./mcp/index.ts";
+export {
 	connectMemory,
 	FakeMemory,
 	MEMORY_MIN_VERSION,

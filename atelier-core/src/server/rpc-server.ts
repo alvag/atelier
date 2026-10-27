@@ -5,6 +5,7 @@ import type { Readable } from "node:stream";
 import type { AgentBackend } from "../backend.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
+import type { McpManager } from "../mcp/index.ts";
 import type { MemoryPort } from "../memory/index.ts";
 import { PERMISSION_MODES } from "../modes.ts";
 import { BACKEND_MODELS } from "../options.ts";
@@ -54,6 +55,8 @@ export interface RpcServerOptions {
 	subagents?: readonly SubagentDefinition[];
 	/** Connects long-term memory for a session folder. Without it sessions have no memory. */
 	connectMemory?: (cwd: string) => Promise<MemoryPort>;
+	/** Opens the user's MCP servers for a session folder; they connect in the background. Without it sessions have none. */
+	connectMcp?: (cwd: string) => McpManager;
 	tools: readonly ToolDefinition[];
 	systemPromptAppend: string;
 	/** Where the walk up from a session's folder for AGENTS.md / CLAUDE.md stops (excluded). Without it none are read. */
@@ -566,10 +569,12 @@ export class RpcServer {
 					memoryUnavailable = describeError(error);
 					return undefined;
 				});
+		const mcp = this.#options.connectMcp?.(cwd);
 		let session: Session;
 		try {
 			session = await Session.start({
 				...(memory ? { memory } : {}),
+				...(mcp ? { mcp } : {}),
 				...(memoryUnavailable === undefined ? {} : { memoryUnavailable }),
 				backend: await this.#options.createBackend(backend),
 				...(profile === undefined ? {} : { profile }),
@@ -610,6 +615,7 @@ export class RpcServer {
 			if (recorder) this.#writing.delete(recorder.path);
 			await recorder?.release();
 			await memory?.close().catch(() => {});
+			await mcp?.close().catch(() => {});
 			// A backend the profile chose for the orchestrator fails naming the role and the backend.
 			const named = requestedBackend === undefined ? orchestratorBackend(profile) : undefined;
 			if (named !== undefined && (error instanceof MissingApiKeyError || error instanceof KeychainError))

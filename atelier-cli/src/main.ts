@@ -9,6 +9,7 @@ import {
 	createBackend as createNamedBackend,
 	describeError,
 	MemoryUnavailableError,
+	openMcp,
 	parseCompactAt,
 } from "@atelier/core";
 import { RpcClient } from "@atelier/core/client";
@@ -87,6 +88,7 @@ const exitCode = await run(
 				throw new MemoryUnavailableError("Memory is off (ATELIER_MEMORY=off).");
 			}
 		: (cwd) => connectMemory({ cwd }),
+	process.env.ATELIER_MCP === "off" ? undefined : (cwd) => openMcp({ cwd }),
 );
 
 // Exit only after stdout is flushed, so piped output is never cut short.

@@ -125,6 +125,7 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 | `permission-mode.json` | Default permission mode, written by `/mode default <mode>`.                                        |
 | `settings.json`        | Full screen or not, and the status line items ([settings](docs/cli.md#settings)).                  |
 | `sandbox.json`         | Extra writable paths and hidden paths for `bash` ([sandbox](docs/sandbox.md#configuration-files)). |
+| `mcp.json`             | MCP servers the agent can use, in the `mcpServers` format of Claude Code ([MCP](docs/mcp.md)).     |
 | `sessions/`            | Saved sessions ([saved sessions](docs/sessions.md)).                                               |
 
 A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent reads `AGENTS.md` (or `CLAUDE.md`) from the working directory and its parents, and `~/.agents/AGENTS.md`. It also lists the skills in `.agents/skills/` (from the working directory up to the repository root) and in `~/.agents/skills/`, each a folder with a `SKILL.md`, and reads one when a task matches it; the first turn says which skills were loaded.
@@ -135,6 +136,7 @@ A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent
 | `ATELIER_REVIEW=off`  | Same as `--no-review`.                   |
 | `ATELIER_SANDBOX=off` | Same as `--no-sandbox`.                  |
 | `ATELIER_MEMORY=off`  | No long-term memory.                     |
+| `ATELIER_MCP=off`     | No MCP servers.                          |
 
 ## Inspiration
 
@@ -154,6 +156,7 @@ Atelier brings these ideas into its own core, as code instead of prompt prose, s
 - [Agent profiles and session settings](docs/profiles.md)
 - [Saved sessions](docs/sessions.md)
 - [Sandbox and permissions](docs/sandbox.md)
+- [MCP servers](docs/mcp.md)
 - [Development](docs/development.md): packages, checks, measurement scripts.
 
 ## License

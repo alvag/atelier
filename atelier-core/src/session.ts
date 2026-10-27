@@ -26,6 +26,8 @@ import {
 	type SubagentTag,
 	ZERO_USAGE,
 } from "./events.ts";
+import type { McpManager } from "./mcp/manager.ts";
+import { createMcpTools, MCP_CALL_TOOL, MCP_SEARCH_TOOL, mcpInstructionsNote, mcpPromptBlock } from "./mcp/tools.ts";
 import {
 	CONTEXT_BYTES,
 	createMemoryTool,
@@ -82,7 +84,15 @@ type TurnEvent = AtelierEventBody & SubagentTag;
 /** Errors a backend reports when its credentials are missing or refused. */
 const CREDENTIAL_ERRORS: ReadonlySet<string> = new Set(["not_logged_in", "authentication_error"]);
 /** Tools a subagent never gets: delegation and the ODD document belong to the parent. */
-const PARENT_ONLY = new Set([TASK_TOOL, FEATURE_TOOL, PHASE_TOOL, MEMORY_TOOL, RISK_TOOL]);
+const PARENT_ONLY = new Set([
+	TASK_TOOL,
+	FEATURE_TOOL,
+	PHASE_TOOL,
+	MEMORY_TOOL,
+	RISK_TOOL,
+	MCP_SEARCH_TOOL,
+	MCP_CALL_TOOL,
+]);
 
 export interface ApprovalRequest {
 	callId: string;
@@ -143,6 +153,11 @@ export interface SessionOptions {
 	maxRequestsPerTurn?: number;
 	/** Turns on ODD tracking: the feature and phase tools, phases and the verbatim user log. */
 	odd?: boolean;
+	/**
+	 * The user's MCP servers, started by the caller; the session closes them. With at least one listed server the agent
+	 * gets `mcp_search` and `mcp_call` and the system prompt lists the servers. Never given to subagents.
+	 */
+	mcp?: McpManager;
 	/** Long-term memory, connected by the caller; the session closes it. */
 	memory?: MemoryPort;
 	/** Why there is no memory, when the caller tried and failed; reported in memory_status. */
@@ -263,6 +278,8 @@ export class Session {
 	/** The skills found at start; reported with the first turn. */
 	#skills: Skills | undefined;
 	#announced = false;
+	/** The MCP servers whose instructions the model was already given. */
+	readonly #mcpGiven = new Set<string>();
 	/** The configuration the session started with was saved. */
 	#recordedConfig = false;
 	/** What the backend that ran the turn answered at its end, until the turn's last event is saved. */
@@ -334,6 +351,7 @@ export class Session {
 			...(this.#review ? [this.#review.tool] : []),
 			...(this.#odd ? this.#odd.tools() : []),
 			...(options.memory ? [createMemoryTool(options.memory)] : []),
+			...(options.mcp && mcpPromptBlock(options.mcp) !== "" ? createMcpTools(options.mcp) : []),
 		];
 		this.#options = { ...options, tools: all };
 		this.#tools = new Map(all.map((tool) => [tool.name, tool]));
@@ -375,6 +393,7 @@ export class Session {
 			options.review ? RISK_RULES : "",
 			session.#instructions?.text ?? "",
 			skillsPrompt(session.#skills?.skills ?? []),
+			options.mcp ? mcpPromptBlock(options.mcp) : "",
 		]
 			.filter((part) => part !== "")
 			.join("\n\n");
@@ -483,6 +502,9 @@ export class Session {
 					turn.push(errorEvent("permission_mode_invalid", this.#options.permissionModeProblem, true));
 				if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
 			}
+			// Servers that connected since the last prompt, with no description, say what they offer once.
+			const mcpNote = this.#options.mcp ? mcpInstructionsNote(this.#options.mcp, this.#mcpGiven) : undefined;
+			if (mcpNote !== undefined) sent = `${mcpNote}\n\n${sent}`;
 			// A backend that took the conversation over by a summary gets it with its first prompt.
 			if (this.#handoff !== undefined) {
 				sent = `${this.#handoff}\n\n${sent}`;
@@ -1108,6 +1130,7 @@ export class Session {
 				.then(() => Promise.all(this.#archiving))
 				.then(() => this.#options.record?.flush())
 				.then(() => this.#options.memory?.close().catch(() => {}))
+				.then(() => this.#options.mcp?.close().catch(() => {}))
 				.then(() => this.#backendSession?.close())
 				.finally(async () => {
 					// Whatever failed above, the saved session is let go once its entries are written.

@@ -14,6 +14,7 @@ import {
 	freezeProfile,
 	type LoadedSession,
 	loadSandboxAdditions,
+	type McpManager,
 	type MemoryPort,
 	orchestratorBackend,
 	PERMISSION_MODES,
@@ -84,6 +85,9 @@ export interface CliIO {
 /** Connects long-term memory for the working directory; may fail, and then the session runs without it. */
 export type MemoryConnector = (cwd: string) => Promise<MemoryPort>;
 
+/** Opens the user's MCP servers for the working directory; they connect in the background. */
+export type McpConnector = (cwd: string) => McpManager;
+
 /** Builds the backend named by --backend; may fail, for example without an API key. */
 export type BackendFactory = (name: BackendName) => AgentBackend | Promise<AgentBackend>;
 
@@ -110,6 +114,7 @@ export async function run(
 	io: CliIO,
 	createBackend: BackendFactory = (name) => createNamedBackend(name),
 	connectMemory?: MemoryConnector,
+	connectMcp?: McpConnector,
 ): Promise<number> {
 	let args: ReturnType<typeof parseCliArgs>;
 	try {
@@ -353,8 +358,10 @@ export async function run(
 		return EXIT_FAILED;
 	}
 	const model = args.model ?? resumed?.config.model;
+	const mcp = connectMcp?.(args.cwd);
 	const session = await Session.start({
 		backend,
+		...(mcp ? { mcp } : {}),
 		...(recorder === undefined ? {} : { record: recorder }),
 		...(resumed?.resume === undefined ? {} : { resume: resumed.resume }),
 		...(resumed?.config.thinking === undefined ? {} : { thinking: resumed.config.thinking }),
@@ -427,6 +434,7 @@ export async function run(
 			lines.close();
 			restoreTerminal();
 			await recorder?.release();
+			await mcp?.close().catch(() => {});
 			if (resumed === undefined) throw error;
 			// Nothing was started: say why and leave the saved session as it was.
 			await memory?.close().catch(() => {});

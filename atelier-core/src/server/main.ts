@@ -4,6 +4,7 @@ import process from "node:process";
 import { createBackend as createNamedBackend } from "../backend-factory.ts";
 import { parseCompactAt } from "../compaction/compactor.ts";
 import { describeError } from "../events.ts";
+import { openMcp } from "../mcp/index.ts";
 import { connectMemory, MemoryUnavailableError } from "../memory/index.ts";
 import { SYSTEM_PROMPT_APPEND } from "../prompt.ts";
 import type { BackendName } from "../protocol/types.ts";
@@ -25,6 +26,7 @@ Environment:
   ATELIER_BACKEND=echo   Network-free echo backend, for tests
   ANTHROPIC_API_KEY      API key for anthropic-api sessions, instead of the Keychain
   ATELIER_MEMORY=off     Run sessions without long-term memory
+  ATELIER_MCP=off        Run sessions without the MCP servers of ~/.atelier/mcp.json
   ATELIER_REVIEW=off     Run sessions without the review of uncommitted changes (RDD)
   ATELIER_SANDBOX=off    Run every session's bash without the macOS sandbox: each command asks,
                          and the verifier gets no bash (session.start can also ask for it)
@@ -69,6 +71,9 @@ const createBackend = (name: BackendName) =>
 // The echo backend (tests) and ATELIER_MEMORY=off run without long-term memory.
 const memoryOff = process.env.ATELIER_BACKEND === "echo" || process.env.ATELIER_MEMORY === "off";
 
+// The echo backend (tests) and ATELIER_MCP=off run without the user's MCP servers.
+const mcpOff = process.env.ATELIER_BACKEND === "echo" || process.env.ATELIER_MCP === "off";
+
 const server = new RpcServer({
 	input: process.stdin,
 	write: (line) => process.stdout.write(line),
@@ -89,6 +94,7 @@ const server = new RpcServer({
 				);
 			}
 		: (cwd: string) => connectMemory({ cwd }),
+	...(mcpOff ? {} : { connectMcp: (cwd: string) => openMcp({ cwd }) }),
 });
 
 await server.run();
