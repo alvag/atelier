@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGitBranch } from "../src/tui/git-branch.ts";
 
@@ -10,6 +10,8 @@ beforeEach(async () => {
 });
 afterEach(async () => {
 	vi.unstubAllEnvs();
+	vi.doUnmock("node:path");
+	vi.resetModules();
 	await rm(base, { recursive: true, force: true });
 });
 
@@ -59,7 +61,30 @@ describe("git branch", () => {
 		await repo(base, "ref: refs/heads/main");
 		const deep = join(base, "inner", "deep");
 		await mkdir(deep, { recursive: true });
-		vi.stubEnv("GIT_CEILING_DIRECTORIES", `relative:${deep}`);
+		vi.stubEnv("GIT_CEILING_DIRECTORIES", ["relative", deep].join(delimiter));
 		expect(await readGitBranch(deep)).toBe("main");
+	});
+
+	it("stops below a ceiling named through a symlink, and ignores one that does not exist", async () => {
+		await repo(base, "ref: refs/heads/main");
+		const real = join(base, "real");
+		await mkdir(join(real, "outside"), { recursive: true });
+		await symlink(real, join(base, "link"));
+		vi.stubEnv("GIT_CEILING_DIRECTORIES", [join(base, "gone"), join(base, "link")].join(delimiter));
+		expect(await readGitBranch(join(real, "outside"))).toBeUndefined();
+		vi.stubEnv("GIT_CEILING_DIRECTORIES", join(base, "gone"));
+		expect(await readGitBranch(join(real, "outside"))).toBe("main");
+	});
+
+	it("splits the ceilings on the platform's path list separator", async () => {
+		// Windows separates them with ";", which never splits a drive letter's colon.
+		vi.doMock("node:path", async (original) => ({ ...(await original<typeof import("node:path")>()), delimiter: ";" }));
+		vi.resetModules();
+		const { readGitBranch: read } = await import("../src/tui/git-branch.ts");
+		await repo(base, "ref: refs/heads/main");
+		const outside = join(base, "outside");
+		await mkdir(outside);
+		vi.stubEnv("GIT_CEILING_DIRECTORIES", `${join(base, "gone")};${base}`);
+		expect(await read(outside)).toBeUndefined();
 	});
 });
