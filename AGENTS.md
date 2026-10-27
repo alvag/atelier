@@ -4,7 +4,7 @@ A pnpm monorepo: `atelier-core` (sessions, backends, tools, review), `atelier-cl
 
 ## Conventions
 
-- Code, comments, tests, identifiers, README and commit messages are in English. Design and measurement docs live outside this repo in `../docs/`, in Spanish.
+- Code, comments, tests, identifiers, README, `docs/` and commit messages are in English. The README is for users (install, basic commands, keys, configuration); the reference lives in `docs/`. The repository is self-contained: no links to paths outside it. Design and measurement notes live outside this repo in `../docs/`, in Spanish, and are never linked from it.
 - Commit messages follow Conventional Commits with a scope: `feat(core): ...`, `fix(cli): ...`, `fix(desktop): ...`, `test(cli): ...`, `docs: ...`. Imperative, lowercase after the colon, no trailing period.
 - Match the surrounding code: tabs, the existing comment density, small named helpers over clever one-liners.
 
@@ -12,7 +12,7 @@ A pnpm monorepo: `atelier-core` (sessions, backends, tools, review), `atelier-cl
 
 - Work on a new branch (`feat/...`, `fix/...`), never on `main`. The user merges into `main`; do not merge or push.
 - Write the test first for a behavior change and watch it fail, then make it pass. Tests go in the same commit as the change, and they check observable effects through the public interface (events, CLI output, what the backend receives), not internal state.
-- When you change a command, option, event or message, update the README in the same commit.
+- When you change a command, option, event or message, update the page of `docs/` that describes it, and the README when a user sees it, in the same commit.
 - Run `pnpm check` (Biome, TypeScript for core/CLI and desktop, Vitest) before every commit. Fix formatting with `pnpm format`. Do not commit with failing checks.
 - `pnpm-lock.yaml` belongs to pnpm: Biome skips it (`biome.json`), so commit it as `pnpm add` or `pnpm install` writes it, without formatting it.
 - When the checks pass, commit your work on the branch before reporting the task done; leave nothing uncommitted.
