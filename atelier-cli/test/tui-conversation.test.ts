@@ -1,8 +1,8 @@
 import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { Conversation } from "../src/tui/conversation.ts";
-import { type Paint, painter } from "../src/tui/style.ts";
+import { type Paint, painter, Shade } from "../src/tui/style.ts";
 
 const plain = painter(false);
 const usage = { input: 1200, output: 85, cacheRead: 0, cacheWrite: 0 };
@@ -220,6 +220,28 @@ describe("Conversation", () => {
 			"skills: review",
 			"memory: other",
 		]);
+	});
+
+	it("shows each prompt as a full-width block on the shade, after › and lined up on every line", () => {
+		const conversation = new Conversation(painter(true), "/repo", new Shade(true));
+		conversation.prompt("first line\nsecond line");
+		const lines = conversation.render(40);
+		const shaded = lines.filter((line) => line.startsWith("\x1b[100m"));
+		expect(shaded.map((line) => stripTerminalSequences(line).trimEnd())).toEqual([
+			"",
+			"› first line",
+			"  second line",
+			"",
+		]);
+		for (const line of shaded) expect(visibleWidth(line)).toBe(40);
+	});
+
+	it("shows a prompt after ❯ as before without color", () => {
+		const conversation = new Conversation(plain, "/repo", new Shade(false));
+		conversation.prompt("first line\nsecond line");
+		const text = conversation.render(40).join("\n");
+		expect(text).toContain("❯ first line");
+		expect(text).not.toContain("\x1b[");
 	});
 
 	it("shows control characters in what /status prints as markers", () => {

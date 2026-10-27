@@ -252,6 +252,26 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(0);
 	});
 
+	it("shows the prompt on a shade taken from the terminal's background, with color", async () => {
+		const h = harness([[{ event: started }, { event: finished }]]);
+		h.io.color = true;
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		// The terminal answers the TUI's question about its colors: a dark background.
+		await until(() => h.screen.raw().includes("\x1b]11;?"));
+		h.screen.type("\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\");
+		h.screen.type("\x1b[?62c");
+		h.screen.type("hi");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		expect(h.screen.screen()).toContain("› hi");
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: the background's sequence is what is checked
+		expect(h.screen.raw()).toMatch(/\x1b\[48;(?:2;49;49;49|5;236)m› hi/);
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
 	it("shows the status line items of ~/.atelier/settings.json, and starts with a warning when one is wrong", async () => {
 		const h = harness([[{ event: started }, { event: finished }]]);
 		await mkdir(join(home, ".atelier"));

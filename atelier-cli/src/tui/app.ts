@@ -19,9 +19,11 @@ import {
 	type Component,
 	Container,
 	Editor,
+	getTerminalColorMode,
 	Loader,
 	matchesKey,
 	type Terminal,
+	type TerminalColors,
 	Text,
 } from "@earendil-works/pi-tui";
 import type { CliArgs } from "../args.ts";
@@ -52,7 +54,7 @@ import {
 	sessionChoices,
 } from "./selectors.ts";
 import { readTuiSettings } from "./settings.ts";
-import { editorTheme, type Paint, painter } from "./style.ts";
+import { editorTheme, type Paint, painter, Shade } from "./style.ts";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
 export interface CoreLink {
@@ -85,6 +87,8 @@ const EXIT_INTERRUPTED = 130;
 const SIGNAL_EXIT = 128;
 const CLOSE_TIMEOUT_MS = 3000;
 const ANSWER_GUARD_MS = 400;
+/** How long the terminal has to say its colors; the shade starts as the palette's until then, and stays so after. */
+const COLOR_QUERY_MS = 500;
 
 const COMMANDS = [
 	{ name: "model", description: "Change the model from the next turn [name]" },
@@ -335,7 +339,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		return EXIT_FAILED;
 	}
 	const settings = await readTuiSettings(options.home);
-	let conversation = new Conversation(paint, args.cwd);
+	const shade = new Shade(options.color);
+	let conversation = new Conversation(paint, args.cwd, shade);
 	// A wrong setting does not stop the session: it says what it used instead.
 	for (const warning of settings.warnings) conversation.note(`warning: ${warning}`, true);
 	let chosen: Chosen = {
@@ -770,7 +775,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 	/** A conversation for the next session, after a rule that ends the one before. */
 	const nextConversation = (title: string) => {
-		const next = new Conversation(paint, args.cwd);
+		const next = new Conversation(paint, args.cwd, shade);
 		next.addChild(new Text(paint("dim", `── ${title} ──`), 1, 1));
 		transcript.addChild(next);
 		return next;
@@ -971,6 +976,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const removeTerminate = options.onTerminate?.((signal) => quit(SIGNAL_EXIT + signal));
 	tui.start();
 	void readBranch();
+	if (shade.on) {
+		const shadeAs = (colors: TerminalColors) => {
+			if (quitting) return;
+			shade.match(colors.background, getTerminalColorMode());
+			tui.requestRender(true);
+		};
+		void tui.queryTerminalColors({ timeoutMs: COLOR_QUERY_MS, onLateReply: shadeAs }).then(shadeAs);
+	}
 	options.terminal.setTitle(`Atelier - ${basename(args.cwd)}`);
 	programStatus.report("idle");
 	try {

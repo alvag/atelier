@@ -1,8 +1,9 @@
 import { type AtelierEvent, visibleText } from "@atelier/core";
 import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
+import { PromptBlock } from "./prompt.ts";
 import { ReviewBlock } from "./review-block.ts";
-import { markdownTheme, type Paint } from "./style.ts";
+import { markdownTheme, type Paint, Shade } from "./style.ts";
 import { AgentGroup, type CardView, ToolCard } from "./tool-card.ts";
 import { VerifyCard } from "./verify-card.ts";
 
@@ -41,6 +42,7 @@ function configuredLine(event: Extract<AtelierEvent, { type: "session_configured
 export class Conversation extends Container {
 	readonly view: CardView = { expanded: false };
 	readonly #paint: Paint;
+	readonly #shade: Shade;
 	readonly #renderer: Renderer;
 	/** What the renderer wrote for the event being shown. */
 	#notes = "";
@@ -66,9 +68,10 @@ export class Conversation extends Container {
 	#assessed: ReviewBlock | undefined;
 	readonly #verifications = new Map<string, VerifyCard>();
 
-	constructor(paint: Paint, cwd: string) {
+	constructor(paint: Paint, cwd: string, shade = new Shade(false)) {
 		super();
 		this.#paint = paint;
+		this.#shade = shade;
 		this.#cwd = cwd;
 		const write = (text: string) => {
 			this.#notes += text;
@@ -87,10 +90,11 @@ export class Conversation extends Container {
 		this.view.expanded = !this.view.expanded;
 	}
 
-	/** The user's prompt, after a blank line that separates it from the turn before. */
+	/** The user's prompt, after a blank line that separates it from the turn before: on the shade, or after `❯` without it. */
 	prompt(text: string): void {
 		this.#add(new Spacer(1));
-		this.#add(new Text(`${this.#paint(["bold", "cyan"], "❯")} ${shown(text)}`, 1, 0));
+		if (this.#shade.on) this.#add(new PromptBlock(shown(text), this.#paint, this.#shade));
+		else this.#add(new Text(`${this.#paint(["bold", "cyan"], "❯")} ${shown(text)}`, 1, 0));
 	}
 
 	/** A line of the client's own, such as the answer to `/mode`; `warn` shows it in yellow. */
