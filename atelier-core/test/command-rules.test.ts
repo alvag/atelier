@@ -28,6 +28,13 @@ describe("commandRules", () => {
 		["nohup timeout 5 deno run x.ts", ["deno run"], false],
 		["time osascript -e 'x'", ["osascript"], false],
 		["ls | xargs rm", ["ls", "rm"], true],
+		["pnpm -r build", ["pnpm"], true],
+		["pnpm -C . dlx foo", ["pnpm dlx"], false],
+		["pnpm --filter x exec foo", ["pnpm exec"], false],
+		["npm --prefix . exec foo", ["npm exec"], false],
+		["yarn --cwd x dlx foo", ["yarn dlx"], false],
+		["pipx --quiet run foo", ["pipx run"], false],
+		["uv --quiet run x.py", ["uv run"], false],
 		["npm test 2>&1 >/dev/null", ["npm test"], true],
 		["ego-browser nodejs < script.js", ["ego-browser nodejs"], true],
 	];
@@ -77,6 +84,24 @@ describe("coveredBy", () => {
 		expect(coveredBy("npm install foo", ["npm install"])).toBe(true);
 		expect(coveredBy("npm publish", ["npm install"])).toBe(false);
 		expect(coveredBy("npm --global install", ["npm install"])).toBe(false);
+	});
+
+	it("never covers a launcher by its program's rule, wherever its subcommand is", () => {
+		for (const [command, rule] of [
+			["pnpm dlx evil", "pnpm"],
+			["pnpm exec evil", "pnpm"],
+			["pnpm -C . dlx evil", "pnpm"],
+			["env pnpm exec x", "pnpm"],
+			["timeout 5 pnpm dlx evil", "pnpm"],
+			["yarn dlx evil", "yarn"],
+			["npm exec evil", "npm"],
+			["npm --prefix . x evil", "npm"],
+			["pipx run evil", "pipx"],
+			["uv run evil.py", "uv"],
+		] as const)
+			expect(coveredBy(command, [rule]), command).toBe(false);
+		expect(coveredBy("pnpm -C . dlx foo", ["pnpm dlx"])).toBe(true);
+		expect(coveredBy("pnpm install", ["pnpm"])).toBe(true);
 	});
 
 	it("compares the program as written", () => {

@@ -45,6 +45,14 @@ describe("bash and the user's rules", () => {
 		expect(gate?.approval?.command).toBe("mkdir -p x && open x");
 	});
 
+	it("asks about a launcher even when its program's rule is allowed", async () => {
+		const gate = await gateOf({ command: "pnpm dlx evil-pkg", unsandboxed: true, reason: "r" }, ["pnpm"]);
+		expect(gate?.approval).toMatchObject({
+			command: "pnpm dlx evil-pkg",
+			remember: { rules: ["pnpm dlx"], always: false },
+		});
+	});
+
 	it("never covers what the guard asks about or refuses", async () => {
 		expect((await gateOf({ command: "rm -r build" }, ["rm"]))?.approval?.confirm).toBe("recursive removal");
 		expect((await gateOf({ command: "git push" }, ["git"]))?.approval?.confirm).toBe("git push");

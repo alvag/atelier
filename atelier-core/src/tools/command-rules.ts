@@ -48,17 +48,17 @@ const INTERPRETERS = new Set([
 	"sudo",
 ]);
 const PYTHON = /^(?:python|pypy)[0-9.]*$/;
-/** Subcommands that download or run arbitrary code: never allowed always. */
-const LAUNCHERS = new Set([
-	"npm exec",
-	"npm x",
-	"pnpm dlx",
-	"pnpm exec",
-	"yarn dlx",
-	"yarn exec",
-	"pipx run",
-	"uv run",
-]);
+/**
+ * Subcommands that download or run arbitrary code, by program: never allowed always, and never covered by the
+ * program's own rule. Options can come before them (`pnpm -C . dlx`), so any of the program's words that is one counts.
+ */
+const LAUNCHERS: Record<string, readonly string[]> = {
+	npm: ["exec", "x"],
+	pnpm: ["dlx", "exec"],
+	yarn: ["dlx", "exec"],
+	pipx: ["run"],
+	uv: ["run"],
+};
 
 /** Programs whose line is not one command the words show: they run a string, a file in this shell, or a structure. */
 const NEVER = new Set([
@@ -88,13 +88,22 @@ interface Key {
 	subcommand?: string;
 	/** Runs arbitrary code: an interpreter, a launcher, or a wrapper that becomes one. */
 	runsCode: boolean;
+	/** A launcher's subcommand: only the rule that names it (`pnpm dlx`) covers it, never the program's alone. */
+	launcher: boolean;
 }
 
 const ruleOf = ({ program, subcommand }: Key) => (subcommand === undefined ? program : `${program} ${subcommand}`);
 
 function isRunner(program: string, subcommand: string | undefined): boolean {
 	const name = program.split("/").at(-1) ?? program;
-	return INTERPRETERS.has(name) || PYTHON.test(name) || LAUNCHERS.has(`${name} ${subcommand ?? ""}`);
+	return INTERPRETERS.has(name) || PYTHON.test(name) || (subcommand !== undefined && isLauncher(name, subcommand));
+}
+
+const isLauncher = (name: string, subcommand: string) => LAUNCHERS[name]?.includes(subcommand) === true;
+
+/** The first of the program's words that is one of its launchers, wherever options put it. */
+function launcherOf(name: string, words: SimpleCommand["words"]): string | undefined {
+	return words.slice(1).find(({ value }) => isLauncher(name, value))?.value;
 }
 
 /** The key of one command, or undefined when it can never be covered. */
@@ -106,12 +115,15 @@ function keyOf({ wrappers, words, writesFile }: SimpleCommand): Key | undefined 
 	if (NEVER.has(name)) return undefined;
 	// A shell given a string runs it: nothing in the words says what that is.
 	if (SHELLS.has(name) && words.some(({ value }) => /^-[a-z]*c[a-z]*$/.test(value))) return undefined;
+	const launcher = launcherOf(name, words);
 	const subcommand =
-		second !== undefined && second.raw === second.value && SUBCOMMAND.test(second.value) ? second.value : undefined;
+		launcher ??
+		(second !== undefined && second.raw === second.value && SUBCOMMAND.test(second.value) ? second.value : undefined);
 	return {
 		program,
 		...(subcommand === undefined ? {} : { subcommand }),
 		runsCode: wrappers.includes("sudo") || isRunner(program, subcommand),
+		launcher: launcher !== undefined,
 	};
 }
 
@@ -150,7 +162,7 @@ export function coveredBy(command: string, allowed: Iterable<string>): boolean {
 	const keys = keysOf(command);
 	if (keys === undefined) return false;
 	return keys.every(
-		(key) => rules.has(key.program) || (key.subcommand !== undefined && rules.has(`${key.program} ${key.subcommand}`)),
+		(key) => (!key.launcher && rules.has(key.program)) || (key.subcommand !== undefined && rules.has(ruleOf(key))),
 	);
 }
 
