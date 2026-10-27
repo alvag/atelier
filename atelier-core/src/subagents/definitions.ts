@@ -26,7 +26,7 @@ export const BUILTIN_AGENTS: readonly SubagentDefinition[] = Object.freeze([
 		name: "explorer",
 		description:
 			"Reads and searches the code to answer a specific question, without changing anything. Use it when answering needs many reads.",
-		tools: ["read", "grep"],
+		tools: ["read", "grep", "web_fetch"],
 		prompt: `You are an explorer working for another coding agent. Answer the question you are given by reading and searching the code; you cannot change anything. ${REPORT_FORMAT}`,
 		models: {},
 		maxRequests: 30,
@@ -35,7 +35,7 @@ export const BUILTIN_AGENTS: readonly SubagentDefinition[] = Object.freeze([
 		name: "worker",
 		description:
 			"Makes a well-specified, bounded change and checks it. Give it everything it needs: it does not see this conversation.",
-		tools: ["read", "edit", "write", "grep", "bash"],
+		tools: ["read", "edit", "write", "grep", "bash", "web_fetch"],
 		prompt: `You are a worker for another coding agent. Make exactly the change you are given, keep it as small as it allows, and check it. ${REPORT_FORMAT} Say what changed and how you checked it.`,
 		models: {},
 		maxRequests: 50,
