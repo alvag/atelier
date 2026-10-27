@@ -9,7 +9,7 @@ Install Atelier globally from GitHub and keep it up to date.
 - `atelier update [vX.Y.Z]` moves an installed copy to the newest release, or to the one given (older too), and reinstalls its dependencies. It refuses a development clone, local changes and unknown releases, and goes back if the install fails.
 - `atelier desktop` opens the desktop app in the same version as the CLI; the first time it installs Electron and builds it.
 - `update` and `desktop` are subcommands only as the first word; a quoted prompt that starts with them is still a prompt.
-- The installed copy replaces the `atelier-stable/` worktree as the stable tool for working on Atelier itself.
+- To work on Atelier itself, the installed copy is the tool and a clone of the repository is the workpiece (see `docs/development.md`).
 
 ## v0.1.0
 
