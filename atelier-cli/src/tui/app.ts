@@ -37,6 +37,7 @@ import {
 	footerWithMode,
 	type StatusItem,
 } from "./footer.ts";
+import { readGitBranch } from "./git-branch.ts";
 import { ProgramStatusReporter, settledState } from "./program-status.ts";
 import {
 	choicesOf,
@@ -152,7 +153,10 @@ const CONSENT_TITLE = "Review this high-risk change?";
 
 /** The fixed status line under the editor, with the items chosen in the settings. */
 class Footer implements Component {
+	/** What the session says. */
 	state: FooterState = {};
+	/** Where the TUI works, which a new or resumed session keeps. */
+	place: Pick<FooterState, "cwd" | "branch"> = {};
 	readonly #paint: Paint;
 	readonly #items: readonly StatusItem[];
 	constructor(paint: Paint, items: readonly StatusItem[]) {
@@ -161,7 +165,7 @@ class Footer implements Component {
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		return [footerLine(this.state, width, this.#paint, this.#items)];
+		return [footerLine({ ...this.state, ...this.place }, width, this.#paint, this.#items)];
 	}
 }
 
@@ -341,6 +345,16 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const tui = new TuiMainScreen(options.terminal);
 	const footer = new Footer(paint, settings.statusLine);
+	footer.place = { cwd: args.cwd };
+	/** Reads the branch again, without blocking: the agent may have changed it. Only the newest read is shown. */
+	let branchReads = 0;
+	const readBranch = async () => {
+		const read = ++branchReads;
+		const branch = await readGitBranch(args.cwd);
+		if (read !== branchReads) return;
+		footer.place = { cwd: args.cwd, ...(branch === undefined ? {} : { branch }) };
+		tui.requestRender();
+	};
 	// What the core answered, until the session's own events say more.
 	if (opened.configuration !== undefined) footer.state = footerWithConfiguration({}, opened.configuration);
 	let modeRequests = modeRequestsOf(sessionId, footer.state.mode);
@@ -525,6 +539,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				{ kind: "question", message: CONSENT_TITLE },
 			);
 		else if (event.type === "turn_finished" && event.parentCallId === undefined) {
+			void readBranch();
 			dropQuestions();
 			setBusy(false);
 			programStatus.report(settledState(event.stopReason));
@@ -876,6 +891,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const removeExit = link.onExit(coreExited);
 	const removeTerminate = options.onTerminate?.((signal) => quit(SIGNAL_EXIT + signal));
 	tui.start();
+	void readBranch();
 	options.terminal.setTitle(`Atelier - ${basename(args.cwd)}`);
 	programStatus.report("idle");
 	try {

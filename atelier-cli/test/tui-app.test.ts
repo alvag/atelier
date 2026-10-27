@@ -215,7 +215,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(screen).toContain("❯ fix it");
 		expect(screen).toContain("Done now.");
 		expect(screen).toContain("▸ read a.ts · 2 lines ✓");
-		expect(screen).toContain("m · profile default · auto · sandbox ✗ · $0.50");
+		expect(screen).toContain(`m · ${basename(cwd)} · profile default · auto · sandbox ✗ · $0.50`);
 		h.screen.type("/exit");
 		h.screen.type("\r");
 		expect(await code).toBe(0);
@@ -237,6 +237,20 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes(" $0.50 · auto"));
 		expect(h.screen.screen().replace(/\s+/g, " ")).toContain('unknown status line item "weather"; skipped');
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("shows the working folder and its git branch, read again when a turn ends", async () => {
+		const h = harness([[{ event: started }, { event: finished }]]);
+		await mkdir(join(cwd, ".git"));
+		await writeFile(join(cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(() => h.screen.screen().includes(`${basename(cwd)} · main ·`));
+		await writeFile(join(cwd, ".git", "HEAD"), "ref: refs/heads/feat/next\n");
+		h.screen.type("switch");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes(`${basename(cwd)} · feat/next ·`));
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});
@@ -411,7 +425,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("/effort high");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("effort: high from the next turn"));
-		expect(h.screen.screen()).toContain("claude-sonnet-5-5 high · profile default");
+		expect(h.screen.screen()).toContain(`claude-sonnet-5-5 high · ${basename(cwd)} · profile default`);
 		h.screen.type("go");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("$0.50"));
@@ -926,7 +940,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 		const code = run(["--no-session"], h.io, () => h.backend);
 		await until(h.screen.started);
-		await until(() => h.screen.screen().includes("opus medium · profile cheap · normal"));
+		await until(() => h.screen.screen().includes(`opus medium · ${basename(cwd)} · profile cheap · normal`));
 		const sent = (name: string) => stub.log.commands.filter((command) => command.command === name);
 
 		h.screen.type("/model");
@@ -952,7 +966,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		h.screen.type("\x1b[B");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("profile: fast from the next turn"));
-		expect(h.screen.screen()).toContain("sonnet high · profile fast · normal");
+		expect(h.screen.screen()).toContain(`sonnet high · ${basename(cwd)} · profile fast · normal`);
 
 		// Esc closes a list without changing anything.
 		h.screen.type("/model");
@@ -1063,7 +1077,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("with a summary of the conversation"));
 		expect(moves()).toEqual([{ command: "session.set_backend", sessionId: "s1", backend: "anthropic-api" }]);
-		expect(h.screen.screen()).toContain("api-model medium · profile cheap");
+		expect(h.screen.screen()).toContain(`api-model medium · ${basename(cwd)} · profile cheap`);
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
 	});
