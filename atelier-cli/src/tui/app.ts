@@ -976,13 +976,21 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const removeTerminate = options.onTerminate?.((signal) => quit(SIGNAL_EXIT + signal));
 	tui.start();
 	void readBranch();
+	// The terminal's colors only refine the shade: a question or an answer that fails leaves the palette's.
 	if (shade.on) {
 		const shadeAs = (colors: TerminalColors) => {
 			if (quitting) return;
-			shade.match(colors.background, getTerminalColorMode());
+			try {
+				shade.match(colors.background, getTerminalColorMode());
+			} catch {
+				return;
+			}
 			tui.requestRender(true);
 		};
-		void tui.queryTerminalColors({ timeoutMs: COLOR_QUERY_MS, onLateReply: shadeAs }).then(shadeAs);
+		void tui
+			.queryTerminalColors({ timeoutMs: COLOR_QUERY_MS, onLateReply: shadeAs })
+			.then(shadeAs)
+			.catch(() => {});
 	}
 	options.terminal.setTitle(`Atelier - ${basename(args.cwd)}`);
 	programStatus.report("idle");

@@ -272,6 +272,30 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(0);
 	});
 
+	it("keeps the palette's shade, without an unhandled rejection, when asking the terminal its colors fails", async () => {
+		const rejections: unknown[] = [];
+		const onRejection = (reason: unknown) => rejections.push(reason);
+		process.on("unhandledRejection", onRejection);
+		try {
+			const h = harness([]);
+			h.io.color = true;
+			const write = h.screen.terminal.write;
+			h.screen.terminal.write = (data) => {
+				if (data.includes("\x1b]11;?")) throw new Error("the terminal went away");
+				write(data);
+			};
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("Ask Atelier to do anything"));
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			expect(rejections).toEqual([]);
+			expect(h.screen.raw()).toContain("\x1b[100m");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		} finally {
+			process.off("unhandledRejection", onRejection);
+		}
+	});
+
 	it("shows the editor as a shaded band after ›, with a placeholder while it is empty, with color", async () => {
 		const h = harness([]);
 		h.io.color = true;
