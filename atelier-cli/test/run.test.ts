@@ -166,6 +166,18 @@ describe("run", () => {
 		expect(h.out()).toContain(`instructions: ${join(cwd, "AGENTS.md")}\n`);
 	});
 
+	it("still runs a multi-word prompt", async () => {
+		const h = harness([[{ event: started }, { event: finished }]]);
+		expect(await run(["fix", "the", "bug"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toEqual(["fix the bug"]);
+	});
+
+	it("still runs a quoted prompt that starts with update", async () => {
+		const h = harness([[{ event: started }, { event: finished }]]);
+		expect(await run(["update the readme"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toEqual(["update the readme"]);
+	});
+
 	it("runs one prompt and exits 0", async () => {
 		const h = harness([[{ event: started }, { event: { type: "text_delta", text: "hello" } }, { event: finished }]]);
 		const code = await run(["say hi"], h.io, h.createBackend);
@@ -609,6 +621,7 @@ describe("run", () => {
 		expect(await run(["--help"], help.io, help.createBackend)).toBe(0);
 		expect(help.out()).toContain("Usage: atelier [options] [prompt]");
 		expect(help.out()).toContain("--backend <name>");
+		expect(help.out()).toContain("atelier update [vX.Y.Z]");
 		expect(help.out()).toContain("ATELIER_MEMORY=off");
 		expect(help.backend.startOptions).toBeUndefined();
 

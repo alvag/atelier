@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { PERMISSION_MODES, type PermissionMode, reviewEnabled, sandboxEnabled } from "@atelier/core";
 import { BACKEND_NAMES, type BackendName, DEFAULT_BACKEND } from "@atelier/core/protocol";
+import { parseSubcommand, type Subcommand } from "./subcommands.ts";
 
 export class UsageError extends Error {
 	override name = "UsageError";
@@ -33,9 +34,12 @@ export interface CliArgs {
 	resume?: string;
 	/** --no-session: the session is not saved. */
 	noSession?: true;
+	/** The first positional word names a subcommand (`atelier update`): no session starts. */
+	subcommand?: Subcommand;
 }
 
 export const USAGE = `Usage: atelier [options] [prompt]
+       atelier update [vX.Y.Z]
 
 Runs a coding agent in the working directory. With a prompt, runs one turn
 and exits; without one, starts an interactive session (/exit or Ctrl+D to quit),
@@ -79,6 +83,10 @@ and --resume print what was said (each prompt and the answer's final text), then
 usual, interactive or with a prompt. The profile is frozen again from the files as they
 are now; --model, --backend (it must be the one saved), --mode and --profile win over
 the saved ones. The files hold what the agent saw, tool output included.
+
+atelier update [vX.Y.Z] moves a copy installed with install.sh to the newest release, or to
+the one named (to go back), and reinstalls its dependencies. It takes no options; to give a
+prompt that starts with "update", quote it: atelier "update the readme".
 
 Long-term memory is used when its memory service is installed; the session says
 which project it uses, or why it has none.
@@ -136,7 +144,20 @@ export function parseCliArgs(
 		throw new UsageError(
 			"--no-session cannot be used with --continue or --resume: a session that is not saved cannot be resumed.",
 		);
-	const prompt = positionals.length > 0 ? positionals.join(" ") : undefined;
+	let subcommand: Subcommand | undefined;
+	try {
+		subcommand = parseSubcommand(positionals);
+	} catch (error) {
+		throw new UsageError(error instanceof Error ? error.message : String(error));
+	}
+	if (subcommand !== undefined) {
+		const given = Object.keys(values).filter((name) => name !== "help" && name !== "version");
+		if (given.length > 0)
+			throw new UsageError(
+				`atelier ${subcommand.name} takes no session options (${given.map((name) => `--${name}`).join(", ")}).`,
+			);
+	}
+	const prompt = subcommand === undefined && positionals.length > 0 ? positionals.join(" ") : undefined;
 	if (prompt !== undefined && prompt.trim() === "") throw new UsageError("The prompt is empty.");
 	return {
 		...(prompt === undefined ? {} : { prompt }),
@@ -154,6 +175,7 @@ export function parseCliArgs(
 		...(values.continue ? { continueSession: true as const } : {}),
 		...(values.resume === undefined ? {} : { resume: values.resume }),
 		...(values["no-session"] ? { noSession: true as const } : {}),
+		...(subcommand === undefined ? {} : { subcommand }),
 	};
 }
 

@@ -37,6 +37,7 @@ import { Renderer } from "./render.ts";
 import { createTerminalReader, type LineReader } from "./terminal-input.ts";
 import { savedTranscript } from "./transcript.ts";
 import { runTui, type TuiOptions } from "./tui/app.ts";
+import { runUpdate } from "./update.ts";
 
 export interface CliIO {
 	stdin: Readable;
@@ -72,6 +73,8 @@ export interface CliIO {
 	 * both terminals. Without it, or with a prompt, the CLI prints line by line and runs the session itself.
 	 */
 	tui?: Pick<TuiOptions, "terminal" | "connect">;
+	/** The repository the CLI runs from, which `atelier update` updates; derived from the CLI's own location when absent. */
+	appRoot?: string;
 }
 
 /** Connects long-term memory for the working directory; may fail, and then the session runs without it. */
@@ -117,6 +120,14 @@ export async function run(
 		io.stdout(`atelier ${VERSION}\n`);
 		return EXIT_OK;
 	}
+	if (args.subcommand?.name === "update")
+		return runUpdate({
+			...(args.subcommand.version === undefined ? {} : { version: args.subcommand.version }),
+			...(io.appRoot === undefined ? {} : { root: io.appRoot }),
+			env: io.env ?? process.env,
+			stdout: io.stdout,
+			stderr: io.stderr,
+		});
 	const root = checkRoot(io.uid, io.env ?? {});
 	if (!root.allowed) {
 		io.stderr(`error: ${root.message}\n`);
