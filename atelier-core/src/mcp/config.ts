@@ -30,6 +30,20 @@ export interface HttpServerConfig extends ServerCommon {
 	transport: "http";
 	url: string;
 	headers: Record<string, string>;
+	/** A client registered with the server's authorization server, for servers without dynamic registration. */
+	oauth?: OAuthSettings;
+}
+
+export interface OAuthSettings {
+	clientId?: string;
+	/** May name environment variables as `${NAME}`. */
+	clientSecret?: string;
+	/** The loopback port of the redirect URI, `http://127.0.0.1:<port>/callback`; a free one by default. */
+	callbackPort?: number;
+	/** Space-separated scopes, for servers that do not advertise them. */
+	scope?: string;
+	/** The name Atelier registers as; `Atelier` by default. */
+	clientName?: string;
 }
 
 export type McpServerConfig = StdioServerConfig | HttpServerConfig;
@@ -168,7 +182,34 @@ function parseEntry(
 	if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") return '"url" must use http or https';
 	const headers = expandAll(entry.headers, "headers", env);
 	if (typeof headers === "string") return headers;
-	return { ...common, transport: "http", url, headers };
+	const oauth = parseOAuth(entry.oauth, env);
+	if (typeof oauth === "string") return oauth;
+	return { ...common, transport: "http", url, headers, ...(oauth === undefined ? {} : { oauth }) };
+}
+
+/** The entry's `oauth` object, or what is wrong with it. */
+function parseOAuth(value: unknown, env: NodeJS.ProcessEnv): OAuthSettings | string | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) return '"oauth" must be an object';
+	const settings: OAuthSettings = {};
+	for (const key of ["clientId", "clientSecret", "scope", "clientName"] as const) {
+		const field = value[key];
+		if (field === undefined) continue;
+		if (typeof field !== "string" || field === "") return `"oauth.${key}" must be a string`;
+		if (key !== "clientSecret") settings[key] = field;
+		else {
+			const expanded = expand(field, env);
+			if (expanded.missing !== undefined) return `"oauth.clientSecret" names \${${expanded.missing}}, which is not set`;
+			settings.clientSecret = expanded.value;
+		}
+	}
+	const port = value.callbackPort;
+	if (port !== undefined) {
+		if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65_535)
+			return '"oauth.callbackPort" must be a port number';
+		settings.callbackPort = port;
+	}
+	return settings;
 }
 
 /** An `env` or `headers` object with every `${NAME}` replaced, or what is wrong with it. */
@@ -201,7 +242,7 @@ function expand(raw: string, env: NodeJS.ProcessEnv): { value: string; missing?:
 const MIN_SECRET = 6;
 
 /**
- * What an entry holds that must never be shown: every value of `env` and `headers`, as written and as expanded,
+ * What an entry holds that must never be shown: every value of `env` and `headers` and `oauth.clientSecret`, as written and as expanded,
  * each word of it (the token of `Bearer <token>`), and the values of the URL's query (`?key=...`).
  */
 export function secretsOf(entry: unknown, env: NodeJS.ProcessEnv): string[] {
@@ -210,7 +251,8 @@ export function secretsOf(entry: unknown, env: NodeJS.ProcessEnv): string[] {
 	const add = (value: string) => {
 		for (const candidate of [value, ...value.split(/\s+/)]) if (candidate.length >= MIN_SECRET) found.push(candidate);
 	};
-	for (const field of [entry.env, entry.headers]) {
+	const oauth = isRecord(entry.oauth) ? { clientSecret: entry.oauth.clientSecret } : undefined;
+	for (const field of [entry.env, entry.headers, oauth]) {
 		if (!isRecord(field)) continue;
 		for (const raw of Object.values(field)) {
 			if (typeof raw !== "string") continue;

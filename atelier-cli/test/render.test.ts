@@ -406,6 +406,13 @@ describe("Renderer", () => {
 					{ name: "off", transport: "stdio", state: "disabled", tools: [] },
 					{ name: "ctx", transport: "stdio", state: "failed", tools: [], error: "spawn npx ENOENT\nmore", stderr: "x" },
 					{ name: "bad", state: "invalid", tools: [], error: '"timeout" must be a positive number of seconds' },
+					{
+						name: "jira",
+						transport: "http",
+						state: "needs_auth",
+						tools: [],
+						error: "sign-in required: run atelier mcp login jira",
+					},
 				],
 				problems: ["/h/.atelier/mcp.json is not valid JSON: Unexpected token"],
 			},
@@ -415,6 +422,7 @@ describe("Renderer", () => {
 			[
 				"mcp: ctx failed: spawn npx ENOENT (/mcp for details)",
 				'mcp: bad is invalid: "timeout" must be a positive number of seconds',
+				"mcp: jira needs sign-in: run atelier mcp login jira",
 				"mcp: /h/.atelier/mcp.json is not valid JSON: Unexpected token",
 				"",
 			].join("\n"),

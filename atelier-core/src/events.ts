@@ -216,7 +216,8 @@ export interface SessionProfile {
 export type McpServerStatus = {
 	name: string;
 	transport?: "stdio" | "http";
-	state: "connecting" | "connected" | "failed" | "disabled" | "invalid";
+	/** `needs_auth`: an HTTP server that wants an OAuth sign-in (`atelier mcp login <name>`). */
+	state: "connecting" | "connected" | "failed" | "needs_auth" | "disabled" | "invalid";
 	/** The names of its tools while connected. */
 	tools: string[];
 	description?: string;

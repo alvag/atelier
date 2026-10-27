@@ -1,10 +1,12 @@
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { type CallToolResult, type Tool, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { describeError, type McpServerStatus } from "../events.ts";
 import { VERSION } from "../version.ts";
 import { type McpConfig, type McpServerConfig, redact } from "./config.ts";
+import { httpTransport, type McpAuthStore, McpOAuthProvider, usesOAuth } from "./oauth.ts";
 import { ProcessGroupTransport } from "./stdio.ts";
 
 /** A server as clients see it: never a value of its configuration, and every secret hidden. */
@@ -34,9 +36,12 @@ export class McpManager {
 	readonly #invalid: McpServerStatus[];
 	readonly #fileProblems: string[];
 	readonly #secrets: readonly string[];
+	readonly #auth: McpAuthStore | undefined;
 	#closed = false;
 
-	constructor(config: McpConfig) {
+	/** `auth` holds the OAuth credentials of HTTP servers; without it no server signs in. */
+	constructor(config: McpConfig, options: { auth?: McpAuthStore } = {}) {
+		this.#auth = options.auth;
 		this.file = config.file;
 		this.#secrets = config.secrets;
 		for (const server of config.servers)
@@ -134,7 +139,7 @@ export class McpManager {
 	async #open(server: Server): Promise<void> {
 		const { config } = server;
 		const client = new Client({ name: "atelier", version: VERSION });
-		const transport = createTransport(config);
+		const transport = this.#transport(config);
 		try {
 			await client.connect(transport, { timeout: config.timeoutMs });
 			server.tools = await listTools(client, config.timeoutMs);
@@ -142,7 +147,10 @@ export class McpManager {
 			if (instructions) server.instructions = instructions;
 		} catch (error) {
 			await client.close().catch(() => {});
-			this.#failed(server, describeError(error), transport);
+			if (needsSignIn(config, error)) {
+				server.state = "needs_auth";
+				server.error = `sign-in required: run atelier mcp login ${config.name}`;
+			} else this.#failed(server, describeError(error), transport);
 			return;
 		}
 		if (this.#closed) {
@@ -168,17 +176,22 @@ export class McpManager {
 		if (stderr !== "") server.stderr = stderr;
 	}
 
+	/** A stdio server's process, or an HTTP server's transport: with OAuth once it has signed in. */
+	#transport(config: McpServerConfig): Transport {
+		if (config.transport === "stdio") return new ProcessGroupTransport(config);
+		const signedIn = this.#auth !== undefined && usesOAuth(config) && this.#auth.get(config)?.tokens !== undefined;
+		return httpTransport(config, signedIn && this.#auth ? new McpOAuthProvider(config, this.#auth) : undefined);
+	}
+
 	#hide(text: string): string {
-		return redact(text, this.#secrets);
+		return redact(text, [...this.#secrets, ...(this.#auth?.secrets() ?? [])]);
 	}
 }
 
-function createTransport(config: McpServerConfig): Transport {
-	if (config.transport === "stdio") return new ProcessGroupTransport(config);
-	// The cast is for exactOptionalPropertyTypes, which the SDK's own types do not follow (`sessionId`).
-	return new StreamableHTTPClientTransport(new URL(config.url), {
-		requestInit: { headers: config.headers },
-	}) as Transport;
+/** The server wants a sign-in: its tokens are gone or refused, or it answers 401 and has no Authorization header of its own. */
+function needsSignIn(config: McpServerConfig, error: unknown): boolean {
+	if (config.transport !== "http" || !usesOAuth(config)) return false;
+	return error instanceof UnauthorizedError || (error instanceof StreamableHTTPError && error.code === 401);
 }
 
 async function listTools(client: Client, timeout: number): Promise<Tool[]> {

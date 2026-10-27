@@ -596,6 +596,7 @@ export function mcpStatusLines(event: Extract<AtelierEvent, { type: "mcp_status"
 			if (state === "failed")
 				return [`mcp: ${shown(name)} failed: ${firstLine(error ?? "unknown error")} (/mcp for details)`];
 			if (state === "invalid") return [`mcp: ${shown(name)} is invalid: ${firstLine(error ?? "")}`];
+			if (state === "needs_auth") return [`mcp: ${shown(name)} needs sign-in: run atelier mcp login ${shown(name)}`];
 			return [];
 		}),
 		...event.problems.map((problem) => `mcp: ${firstLine(problem)}`),

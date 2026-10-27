@@ -9,7 +9,8 @@ export function mcpReport(servers: readonly McpServerStatus[], problems: readonl
 		if (state === "connected") {
 			lines.push(`${label}: connected, ${tools.length} ${tools.length === 1 ? "tool" : "tools"}`);
 			if (tools.length > 0) lines.push(`  ${tools.map(shown).join(", ")}`);
-		} else if (state === "failed" || state === "invalid") {
+		} else if (state === "needs_auth") lines.push(`${label}: needs sign-in: run atelier mcp login ${shown(name)}`);
+		else if (state === "failed" || state === "invalid") {
 			lines.push(`${label}: ${state}: ${shown(error ?? "unknown error")}`);
 			if (stderr !== undefined)
 				lines.push(

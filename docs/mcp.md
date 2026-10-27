@@ -66,6 +66,35 @@ The desktop shows `MCP <connected>/<enabled>` in the status bar and opens the sa
 
 Clients ask for the state at any time with the protocol command `session.mcp` (`sessionId`), answered with `{ servers, problems }` as `mcp_status` carries them, both empty for a session without MCP servers. The protocol is version 7 since this command and event.
 
+## Sign in with OAuth
+
+Remote servers that use OAuth, such as Atlassian's `https://mcp.atlassian.com/v1/mcp/authv2`, need no credentials in `mcp.json`:
+
+```json
+{
+	"mcpServers": {
+		"atlassian": { "url": "https://mcp.atlassian.com/v1/mcp/authv2" }
+	}
+}
+```
+
+When such a server answers that it needs authorization, its state is `needs_auth` and its error says `sign-in required: run atelier mcp login <name>`. Signing in opens the authorization page in the browser and waits, up to five minutes, for it to come back to `http://127.0.0.1:<port>/callback`. Atelier finds the authorization server through the server's metadata, registers itself as `Atelier` when the server allows dynamic client registration, and keeps the client and the tokens in `~/.atelier/mcp-auth.json`, which only you can read and write (`0600`). Sessions use those tokens, and refresh them when they expire or the server refuses them; a session never opens the browser, so a server that wants a new sign-in shows `needs_auth` again. Credentials belong to a server name and URL. Signing out deletes them.
+
+OAuth applies only to HTTP servers without an `Authorization` header. For a server that does not support dynamic client registration, configure a registered client:
+
+```json
+{
+	"mcpServers": {
+		"example": {
+			"url": "https://mcp.example.com/mcp",
+			"oauth": { "clientId": "my-client", "clientSecret": "${EXAMPLE_SECRET}", "callbackPort": 8765 }
+		}
+	}
+}
+```
+
+`oauth` takes `clientId`, `clientSecret` (which may use `${NAME}`), `callbackPort` (the redirect URI is then `http://127.0.0.1:<port>/callback`, which must match the registered one; without it a free port is used, and the port of an earlier registration is preferred), `scope` (space-separated, for servers that do not advertise their scopes) and `clientName` (the name sent when registering).
+
 ### Secrets
 
-Atelier never shows the values of `env` and `headers`, written literally or taken from `${NAME}`, nor the values of the URL's query (`?key=...`). Any of them that appears in an error, a server's stderr or a status, in a client, an event or a log, is replaced by `***`, and so is each word of them (the token of `Bearer <token>`). Values shorter than six characters are not hidden.
+Atelier never shows the values of `env` and `headers` or the `oauth.clientSecret`, written literally or taken from `${NAME}`, the values of the URL's query (`?key=...`), nor the OAuth tokens and client secrets of `mcp-auth.json`, also after they are replaced or deleted. Any of them that appears in an error, a server's stderr or a status, in a client, an event or a log, is replaced by `***`, and so is each word of them (the token of `Bearer <token>`). Values shorter than six characters are not hidden.
