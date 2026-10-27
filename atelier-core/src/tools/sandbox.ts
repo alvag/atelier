@@ -539,20 +539,45 @@ function sandboxExecWorks(): boolean {
 	return probe.status === 0;
 }
 
+/** A path of a policy as a Seatbelt filter: a glob (with `*` or `**`) as a regular expression, anything else as itself and below. */
+function seatbeltFilter(path: string): string {
+	if (!path.includes("*")) return `(subpath ${JSON.stringify(path)})`;
+	const regex = path
+		.split(/(\*\*\/|\*)/)
+		.map((part) => (part === "**/" ? "(.*/)?" : part === "*" ? "[^/]*" : part.replace(/[.^$+?()[\]{}|\\"]/g, "\\$&")))
+		.join("");
+	return `(regex #"^${regex}$")`;
+}
+
+/** The real path of `place`, or undefined when it cannot be resolved or is the same. */
+function realOther(place: string): string | undefined {
+	try {
+		const real = realpathSync(place);
+		return real === place ? undefined : real;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * The profile a command the user's rules cover runs under: everything is allowed, as outside the sandbox, except
- * writing `~/.atelier`, where the rules and the default mode live, by its name or by where a link leads.
+ * writing `~/.atelier`, where the rules and the default mode live, and what the main sandbox never lets a command
+ * write (`denyWrite`: git hooks and configuration, rebase steps, shell start-up and editor files, secret files).
+ * Seatbelt compares real paths, so each place under the home or the working directory is denied by its real path too.
  */
-export function outsideProfile(home: string): string {
+export function outsideProfile(home: string, denyWrite: readonly string[] = [], cwd?: string): string {
+	const bases = [home, ...(cwd === undefined ? [] : [cwd])].flatMap((base) => {
+		const real = realOther(base);
+		return real === undefined ? [] : [{ base, real }];
+	});
 	const atelier = join(home, ".atelier");
-	const places = new Set([atelier]);
-	for (const place of [atelier, home]) {
-		try {
-			const real = realpathSync(place);
-			places.add(place === home ? join(real, ".atelier") : real);
-		} catch {}
-	}
-	const denied = [...places].map((place) => `(subpath ${JSON.stringify(place)})`).join(" ");
+	const places = new Set([atelier, ...denyWrite]);
+	const linked = realOther(atelier);
+	if (linked !== undefined) places.add(linked);
+	for (const place of [...places])
+		for (const { base, real } of bases)
+			if (place === base || place.startsWith(`${base}/`)) places.add(real + place.slice(base.length));
+	const denied = [...places].map(seatbeltFilter).join(" ");
 	return `(version 1)\n(allow default)\n(deny file-write* ${denied})\n`;
 }
 
@@ -690,9 +715,20 @@ export class Sandbox {
 	}
 
 	/** The program and arguments that run `command` under the profile for covered commands. */
-	outside(command: string): { file: string; args: string[] } {
+	outside(command: string, cwd: string): { file: string; args: string[] } {
 		if (this.#options.manager) return { file: "bash", args: ["-c", command] };
-		const profile = outsideProfile(this.#options.home ?? homedir());
+		const home = this.#options.home ?? homedir();
+		// The writes the agent's policy denies, read at each command like `wrap` does; an invalid configuration throws.
+		const { denyWrite } = agentPolicy({
+			cwd,
+			tempDir: this.#options.tempDir ?? tmpdir(),
+			home,
+			additions: loadSandboxAdditions({ cwd, home }),
+			...optional("worktreeGit", linkedWorktreeGit(cwd)),
+			gitPaths: gitProtectedPaths(cwd, home),
+		}).filesystem;
+		const places = denyWrite.map((entry) => (typeof entry === "string" ? entry : entry.path));
+		const profile = outsideProfile(home, places, cwd);
 		return { file: "/usr/bin/sandbox-exec", args: ["-p", profile, "bash", "-c", command] };
 	}
 

@@ -172,8 +172,10 @@ function coveredByRules(
 function rememberOffer(
 	command: string,
 	confirm: string | undefined,
+	sandbox: Sandbox,
 ): { remember?: { rules: string[]; always: boolean } } {
-	if (confirm !== undefined) return {};
+	// Without the profile covered commands run under, a rule would cover nothing: only Allow and Deny are offered.
+	if (confirm !== undefined || !sandbox.outsideAvailable()) return {};
 	const { rules, always } = commandRules(command);
 	return rules === undefined ? {} : { remember: { rules, always } };
 }
@@ -246,7 +248,12 @@ export function createBashTool({
 				if (reason === undefined || reason.trim() === "")
 					throw new ToolInputError("reason is required with unsandboxed: say why this command must leave the sandbox.");
 				return {
-					approval: { command, reason: reason.trim(), ...confirmed, ...rememberOffer(command, confirmed.confirm) },
+					approval: {
+						command,
+						reason: reason.trim(),
+						...confirmed,
+						...rememberOffer(command, confirmed.confirm, sandbox),
+					},
 				};
 			}
 			if (withoutApproval) return {};
@@ -254,7 +261,7 @@ export function createBashTool({
 			// The sandbox contains the command, so no mode asks about it, unless the guard's confirm category does.
 			if (status.available) return confirmed.confirm === undefined ? {} : { approval: { command, ...confirmed } };
 			return {
-				approval: { command, ...confirmed, ...rememberOffer(command, confirmed.confirm) },
+				approval: { command, ...confirmed, ...rememberOffer(command, confirmed.confirm, sandbox) },
 				warning: status.reason,
 			};
 		},
@@ -304,7 +311,21 @@ export function createBashTool({
 				}
 			}
 
-			const { file, args } = covered ? sandbox.outside(command) : { file: "bash", args: ["-c", script] };
+			let run = { file: "bash", args: ["-c", script] };
+			if (covered) {
+				try {
+					run = sandbox.outside(command, cwd);
+				} catch (error) {
+					const reason = error instanceof Error ? error.message : String(error);
+					return {
+						ok: false,
+						output: `[sandbox error: ${reason}]`,
+						summary: `${firstLine(command)} (not run)`,
+						truncated: false,
+					};
+				}
+			}
+			const { file, args } = run;
 			const child = spawn(file, args, {
 				cwd,
 				// The verifier's own git and temporary directory; its caller's variables win.

@@ -66,7 +66,8 @@ const tools = (() => {
 
 /** The core's tools with a `bash` that has no sandbox: in normal mode every command asks. */
 const unsandboxedTools = (() => {
-	const bash = createBashTool({ sandbox: new Sandbox({ platform: "linux" }) });
+	// Without a sandbox there is no profile for covered commands either: questions offer only y and N.
+	const bash = createBashTool({ sandbox: new Sandbox({ platform: "linux", outside: () => false }) });
 	return coreTools.map((tool) => (tool.name === "bash" ? bash : tool));
 })();
 
@@ -259,7 +260,7 @@ describe("run", () => {
 
 		const yes = harness([[step, { event: finished }]], { isTTY: true, answers: ["y"], sandbox: false });
 		await run(["x"], yes.io, yes.createBackend);
-		expect(yes.out()).toContain('Run this command?\n  echo hi\n  s: Allow "echo hi" in this session\n[y/N/s] ');
+		expect(yes.out()).toContain("Run this command?\n  echo hi\n[y/N] ");
 		expect(yes.backend.toolResults[0]?.ok).toBe(true);
 
 		const no = harness([[step, { event: finished }]], { isTTY: true, input: [""], sandbox: false });
@@ -277,9 +278,7 @@ describe("run", () => {
 			sandbox: false,
 		});
 		await run(["x"], h.io, h.createBackend);
-		expect(h.out()).toContain(
-			'ignored 1 line typed before this question\nRun this command?\n  echo hi\n  s: Allow "echo hi" in this session\n[y/N/s] ',
-		);
+		expect(h.out()).toContain("ignored 1 line typed before this question\nRun this command?\n  echo hi\n[y/N] ");
 		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
 	});
 

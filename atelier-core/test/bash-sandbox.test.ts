@@ -761,6 +761,33 @@ describe.skipIf(!onMac)("the commands the user's rules cover", () => {
 		expect(linked.ok).toBe(false);
 		expect(await exists(join(home, ".atelier", "permissions.json"))).toBe(false);
 	});
+
+	it("keep the main sandbox's protected writes: git hooks and config, shell start-up files, secrets", async () => {
+		execFileSync("git", ["init", "-q"], { cwd });
+		execFileSync("git", ["config", "core.hooksPath", "my-hooks"], { cwd });
+		await mkdir(join(cwd, "my-hooks"));
+		// Every folder exists, so a write fails only because the profile denies it.
+		for (const dir of ["sub", ".vscode", ".git/rebase-merge"]) await mkdir(join(cwd, dir), { recursive: true });
+		for (const path of [
+			".git/hooks/pre-commit",
+			".git/config",
+			"my-hooks/pre-commit",
+			".git/rebase-merge/git-rebase-todo",
+			".zshrc",
+			".vscode/settings.json",
+			".env",
+			".env.local",
+			"sub/server.pem",
+			"sub/id.key",
+		]) {
+			const result = await run(`touch ${join(cwd, path)}`);
+			expect(result.ok, path).toBe(false);
+		}
+		expect(await exists(join(cwd, ".git", "hooks", "pre-commit"))).toBe(false);
+		expect(await exists(join(cwd, "my-hooks", "pre-commit"))).toBe(false);
+		expect(await exists(join(cwd, ".env"))).toBe(false);
+		expect((await run(`touch ${join(cwd, "notes.txt")}`)).ok).toBe(true);
+	});
 });
 
 describe("without a sandbox", () => {

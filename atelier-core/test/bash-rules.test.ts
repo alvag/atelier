@@ -62,6 +62,11 @@ describe("bash and the user's rules", () => {
 	it("does not cover when the profile for covered commands cannot run, nor for the verifier", async () => {
 		const gate = await gateOf({ command: "open x" }, ["open"], { available: false, outside: false });
 		expect(gate?.approval?.command).toBe("open x");
+		// Nothing to remember there either: only Allow and Deny.
+		expect(gate?.approval?.remember).toBeUndefined();
+		const leaving = await gateOf({ command: "open x", unsandboxed: true, reason: "GUI" }, [], { outside: false });
+		expect(leaving?.approval).toMatchObject({ command: "open x" });
+		expect(leaving?.approval?.remember).toBeUndefined();
 		const verifier = await gateOf({ command: "open x", unsandboxed: true, reason: "GUI" }, ["open"], {
 			verifier: true,
 		});
