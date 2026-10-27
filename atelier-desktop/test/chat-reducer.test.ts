@@ -540,6 +540,12 @@ describe("reduceChat: review", () => {
 		expect(plain).not.toHaveProperty("baseNote");
 	});
 
+	it("marks the review block that runs without asking because the session's reviews were allowed", () => {
+		const state = run([...opened, event({ ...assessed, consent: "session" })]);
+		expect(items(state)[0]).toMatchObject({ kind: "review", allowedForSession: true });
+		expect(items(run([...opened, event(assessed)]))[0]).not.toHaveProperty("allowedForSession");
+	});
+
 	it("marks the card with the answer", () => {
 		const state = run([
 			...opened,
@@ -553,6 +559,11 @@ describe("reduceChat: review", () => {
 			run([...opened, event(consent)]),
 		);
 		expect(items(declined)[1]).toMatchObject({ kind: "review_consent", state: "declined" });
+		const session = run(
+			[{ type: "review_consent_answered", reviewId: "r1", answer: "granted_for_session" }],
+			run([...opened, event(consent)]),
+		);
+		expect(items(session)[1]).toMatchObject({ kind: "review_consent", state: "granted_for_session" });
 	});
 
 	it("closes a pending card when the review finishes, and keeps an answered one", () => {

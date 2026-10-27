@@ -7,6 +7,7 @@ import type {
 	JsonValue,
 	Phase,
 	RefusalCause,
+	ReviewConsentAnswer,
 	RiskDeclaration,
 	SessionProfile,
 	TurnPhases,
@@ -57,7 +58,7 @@ export type TurnItem =
 			/** Why the agent chose the lenses; absent when it did not. */
 			lensesReason?: string;
 			/** closed: the review ended, or the turn did, before it was answered. */
-			state: "pending" | "granted" | "declined" | "closed";
+			state: "pending" | ReviewConsentAnswer | "closed";
 	  }
 	| {
 			kind: "review";
@@ -74,6 +75,8 @@ export type TurnItem =
 			since?: string;
 			/** Why the base is the current HEAD although the turn started earlier. */
 			baseNote?: string;
+			/** The user allowed this session's reviews, so this one runs without asking. */
+			allowedForSession?: true;
 			/** Each lens, the refuter and the validator, in the order they first spoke. */
 			roles: Subagent[];
 			result?: ReviewResult;
@@ -209,7 +212,7 @@ export type ChatAction =
 	| { type: "prompt_sent"; text: string }
 	| { type: "turn_accepted"; turnId: string }
 	| { type: "approval_answered"; callId: string; approved: boolean }
-	| { type: "review_consent_answered"; reviewId: string; answer: "granted" | "declined" }
+	| { type: "review_consent_answered"; reviewId: string; answer: ReviewConsentAnswer }
 	| { type: "command_failed"; code: string; message: string }
 	/** The core answered `session.set_mode` with this mode. */
 	| { type: "mode_changed"; mode: PermissionMode }
@@ -554,6 +557,7 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					...(event.declaration === undefined ? {} : { declaration: event.declaration }),
 					...(event.since === undefined ? {} : { since: event.since }),
 					...(event.baseNote === undefined ? {} : { baseNote: event.baseNote }),
+					...(event.consent === "session" ? { allowedForSession: true as const } : {}),
 					roles: [],
 				},
 			];

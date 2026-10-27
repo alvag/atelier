@@ -1,4 +1,10 @@
-import { BACKEND_MODELS, type BackendName, DEFAULT_BACKEND, type SessionProfile } from "@atelier/core/protocol";
+import {
+	BACKEND_MODELS,
+	type BackendName,
+	DEFAULT_BACKEND,
+	type ReviewConsentAnswer,
+	type SessionProfile,
+} from "@atelier/core/protocol";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import type { AtelierBridge } from "../../shared/bridge.ts";
 import { FeaturePanel } from "./chat/FeaturePanel.tsx";
@@ -69,7 +75,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 	);
 
 	const onConsent = useCallback(
-		(reviewId: string, answer: "granted" | "declined") => void chat.answerReviewConsent(reviewId, answer),
+		(reviewId: string, answer: ReviewConsentAnswer) => void chat.answerReviewConsent(reviewId, answer),
 		[chat],
 	);
 

@@ -978,19 +978,18 @@ describe("App", () => {
 			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
 		};
 
-		it("asks for consent with exactly two buttons and sends the answer", async () => {
+		it("asks for consent with the question and three buttons only, and sends the answer", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");
 			fake.emit(consent);
-			const card = await screen.findByRole("group", { name: "Review this change?" });
-			expect(card.textContent).toContain("high");
-			expect(card.textContent).toContain("path: src/auth.ts (auth)");
-			expect(card.textContent).toContain("risk, resilience, readability, reliability");
+			const card = await screen.findByRole("group", { name: "Review this high-risk change?" });
+			expect(card.textContent).not.toContain("path: src/auth.ts (auth)");
+			expect(card.textContent).not.toContain("resilience");
 			expect(
 				within(card)
 					.getAllByRole("button")
 					.map((button) => button.textContent),
-			).toEqual(["Review this change", "Not now"]);
+			).toEqual(["Review this change", "Skip this time", "Review all this session"]);
 			fireEvent.click(within(card).getByRole("button", { name: "Review this change" }));
 			await waitFor(() =>
 				expect(fake.commands.at(-1)).toEqual({
@@ -1003,28 +1002,48 @@ describe("App", () => {
 			expect(within(card).queryAllByRole("button")).toEqual([]);
 		});
 
-		it("sends declined for Not now", async () => {
+		it.each([
+			["Skip this time", "declined"],
+			["Review all this session", "granted_for_session"],
+		])("sends the answer of %s", async (name, answer) => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");
 			fake.emit(consent);
-			fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+			fireEvent.click(await screen.findByRole("button", { name }));
 			await waitFor(() =>
 				expect(fake.commands.at(-1)).toEqual({
 					command: "session.review_consent",
 					sessionId: "s1",
 					reviewId: "r1",
-					answer: "declined",
+					answer,
 				}),
 			);
+		});
+
+		it("says on the review block that the session's reviews were allowed", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({
+				type: "review_assessed",
+				tree: "t",
+				level: "high",
+				reasons: ["path: src/auth.ts (auth)"],
+				files: ["src/auth.ts"],
+				changedLines: 1,
+				lenses: ["risk"],
+				reviewDue: true,
+				consent: "session",
+			});
+			await waitFor(() => expect(screen.getByTestId("review").textContent).toContain("Allowed for this session"));
 		});
 
 		it("closes the card when the review finishes", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");
 			fake.emit(consent);
-			await screen.findByRole("button", { name: "Not now" });
+			await screen.findByRole("button", { name: "Skip this time" });
 			fake.emit(finishedReview);
-			await waitFor(() => expect(screen.queryByRole("button", { name: "Not now" })).toBeNull());
+			await waitFor(() => expect(screen.queryByRole("button", { name: "Skip this time" })).toBeNull());
 			expect(screen.queryByRole("button", { name: "Review this change" })).toBeNull();
 		});
 
@@ -1081,8 +1100,9 @@ describe("App", () => {
 			const block = await screen.findByTestId("review");
 			expect(block.textContent).toContain("2 lenses: risk, readability");
 			expect(block.textContent).toContain("Lenses chosen: renames the output");
-			const card = await screen.findByRole("group", { name: "Review this change?" });
-			expect(card.textContent).toContain("Lenses: risk, readability (renames the output)");
+			// The card asks only the question: the lenses and why are in the review block.
+			const card = await screen.findByRole("group", { name: "Review this high-risk change?" });
+			expect(card.textContent).not.toContain("renames the output");
 		});
 
 		it("shows the agent's risk declaration in the review block", async () => {

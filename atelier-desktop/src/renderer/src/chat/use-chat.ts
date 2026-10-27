@@ -1,4 +1,4 @@
-import type { BackendName, ClientCommand } from "@atelier/core/protocol";
+import type { BackendName, ClientCommand, ReviewConsentAnswer } from "@atelier/core/protocol";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { AtelierBridge, CommandResult, HostMessage } from "../../../shared/bridge.ts";
 import { type ChatAction, type ChatState, initialChatState, type PermissionMode, reduceChat } from "./reducer.ts";
@@ -27,7 +27,7 @@ export interface Chat {
 	send(prompt: string): Promise<void>;
 	interrupt(): Promise<void>;
 	answerApproval(callId: string, approved: boolean): Promise<void>;
-	answerReviewConsent(reviewId: string, answer: "granted" | "declined"): Promise<void>;
+	answerReviewConsent(reviewId: string, answer: ReviewConsentAnswer): Promise<void>;
 	/** Reviews the session's current uncommitted change, at any risk. */
 	review(): Promise<void>;
 	/** Undoes the correction the escalated review `reviewId` left in the worktree. */

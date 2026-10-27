@@ -1,4 +1,4 @@
-import { cacheHitRate, describeRefusal, type PhaseAgent } from "@atelier/core/protocol";
+import { cacheHitRate, describeRefusal, type PhaseAgent, type ReviewConsentAnswer } from "@atelier/core/protocol";
 import { visibleText } from "@atelier/core/text";
 import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
@@ -94,10 +94,26 @@ function ApprovalCard({
 	);
 }
 
-type OnConsent = (reviewId: string, answer: "granted" | "declined") => void;
+type OnConsent = (reviewId: string, answer: ReviewConsentAnswer) => void;
 type OnUndo = (reviewId: string) => void;
 
-const CONSENT_STATE = { granted: "Review requested", declined: "Not now", closed: "Closed" } as const;
+const CONSENT_STATE = {
+	granted: "Review requested",
+	declined: "Skipped this time",
+	granted_for_session: "Reviewing all this session",
+	closed: "Closed",
+} as const;
+
+/** The answers to the review question, with what each does; why it is asked is in the review block above it. */
+const CONSENT_CHOICES: { answer: ReviewConsentAnswer; label: string; effect: string }[] = [
+	{ answer: "granted", label: "Review this change", effect: "Only this one" },
+	{ answer: "declined", label: "Skip this time", effect: "The next one asks again" },
+	{
+		answer: "granted_for_session",
+		label: "Review all this session",
+		effect: "This one and later ones, without asking",
+	},
+];
 
 function ConsentCard({
 	item,
@@ -108,25 +124,14 @@ function ConsentCard({
 }) {
 	return (
 		<fieldset className="approval review-consent">
-			<legend>Review this change?</legend>
-			<div>Risk: {item.level}</div>
-			<ul>
-				{item.reasons.map((reason) => (
-					<li key={reason}>{reason}</li>
-				))}
-			</ul>
-			<div>
-				Lenses: {item.lenses.join(", ")}
-				{item.lensesReason === undefined ? "" : ` (${item.lensesReason})`}
-			</div>
+			<legend>Review this high-risk change?</legend>
 			{item.state === "pending" ? (
 				<div className="approval-actions">
-					<button type="button" onClick={() => onConsent(item.reviewId, "granted")}>
-						Review this change
-					</button>
-					<button type="button" onClick={() => onConsent(item.reviewId, "declined")}>
-						Not now
-					</button>
+					{CONSENT_CHOICES.map(({ answer, label, effect }) => (
+						<button key={answer} type="button" title={effect} onClick={() => onConsent(item.reviewId, answer)}>
+							{label}
+						</button>
+					))}
 				</div>
 			) : (
 				<div className="approval-state">{CONSENT_STATE[item.state]}</div>
@@ -220,6 +225,7 @@ function ReviewBlock({
 			{item.lensesReason === undefined ? null : <div>Lenses chosen: {item.lensesReason}</div>}
 			{item.since ? <div>Changes since {item.since}</div> : null}
 			{item.baseNote ? <div>{item.baseNote}</div> : null}
+			{item.allowedForSession ? <div>Allowed for this session</div> : null}
 			{item.roles.map((role) => {
 				// A role's block reuses the subagent block; it stays folded unless the role asks for an answer.
 				const done = role.finished !== undefined || item.result !== undefined || item.ended === true;
