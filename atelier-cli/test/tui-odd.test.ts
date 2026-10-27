@@ -1,7 +1,7 @@
 import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
 import { describe, expect, it } from "vitest";
 import { Conversation } from "../src/tui/conversation.ts";
-import { FeaturePanel, WorkStatus } from "../src/tui/odd.ts";
+import { WorkStatus } from "../src/tui/odd.ts";
 import { painter } from "../src/tui/style.ts";
 
 const plain = painter(false);
@@ -10,59 +10,6 @@ const usage = { input: 1200, output: 85, cacheRead: 0, cacheWrite: 0 };
 type Body = AtelierEventBody & { parentCallId?: string; agent?: string };
 const stamp = (bodies: Body[]) => bodies.map((body, i) => ({ ...body, seq: i + 1, turnId: "t" }) as AtelierEvent);
 const text = (lines: string[]) => lines.map((line) => line.trimEnd()).join("\n");
-
-const feature: Body = {
-	type: "feature_changed",
-	name: "m14-tui",
-	path: "odd/tasks/m14-tui.md",
-	title: "M14 – TUI",
-	tasks: [
-		{ id: "T1", title: "Hot model", specs: ["S2"], status: "done", commit: "34e37d5" },
-		{ id: "T2", title: "Hot profile", specs: ["S3"], status: "in_progress" },
-		{ id: "T3", title: "Hot backend", specs: ["S4"], status: "blocked" },
-		{ id: "T4", title: "Sessions", specs: ["S5"], status: "dropped" },
-		{ id: "T5", title: "TUI base", specs: ["S6"] },
-	],
-};
-
-describe("FeaturePanel", () => {
-	it("says nothing until a feature is active, then one line with the task in progress", () => {
-		const panel = new FeaturePanel(plain);
-		expect(panel.render(80)).toEqual([]);
-		for (const event of stamp([feature])) panel.event(event);
-		expect(text(panel.render(80))).toBe(" ◆ M14 – TUI · 1/5 done · now T2 Hot profile · Ctrl+T tasks");
-	});
-
-	it("lists every task with its state when unfolded", () => {
-		const panel = new FeaturePanel(plain);
-		for (const event of stamp([feature])) panel.event(event);
-		panel.toggle();
-		expect(text(panel.render(80))).toBe(
-			[
-				" ◆ M14 – TUI · 1/5 done · now T2 Hot profile · odd/tasks/m14-tui.md",
-				"   ✓ T1 Hot model · 34e37d5",
-				"   ▸ T2 Hot profile",
-				"   ! T3 Hot backend · blocked",
-				"   ~ T4 Sessions · dropped",
-				"   · T5 TUI base",
-			].join("\n"),
-		);
-	});
-
-	it("ignores a subagent's feature and shows control characters as markers", () => {
-		const panel = new FeaturePanel(plain);
-		for (const event of stamp([
-			{ ...feature, parentCallId: "c1", agent: "worker" },
-			{ ...feature, title: "x\u001b[31my", tasks: [{ id: "T\u001b1", title: "t", specs: [] }] },
-		]))
-			panel.event(event);
-		panel.toggle();
-		const shown = text(panel.render(80));
-		expect(shown).toContain("x␛[31my");
-		expect(shown).toContain("T␛1");
-		expect(shown).not.toContain("\u001b");
-	});
-});
 
 describe("WorkStatus", () => {
 	it("follows a review's lenses and steps while it runs, and clears when it ends", () => {

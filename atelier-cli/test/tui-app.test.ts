@@ -566,12 +566,15 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
-	it("shows the feature's tasks over the editor, unfolded with Ctrl+T, and the review while it runs", async () => {
+	it("opens the feature's tasks over the editor with Ctrl+T and /feature, from its events", async () => {
 		const h = harness([]);
 		const stub = stubCore();
 		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 		const code = run(["--no-session"], h.io, () => h.backend);
 		await until(h.screen.started);
+		h.screen.type("/feature");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("no ODD feature is active in this session"));
 		stub.emit({
 			type: "feature_changed",
 			name: "m14",
@@ -582,13 +585,27 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				{ id: "T2", title: "Hot profile", specs: [], status: "in_progress" },
 			],
 		});
-		await until(() => h.screen.screen().includes("◆ M14 · 1/2 done · now T2 Hot profile · Ctrl+T tasks"));
+		await until(() => h.screen.screen().includes("◆ M14 · 1/2 done · now T2 Hot profile · Ctrl+T or /feature: tasks"));
 		expect(h.screen.screen()).toContain("T2 1/2");
 		h.screen.type("\x14");
-		await until(() => h.screen.screen().includes("✓ T1 Hot model"));
-		expect(h.screen.screen()).toContain("▸ T2 Hot profile");
-		stub.emit({ type: "review_progress", reviewId: "r1", step: { type: "lens_started", lens: "risk" } });
-		await until(() => h.screen.screen().includes("◇ review · risk …"));
+		await until(() => h.screen.screen().includes("▸ T2  in progress  Hot profile"));
+		expect(h.screen.screen()).toContain("T1  done         Hot model");
+		stub.emit({
+			type: "feature_changed",
+			name: "m14",
+			path: "odd/tasks/m14.md",
+			title: "M14",
+			tasks: [
+				{ id: "T1", title: "Hot model", specs: [], status: "done" },
+				{ id: "T2", title: "Hot profile", specs: [], status: "done" },
+				{ id: "T3", title: "Hot backend", specs: [], status: "in_progress" },
+			],
+		});
+		await until(() => h.screen.screen().includes("▸ T3  in progress  Hot backend"));
+		expect(h.screen.screen()).toContain("T3 2/3");
+		h.screen.type("/feature");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().split("Ctrl+T or /feature: tasks").length === 3);
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});

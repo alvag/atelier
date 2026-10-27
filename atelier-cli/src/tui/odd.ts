@@ -1,72 +1,12 @@
-import { type AtelierEvent, type FeatureTask, type ReviewStep, visibleText } from "@atelier/core";
+import { type AtelierEvent, type ReviewStep, visibleText } from "@atelier/core";
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import { stepText } from "../render.ts";
 import type { Paint } from "./style.ts";
 
-const shown = (text: string) => visibleText(text).text;
-const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
-
-type FeatureChanged = Extract<AtelierEvent, { type: "feature_changed" }>;
 type VerificationRound = Extract<AtelierEvent, { type: "verification_round" }>;
 
-/** `1/5 done · now T2 Hot profile`. */
-function progress(feature: FeatureChanged): string {
-	const done = feature.tasks.filter((task) => task.status === "done").length;
-	const now = feature.tasks.find((task) => task.status === "in_progress");
-	return `${done}/${feature.tasks.length} done${now === undefined ? "" : ` · now ${shown(now.id)} ${shown(now.title)}`}`;
-}
-
-/** `✓ T1 Hot model · 34e37d5`: a task with a mark for its state, and the state itself when it is not the usual ones. */
-function taskLine(task: FeatureTask, paint: Paint): string {
-	const title = `${shown(task.id)} ${shown(task.title)}`;
-	switch (task.status) {
-		case "done":
-			return `${paint("green", "✓")} ${title}${task.commit === undefined ? "" : paint("dim", ` · ${shown(task.commit)}`)}`;
-		case "in_progress":
-			return `${paint("cyan", "▸")} ${paint("bold", title)}`;
-		case "blocked":
-			return `${paint("yellow", "!")} ${title}${paint("yellow", " · blocked")}`;
-		case "dropped":
-			return paint("dim", `~ ${title} · dropped`);
-		case "pending":
-		case undefined:
-			return `${paint("dim", "·")} ${title}`;
-		default:
-			return `${paint("dim", "·")} ${title} · ${shown(task.status)}`;
-	}
-}
-
-/** The active ODD feature over the editor: one line folded, each task with its state unfolded. */
-export class FeaturePanel implements Component {
-	expanded = false;
-	#feature: FeatureChanged | undefined;
-	readonly #paint: Paint;
-
-	constructor(paint: Paint) {
-		this.#paint = paint;
-	}
-
-	toggle(): void {
-		this.expanded = !this.expanded;
-	}
-
-	/** Takes the main agent's `feature_changed`; a subagent's says nothing about the session's feature. */
-	event(event: AtelierEvent): void {
-		if (event.type === "feature_changed" && event.parentCallId === undefined) this.#feature = event;
-	}
-
-	invalidate(): void {}
-
-	render(width: number): string[] {
-		const feature = this.#feature;
-		if (feature === undefined) return [];
-		const paint = this.#paint;
-		const tail = this.expanded ? shown(feature.path) : "Ctrl+T tasks";
-		const head = ` ${paint("magenta", "◆")} ${paint("bold", shown(feature.title))} · ${progress(feature)}${paint("dim", ` · ${tail}`)}`;
-		const lines = [head, ...(this.expanded ? feature.tasks.map((task) => `   ${taskLine(task, paint)}`) : [])];
-		return lines.map((line) => truncateToWidth(line, width));
-	}
-}
+const shown = (text: string) => visibleText(text).text;
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 /** `risk ✓ 2 findings`, `reliability …`: a lens as the review status shows it. */
 type LensState = "running" | { ok: boolean; findings: number };

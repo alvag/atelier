@@ -6,6 +6,7 @@ import {
 	visibleText,
 } from "@atelier/core";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { type FeatureProgress, featureProgress } from "./feature-panel.ts";
 import type { Paint } from "./style.ts";
 
 /** What the fixed footer says about the session: filled in by its events, unknown until one says it. */
@@ -22,7 +23,7 @@ export interface FooterState {
 	costUsd?: number;
 	phase?: Phase;
 	/** The active feature's task in progress and how many of its tasks are done. */
-	task?: { id?: string; done: number; total: number };
+	task?: FeatureProgress;
 }
 
 /** The footer after one of the main agent's events; a subagent's events say nothing about the session. */
@@ -52,11 +53,9 @@ export function footerAfter(state: FooterState, event: AtelierEvent): FooterStat
 			};
 		case "phase_changed":
 			return { ...state, phase: event.phase };
-		case "feature_changed": {
-			const now = event.tasks.find((task) => task.status === "in_progress");
-			const done = event.tasks.filter((task) => task.status === "done").length;
-			return { ...state, task: { ...(now === undefined ? {} : { id: now.id }), done, total: event.tasks.length } };
-		}
+		// The same progress as the feature panel's.
+		case "feature_changed":
+			return { ...state, task: featureProgress(event) };
 		default:
 			return state;
 	}

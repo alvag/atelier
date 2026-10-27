@@ -27,8 +27,9 @@ import type { CliArgs } from "../args.ts";
 import { savedTranscript } from "../transcript.ts";
 import { Conversation } from "./conversation.ts";
 import { type Choice, ChoiceDialog } from "./dialog.ts";
+import { FeaturePanel } from "./feature-panel.ts";
 import { type FooterState, footerAfter, footerLine, footerWithConfiguration, footerWithMode } from "./footer.ts";
-import { FeaturePanel, WorkStatus } from "./odd.ts";
+import { WorkStatus } from "./odd.ts";
 import {
 	choicesOf,
 	LIST_ROWS,
@@ -73,6 +74,7 @@ const COMMANDS = [
 	{ name: "profile", description: "Freeze another profile for this session [name]" },
 	{ name: "mode", description: "Change the permission mode: [normal|auto|yolo] | default <mode>" },
 	{ name: "backend", description: "Move the session to another backend, with a summary [name]" },
+	{ name: "feature", description: "Open or fold the ODD feature's tasks (Ctrl+T)" },
 	{ name: "new", description: "Start a new session" },
 	{ name: "resume", description: "Resume a saved session of this folder [id]" },
 	{ name: "review", description: "Review the current changes, against HEAD or a git ref" },
@@ -645,12 +647,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		conversation = shownIn;
 		footer.state = next.configuration === undefined ? {} : footerWithConfiguration({}, next.configuration);
 		modeRequests = modeRequestsOf(sessionId, footer.state.mode);
-		// The session before's feature and work say nothing about the next one; the panel stays as unfolded as it was.
-		const unfolded = feature.expanded;
+		// The session before's feature and work say nothing about the next one; the panel stays as open as it was.
+		const open = feature.open;
 		odd.clear();
 		work = new WorkStatus(paint);
 		feature = new FeaturePanel(paint);
-		feature.expanded = unfolded;
+		feature.open = open;
 		odd.addChild(work);
 		odd.addChild(feature);
 		void request({ command: "session.close", sessionId: previous });
@@ -663,6 +665,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		return next;
 	};
 	const withoutConversation = (shownIn: Conversation) => transcript.removeChild(shownIn);
+
+	/** Opens or folds the feature panel; with no feature active there is nothing to show. */
+	const toggleFeature = () => {
+		if (!feature.active) return conversation.note("no ODD feature is active in this session");
+		feature.toggle();
+	};
 
 	/** Starts a new session with what was chosen and the mode in use; the one before stays on screen. */
 	const runNew = async () => {
@@ -730,6 +738,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		["/profile", "/profile [name]"],
 		["/backend", `/backend [${BACKEND_NAMES.join("|")}]`],
 		["/new", "/new"],
+		["/feature", "/feature"],
 		["/resume", "/resume [id]"],
 		["/undo-correction", "/undo-correction"],
 		["/review", "/review [ref]"],
@@ -744,6 +753,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (command === "/profile" && single) await runProfile(argument);
 		else if (command === "/backend" && single) await runBackend(argument);
 		else if (text === "/new") await runNew();
+		else if (text === "/feature") toggleFeature();
 		else if (command === "/resume" && single) await runResume(argument);
 		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });
 		else if (/^\/review(?:\s+\S+)?$/.test(text))
@@ -791,7 +801,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			return { consume: true };
 		}
 		if (matchesKey(data, "ctrl+t")) {
-			feature.toggle();
+			toggleFeature();
 			tui.requestRender();
 			return { consume: true };
 		}
