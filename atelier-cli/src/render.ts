@@ -491,6 +491,11 @@ export class Renderer {
 				if (event.files.length > 0) this.#line(this.#style("dim", `instructions: ${event.files.join(", ")}`));
 				if (event.dropped.length > 0) this.#warn(`instructions over 32 KiB, left out: ${event.dropped.join(", ")}`);
 				return;
+			case "skills_loaded":
+				if (event.skills.length > 0)
+					this.#line(this.#style("dim", `skills: ${event.skills.map(({ name }) => name).join(", ")}`));
+				for (const { path, message } of event.warnings) this.#warn(`skill ${path}: ${message}`);
+				return;
 			case "review_status":
 				if (!event.available) this.#warn(`no review: ${event.reason ?? "unavailable"}`);
 				return;

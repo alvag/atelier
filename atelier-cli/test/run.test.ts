@@ -166,6 +166,18 @@ describe("run", () => {
 		expect(h.out()).toContain(`instructions: ${join(cwd, "AGENTS.md")}\n`);
 	});
 
+	it("lists the skills in the system prompt and says which it loaded", async () => {
+		await mkdir(join(cwd, ".agents", "skills", "notes"), { recursive: true });
+		await writeFile(
+			join(cwd, ".agents", "skills", "notes", "SKILL.md"),
+			"---\nname: notes\ndescription: Take notes.\n---\n",
+		);
+		const h = harness([[{ event: started }, { event: finished }]], { home: dirname(cwd) });
+		expect(await run(["--no-session", "hi"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.startOptions?.systemPromptAppend).toContain("<name>notes</name>");
+		expect(h.out()).toContain("skills: notes\n");
+	});
+
 	it("still runs a multi-word prompt", async () => {
 		const h = harness([[{ event: started }, { event: finished }]]);
 		expect(await run(["fix", "the", "bug"], h.io, h.createBackend)).toBe(0);

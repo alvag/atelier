@@ -174,6 +174,7 @@ describe("Conversation", () => {
 			{ type: "memory_status", available: true, project: esc },
 			{ type: "memory_status", available: false, reason: esc },
 			{ type: "project_instructions", files: [esc], dropped: [esc] },
+			{ type: "skills_loaded", skills: [{ name: esc, path: esc }], warnings: [{ path: esc, message: esc }] },
 			{ type: "review_status", available: false, reason: esc },
 			{ type: "sandbox_status", sandboxed: false, mechanism: esc, reason: esc },
 			{ type: "sandbox_warning", reason: esc },

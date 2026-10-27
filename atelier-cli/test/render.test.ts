@@ -404,6 +404,29 @@ describe("Renderer", () => {
 		expect(cut.stderr).toBe("instructions over 32 KiB, left out: /w/AGENTS.md\n");
 	});
 
+	it("says which skills were loaded, and warns about each problem", () => {
+		const both = render([
+			{
+				type: "skills_loaded",
+				skills: [
+					{ name: "pdf", path: "/w/.agents/skills/pdf/SKILL.md" },
+					{ name: "notes", path: "/h/.agents/skills/notes/SKILL.md" },
+				],
+				warnings: [
+					{ path: "/w/.agents/skills/a/SKILL.md", message: "no description; not loaded" },
+					{ path: "/h/.agents/skills/pdf/SKILL.md", message: 'skill "pdf" is already loaded' },
+				],
+			},
+		]);
+		expect(both.stdout).toBe("skills: pdf, notes\n");
+		expect(both.stderr).toBe(
+			'skill /w/.agents/skills/a/SKILL.md: no description; not loaded\nskill /h/.agents/skills/pdf/SKILL.md: skill "pdf" is already loaded\n',
+		);
+		const warned = render([{ type: "skills_loaded", skills: [], warnings: [{ path: "/s/SKILL.md", message: "m" }] }]);
+		expect(warned.stdout).toBe("");
+		expect(warned.stderr).toBe("skill /s/SKILL.md: m\n");
+	});
+
 	it("prints errors to stderr and remembers them", () => {
 		const { stdout, stderr, renderer } = render([
 			{ type: "text_delta", text: "partial" },
