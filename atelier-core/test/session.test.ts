@@ -75,10 +75,24 @@ describe("Session", () => {
 		expect(first).toEqual([
 			{ type: "text_delta", text: "a", seq: 1, turnId: "id-1" },
 			{ type: "text_delta", text: "b", seq: 2, turnId: "id-1" },
-			{ ...finished, phases: { main: { usage } }, durationMs: expect.any(Number), seq: 3, turnId: "id-1" },
+			{
+				...finished,
+				phases: { main: { usage } },
+				durationMs: expect.any(Number),
+				at: expect.any(String),
+				seq: 3,
+				turnId: "id-1",
+			},
 		]);
 		expect(second).toEqual([
-			{ ...finished, phases: { main: { usage } }, durationMs: expect.any(Number), seq: 1, turnId: "id-2" },
+			{
+				...finished,
+				phases: { main: { usage } },
+				durationMs: expect.any(Number),
+				at: expect.any(String),
+				seq: 1,
+				turnId: "id-2",
+			},
 		]);
 	});
 
@@ -101,7 +115,7 @@ describe("Session", () => {
 		expect(events.map(({ seq: _seq, turnId: _turnId, ...body }) => body)).toEqual([
 			{ type: "tool_call_started", callId: "c1", tool: "echo", input: { text: "hi" } },
 			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "echoed hi", truncated: false },
-			{ ...finished, phases: { main: { usage } }, durationMs: expect.any(Number) },
+			{ ...finished, phases: { main: { usage } }, durationMs: expect.any(Number), at: expect.any(String) },
 		]);
 	});
 
@@ -304,6 +318,7 @@ describe("Session", () => {
 					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 					phases: { main: { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } },
 					durationMs: expect.any(Number),
+					at: expect.any(String),
 				},
 			]);
 		});
@@ -346,6 +361,17 @@ describe("Session", () => {
 			const durationMs = last?.type === "turn_finished" ? last.durationMs : undefined;
 			expect(Number.isInteger(durationMs)).toBe(true);
 			expect(durationMs).toBeGreaterThanOrEqual(25);
+		});
+
+		it("says when the turn ended in at, as an ISO time", async () => {
+			const { session } = await start([[{ event: finished }]]);
+			const before = Date.now();
+			const events = await collect(session.send("x"));
+			const last = events.at(-1);
+			const at = last?.type === "turn_finished" ? last.at : undefined;
+			expect(at).toBe(new Date(Date.parse(at ?? "")).toISOString());
+			expect(Date.parse(at ?? "")).toBeGreaterThanOrEqual(before);
+			expect(Date.parse(at ?? "")).toBeLessThanOrEqual(Date.now());
 		});
 	});
 

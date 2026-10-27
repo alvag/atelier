@@ -784,7 +784,7 @@ export class Session {
 				this.#queue = [];
 				if (returned.length > 0) this.#sayQueue(returned);
 			}
-			turn.push({ ...finish, durationMs: Math.round(performance.now() - started) });
+			turn.push({ ...finish, durationMs: Math.round(performance.now() - started), at: new Date().toISOString() });
 			turn.close();
 		})();
 
