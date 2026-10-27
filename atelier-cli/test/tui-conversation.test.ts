@@ -7,11 +7,16 @@ import { type Paint, painter, Shade } from "../src/tui/style.ts";
 const plain = painter(false);
 const usage = { input: 1200, output: 85, cacheRead: 0, cacheWrite: 0 };
 
+/** When the turns of these tests end, and how the system says that time with hours and minutes. */
+const FINISHED_AT = new Date(2026, 9, 27, 14, 42, 30);
+const clock = () => FINISHED_AT;
+const AT = FINISHED_AT.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
 type Body = AtelierEventBody & { parentCallId?: string; agent?: string };
 const stamp = (bodies: Body[]) => bodies.map((body, i) => ({ ...body, seq: i + 1, turnId: "t" }) as AtelierEvent);
 
 function shown(bodies: Body[], width = 80, expanded = false) {
-	const conversation = new Conversation(plain, "/repo");
+	const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
 	for (const event of stamp(bodies)) conversation.event(event);
 	if (expanded) conversation.toggleCards();
 	const lines = conversation.render(width);
@@ -222,8 +227,17 @@ describe("Conversation", () => {
 		]);
 	});
 
+	it("ends a turn's line with the local time it ended, also an interrupted one with nothing else to say", () => {
+		const { text } = shown([
+			{ type: "turn_finished", stopReason: "end_turn", usage, requests: 1, durationMs: 1800 },
+			{ type: "turn_finished", stopReason: "interrupted", usage },
+		]);
+		expect(text).toContain(`◇ 1.8s · 1 request · ${AT}`);
+		expect(text).toContain(`◇ interrupted · ${AT}`);
+	});
+
 	it("leaves one blank line between the prompt, the agent's text, each card, the turn's end and each note", () => {
-		const conversation = new Conversation(plain, "/repo");
+		const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
 		conversation.prompt("hi");
 		for (const event of stamp([
 			{ type: "text_delta", text: "Hello." },
@@ -255,7 +269,7 @@ describe("Conversation", () => {
 			"",
 			"Done.",
 			"",
-			"◇ 1.8s · 1 request",
+			`◇ 1.8s · 1 request · ${AT}`,
 			"",
 			"❯ /status",
 			"",
@@ -385,7 +399,7 @@ describe("Conversation", () => {
 		);
 		expect(text).toContain("◇ context compacted: 9,000 tokens before · 1 message kept");
 		expect(text).toContain(
-			"◇ 12.3s · 3 requests\n phases: main 2 req on claude-opus-5-5 high · verify 1,285 tokens on codex/claude-opus-5-5 high",
+			`◇ 12.3s · 3 requests · ${AT}\n phases: main 2 req on claude-opus-5-5 high · verify 1,285 tokens on codex/claude-opus-5-5 high`,
 		);
 		expect(text).not.toContain("$");
 	});

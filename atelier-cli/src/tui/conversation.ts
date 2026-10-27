@@ -21,13 +21,16 @@ function withoutBlankEdges(lines: string[]): string[] {
 	return lines.slice(start, end);
 }
 
-/** `◇ 12.3s · 3 requests`, what a turn took; its cost is left to the footer and `/status`. */
-function finishedLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): string {
+/** The local time `at`, in hours and minutes as the system says them (`14:42`, `2:42 PM`). */
+const clockTime = (at: Date) => at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+/** `◇ 12.3s · 3 requests · 14:42`, what a turn took and when it ended; its cost is left to the footer and `/status`. */
+function finishedLine(event: Extract<AtelierEvent, { type: "turn_finished" }>, endedAt: Date): string {
 	const parts: string[] = [];
 	if (event.durationMs !== undefined) parts.push(`${(event.durationMs / 1000).toFixed(1)}s`);
 	if (event.requests !== undefined) parts.push(`${event.requests} request${event.requests === 1 ? "" : "s"}`);
 	if (event.stopReason !== "end_turn") parts.push(event.stopReason);
-	return `◇ ${parts.length === 0 ? "done" : parts.join(" · ")}`;
+	return `◇ ${parts.length === 0 ? "done" : parts.join(" · ")} · ${clockTime(endedAt)}`;
 }
 
 /** `◇ model claude-sonnet-5-5 · effort high · mode auto`, and the backend change with what it carried. */
@@ -55,6 +58,7 @@ export class Conversation extends Container {
 	readonly view: CardView = { expanded: false };
 	readonly #paint: Paint;
 	readonly #shade: Shade;
+	readonly #now: () => Date;
 	readonly #renderer: Renderer;
 	/** What the renderer wrote for the event being shown. */
 	#notes = "";
@@ -80,10 +84,12 @@ export class Conversation extends Container {
 	#assessed: ReviewBlock | undefined;
 	readonly #verifications = new Map<string, VerifyCard>();
 
-	constructor(paint: Paint, cwd: string, shade = new Shade(false)) {
+	/** `now` tells the time a turn ends at. */
+	constructor(paint: Paint, cwd: string, shade = new Shade(false), now: () => Date = () => new Date()) {
 		super();
 		this.#paint = paint;
 		this.#shade = shade;
+		this.#now = now;
 		this.#cwd = cwd;
 		const write = (text: string) => {
 			this.#notes += text;
@@ -204,7 +210,8 @@ export class Conversation extends Container {
 				this.#renderer.endLine();
 				this.#notes = "";
 				const phases = phasesLine(event, this.#backend, false);
-				this.note(phases === undefined ? finishedLine(event) : `${finishedLine(event)}\n${phases}`);
+				const finished = finishedLine(event, this.#now());
+				this.note(phases === undefined ? finished : `${finished}\n${phases}`);
 				return;
 			}
 			default:
