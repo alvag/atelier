@@ -20,6 +20,7 @@ import {
 	type BackendChange,
 	describeError,
 	errorEvent,
+	type McpServerStatus,
 	type PhaseAgent,
 	type PhaseSpent,
 	type SessionProfile,
@@ -280,6 +281,8 @@ export class Session {
 	#announced = false;
 	/** The MCP servers whose instructions the model was already given. */
 	readonly #mcpGiven = new Set<string>();
+	/** The last `mcp_status` said, as JSON, so a turn says it again only when it changed. */
+	#mcpSaid: string | undefined;
 	/** The configuration the session started with was saved. */
 	#recordedConfig = false;
 	/** What the backend that ran the turn answered at its end, until the turn's last event is saved. */
@@ -459,6 +462,15 @@ export class Session {
 		return lines.length === 0 ? undefined : `<state>\n${lines.join("\n")}\n</state>`;
 	}
 
+	/** The user's MCP servers now, and what is wrong with their file; undefined without MCP or without servers. */
+	mcpStatus(): { servers: McpServerStatus[]; problems: string[] } | undefined {
+		const mcp = this.#options.mcp;
+		if (mcp === undefined) return undefined;
+		const servers = mcp.status();
+		const problems = mcp.problems();
+		return servers.length === 0 && problems.length === 0 ? undefined : { servers, problems };
+	}
+
 	get busy(): boolean {
 		return this.#turn !== undefined;
 	}
@@ -501,6 +513,11 @@ export class Session {
 				if (this.#options.permissionModeProblem !== undefined)
 					turn.push(errorEvent("permission_mode_invalid", this.#options.permissionModeProblem, true));
 				if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
+			}
+			const mcpStatus = this.mcpStatus();
+			if (mcpStatus !== undefined && JSON.stringify(mcpStatus) !== this.#mcpSaid) {
+				this.#mcpSaid = JSON.stringify(mcpStatus);
+				turn.push({ type: "mcp_status", ...mcpStatus });
 			}
 			// Servers that connected since the last prompt, with no description, say what they offer once.
 			const mcpNote = this.#options.mcp ? mcpInstructionsNote(this.#options.mcp, this.#mcpGiven) : undefined;

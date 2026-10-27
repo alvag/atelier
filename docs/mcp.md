@@ -56,6 +56,12 @@ When a session starts, Atelier connects every enabled server in the background; 
 
 Stdio servers start in their own process group, with Atelier's environment plus their `env`. Stopping one closes its stdin, sends SIGTERM to the group and, after two seconds at most, SIGKILL to the group, so servers launched through wrappers such as `npx` or `uvx` stop too. Every server is stopped when the session closes.
 
+## See the servers' state
+
+The first turn of a session says the state of its servers with the `mcp_status` event (`servers`, one `{ name, transport?, state, tools, description?, error?, stderr? }` each, and `problems`, what is wrong with the file itself), and later turns say it again only when it changed. The CLI and the TUI print the servers that are up as `mcp: docs (2 tools), fs (connecting)`, and warn on stderr about each failed server (`mcp: ctx failed: <first line of the error> (/mcp for details)`), each invalid entry (`mcp: bad is invalid: <what is wrong>`) and each problem of the file. Disabled servers are not printed.
+
+Clients ask for the state at any time with the protocol command `session.mcp` (`sessionId`), answered with `{ servers, problems }` as `mcp_status` carries them, both empty for a session without MCP servers. The protocol is version 7 since this command and event.
+
 ### Secrets
 
 Atelier never shows the values of `env` and `headers`, written literally or taken from `${NAME}`, nor the values of the URL's query (`?key=...`). Any of them that appears in an error, a server's stderr or a status, in a client, an event or a log, is replaced by `***`, and so is each word of them (the token of `Bearer <token>`). Values shorter than six characters are not hidden.

@@ -2,26 +2,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { type CallToolResult, type Tool, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { describeError } from "../events.ts";
+import { describeError, type McpServerStatus } from "../events.ts";
 import { VERSION } from "../version.ts";
 import { type McpConfig, type McpServerConfig, redact } from "./config.ts";
 import { ProcessGroupTransport } from "./stdio.ts";
 
-export type McpServerState = "connecting" | "connected" | "failed" | "disabled" | "invalid";
-
 /** A server as clients see it: never a value of its configuration, and every secret hidden. */
-export interface McpServerStatus {
-	name: string;
-	/** Absent for an invalid entry. */
-	transport?: "stdio" | "http";
-	state: McpServerState;
-	/** The names of its tools while connected. */
-	tools: string[];
-	description?: string;
-	error?: string;
-	/** The end of a failed stdio server's stderr. */
-	stderr?: string;
-}
+export type { McpServerStatus };
+export type McpServerState = McpServerStatus["state"];
 
 interface Server {
 	config: McpServerConfig;

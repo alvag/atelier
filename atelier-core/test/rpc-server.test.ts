@@ -118,7 +118,7 @@ describe("RpcServer", () => {
 	it("greets with the protocol version first", async () => {
 		const h = harness([]);
 		await h.waitFor(() => true);
-		expect(h.messages[0]).toEqual({ type: "hello", protocol: 6, core: VERSION });
+		expect(h.messages[0]).toEqual({ type: "hello", protocol: 7, core: VERSION });
 	});
 
 	it("offers subagents in every session, on the session's own backend", async () => {

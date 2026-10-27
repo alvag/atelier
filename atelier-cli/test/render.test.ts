@@ -395,6 +395,32 @@ describe("Renderer", () => {
 		expect(off.stderr).toBe("no memory: Engram is not installed (no engram command).\n");
 	});
 
+	it("says which MCP servers are up, and warns about failed and invalid ones and the file's problems", () => {
+		const { stdout, stderr } = render([
+			{
+				type: "mcp_status",
+				servers: [
+					{ name: "docs", transport: "http", state: "connected", tools: ["search", "read"] },
+					{ name: "one", transport: "stdio", state: "connected", tools: ["only"] },
+					{ name: "fs", transport: "stdio", state: "connecting", tools: [] },
+					{ name: "off", transport: "stdio", state: "disabled", tools: [] },
+					{ name: "ctx", transport: "stdio", state: "failed", tools: [], error: "spawn npx ENOENT\nmore", stderr: "x" },
+					{ name: "bad", state: "invalid", tools: [], error: '"timeout" must be a positive number of seconds' },
+				],
+				problems: ["/h/.atelier/mcp.json is not valid JSON: Unexpected token"],
+			},
+		]);
+		expect(stdout).toBe("mcp: docs (2 tools), one (1 tool), fs (connecting)\n");
+		expect(stderr).toBe(
+			[
+				"mcp: ctx failed: spawn npx ENOENT (/mcp for details)",
+				'mcp: bad is invalid: "timeout" must be a positive number of seconds',
+				"mcp: /h/.atelier/mcp.json is not valid JSON: Unexpected token",
+				"",
+			].join("\n"),
+		);
+	});
+
 	it("says which instruction files were loaded, and warns about those the cap left out", () => {
 		const on = render([{ type: "project_instructions", files: ["/w/AGENTS.md", "/w/p/CLAUDE.md"], dropped: [] }]);
 		expect(on.stdout).toBe("instructions: /w/AGENTS.md, /w/p/CLAUDE.md\n");

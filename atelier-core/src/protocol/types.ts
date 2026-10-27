@@ -4,7 +4,7 @@ import type { PermissionMode } from "../session.ts";
 import type { ThinkingLevel } from "../thinking.ts";
 
 /** Bumped on any incompatible change; sent first by the server in `hello`. */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /** Limit of the instructions a client may give `session.compact`. */
 export const MAX_COMPACT_INSTRUCTIONS_BYTES = 2000;
@@ -107,6 +107,8 @@ export type ClientCommand =
 	/** Deletes a saved session's file; refused with `session_in_use` while this server runs it. Answers `{}`. */
 	| { command: "session.delete"; sessionId: string; cwd: string }
 	| { command: "session.close"; sessionId: string }
+	/** The session's MCP servers now: answers `{ servers, problems }` as `mcp_status` carries them; both empty without MCP. */
+	| { command: "session.mcp"; sessionId: string }
 	| { command: "shutdown" };
 
 export type CommandName = ClientCommand["command"];

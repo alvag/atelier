@@ -173,6 +173,46 @@ describe("MCP in a session", () => {
 		}
 	});
 
+	it("says the servers' state in the first turn, and again only in a turn where it changed", async () => {
+		const backend = new FakeBackend([[{ event: finished }], [{ event: finished }], [{ event: finished }]]);
+		const manager = new McpManager({
+			file: join(dir, "mcp.json"),
+			servers: [server("fixture"), server("off", { enabled: false })],
+			problems: [{ name: "bad", message: "the entry must be an object" }, { message: "file problem" }],
+			secrets: [],
+		});
+		const session = await Session.start({ backend, cwd: dir, tools: [], mcp: manager });
+		try {
+			const statuses = async (prompt: string) =>
+				(await collect(session.send(prompt))).filter((event) => event.type === "mcp_status");
+			const first = await statuses("one");
+			expect(first).toEqual([
+				expect.objectContaining({
+					type: "mcp_status",
+					servers: [
+						{ name: "fixture", transport: "stdio", state: "connecting", tools: [] },
+						{ name: "off", transport: "stdio", state: "disabled", tools: [] },
+						{ name: "bad", state: "invalid", tools: [], error: "the entry must be an object" },
+					],
+					problems: ["file problem"],
+				}),
+			]);
+			manager.start();
+			await manager.ready();
+			const second = await statuses("two");
+			expect(second[0]).toMatchObject({
+				servers: [{ name: "fixture", state: "connected", tools: expect.arrayContaining(["echo"]) }, {}, {}],
+			});
+			expect(await statuses("three")).toEqual([]);
+			expect(session.mcpStatus()).toEqual({
+				servers: second[0]?.type === "mcp_status" ? second[0].servers : [],
+				problems: ["file problem"],
+			});
+		} finally {
+			await session.close();
+		}
+	});
+
 	it("closes its servers when the session closes", async () => {
 		const manager = mcp([server("fixture")]);
 		const session = await Session.start({ backend: new FakeBackend([]), cwd: dir, tools: [], mcp: manager });

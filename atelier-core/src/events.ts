@@ -212,6 +212,19 @@ export interface SessionProfile {
 	roles: { [role: string]: ProfileRoleEntry };
 }
 
+/** One MCP server as clients see it; `transport` is absent for an entry that could not be taken. */
+export type McpServerStatus = {
+	name: string;
+	transport?: "stdio" | "http";
+	state: "connecting" | "connected" | "failed" | "disabled" | "invalid";
+	/** The names of its tools while connected. */
+	tools: string[];
+	description?: string;
+	error?: string;
+	/** The end of a failed stdio server's stderr. */
+	stderr?: string;
+};
+
 export type AtelierEventBody =
 	/**
 	 * `effort`: the thinking level asked for, as sent with every request: the reasoning effort, `off` when thinking
@@ -310,6 +323,11 @@ export type AtelierEventBody =
 	/** The prompt cache could not reuse the previous prefix; `reason` is the API's (`system_changed`...). */
 	| { type: "cache_miss"; reason: string; missedTokens: number }
 	| { type: "phase_changed"; phase: Phase; source: "inferred" | "declared" }
+	/**
+	 * The user's MCP servers and what is wrong with their file, at the start of the first turn and of any turn in which
+	 * they changed. Never a value of their configuration: secrets are hidden as `***`.
+	 */
+	| { type: "mcp_status"; servers: McpServerStatus[]; problems: string[] }
 	/** Sent first in a session's first turn: whether long-term memory works, for which project, or why not. */
 	| { type: "memory_status"; available: boolean; project?: string; reason?: string }
 	/** Sent first in a session's first turn when AGENTS.md / CLAUDE.md files were found: those added to the system prompt, and those left out by the size cap. */

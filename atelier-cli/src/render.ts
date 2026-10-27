@@ -487,6 +487,12 @@ export class Renderer {
 				if (event.available) this.#line(this.#style("dim", `memory: ${event.project ?? "on"}`));
 				else this.#warn(`no memory: ${event.reason ?? "unavailable"}`);
 				return;
+			case "mcp_status": {
+				const lines = mcpStatusLines(event);
+				if (lines.ok !== undefined) this.#line(this.#style("dim", lines.ok));
+				for (const warning of lines.warnings) this.#warn(warning);
+				return;
+			}
 			case "project_instructions":
 				if (event.files.length > 0) this.#line(this.#style("dim", `instructions: ${event.files.join(", ")}`));
 				if (event.dropped.length > 0) this.#warn(`instructions over 32 KiB, left out: ${event.dropped.join(", ")}`);
@@ -568,4 +574,31 @@ export class Renderer {
 				return;
 		}
 	}
+}
+
+/**
+ * The `mcp_status` lines: the servers that are up or connecting, then a warning for each failed or invalid server and
+ * each problem of the file. Server text is shown with its control characters as markers.
+ */
+export function mcpStatusLines(event: Extract<AtelierEvent, { type: "mcp_status" }>): {
+	ok?: string;
+	warnings: string[];
+} {
+	const shown = (text: string) => visibleText(text).text;
+	const firstLine = (text: string) => shown(text.trim().split("\n")[0] ?? "");
+	const up = event.servers.flatMap(({ name, state, tools }) => {
+		if (state === "connected") return [`${shown(name)} (${tools.length} ${tools.length === 1 ? "tool" : "tools"})`];
+		if (state === "connecting") return [`${shown(name)} (connecting)`];
+		return [];
+	});
+	const warnings = [
+		...event.servers.flatMap(({ name, state, error }) => {
+			if (state === "failed")
+				return [`mcp: ${shown(name)} failed: ${firstLine(error ?? "unknown error")} (/mcp for details)`];
+			if (state === "invalid") return [`mcp: ${shown(name)} is invalid: ${firstLine(error ?? "")}`];
+			return [];
+		}),
+		...event.problems.map((problem) => `mcp: ${firstLine(problem)}`),
+	];
+	return { ...(up.length === 0 ? {} : { ok: `mcp: ${up.join(", ")}` }), warnings };
 }

@@ -73,7 +73,7 @@ describe("atelier-core serve as a normal user", () => {
 describe("atelier-core serve", () => {
 	it("greets, runs a turn with the echo backend and exits 0 on shutdown", async () => {
 		const s = serve();
-		expect(await s.waitFor(() => true)).toEqual({ type: "hello", protocol: 6, core: VERSION });
+		expect(await s.waitFor(() => true)).toEqual({ type: "hello", protocol: 7, core: VERSION });
 
 		const startId = s.send({ command: "session.start", cwd });
 		const started = await s.waitFor((m) => m.type === "response" && m.id === startId);

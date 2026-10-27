@@ -311,6 +311,8 @@ export class RpcServer {
 				answer(message.answer);
 				return {};
 			}
+			case "session.mcp":
+				return { ...(this.#session(message.sessionId).session.mcpStatus() ?? { servers: [], problems: [] }) };
 			case "session.interrupt": {
 				const entry = this.#session(message.sessionId);
 				denyAll(entry);
