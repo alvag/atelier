@@ -87,6 +87,53 @@ describe("Conversation", () => {
 		expect(expanded).toMatch(/⎿ ▾ Ran 1 command\n ✻ Thinking…\n.*▾ bash ls · exit 0 ✓\n(.*\n)*.*✻ Thinking…/);
 	});
 
+	it("opens or folds one block or one thinking with a click, until the next Ctrl+O or Ctrl+R", () => {
+		const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
+		for (const event of stamp([
+			{ type: "thinking_delta", text: "Checking." },
+			{ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "ls" } },
+			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "ls (exit 0)", truncated: false },
+			{ type: "text_delta", text: "Done." },
+			{ type: "tool_call_started", callId: "c2", tool: "bash", input: { command: "pwd" } },
+			{ type: "tool_call_finished", callId: "c2", ok: true, summary: "pwd (exit 0)", truncated: false },
+		]))
+			conversation.event(event);
+		const click = (text: string) => {
+			const lines = conversation.render(80);
+			const y = lines.findIndex((line) => line.includes(text));
+			expect(y).toBeGreaterThanOrEqual(0);
+			const result = conversation.handleMouse({
+				type: "click",
+				button: "left",
+				x: 3,
+				y,
+				screenX: 3,
+				screenY: y,
+				width: 80,
+				height: lines.length,
+				shift: false,
+				alt: false,
+				ctrl: false,
+			});
+			expect(result).toMatchObject({ handled: true });
+			return conversation.render(80).join("\n");
+		};
+		let text = click("✻ Checking.");
+		expect(text).toContain("✻ Thinking…");
+		text = click("⎿ Ran 1 command");
+		expect(text).toContain("▾ bash ls · exit 0 ✓");
+		expect(text).not.toContain("▾ bash pwd");
+		text = click("✻ Thinking…");
+		expect(text).toContain("✻ Checking.");
+		text = click("▾ bash ls");
+		expect(text).not.toContain("▾ bash ls");
+		click("⎿ Ran 1 command");
+		conversation.toggleCards();
+		text = conversation.render(80).join("\n");
+		expect(text).toContain("▾ bash ls · exit 0 ✓");
+		expect(text).toContain("▾ bash pwd · exit 0 ✓");
+	});
+
 	it("paints the thinking dimmed, italic and magenta", () => {
 		const tagged: Paint = (style, text) => `<${[style].flat().join("+")}>${text}</>`;
 		const conversation = new Conversation(tagged, "/repo");

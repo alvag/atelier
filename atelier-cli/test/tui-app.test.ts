@@ -490,6 +490,25 @@ describe("TUI", { timeout: 20_000 }, () => {
 			expect(await code).toBe(0);
 		});
 
+		it("opens a block of calls with a click on its line", async () => {
+			const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo one" } } }, { event: finished }]]);
+			const code = run(["--no-session", "--mode", "yolo"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("run");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("◇ "));
+			// The row the line was last drawn on, from the cursor move before it.
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: the cursor moves are what is read
+			const drawn = [...h.screen.raw().matchAll(/\x1b\[(\d+);1H\x1b\[2K ⎿ Ran 1 command/g)].at(-1);
+			const row = drawn?.[1] ?? "0";
+			h.screen.type(`\x1b[<0;5;${row}M`);
+			h.screen.type(`\x1b[<0;5;${row}m`);
+			await until(() => h.screen.screen().includes("│ $ echo one"));
+			expect(h.screen.screen()).toContain("▾ bash echo one · exit 0 ✓");
+			h.screen.type("\x04");
+			expect(await code).toBe(0);
+		});
+
 		it("copies the text selected with the mouse to the clipboard", async () => {
 			const h = harness([]);
 			const code = run(["--no-session"], h.io, () => h.backend);
