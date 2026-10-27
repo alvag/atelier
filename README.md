@@ -2,7 +2,7 @@
 
 Coding-agent orchestrator with two first-class clients, a terminal UI and a desktop app, on top of one headless core.
 - Runs on your Claude subscription through Claude Code, or on its own loop with an Anthropic API key.
-- Delegates to subagents, keeps large work in feature documents (ODD), and remembers across sessions with [Engram](https://github.com/Gentleman-Programming/engram) when it is installed.
+- Delegates to subagents, keeps large work in feature documents following Organic Driven Development (ODD), and remembers across sessions with [Engram](https://github.com/Gentleman-Programming/engram) when it is installed.
 - Reviews the changes of every turn with receipts and verifies high-risk ones independently.
 - Runs `bash` inside the macOS sandbox and asks before anything the sandbox cannot make safe.
 
@@ -117,6 +117,15 @@ A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent
 | `ATELIER_REVIEW=off`  | Same as `--no-review`.                   |
 | `ATELIER_SANDBOX=off` | Same as `--no-sandbox`.                  |
 | `ATELIER_MEMORY=off`  | No long-term memory.                     |
+
+## Inspiration
+
+Atelier is inspired by [gentle-shell](https://github.com/Gentleman-Programming/gentle-shell) and [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), by Gentleman Programming, and follows their way of working:
+- **Organic Driven Development (ODD)**: explore before changing, size the task, take the small path inline, and keep large work in a feature document with the user's requests verbatim, tests first and reviewable commits.
+- **Receipt-Driven Development (RDD)**: declare the risk of every change, review high-risk work through independent lenses with a refuter and one bounded correction, and leave a receipt.
+- The independent verifier and the destructive command guard follow gentle-shell's.
+
+Atelier brings these ideas into its own core, as code instead of prompt prose, so they work the same on every backend. It also builds on [pi](https://github.com/earendil-works/pi) (its TUI library) and remembers with [Engram](https://github.com/Gentleman-Programming/engram).
 
 ## Documentation
 
