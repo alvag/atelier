@@ -308,8 +308,11 @@ export class Session {
 	#memoryContext = "";
 	/** What the agent is told after a compaction, with the recent memory; it goes before the next prompt, once. */
 	#recovery: string | undefined;
-	/** The recovery notice is in the prompt the backend is taking now, until its first event. */
-	#recoverySent = false;
+	/**
+	 * The recovery notice in the prompt the backend is taking now, until the backend answers with something other than
+	 * an error; a backend that fails before that gets it back as pending, for the next prompt.
+	 */
+	#recoveryInFlight: string | undefined;
 	/** The instruction files read at start; reported with the first turn. */
 	#instructions: ProjectInstructions | undefined;
 	/** The skills found at start; reported with the first turn. */
@@ -509,7 +512,8 @@ export class Session {
 		if (odd?.phase !== undefined) lines.push(`phase: ${odd.phase}`);
 		// The recovery notice brings the memory with the same prompt; said twice, it would only cost context.
 		const memory = this.#memoryContext.trim();
-		if (memory !== "" && this.#recovery === undefined && !this.#recoverySent) lines.push(`memory:\n${memory}`);
+		if (memory !== "" && this.#recovery === undefined && this.#recoveryInFlight === undefined)
+			lines.push(`memory:\n${memory}`);
 		return lines.length === 0 ? undefined : `<state>\n${lines.join("\n")}\n</state>`;
 	}
 
@@ -640,12 +644,14 @@ export class Session {
 				this.#sayProfileNotices(turn);
 				if (this.#options.permissionModeProblem !== undefined)
 					turn.push(errorEvent("permission_mode_invalid", this.#options.permissionModeProblem, true));
-				if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
+				// A compaction before the first prompt left a recovery notice that already brings the memory.
+				if (this.#memoryContext.trim() !== "" && this.#recovery === undefined)
+					sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
 			}
 			if (this.#recovery !== undefined) {
 				sent = `${this.#recovery}\n\n${sent}`;
+				this.#recoveryInFlight = this.#recovery;
 				this.#recovery = undefined;
-				this.#recoverySent = true;
 			}
 			const mcpStatus = this.mcpStatus();
 			if (mcpStatus !== undefined && JSON.stringify(mcpStatus) !== this.#mcpSaid) {
@@ -668,7 +674,7 @@ export class Session {
 			this.#steerable = true;
 			try {
 				for await (const event of backendSession.send(sent)) {
-					this.#recoverySent = false;
+					if (!refusal(event)) this.#recoveryInFlight = undefined;
 					if (event.type === "turn_finished") finish ??= event;
 					else {
 						if (event.type === "error") failed = true;
@@ -682,7 +688,9 @@ export class Session {
 				turn.push(errorEvent("backend_error", describeError(error)));
 			} finally {
 				this.#steerable = false;
-				this.#recoverySent = false;
+				// Never taken: it goes with the next prompt, unless a later compaction left a newer one.
+				if (this.#recoveryInFlight !== undefined) this.#recovery ??= this.#recoveryInFlight;
+				this.#recoveryInFlight = undefined;
 			}
 			this.#previousTurn = { request: prompt, lastMessage: lastMessageTail(this.#lastMessage) };
 			await logged;
@@ -1881,6 +1889,11 @@ function localDate(date: Date): string {
 const NOT_REVIEWED = new Set(["error", "interrupted", "incomplete"]);
 /** Ends after which the queue goes back to the user instead of running. */
 const UNCLEAN_ENDS: ReadonlySet<string> = new Set(["error", "interrupted"]);
+
+/** An event that says the backend did not take the prompt: an error, or a turn that ended on one. */
+function refusal(event: AtelierEventBody): boolean {
+	return event.type === "error" || (event.type === "turn_finished" && event.stopReason === "error");
+}
 
 /** How steers reach the model with a tool result: as the user's words, apart from the tool's output. */
 function steeringText(texts: string[]): string {

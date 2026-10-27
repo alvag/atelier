@@ -566,6 +566,41 @@ describe("compaction summary", () => {
 			);
 		});
 
+		it("keeps the notice for the next prompt when the backend answers only with an error", async () => {
+			let options: BackendStartOptions | undefined;
+			const prompts: string[] = [];
+			const backend: AgentBackend = {
+				id: "fake",
+				start: async (start) => {
+					options = start;
+					return {
+						async *send(prompt) {
+							prompts.push(prompt);
+							if (prompts.length === 1) {
+								yield { type: "error", code: "backend_ended", message: "gone", recoverable: false };
+								yield { type: "turn_finished", stopReason: "error", usage };
+							} else yield finished;
+						},
+						async *compact() {
+							options?.compacted?.(SUMMARY);
+							yield finished;
+						},
+						interrupt: async () => {},
+						close: async () => {},
+					};
+				},
+			};
+			const s = await Session.start({ backend, cwd, tools, memory: new FakeMemory("proj") });
+			await run(s.compact());
+			await run(s.send("refused"));
+			await run(s.send("taken"));
+			await run(s.send("later"));
+			await s.close();
+			expect(prompts[0]).toContain("<memory-recovery>");
+			expect(prompts[1]).toMatch(/^<memory-recovery>[\s\S]*\n\ntaken$/);
+			expect(prompts[2]).toBe("later");
+		});
+
 		it("still says what to do when the recent memory does not come, and warns", async () => {
 			const memory = new FakeMemory("proj");
 			const backend = summarizing([SUMMARY], false);
@@ -979,6 +1014,55 @@ describe("independent recovery/privacy regressions", () => {
 			expect(r.memory.prompts).toEqual([]);
 		} finally {
 			await r.session.close();
+		}
+	});
+
+	it.each([false, true])("retains undelivered recovery and avoids duplicate context: %s (S1)", async (fail) => {
+		let options: BackendStartOptions;
+		let reject = false;
+		const prompts: string[] = [];
+		const backend: AgentBackend = {
+			id: "fake",
+			start: async (start) => {
+				options = start;
+				return {
+					async *send(prompt) {
+						if (reject) {
+							reject = false;
+							throw new Error("offline before accepting prompt");
+						}
+						prompts.push(prompt);
+						yield finished;
+					},
+					async *compact() {
+						options.compacted?.("## Goal\n- parse");
+						yield finished;
+					},
+					interrupt: async () => {},
+					close: async () => {},
+				};
+			},
+		};
+		const memory = new FakeMemory("proj");
+		const s = await Session.start({ backend, cwd, tools, memory });
+		const drain = async (events: AsyncIterable<AtelierEvent>) => {
+			for await (const _ of events) void _;
+		};
+		try {
+			if (fail) await drain(s.send("initial"));
+			await drain(s.compact());
+			if (fail) {
+				reject = true;
+				await drain(s.send("failed attempt"));
+			}
+			await drain(s.send("continue"));
+			const accepted = prompts.at(-1) ?? "";
+			expect(accepted).toContain("<memory-recovery>");
+			expect(accepted).not.toContain("<memory>");
+			await drain(s.send("later"));
+			expect(prompts.at(-1)).toBe("later");
+		} finally {
+			await s.close();
 		}
 	});
 });

@@ -1057,3 +1057,34 @@ describe("ClaudeCodeBackend saved sessions", () => {
 		await expect(backend.start({ ...saved, resume: { messages: [] } })).rejects.toThrow("not a Claude Code session");
 	});
 });
+
+it("recovers memory once after mid-turn Claude Code compaction without duplicate state (S1)", async () => {
+	const boundary = msg({
+		type: "system",
+		subtype: "compact_boundary",
+		compact_metadata: { trigger: "auto", pre_tokens: 9000 },
+	});
+	const h = fakeQuery(
+		[init],
+		[[boundary, { postCompact: "## Goal\n- parser" }, result(0.01)], [result(0.02)], [result(0.03)]],
+	);
+	const memory = new FakeMemory("proj");
+	await memory.save({ title: "Earlier", type: "decision", content: "keep" });
+	const s = await Session.start({
+		backend: new ClaudeCodeBackend({ query: h.query, env: {} }),
+		cwd: process.cwd(),
+		tools: [],
+		memory,
+	});
+	try {
+		await collect(s.send("initial"));
+		await collect(s.send("next"));
+		await collect(s.send("later"));
+		expect(h.calls.prompts[1]).toContain("<memory-recovery>");
+		expect(h.calls.prompts[1]?.match(/Earlier/g)).toHaveLength(1);
+		expect(h.calls.prompts[1]).not.toContain("memory:");
+		expect(h.calls.prompts[2]).toBe("later");
+	} finally {
+		await s.close();
+	}
+});
