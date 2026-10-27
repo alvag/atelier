@@ -526,6 +526,9 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("two");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("echo second"));
+		// Allow, the two answers that remember "echo second", then Deny.
+		h.screen.type("\x1b[B");
+		h.screen.type("\x1b[B");
 		h.screen.type("\x1b[B");
 		h.screen.type("\r");
 		await until(() => h.backend.toolResults.length === 2);
@@ -537,7 +540,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 
 	it("shows a long command's first line in the approval, and all of it with Ctrl+O", async () => {
 		const h = harness([
-			[{ toolCall: { tool: "bash", input: { command: "echo one\necho two\necho three" } } }, { event: finished }],
+			[{ toolCall: { tool: "bash", input: { command: "echo 1\necho 2\necho 3" } } }, { event: finished }],
 		]);
 		const code = run(["--no-session"], h.io, () => h.backend);
 		await until(h.screen.started);
@@ -545,17 +548,17 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("Run this command?"));
 		const dialog = () => h.screen.screen().slice(h.screen.screen().lastIndexOf("Run this command?"));
-		expect(dialog()).toContain("echo one … 2 more lines (Ctrl+O)");
-		expect(dialog()).not.toContain("echo three");
+		expect(dialog()).toContain("echo 1 … 2 more lines (Ctrl+O)");
+		expect(dialog()).not.toContain("echo 3");
 		h.screen.type("\x0f");
-		await until(() => dialog().includes("echo three"));
-		expect(dialog()).toContain("echo two");
+		await until(() => dialog().includes("echo 3"));
+		expect(dialog()).toContain("echo 2");
 		expect(dialog()).not.toContain("more lines");
 		h.screen.type("\x0f");
-		await until(() => !dialog().includes("echo three"));
+		await until(() => !dialog().includes("echo 3"));
 		h.screen.type("\r");
 		await until(() => h.backend.toolResults.length === 1);
-		expect(h.backend.toolResults[0]?.output).toContain("three");
+		expect(h.backend.toolResults[0]?.output).toContain("3");
 		await until(() => h.screen.screen().includes("$0.50"));
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
@@ -1483,8 +1486,75 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		const ask = (command: string, reason?: string) =>
 			stub.emit({ type: "approval_requested", tool: "bash", callId: "a1", command, ...(reason ? { reason } : {}) });
 		const dialog = () => h.screen.screen().slice(h.screen.screen().lastIndexOf("Run this command"));
-		return { h, code, approvals, ask, dialog };
+		return { h, code, approvals, ask, dialog, emit: stub.emit };
 	}
+
+	it("offers to remember an approval's rules and sends the chosen one", async () => {
+		const { h, code, approvals, dialog, emit } = await approvalCore();
+		const remembering = (callId: string, always: boolean) =>
+			emit({
+				type: "approval_requested",
+				callId,
+				command: "ego-browser nodejs",
+				reason: "a GUI app",
+				remember: { rules: ["ego-browser nodejs"], always },
+			});
+		remembering("a1", true);
+		await until(() => dialog().includes('Allow "ego-browser nodejs" always'));
+		expect(dialog()).toContain('Allow "ego-browser nodejs" in this session');
+		expect(dialog()).toContain("Deny");
+		h.screen.type("\x1b[B");
+		h.screen.type("\x1b[B");
+		h.screen.type("\r");
+		await until(() => approvals().length === 1);
+		expect(approvals()[0]).toMatchObject({ callId: "a1", approved: true, remember: "always" });
+
+		remembering("a2", false);
+		await until(() => h.screen.screen().includes("in this session") && approvals().length === 1);
+		await until(() => !dialog().includes('"ego-browser nodejs" always'));
+		h.screen.type("\x1b[B");
+		h.screen.type("\r");
+		await until(() => approvals().length === 2);
+		expect(approvals()[1]).toMatchObject({ callId: "a2", approved: true, remember: "session" });
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("lists the permission rules with /permissions and removes one", async () => {
+		const h = harness([]);
+		const rule = { id: "always:bash:open", scope: "always", kind: "bash", value: "open" };
+		const stub = stubCore({
+			answer: (command) =>
+				command.command === "session.permissions"
+					? { rules: [rule] }
+					: command.command === "session.permissions_remove"
+						? { rules: [] }
+						: undefined,
+		});
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/permissions");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("1. always  bash  open"));
+		h.screen.type("/permissions remove 1");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("removed: always bash open"));
+		expect(stub.log.commands).toContainEqual({
+			command: "session.permissions_remove",
+			sessionId: "s1",
+			ruleId: "always:bash:open",
+		});
+		h.screen.type("/permissions remove 9");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("error: no rule 9"));
+		h.screen.type("/permissions x");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("usage: /permissions | /permissions remove <number>"));
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
 
 	it("never answers an approval with a paste begun in the editor before it appeared", async () => {
 		const { h, code, approvals, ask, dialog } = await approvalCore();

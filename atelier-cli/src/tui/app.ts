@@ -29,6 +29,14 @@ import {
 } from "@earendil-works/pi-tui";
 import type { CliArgs } from "../args.ts";
 import { mcpReport } from "../mcp-report.ts";
+import {
+	PERMISSIONS_USAGE,
+	parsePermissions,
+	removedText,
+	rulesListing,
+	ruleText,
+	type ShownRule,
+} from "../permission-text.ts";
 import { savedTranscript } from "../transcript.ts";
 import { Conversation } from "./conversation.ts";
 import { type Choice, ChoiceDialog, type Folded, PasteFilter } from "./dialog.ts";
@@ -104,6 +112,7 @@ const COMMANDS = [
 	{ name: "backend", description: "Move the session to another backend, with a summary [name]" },
 	{ name: "feature", description: "Open or fold the ODD feature's tasks (Ctrl+T)" },
 	{ name: "mcp", description: "Show the MCP servers; login|logout <server> signs one in or out" },
+	{ name: "permissions", description: "List the permission rules you allowed; remove <number> removes one" },
 	{ name: "new", description: "Start a new session" },
 	{ name: "resume", description: "Resume a saved session of this folder [id]" },
 	{ name: "review", description: "Review the current changes, against HEAD or a git ref" },
@@ -169,6 +178,18 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 		lines,
 		folded: { lines: [first, ...warning], hidden: commandLines.length - 1 + reasonLines },
 	};
+}
+
+/** Allow and Deny, and between them the answers that remember the question's rules when it offers them. */
+function approvalChoices(event: Extract<AtelierEvent, { type: "approval_requested" }>) {
+	const remember = event.remember;
+	const what = remember === undefined ? "" : ruleText(event.tool, remember.rules);
+	return [
+		{ value: "allow", label: "Allow" },
+		...(remember === undefined ? [] : [{ value: "session", label: `Allow ${what} in this session` }]),
+		...(remember?.always ? [{ value: "always", label: `Allow ${what} always` }] : []),
+		{ value: "deny", label: "Deny" },
+	];
 }
 
 /** The review question: why it is asked is in the review block just above it. */
@@ -573,16 +594,19 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			ask(
 				{
 					...approvalQuestion(event),
-					choices: [
-						{ value: "allow", label: "Allow" },
-						{ value: "deny", label: "Deny" },
-					],
+					choices: approvalChoices(event),
 					initial: "allow",
 					cancel: "deny",
 					guardMs: options.answerGuardMs ?? ANSWER_GUARD_MS,
 				},
 				(value) =>
-					void request({ command: "session.approve", sessionId, callId: event.callId, approved: value === "allow" }),
+					void request({
+						command: "session.approve",
+						sessionId,
+						callId: event.callId,
+						approved: value !== "deny",
+						...(value === "session" || value === "always" ? { remember: value } : {}),
+					}),
 				false,
 				{ kind: "permission", message: approvalQuestion(event).title },
 			);
@@ -886,6 +910,24 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 	};
 
+	/** `/permissions` lists the session's rules from the core; `/permissions remove <n>` removes the n-th of that list. */
+	const runPermissions = async (words: string[]) => {
+		const parsed = parsePermissions(words);
+		if (parsed === undefined) return conversation.note(PERMISSIONS_USAGE, true);
+		try {
+			const { rules } = (await link.request({ command: "session.permissions", sessionId })) as {
+				rules: (ShownRule & { id: string })[];
+			};
+			if (parsed.remove === undefined) return conversation.note(rulesListing(rules));
+			const rule = rules[parsed.remove - 1];
+			if (rule === undefined) return conversation.note(`error: no rule ${parsed.remove}`, true);
+			await link.request({ command: "session.permissions_remove", sessionId, ruleId: rule.id });
+			conversation.note(removedText(rule));
+		} catch (error) {
+			conversation.note(`error: ${describeError(error)}`, true);
+		}
+	};
+
 	/** What the session runs with and loaded, which the transcript leaves out, and what it has cost so far. */
 	const runStatus = () => {
 		const lines = conversation.status();
@@ -981,6 +1023,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (text === "/new") await runNew();
 		else if (text === "/feature") toggleFeature();
 		else if (command === "/mcp") await runMcp(words.slice(1));
+		else if (command === "/permissions") await runPermissions(words.slice(1));
 		else if (text === "/status") runStatus();
 		else if (command === "/resume" && single) await runResume(argument);
 		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });

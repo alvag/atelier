@@ -72,22 +72,23 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 ### Commands
 
-| Command                    | Effect                                                                 |
-| -------------------------- | ---------------------------------------------------------------------- |
-| `/model [name]`            | Change the model from the next turn; without a name, pick from a list. |
-| `/effort [level]`          | Change the thinking level (`off`, `minimal`, `low` … `max`).           |
-| `/profile [name]`          | Change the agent profile.                                              |
-| `/mode [mode]`             | Change the permission mode; `/mode default <mode>` saves the default.  |
-| `/backend [name]`          | Move the session to another backend (it continues from a summary).     |
-| `/new`                     | Start another session.                                                 |
-| `/resume [id]`             | Resume a saved session of this directory.                              |
-| `/feature`                 | Open or fold the active feature's tasks.                               |
-| `/mcp [login\|logout <s>]` | Show the session's MCP servers, or sign one in or out.                 |
-| `/review [ref]`            | Review the working tree now, against `HEAD` or a git ref.              |
-| `/undo-correction`         | Undo the latest escalated review correction.                           |
-| `/compact [instructions]`  | Summarize the older history now.                                       |
-| `/status`                  | Show the model, sandbox, instructions, skills, memory and cost.        |
-| `/exit`                    | Quit.                                                                  |
+| Command                     | Effect                                                                 |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `/model [name]`             | Change the model from the next turn; without a name, pick from a list. |
+| `/effort [level]`           | Change the thinking level (`off`, `minimal`, `low` … `max`).           |
+| `/profile [name]`           | Change the agent profile.                                              |
+| `/mode [mode]`              | Change the permission mode; `/mode default <mode>` saves the default.  |
+| `/backend [name]`           | Move the session to another backend (it continues from a summary).     |
+| `/new`                      | Start another session.                                                 |
+| `/resume [id]`              | Resume a saved session of this directory.                              |
+| `/feature`                  | Open or fold the active feature's tasks.                               |
+| `/mcp [login\|logout <s>]`  | Show the session's MCP servers, or sign one in or out.                 |
+| `/permissions [remove <n>]` | List the commands and folders you allowed, or remove one.              |
+| `/review [ref]`             | Review the working tree now, against `HEAD` or a git ref.              |
+| `/undo-correction`          | Undo the latest escalated review correction.                           |
+| `/compact [instructions]`   | Summarize the older history now.                                       |
+| `/status`                   | Show the model, sandbox, instructions, skills, memory and cost.        |
+| `/exit`                     | Quit.                                                                  |
 
 ### Keys
 
@@ -129,6 +130,7 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 | ---------------------- | -------------------------------------------------------------------------------------------------- |
 | `profiles.json`        | Model, backend and thinking level per agent role ([profiles](docs/profiles.md)).                   |
 | `permission-mode.json` | Default permission mode, written by `/mode default <mode>`.                                        |
+| `permissions.json`     | Commands and folders you allowed always ([rules](docs/sandbox.md#rules-you-allowed)).              |
 | `settings.json`        | Full screen or not, and the status line items ([settings](docs/cli.md#settings)).                  |
 | `sandbox.json`         | Extra writable paths and hidden paths for `bash` ([sandbox](docs/sandbox.md#configuration-files)). |
 | `mcp.json`             | MCP servers the agent can use, in the `mcpServers` format of Claude Code ([MCP](docs/mcp.md)).     |

@@ -40,6 +40,7 @@ import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { runDesktop } from "./desktop.ts";
 import { OWN_ROOT, versionLabel } from "./install-marker.ts";
 import { mcpFailed, mcpReport } from "./mcp-report.ts";
+import { PERMISSIONS_USAGE, parsePermissions, removedText, rulesListing, ruleText } from "./permission-text.ts";
 import { Renderer } from "./render.ts";
 import { createTerminalReader, type LineReader } from "./terminal-input.ts";
 import { savedTranscript } from "./transcript.ts";
@@ -329,7 +330,7 @@ export async function run(
 		remember: ApprovalRequest["remember"],
 	): Promise<ApprovalAnswer> => {
 		if (remember === undefined) return askYesNo(question);
-		const what = visibleText(ruleText(tool, remember.rules)).text;
+		const what = ruleText(tool, remember.rules);
 		const choices = `  s: Allow ${what} in this session\n${remember.always ? `  a: Allow ${what} always\n` : ""}`;
 		const answer = (await askLine(`${question}${choices}`, remember.always ? "[y/N/s/a] " : "[y/N/s] ")) ?? "";
 		if (/^y(es)?$/i.test(answer)) return true;
@@ -734,42 +735,26 @@ async function runMcpList(io: CliIO, cwd: string, connectMcp: McpConnector | und
 	}
 }
 
-/** How a question names the rules an answer would remember: `"open", "npm install"`, or `edits in <folder>`. */
-export function ruleText(tool: string | undefined, rules: readonly string[]): string {
-	return tool === "edit" || tool === "write"
-		? `edits in ${rules.join(", ")}`
-		: rules.map((rule) => `"${rule}"`).join(", ");
-}
-
 /** `/permissions` lists the rules in force; `/permissions remove <n>` removes the n-th. Not a turn. */
 async function runPermissionsCommand(io: CliIO, session: Session, words: readonly string[]): Promise<void> {
+	const parsed = parsePermissions(words);
+	if (parsed === undefined) {
+		io.stderr(`${PERMISSIONS_USAGE}\n`);
+		return;
+	}
 	const rules = await session.permissionRules();
-	const [action, number, ...extra] = words;
-	if (action === undefined) {
-		io.stdout(
-			rules.length === 0
-				? "No permission rules.\n"
-				: rules
-						.map(
-							({ scope, kind, value }, index) =>
-								`${index + 1}. ${scope.padEnd(7)} ${kind.padEnd(5)} ${visibleText(value).text}\n`,
-						)
-						.join(""),
-		);
+	if (parsed.remove === undefined) {
+		io.stdout(`${rulesListing(rules)}\n`);
 		return;
 	}
-	if (action !== "remove" || number === undefined || !/^\d+$/.test(number) || extra.length > 0) {
-		io.stderr("usage: /permissions | /permissions remove <number>\n");
-		return;
-	}
-	const rule = rules[Number(number) - 1];
+	const rule = rules[parsed.remove - 1];
 	if (rule === undefined) {
-		io.stderr(`error: no rule ${number}\n`);
+		io.stderr(`error: no rule ${parsed.remove}\n`);
 		return;
 	}
 	try {
 		await session.removePermissionRule(rule.id);
-		io.stdout(`removed: ${rule.scope} ${rule.kind} ${visibleText(rule.value).text}\n`);
+		io.stdout(`${removedText(rule)}\n`);
 	} catch (error) {
 		io.stderr(`error: ${describeError(error)}\n`);
 	}
