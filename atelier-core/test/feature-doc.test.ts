@@ -12,19 +12,13 @@ import {
 	updateTask,
 } from "../src/odd/feature-doc.ts";
 
-const fixtures = new URL("./fixtures/odd/", import.meta.url);
+const fixtures = new URL("./fixtures/feature-docs/", import.meta.url);
 const fixture = (name: string) => readFile(new URL(name, fixtures), "utf8");
 
-describe("parseFeatureDoc on the real documents of M0–M4", () => {
+describe("parseFeatureDoc on sample feature documents", () => {
 	it("round-trips every one byte for byte", async () => {
 		const names = (await readdir(fixtures)).filter((name) => name.endsWith(".md")).sort();
-		expect(names).toEqual([
-			"m0-estudio.md",
-			"m1-nucleo.md",
-			"m2-protocolo.md",
-			"m3-backend-propio.md",
-			"m4-subagentes.md",
-		]);
+		expect(names).toEqual(["commit-column.md", "table-trailer.md"]);
 		for (const name of names) {
 			const text = await fixture(name);
 			expect(serializeFeatureDoc(parseFeatureDoc(text)), name).toBe(text);
@@ -32,10 +26,10 @@ describe("parseFeatureDoc on the real documents of M0–M4", () => {
 	});
 
 	it("reads title, specs, tasks, log and keeps extra sections", async () => {
-		const doc = parseFeatureDoc(await fixture("m4-subagentes.md"));
-		expect(doc.title).toBe("M4 – Subagentes");
+		const doc = parseFeatureDoc(await fixture("commit-column.md"));
+		expect(doc.title).toBe("Sample – Subagents");
 		expect(doc.specs.map((s) => s.id)).toEqual(["S1", "S2", "S3", "S4", "S5", "S6"]);
-		expect(doc.specs[0]?.text.startsWith('Pedido del usuario, textual: "si, van los 6"')).toBe(true);
+		expect(doc.specs[0]?.text.startsWith('User request, verbatim: "yes, all six"')).toBe(true);
 		expect(listTasks(doc).map((t) => [t.id, t.specs, t.route])).toEqual([
 			["U1", ["S1", "S3"], "inline"],
 			["U2", ["S4"], "inline"],
@@ -44,14 +38,14 @@ describe("parseFeatureDoc on the real documents of M0–M4", () => {
 		]);
 		expect(doc.log[0]).toEqual({
 			id: "L1",
-			text: '"si, van los 6" (respuesta a "¿Van las seis, o querés cambiar alguna?").',
+			text: '"yes, all six" (answer to "Do all six go, or do you want to change any?").',
 		});
-		expect(doc.sections.map((s) => s.heading)).toEqual(["Specs", "Tasks", "Cortes de entrega", "Log"]);
+		expect(doc.sections.map((s) => s.heading)).toEqual(["Specs", "Tasks", "Delivery slices", "Log"]);
 	});
 
 	it("keeps what follows the task table", async () => {
-		const doc = parseFeatureDoc(await fixture("m0-estudio.md"));
-		expect(doc.tasks.trailer.startsWith("### Preguntas por tarea")).toBe(true);
+		const doc = parseFeatureDoc(await fixture("table-trailer.md"));
+		expect(doc.tasks.trailer.startsWith("### Questions per task")).toBe(true);
 		expect(listTasks(doc).find((t) => t.id === "T7")?.specs).toEqual(["S1", "S2", "S3", "S4", "S5", "S6", "S8"]);
 	});
 });
@@ -169,7 +163,7 @@ describe("building and changing a document", () => {
 	});
 
 	it("refuses to change the status of a document without an Estado column", async () => {
-		const doc = parseFeatureDoc(await fixture("m4-subagentes.md"));
+		const doc = parseFeatureDoc(await fixture("commit-column.md"));
 		expect(() => updateTask(doc, { id: "U1", status: "done" })).toThrow(/Estado/);
 	});
 });

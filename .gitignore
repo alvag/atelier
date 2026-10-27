@@ -5,4 +5,4 @@ coverage/
 .DS_Store
 out/
 # Atelier's own ODD feature documents: work state of a session, not code.
-odd/
+/odd/
