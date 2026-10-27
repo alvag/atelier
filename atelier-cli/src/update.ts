@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { VERSION } from "@atelier/core";
 import { buildDesktop, installFull } from "./desktop.ts";
@@ -54,12 +55,14 @@ export async function runUpdate(options: UpdateOptions): Promise<number> {
 			return fail(`${describeCommand(error)}\natelier stays at ${current}; retry with: atelier update ${target}`);
 		}
 		if (marker.desktop) {
+			// A failed rebuild must not leave the old bundle for `atelier desktop` to open.
+			await rm(join(root, "atelier-desktop", "out"), { recursive: true, force: true });
 			try {
 				await buildDesktop(exec);
 			} catch (error) {
 				if (!(error instanceof CommandError)) throw error;
 				return fail(
-					`${describeCommand(error)}\natelier is updated to ${target} but the desktop is not rebuilt; retry with: pnpm -C ${join(root, "atelier-desktop")} build`,
+					`${describeCommand(error)}\natelier is updated to ${target} but the desktop is not built; retry with: atelier desktop (it builds when the output is missing)`,
 				);
 			}
 		}

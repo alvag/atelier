@@ -18,8 +18,8 @@ export interface DesktopOptions {
 	env: Record<string, string | undefined>;
 	stdout: (text: string) => void;
 	stderr: (text: string) => void;
-	/** Starts Electron on the desktop directory and returns at once; detached by default. */
-	open?: (binary: string, args: string[]) => void;
+	/** Starts Electron on the desktop directory, resolving once it started; detached by default. */
+	open?: (binary: string, args: string[]) => void | Promise<void>;
 }
 
 /** Builds the desktop app (`electron-vite build`, into atelier-desktop/out/). */
@@ -32,9 +32,18 @@ export function installFull(exec: Exec): Promise<string> {
 	return exec("pnpm", ["install", "--frozen-lockfile"]);
 }
 
-/** Starts Electron detached from the terminal, which comes back at once. */
-function spawnDetached(binary: string, args: string[]): void {
-	spawn(binary, args, { detached: true, stdio: "ignore" }).unref();
+/** Starts Electron detached from the terminal; resolves when it started, rejects when it could not. */
+function spawnDetached(binary: string, args: string[]): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(binary, args, { detached: true, stdio: "ignore" });
+		child.once("error", reject);
+		child.once("spawn", () => {
+			child.off("error", reject);
+			child.on("error", () => {});
+			child.unref();
+			resolve();
+		});
+	});
 }
 
 /** Opens the desktop app, installing and building it first when needed; returns the exit code. */
@@ -58,8 +67,12 @@ export async function runDesktop(options: DesktopOptions): Promise<number> {
 			}
 			if (!built()) await buildDesktop(exec);
 		}
-		if (options.open === undefined) spawnDetached(electron, [desktopDir]);
-		else options.open(electron, [desktopDir]);
+		try {
+			await (options.open ?? spawnDetached)(electron, [desktopDir]);
+		} catch (error) {
+			options.stderr(`error: could not open the desktop (${electron}): ${(error as Error).message}\n`);
+			return 1;
+		}
 		options.stdout(`Opened Atelier desktop ${VERSION}\n`);
 		return 0;
 	} catch (error) {

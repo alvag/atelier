@@ -224,7 +224,7 @@ describe("atelier update", () => {
 		expect(await c.code()).toBe(1);
 
 		expect(c.err()).toBe(
-			`error: pnpm -C atelier-desktop build failed (exit 7): boom\natelier is updated to v0.9.0 but the desktop is not rebuilt; retry with: pnpm -C ${install}/atelier-desktop build\n`,
+			`error: pnpm -C atelier-desktop build failed (exit 7): boom\natelier is updated to v0.9.0 but the desktop is not built; retry with: atelier desktop (it builds when the output is missing)\n`,
 		);
 		expect(c.out()).toBe("");
 		expect(git(install, "describe", "--tags", "--exact-match")).toBe("v0.9.0");
@@ -273,6 +273,13 @@ describe("atelier update usage", () => {
 		expect(c.err()).toContain("Usage: atelier update [vX.Y.Z]");
 	});
 
+	it("rejects a version with a leading zero", async () => {
+		const c = cli(["update", "v01.2.3"]);
+		expect(await c.code()).toBe(2);
+
+		expect(c.err()).toContain("Usage: atelier update [vX.Y.Z]");
+	});
+
 	it("rejects session options", async () => {
 		const c = cli(["update", "--model", "sonnet"]);
 		expect(await c.code()).toBe(2);
@@ -287,3 +294,45 @@ async function realRoot(): Promise<string> {
 	const { realpath } = await import("node:fs/promises");
 	return realpath(install);
 }
+
+// S2/S4: installer and updater both select stable semantic releases.
+it("ignores a leading-zero release tag", async () => {
+	await release("v01.2.3");
+	const c = cli(["update"]);
+	expect(await c.code()).toBe(0);
+	expect(c.out()).toBe("Updated atelier v0.1.0 → v0.9.0\n");
+});
+
+// S5: a failed rebuild cannot later open the old bundle as the new desktop.
+it("retries a failed desktop rebuild before opening", async () => {
+	await writeFile(join(install, marker), "desktop=1\n");
+	await writeFile(join(install, ".git", "info", "exclude"), "atelier-desktop/\n");
+	await mkdir(join(install, "atelier-desktop", "out", "main"), { recursive: true });
+	await writeFile(join(install, "atelier-desktop", "out", "main", "index.js"), "// old bundle\n");
+	await writeFile(join(root, "pnpm-fails-on"), "build");
+	expect(await cli(["update", "v0.9.0"]).code()).toBe(1);
+	const opened: string[] = [];
+	let stdout = "";
+	let stderr = "";
+	const code = await run(["desktop"], {
+		stdin: new PassThrough(),
+		isTTY: false,
+		cwd: root,
+		color: false,
+		appRoot: install,
+		env: { ...process.env, HOME: root, PATH: `${fakes}:${process.env.PATH ?? ""}` },
+		stdout: (s) => {
+			stdout += s;
+		},
+		stderr: (s) => {
+			stderr += s;
+		},
+		openDesktop: (binary) => {
+			opened.push(binary);
+		},
+	});
+	expect(code).toBe(1);
+	expect(stderr).toBe("error: pnpm -C atelier-desktop build failed (exit 7): boom\n");
+	expect(stdout).not.toContain("Opened");
+	expect(opened).toEqual([]);
+});

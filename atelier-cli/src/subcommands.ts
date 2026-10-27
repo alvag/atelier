@@ -5,7 +5,8 @@ export interface Subcommand {
 	version?: string;
 }
 
-export const RELEASE_TAG = /^v\d+\.\d+\.\d+$/;
+/** A stable release: strict semver, no prerelease, no leading zeros (install.sh applies the same rule). */
+export const RELEASE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 interface SubcommandSpec {
 	usage: string;

@@ -212,3 +212,39 @@ describe("atelier desktop usage", () => {
 		expect(opened).toEqual([]);
 	});
 });
+
+// S5: exercise the actual spawn boundary, not the injected opener.
+it("reports missing Electron without claiming to open or crashing", async () => {
+	await writeFile(join(app, ".git", "atelier-install"), "desktop=1\n");
+	await addBuild();
+	const { spawnSync } = await import("node:child_process");
+	const moduleUrl = new URL("../src/desktop.ts", import.meta.url).href;
+	const result = spawnSync(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`
+		import { runDesktop } from ${JSON.stringify(moduleUrl)};
+		process.exitCode = await runDesktop({
+			root: ${JSON.stringify(app)}, env: process.env,
+			stdout: (s) => process.stdout.write(s), stderr: (s) => process.stderr.write(s),
+		});
+	`,
+		],
+		{
+			encoding: "utf8",
+			env: {
+				...process.env,
+				HOME: root,
+				TMPDIR: root,
+				NODE_COMPILE_CACHE: join(root, "cache"),
+				NO_UPDATE_NOTIFIER: "1",
+			},
+		},
+	);
+	expect(result.status).toBe(1);
+	expect(result.stdout).not.toContain("Opened");
+	expect(result.stderr).toContain("error:");
+	expect(result.stderr).not.toContain("Unhandled");
+});

@@ -147,7 +147,7 @@ describe("install.sh", () => {
 
 		const launcher = join(binDir, "atelier");
 		expect(await readFile(launcher, "utf8")).toBe(
-			`#!/bin/sh\nexec node "${installDir}/atelier-cli/src/main.ts" "$@"\n`,
+			`#!/bin/sh\nexec node '${installDir}/atelier-cli/src/main.ts' "$@"\n`,
 		);
 		expect((await stat(launcher)).mode & 0o777).toBe(0o755);
 	});
@@ -244,3 +244,30 @@ function expectNothingWritten(): void {
 	expect(existsSync(binDir)).toBe(false);
 	expect(existsSync(join(root, "pnpm.log"))).toBe(false);
 }
+
+// S2: the launcher treats the install path as data, not shell syntax.
+it.each(['app"quoted', "app$(printf injected)"])("launches from %s literally", async (name) => {
+	installDir = join(root, name);
+	expect(install().status).toBe(0);
+	await fake("node", 'printf "%s\\n" "$@"');
+	const result = spawnSync(join(binDir, "atelier"), ["two words"], {
+		encoding: "utf8",
+		env: { ...process.env, HOME: home, PATH: `${fakes}:${tools}` },
+	});
+	expect(result.status).toBe(0);
+	expect(result.stderr).toBe("");
+	expect(result.stdout).toBe(`${installDir}/atelier-cli/src/main.ts\ntwo words\n`);
+});
+
+// S2/S4: the installer ignores prereleases and leading-zero tags, as `atelier update` does.
+it("installs the newest strict release, ignoring prereleases and leading zeros", async () => {
+	for (const tag of ["v1.0.0-rc1", "v01.2.3"]) {
+		await writeFile(join(origin, "tag.txt"), tag);
+		git(origin, "add", ".");
+		git(origin, "commit", "--quiet", "-m", tag);
+		git(origin, "tag", tag);
+	}
+	const out = install();
+	expect(out.status).toBe(0);
+	expect(out.stdout.trim().split("\n").at(-1)).toBe(`Installed atelier v0.10.0 in ${installDir}. Run: atelier`);
+});

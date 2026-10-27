@@ -70,8 +70,10 @@ check_requirements() {
 }
 
 newest_release_tag() {
-	git -C "$INSTALL_DIR" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname |
-		grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true
+	# Strict vX.Y.Z (no prerelease, no leading zeros), newest by numeric order; same rule as `atelier update`.
+	git -C "$INSTALL_DIR" tag --list |
+		grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' |
+		sort -t. -k1.2,1nr -k2,2nr -k3,3nr | head -n 1 || true
 }
 
 install_dependencies() {
@@ -90,7 +92,9 @@ write_marker() {
 
 write_launcher() {
 	mkdir -p "$BIN_DIR"
-	printf '#!/bin/sh\nexec node "%s/atelier-cli/src/main.ts" "$@"\n' "$INSTALL_DIR" >"$BIN_DIR/atelier"
+	# Single-quoted, so the launcher's shell takes the path literally; a ' in it becomes '\''.
+	quoted=$(printf '%s' "$INSTALL_DIR/atelier-cli/src/main.ts" | sed "s/'/'\\\\''/g")
+	printf '#!/bin/sh\nexec node '"'"'%s'"'"' "$@"\n' "$quoted" >"$BIN_DIR/atelier"
 	chmod 755 "$BIN_DIR/atelier"
 }
 
