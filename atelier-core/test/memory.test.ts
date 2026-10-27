@@ -92,19 +92,36 @@ describe("FakeMemory", () => {
 });
 
 /** An EngramMemory over an in-process MCP server whose tools answer `answer`; `calls` counts the calls. */
-async function engramAnswering(answer: Record<string, unknown>, isError = false) {
+async function engramAnswering(answer: Record<string, unknown>, isError = false, savesPrompts = false) {
 	const server = new Server({ name: "engram", version: "0.0.0" }, { capabilities: { tools: {} } });
 	const calls: string[] = [];
+	const args: Record<string, unknown>[] = [];
 	server.setRequestHandler(CallToolRequestSchema, async (request) => {
 		calls.push(request.params.name);
+		args.push(request.params.arguments ?? {});
 		return { content: [{ type: "text", text: JSON.stringify(answer) }], isError };
 	});
 	const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
 	await server.connect(serverSide);
 	const client = new Client({ name: "atelier", version: "0.0.0" });
 	await client.connect(clientSide);
-	return { memory: new EngramMemory(client, "proj"), calls };
+	return { memory: new EngramMemory(client, "proj", savesPrompts), calls, args };
 }
+
+describe("EngramMemory savePrompt", () => {
+	it("sends the prompt as it is given, or nothing when prompts are off", async () => {
+		const on = await engramAnswering({ id: 4 }, false, true);
+		await on.memory.savePrompt("fix the parser");
+		await on.memory.close();
+		expect(on.calls).toEqual(["mem_save_prompt"]);
+		expect(on.args).toEqual([{ content: "fix the parser" }]);
+
+		const off = await engramAnswering({ id: 4 });
+		await off.memory.savePrompt("fix the parser");
+		await off.memory.close();
+		expect(off.calls).toEqual([]);
+	});
+});
 
 describe("EngramMemory save", () => {
 	it("keeps a save whose conflict detection did not finish, with a warning, and does not save again", async () => {
@@ -201,6 +218,10 @@ describe.skipIf(!engramInstalled)("EngramMemory against the real binary (tempora
 		expect(Buffer.byteLength(context)).toBeLessThanOrEqual(300);
 		expect(context).toContain("Use MCP for Engram");
 		await expect(memory.summary("## Goal\nTest the adapter")).resolves.toBeUndefined();
+	});
+
+	it("saves a prompt", async () => {
+		await expect(memory.savePrompt("remember the parser")).resolves.toBeUndefined();
 	});
 
 	it("never wrote outside the temporary data dir", async () => {

@@ -133,6 +133,8 @@ correction was committed.
 
 Environment:
   ATELIER_MEMORY=off     Run without long-term memory
+  ATELIER_MEMORY_PROMPTS=off
+                         Keep your prompts out of long-term memory
   ATELIER_REVIEW=off     Run without reviewing or verifying changes, like --no-review
   ATELIER_SANDBOX=off    Run bash without the sandbox, like --no-sandbox
   ATELIER_TUI=off        Run the interactive session line by line, without the

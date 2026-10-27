@@ -26,6 +26,8 @@ Environment:
   ATELIER_BACKEND=echo   Network-free echo backend, for tests
   ANTHROPIC_API_KEY      API key for anthropic-api sessions, instead of the Keychain
   ATELIER_MEMORY=off     Run sessions without long-term memory
+  ATELIER_MEMORY_PROMPTS=off
+                         Keep the user's prompts out of long-term memory
   ATELIER_MCP=off        Run sessions without the MCP servers of ~/.atelier/mcp.json
   ATELIER_REVIEW=off     Run sessions without the review of uncommitted changes (RDD)
   ATELIER_SANDBOX=off    Run every session's bash without the macOS sandbox: each command asks,
@@ -93,7 +95,7 @@ const server = new RpcServer({
 						: "No memory with the echo backend.",
 				);
 			}
-		: (cwd: string) => connectMemory({ cwd }),
+		: (cwd: string) => connectMemory({ cwd, prompts: process.env.ATELIER_MEMORY_PROMPTS !== "off" }),
 	...(mcpOff ? {} : { connectMcp: (cwd: string) => openMcp({ cwd }) }),
 });
 

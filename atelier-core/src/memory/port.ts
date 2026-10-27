@@ -54,6 +54,8 @@ export interface MemoryPort {
 	get(id: number): Promise<MemoryEntry | undefined>;
 	save(entry: NewMemory): Promise<SavedMemory>;
 	summary(text: string): Promise<void>;
+	/** Keeps what the user asked, already masked and cut by the core; does nothing where the service or the user says no. */
+	savePrompt(text: string): Promise<void>;
 	close(): Promise<void>;
 }
 
@@ -79,6 +81,7 @@ export class FakeMemory implements MemoryPort {
 	/** Every save, in order, updates included. */
 	readonly saved: NewMemory[] = [];
 	readonly summaries: string[] = [];
+	readonly prompts: string[] = [];
 	closed = false;
 
 	constructor(project = "fake") {
@@ -130,6 +133,10 @@ export class FakeMemory implements MemoryPort {
 
 	async summary(text: string): Promise<void> {
 		this.summaries.push(text);
+	}
+
+	async savePrompt(text: string): Promise<void> {
+		this.prompts.push(text);
 	}
 
 	async close(): Promise<void> {

@@ -6,6 +6,8 @@ import { MEMORY_TYPES, type MemoryPort } from "./port.ts";
 export const MEMORY_TOOL = "memory";
 /** Bytes of recent memory a session starts with. */
 export const CONTEXT_BYTES = 2048;
+/** Characters of a user prompt kept in memory. */
+export const PROMPT_CHARS = 2000;
 const SEARCH_LIMIT = 10;
 const ENTRY_CHARS = 8000;
 
@@ -32,6 +34,11 @@ export function findSecret(text: string): string | undefined {
 	return SECRETS.find(
 		(secret) => secret.pattern.test(text) || joined.some((candidate) => secret.pattern.test(candidate)),
 	)?.name;
+}
+
+/** The text with every credential it holds replaced by `[REDACTED]`; one still found across words is left to `findSecret`. */
+export function maskSecrets(text: string): string {
+	return SECRETS.reduce((masked, secret) => masked.replace(new RegExp(secret.pattern.source, "g"), "[REDACTED]"), text);
 }
 
 export function createMemoryTool(memory: MemoryPort): ToolDefinition {

@@ -36,6 +36,8 @@ import {
 	MEMORY_TOOL,
 	type MemoryPort,
 	MemoryUncertainError,
+	maskSecrets,
+	PROMPT_CHARS,
 	recoveryNotice,
 	SESSION_SUMMARY_TYPE,
 	type SummaryOutcome,
@@ -353,8 +355,10 @@ export class Session {
 	#scratch: ScratchDir | undefined;
 	/** Every compaction summary of this session updates the same memory. */
 	readonly #summaryKey = `session/${randomUUID()}/summary`;
-	/** Summaries being saved; the turn that compacted waits for them before it finishes. */
-	readonly #archiving = new Set<Promise<void>>();
+	/** Summaries and prompts being saved to memory; the turn that started them waits for them before it finishes. */
+	readonly #memoryWrites = new Set<Promise<void>>();
+	/** Saving the user's prompts failed once and was said; later failures are not. */
+	#promptFailureSaid = false;
 
 	private constructor(options: SessionOptions) {
 		const subagents = options.subagents;
@@ -603,6 +607,7 @@ export class Session {
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
 			this.#turnPrompt = prompt;
 			const logged = this.#odd?.userMessage(prompt);
+			this.#keepPrompt(prompt);
 			// What the agent declared in an earlier turn does not cover this one, and its candidate starts from today's HEAD.
 			this.#review?.startTurn(this.#options.cwd, prompt);
 			// The first turn says whether memory works and gives the model the recent memory, outside the system prompt.
@@ -813,7 +818,7 @@ export class Session {
 				turn.push(errorEvent("turn_failed", describeError(error)));
 				finish = { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
 			}
-			await Promise.all(this.#archiving);
+			await Promise.all(this.#memoryWrites);
 			// The state of the backend that ran the turn, before a change made at its end can replace the backend.
 			if (this.#options.record) this.#endState = this.#backendSession?.resumeState?.();
 			this.#endBackend = this.#backendSessionId;
@@ -1291,7 +1296,7 @@ export class Session {
 				.then(() => this.#child?.close())
 				.then(() => this.#review?.close())
 				.then(() => this.#odd?.close())
-				.then(() => Promise.all(this.#archiving))
+				.then(() => Promise.all(this.#memoryWrites))
 				.then(() => this.#options.record?.flush())
 				.then(() => this.#options.memory?.close().catch(() => {}))
 				.then(() => this.#options.mcp?.close().catch(() => {}))
@@ -1312,7 +1317,10 @@ export class Session {
 		const steers = this.#queue.filter((message) => message.kind === "steer");
 		if (steers.length === 0) return result;
 		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
-		for (const steer of steers) this.#turn?.push({ type: "queued_message", ...steer });
+		for (const steer of steers) {
+			this.#turn?.push({ type: "queued_message", ...steer });
+			this.#keepPrompt(steer.text);
+		}
 		this.#sayQueue();
 		return { ...result, steering: steeringText(steers.map((steer) => steer.text)) };
 	}
@@ -1696,8 +1704,38 @@ export class Session {
 
 	/** Starts saving a compaction summary; the turn waits for it, the backend does not. */
 	#archive(summary: string): void {
-		const saving = this.#saveSummary(summary).finally(() => this.#archiving.delete(saving));
-		this.#archiving.add(saving);
+		this.#write(this.#saveSummary(summary));
+	}
+
+	#write(work: Promise<void>): void {
+		const writing = work.finally(() => this.#memoryWrites.delete(writing));
+		this.#memoryWrites.add(writing);
+	}
+
+	/**
+	 * Starts saving what the user wrote, credentials masked and cut to `PROMPT_CHARS`; one still found across words keeps
+	 * the prompt out. Never throws: the first failure is a recoverable error, said once per session.
+	 */
+	#keepPrompt(text: string): void {
+		const memory = this.#options.memory;
+		if (!memory) return;
+		const masked = Array.from(maskSecrets(text)).slice(0, PROMPT_CHARS).join("");
+		if (masked.trim() === "" || findSecret(masked)) return;
+		this.#write(
+			Promise.resolve()
+				.then(() => memory.savePrompt(masked))
+				.catch((error) => {
+					if (this.#promptFailureSaid) return;
+					this.#promptFailureSaid = true;
+					this.#say(
+						errorEvent(
+							"memory_prompt_failed",
+							`Your prompts are not being saved to memory: ${describeError(error)}`,
+							true,
+						),
+					);
+				}),
+		);
 	}
 
 	/**

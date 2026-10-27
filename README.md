@@ -2,7 +2,7 @@
 
 Coding-agent orchestrator with two first-class clients, a terminal UI and a desktop app, on top of one headless core.
 - Runs on your Claude subscription through Claude Code, or on its own loop with an Anthropic API key.
-- Delegates to subagents, keeps large work in feature documents following Organic Driven Development (ODD), and remembers across sessions with [Engram](https://github.com/Gentleman-Programming/engram) when it is installed.
+- Delegates to subagents, keeps large work in feature documents following Organic Driven Development (ODD), and remembers across sessions with [Engram](https://github.com/Gentleman-Programming/engram) when it is installed, your prompts included (credentials masked; `ATELIER_MEMORY_PROMPTS=off` keeps them out).
 - Reviews the changes of every turn with receipts and verifies high-risk ones independently.
 - Runs `bash` inside the macOS sandbox and asks before anything the sandbox cannot make safe.
 
@@ -141,14 +141,15 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 
 A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent reads `AGENTS.md` (or `CLAUDE.md`) from the working directory and its parents, and `~/.agents/AGENTS.md`. It also lists the skills in `.agents/skills/` (from the working directory up to the repository root) and in `~/.agents/skills/`, each a folder with a `SKILL.md`, and reads one when a task matches it; the first turn says which skills were loaded.
 
-| Variable                    | Effect                                                                                                              |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `ATELIER_TUI=off`           | Line-by-line session instead of the TUI.                                                                            |
-| `ATELIER_REVIEW=off`        | Same as `--no-review`.                                                                                              |
-| `ATELIER_SANDBOX=off`       | Same as `--no-sandbox`.                                                                                             |
-| `ATELIER_MEMORY=off`        | No long-term memory.                                                                                                |
-| `ATELIER_MCP=off`           | No MCP servers.                                                                                                     |
-| `ATELIER_SCRATCH_SWEEP=off` | No cleanup of the temporary directories that crashed sessions left ([temporary directories](docs/architecture.md)). |
+| Variable                     | Effect                                                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `ATELIER_TUI=off`            | Line-by-line session instead of the TUI.                                                                            |
+| `ATELIER_REVIEW=off`         | Same as `--no-review`.                                                                                              |
+| `ATELIER_SANDBOX=off`        | Same as `--no-sandbox`.                                                                                             |
+| `ATELIER_MEMORY=off`         | No long-term memory.                                                                                                |
+| `ATELIER_MEMORY_PROMPTS=off` | Your prompts are not saved to long-term memory.                                                                     |
+| `ATELIER_MCP=off`            | No MCP servers.                                                                                                     |
+| `ATELIER_SCRATCH_SWEEP=off`  | No cleanup of the temporary directories that crashed sessions left ([temporary directories](docs/architecture.md)). |
 
 ## Inspiration
 

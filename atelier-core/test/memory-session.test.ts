@@ -617,6 +617,77 @@ describe("compaction summary", () => {
 	});
 });
 
+describe("user prompts", () => {
+	it("saves each prompt and each steer that enters, with credentials masked and cut to 2000 characters", async () => {
+		let steer = () => {};
+		const steering = defineTool({
+			name: "read",
+			description: "read",
+			inputShape: {},
+			execute: async () => {
+				steer();
+				return { ok: true, output: "ran", summary: "read", truncated: false };
+			},
+		});
+		const {
+			memory,
+			session: s,
+			send,
+		} = await session([[call("read", {}), { event: finished }], [{ event: finished }], [{ event: finished }]], {
+			tools: [steering],
+		});
+		steer = () => void s.queue("steer", "use the other file");
+		await send("fix it with sk-ant-api03-abcdefghijklmnopqrstuvwx please");
+		steer = () => {};
+		await send("x".repeat(2500));
+		const events: AtelierEvent[] = [];
+		for await (const event of s.compact("keep the parser")) events.push(event);
+		await s.close();
+		expect(memory.prompts).toEqual(["fix it with [REDACTED] please", "use the other file", "x".repeat(2000)]);
+	});
+
+	it("warns once when saving prompts fails, and the turns go on", async () => {
+		const memory = new FakeMemory("proj");
+		let attempts = 0;
+		memory.savePrompt = async () => {
+			attempts++;
+			throw new MemoryError("Engram mem_save_prompt failed: closed");
+		};
+		const { session: s, send } = await session([[{ event: finished }], [{ event: finished }]], {}, memory);
+		const first = await send("one");
+		const second = await send("two");
+		await s.close();
+		expect(attempts).toBe(2);
+		expect(first.filter((e) => e.type === "error")).toEqual([
+			expect.objectContaining({
+				code: "memory_prompt_failed",
+				message: "Your prompts are not being saved to memory: Engram mem_save_prompt failed: closed",
+				recoverable: true,
+			}),
+		]);
+		expect(second.filter((e) => e.type === "error")).toEqual([]);
+		for (const events of [first, second])
+			expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+	});
+
+	it("does not save a subagent's prompt", async () => {
+		const child = new FakeBackend([[{ event: { type: "text_delta", text: "r" } }, { event: finished }]]);
+		const {
+			memory,
+			session: s,
+			send,
+		} = await session([[call("task", { agent: "w", prompt: "child task" }), { event: finished }]], {
+			subagents: {
+				agents: [{ name: "w", description: "w", tools: ["read"], prompt: "p", models: {}, maxRequests: 5 }],
+				createBackend: () => child,
+			},
+		});
+		await send("delegate");
+		await s.close();
+		expect(memory.prompts).toEqual(["delegate"]);
+	});
+});
+
 describe("RpcServer memory", () => {
 	async function serve(connectMemory: (cwd: string) => Promise<FakeMemory>) {
 		const input = new PassThrough();

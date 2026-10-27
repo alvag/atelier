@@ -45,6 +45,8 @@ export interface EngramOptions {
 	/** Environment for Engram; defaults to process.env. Server variables are removed. */
 	env?: Record<string, string | undefined>;
 	command?: string;
+	/** False keeps the user's prompts out of Engram; on by default, when Engram has mem_save_prompt. */
+	prompts?: boolean;
 }
 
 const projectResponse = z.object({ project: z.string().min(1) });
@@ -79,7 +81,7 @@ export async function connectEngram(options: EngramOptions): Promise<EngramMemor
 		if (missing.length > 0) throw new MemoryUnavailableError(`Engram ${version} lacks ${missing.join(", ")}.`);
 		const memory = new EngramMemory(client, "");
 		const { project } = await memory.call("mem_current_project", {}, projectResponse);
-		return new EngramMemory(client, project);
+		return new EngramMemory(client, project, options.prompts !== false && tools.has("mem_save_prompt"));
 	} catch (error) {
 		await client.close().catch(() => {});
 		if (error instanceof MemoryUnavailableError) throw error;
@@ -90,10 +92,12 @@ export async function connectEngram(options: EngramOptions): Promise<EngramMemor
 export class EngramMemory implements MemoryPort {
 	readonly project: string;
 	readonly #client: Client;
+	readonly #savesPrompts: boolean;
 
-	constructor(client: Client, project: string) {
+	constructor(client: Client, project: string, savesPrompts = false) {
 		this.#client = client;
 		this.project = project;
+		this.#savesPrompts = savesPrompts;
 	}
 
 	async context(maxBytes: number): Promise<string> {
@@ -143,6 +147,11 @@ export class EngramMemory implements MemoryPort {
 
 	async summary(text: string): Promise<void> {
 		await this.call("mem_session_summary", { content: text }, z.object({}).passthrough());
+	}
+
+	async savePrompt(text: string): Promise<void> {
+		if (!this.#savesPrompts) return;
+		await this.call("mem_save_prompt", { content: text }, z.object({}).passthrough());
 	}
 
 	/** Closing stdin ends the Engram process. */
