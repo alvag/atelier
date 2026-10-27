@@ -1,6 +1,6 @@
 /** A subcommand is chosen by the first positional word, exactly; anything else is a prompt. */
 export interface Subcommand {
-	name: "update" | "desktop" | "mcp";
+	name: "update" | "desktop" | "mcp" | "stats";
 	/** What `atelier mcp` does, and to which server for `login` and `logout`. */
 	action?: "list" | "login" | "logout";
 	server?: string;
@@ -43,6 +43,17 @@ const SPECS: Record<Subcommand["name"], SubcommandSpec> = {
 			if ((action === "login" || action === "logout") && server !== undefined && extra.length === 0)
 				return { name: "mcp", action, server };
 			throw new Error(`Usage: ${this.usage}. To give a prompt that starts with "mcp", quote it: atelier "${prompt}"`);
+		},
+	},
+	stats: {
+		usage:
+			"atelier stats [--since 7d|30d|all|YYYY-MM-DD] [--project <dir>] [--by day|project|model|phase|role] [--json]",
+		parse(words, prompt) {
+			if (words.length > 0)
+				throw new Error(
+					`Usage: ${this.usage}. To give a prompt that starts with "stats", quote it: atelier "${prompt}"`,
+				);
+			return { name: "stats" };
 		},
 	},
 	desktop: {

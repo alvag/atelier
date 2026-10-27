@@ -42,6 +42,7 @@ import { OWN_ROOT, versionLabel } from "./install-marker.ts";
 import { mcpFailed, mcpReport } from "./mcp-report.ts";
 import { PERMISSIONS_USAGE, parsePermissions, removedText, rulesListing, ruleText } from "./permission-text.ts";
 import { Renderer } from "./render.ts";
+import { runStats } from "./stats.ts";
 import { createTerminalReader, type LineReader } from "./terminal-input.ts";
 import { savedTranscript } from "./transcript.ts";
 import { runTui, type TuiOptions } from "./tui/app.ts";
@@ -141,6 +142,7 @@ export async function run(
 		return args.subcommand.action === "list" || args.subcommand.server === undefined
 			? runMcpList(io, args.cwd, connectMcp)
 			: runMcpSignIn(io, args.cwd, connectMcp, args.subcommand.action ?? "login", args.subcommand.server);
+	if (args.subcommand?.name === "stats") return runStats(args.stats ?? {}, { ...io, home: io.home ?? homedir() });
 	if (args.subcommand?.name === "desktop")
 		return runDesktop({
 			...(io.appRoot === undefined ? {} : { root: io.appRoot }),
