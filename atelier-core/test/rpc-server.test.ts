@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -67,7 +67,7 @@ afterEach(async () => {
 });
 
 /** A server over in-memory streams; `backends` are handed out in session order. */
-function harness(turnsPerSession: FakeStep[][][]) {
+function harness(turnsPerSession: FakeStep[][][], tools = [shell]) {
 	const input = new PassThrough();
 	const messages: ServerMessage[] = [];
 	const raw: string[] = [];
@@ -84,7 +84,7 @@ function harness(turnsPerSession: FakeStep[][][]) {
 			backends.push(backend);
 			return backend;
 		},
-		tools: [shell],
+		tools,
 		systemPromptAppend: "",
 		home: cwd,
 		onShutdown: () => {
@@ -539,6 +539,44 @@ describe("RpcServer", () => {
 			await h.responseTo(h.send({ ...command, sessionId }));
 			await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
 			expect(h.backends[0]?.toolResults).toEqual([{ ok: false, output: "The user denied this command." }]);
+		});
+
+		it("remembers an answer with remember, lists the rules and removes one", async () => {
+			const gated = defineTool({
+				name: "shell",
+				description: "Runs a command",
+				inputShape: { command: z.string() },
+				gate: async ({ command }) => ({ approval: { command, remember: { rules: ["open"], always: true } } }),
+				execute: async ({ command }) => ({ ok: true, output: `ran ${command}`, summary: command, truncated: false }),
+			});
+			const asking = [{ toolCall: { tool: "shell", input: { command: "open x" }, callId: "k1" } }, { event: finished }];
+			const h = harness([[asking]], [gated]);
+			const sessionId = await h.start();
+			h.send({ command: "session.send", sessionId, prompt: "x" });
+			const asked = await h.waitFor((m) => m.type === "event" && m.event.type === "approval_requested");
+			expect(asked).toMatchObject({ event: { remember: { rules: ["open"], always: true } } });
+			const bad = h.send({ command: "session.approve", sessionId, callId: "k1", approved: true, remember: "forever" });
+			expect(await h.responseTo(bad)).toMatchObject({ ok: false, error: { code: "invalid_command" } });
+			const id = h.send({ command: "session.approve", sessionId, callId: "k1", approved: true, remember: "always" });
+			expect(await h.responseTo(id)).toMatchObject({ ok: true });
+			await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
+			expect(JSON.parse(await readFile(join(cwd, ".atelier", "permissions.json"), "utf8")).allow).toEqual([
+				{ bash: "open" },
+			]);
+
+			const listed = await h.responseTo(h.send({ command: "session.permissions", sessionId }));
+			expect(listed).toMatchObject({
+				ok: true,
+				result: { rules: [{ id: "always:bash:open", scope: "always", kind: "bash", value: "open" }] },
+			});
+			const removed = await h.responseTo(
+				h.send({ command: "session.permissions_remove", sessionId, ruleId: "always:bash:open" }),
+			);
+			expect(removed).toMatchObject({ ok: true, result: { rules: [] } });
+			const again = await h.responseTo(
+				h.send({ command: "session.permissions_remove", sessionId, ruleId: "always:bash:open" }),
+			);
+			expect(again).toMatchObject({ ok: false, error: { code: "unknown_rule" } });
 		});
 
 		it("rejects an approval nobody asked for", async () => {

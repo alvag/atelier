@@ -53,6 +53,7 @@ import {
 	pauseReason,
 } from "./permission-classifier.ts";
 import {
+	type ListedPermissionRule,
 	type PermissionRuleKind,
 	type PermissionRuleScope,
 	type PermissionRules,
@@ -1524,6 +1525,16 @@ export class Session {
 		if (spent === undefined) return ended;
 		this.#handoffSpent = undefined;
 		return addSpent(ended, { ...spent, phases: onePhase("handoff", spent) });
+	}
+
+	/** The rules in force for this session, its own first, then the saved ones; none without `permissionRules`. */
+	async permissionRules(): Promise<ListedPermissionRule[]> {
+		return (await this.#options.permissionRules?.list()) ?? [];
+	}
+
+	/** Removes the rule `permissionRules` named `id`; false when there is none. Throws when the saved file cannot be written. */
+	async removePermissionRule(id: string): Promise<boolean> {
+		return (await this.#options.permissionRules?.remove(id)) ?? false;
 	}
 
 	/** The rules in force now, as tools take them; a broken saved file is said once, as a recoverable error, and counts as none. */

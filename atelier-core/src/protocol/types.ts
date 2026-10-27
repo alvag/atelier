@@ -1,4 +1,5 @@
 import type { AtelierEvent, JsonValue, QueueKind } from "../events.ts";
+import type { PermissionRuleScope } from "../permission-rules.ts";
 import type { ReviewConsentAnswer } from "../review/session-review.ts";
 import type { PermissionMode } from "../session.ts";
 import type { ThinkingLevel } from "../thinking.ts";
@@ -57,7 +58,21 @@ export type ClientCommand =
 	| { command: "session.queue_edit"; sessionId: string; messageId: string; text: string }
 	/** Takes the queued message `messageId` off the queue, or all of them without one; answers `{ messages }`, what it took. */
 	| { command: "session.unqueue"; sessionId: string; messageId?: string }
-	| { command: "session.approve"; sessionId: string; callId: string; approved: boolean }
+	/**
+	 * Answers an approval question. `remember` (with `approved: true`) also keeps the rules the question offered, for the
+	 * session or always; `always` is honored only when the question offered it.
+	 */
+	| {
+			command: "session.approve";
+			sessionId: string;
+			callId: string;
+			approved: boolean;
+			remember?: PermissionRuleScope;
+	  }
+	/** The rules in force for the session, its own and the saved ones: answers `{ rules: [{ id, scope, kind, value }] }`. */
+	| { command: "session.permissions"; sessionId: string }
+	/** Removes the rule whose `id` `session.permissions` gave as `ruleId`; answers the rules left, or fails with `unknown_rule`. */
+	| { command: "session.permissions_remove"; sessionId: string; ruleId: string }
 	/** Reviews the current uncommitted change at any risk, against HEAD or the git ref `ref` names; answers like session.send. */
 	| { command: "session.review"; sessionId: string; ref?: string }
 	| { command: "session.review_consent"; sessionId: string; reviewId: string; answer: ReviewConsentAnswer }

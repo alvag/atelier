@@ -10,6 +10,7 @@ import type { MemoryPort } from "../memory/index.ts";
 import { PERMISSION_MODES } from "../modes.ts";
 import { BACKEND_MODELS } from "../options.ts";
 import { type DefaultPermissionMode, readDefaultPermissionMode } from "../permission-mode.ts";
+import { PermissionRules } from "../permission-rules.ts";
 import {
 	closestName,
 	freezeProfile,
@@ -32,6 +33,7 @@ import {
 } from "../protocol/types.ts";
 import type { ReviewConsentAnswer } from "../review/session-review.ts";
 import {
+	type ApprovalAnswer,
 	ConfigureError,
 	type MainChange,
 	type PermissionMode,
@@ -97,7 +99,7 @@ interface ServerSession {
 	/** The recorder of the saved session; its file is not resumed or deleted while this session runs. */
 	recorder?: SessionRecorder;
 	/** Approval questions waiting for session.approve, by callId. */
-	approvals: Map<string, (approved: boolean) => void>;
+	approvals: Map<string, (answer: ApprovalAnswer) => void>;
 	/** Review questions waiting for session.review_consent, by reviewId. */
 	consents: Map<string, (answer: ReviewConsentAnswer) => void>;
 }
@@ -211,6 +213,12 @@ export class RpcServer {
 			const code = error instanceof CommandError ? error.code : "internal_error";
 			this.#send({ type: "response", id, ok: false, error: { code, message: describeError(error) } });
 		}
+	}
+
+	/** The session's rules as the protocol carries them. */
+	async #rules(sessionId: string): Promise<JsonValue[]> {
+		const rules = await this.#session(sessionId).session.permissionRules();
+		return rules.map(({ id, scope, kind, value }) => ({ id, scope, kind, value }));
 	}
 
 	#session(sessionId: string): ServerSession {
@@ -366,8 +374,18 @@ export class RpcServer {
 				const answer = entry.approvals.get(message.callId);
 				if (!answer) throw new CommandError("unknown_approval", `No pending approval ${message.callId}.`);
 				entry.approvals.delete(message.callId);
-				answer(message.approved);
+				answer(message.approved && message.remember !== undefined ? { remember: message.remember } : message.approved);
 				return {};
+			}
+			case "session.permissions":
+				return { rules: await this.#rules(message.sessionId) };
+			case "session.permissions_remove": {
+				const { session } = this.#session(message.sessionId);
+				const removed = await session.removePermissionRule(message.ruleId).catch((error: unknown) => {
+					throw new CommandError("rules_not_saved", describeError(error));
+				});
+				if (!removed) throw new CommandError("unknown_rule", `No rule ${message.ruleId}.`);
+				return { rules: await this.#rules(message.sessionId) };
 			}
 			case "session.set_mode": {
 				this.#session(message.sessionId).session.setPermissionMode(message.mode);
@@ -599,7 +617,7 @@ export class RpcServer {
 				);
 			}
 		}
-		const approvals = new Map<string, (approved: boolean) => void>();
+		const approvals = new Map<string, (answer: ApprovalAnswer) => void>();
 		const consents = new Map<string, (answer: ReviewConsentAnswer) => void>();
 		// Memory is optional: a session that cannot connect it starts anyway and says why.
 		let memory: MemoryPort | undefined;
@@ -630,7 +648,8 @@ export class RpcServer {
 				tools: this.#options.tools,
 				systemPromptAppend: this.#options.systemPromptAppend,
 				...(noSandbox ? { noSandbox: true } : {}),
-				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
+				approve: ({ callId }) => new Promise<ApprovalAnswer>((resolve) => approvals.set(callId, resolve)),
+				permissionRules: new PermissionRules({ home: this.#options.home ?? homedir() }),
 				permissionClassifier: { createBackend: (name) => this.#options.createBackend(name ?? backend) },
 				odd: true,
 				...(this.#options.home === undefined
