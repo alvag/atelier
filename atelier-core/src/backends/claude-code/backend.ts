@@ -28,7 +28,7 @@ import {
 	type JsonValue,
 	ZERO_USAGE,
 } from "../../events.ts";
-import { type ThinkingSend, thinkingToSend } from "../../pricing.ts";
+import { summarizesThinking, type ThinkingSend, thinkingToSend } from "../../pricing.ts";
 import type { ToolDefinition } from "../../tools/types.ts";
 import { VERSION } from "../../version.ts";
 import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./map.ts";
@@ -157,6 +157,10 @@ export class ClaudeCodeBackend implements AgentBackend {
 				model,
 				...(sent?.effort === undefined ? {} : { effort: sent.effort }),
 				...(sent?.thinking === "disabled" ? { thinking: { type: "disabled" as const } } : {}),
+				// The API omits the thinking text by default on these models; the setting alone did not bring it back.
+				...(summarizesThinking(model, sent)
+					? { thinking: { type: "adaptive" as const, display: "summarized" as const } }
+					: {}),
 				tools: [],
 				mcpServers: { [MCP_SERVER_NAME]: server },
 				strictMcpConfig: true,

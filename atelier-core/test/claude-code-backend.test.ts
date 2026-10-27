@@ -274,25 +274,36 @@ describe("ClaudeCodeBackend options", () => {
 		async (model) => {
 			const { query, calls } = fakeQuery([{ ...init, model } as SDKMessage], [[result(0.01)]]);
 			const session = await new ClaudeCodeBackend({ query, env: {} }).start({ ...plainStart, model, thinking: "off" });
-			expect(calls.options).not.toHaveProperty("thinking");
+			// Thinking stays on there, so its summary is still asked for.
+			expect(calls.options.thinking).toEqual({ type: "adaptive", display: "summarized" });
 			expect(calls.options).not.toHaveProperty("effort");
 			const [started] = await collectBodies(session.send("hi"));
 			expect(started).toMatchObject({ type: "session_started", model, effort: "unsupported" });
 		},
 	);
 
-	it("passes no thinking and says no effort when no level was asked", async () => {
+	it("passes no effort and says none when no level was asked", async () => {
 		const { query, calls } = fakeQuery([init], [[result(0.01)]]);
 		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
-		expect(calls.options).not.toHaveProperty("thinking");
+		expect(calls.options).not.toHaveProperty("effort");
 		const [started] = await collectBodies(session.send("hi"));
 		expect(started).not.toHaveProperty("effort");
 	});
 
-	it("asks Claude Code for the thinking summarized, which the API omits by default", async () => {
+	it.each([undefined, "claude-sonnet-5-5", "opus"])(
+		"asks %s for adaptive thinking summarized, which the API omits by default",
+		async (model) => {
+			const { query, calls } = fakeQuery([], []);
+			await new ClaudeCodeBackend({ query, env: {} }).start({ ...plainStart, ...(model ? { model } : {}) });
+			expect(calls.options.thinking).toEqual({ type: "adaptive", display: "summarized" });
+			expect(calls.options.settings).toMatchObject({ showThinkingSummaries: true });
+		},
+	);
+
+	it("asks no thinking of a model where adaptive would turn it on or be refused", async () => {
 		const { query, calls } = fakeQuery([], []);
-		await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
-		expect(calls.options.settings).toMatchObject({ showThinkingSummaries: true });
+		await new ClaudeCodeBackend({ query, env: {} }).start({ ...plainStart, model: "claude-opus-4-6" });
+		expect(calls.options).not.toHaveProperty("thinking");
 	});
 
 	it("caps a turn's model requests with maxTurns when asked", async () => {
