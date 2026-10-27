@@ -1774,5 +1774,79 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				{ method: "pane.release_agent" },
 			]);
 		});
+
+		const featureChanged = (tasks: { id: string; title: string; status: string }[]) => ({
+			type: "feature_changed",
+			name: "herdr",
+			path: "odd/tasks/herdr.md",
+			title: "Herdr",
+			tasks,
+		});
+		const cleared = { tokens: { summary: null, summary2: null } };
+
+		it("shows the task in progress in the sidebar while a turn runs, cut to the sidebar's width", async () => {
+			const herdr = await fakeHerdr();
+			await writeFile(join(cwd, "session.json"), JSON.stringify({ sidebar_width: 30 }));
+			const h = harness([]);
+			const stub = stubCore();
+			h.io = { ...h.io, env: herdrEnv(herdr.path) } as typeof h.io;
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			const metadata = () => herdr.calls.filter((call) => call.method === "pane.report_metadata");
+			const long = "Show\nthe active‮ task in Herdr's\x07 sidebar, cut to its width";
+			stub.emit(featureChanged([{ id: "T2", title: long, status: "in_progress" }]));
+			h.screen.type("go");
+			h.screen.type("\r");
+			await until(() => metadata().length === 1);
+			stub.emit(featureChanged([{ id: "T2", title: long, status: "done" }]));
+			await until(() => metadata().length === 2);
+			stub.emit(featureChanged([{ id: "T3", title: "Docs", status: "in_progress" }]));
+			await until(() => metadata().length === 3);
+			stub.emit({ type: "turn_finished", stopReason: "end_turn", usage, costUsd: 0 });
+			await until(() => metadata().length === 4);
+			h.screen.type("again");
+			h.screen.type("\r");
+			await until(() => metadata().length === 5);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			await herdr.close();
+
+			for (const call of metadata())
+				expect(call.params).toMatchObject({ pane_id: "w1:p1", source: "atelier:activity", agent: "atelier" });
+			const docs = { tokens: { summary: "◐ T3 Docs", summary2: null }, ttl_ms: 30000 };
+			expect(metadata().map(said)).toEqual(
+				[
+					{ tokens: { summary: "◐ T2 Show the active task", summary2: "in Herdr's sidebar, cut…" }, ttl_ms: 30000 },
+					cleared,
+					docs,
+					cleared,
+					docs,
+					cleared,
+				].map((params) => ({ method: "pane.report_metadata", ...params })),
+			);
+			expect(herdr.calls.at(-1)?.method).toBe("pane.release_agent");
+		});
+
+		it("refreshes the summary while the turn runs, 24 columns wide without Herdr's session file", async () => {
+			const herdr = await fakeHerdr();
+			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path), { refreshMs: 20 });
+			const metadata = () => herdr.calls.filter((call) => call.method === "pane.report_metadata").map(said);
+			reporter?.activity({ id: "T1", title: "abcdefghij klmnopqrst uvwxyz" });
+			reporter?.report("working");
+			await until(() => metadata().length === 3);
+			reporter?.report("idle");
+			await reporter?.release();
+			await herdr.close();
+			const summary = {
+				method: "pane.report_metadata",
+				tokens: { summary: "◐ T1 abcdefghij", summary2: "klmnopqrst uvwxyz" },
+				ttl_ms: 30000,
+			};
+			expect(metadata().slice(0, 3)).toEqual([summary, summary, summary]);
+			expect(metadata().at(-1)).toEqual({ method: "pane.report_metadata", ...cleared });
+			expect(herdr.calls.at(-1)?.method).toBe("pane.release_agent");
+		});
 	});
 });

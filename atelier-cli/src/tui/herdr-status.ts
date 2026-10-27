@@ -1,9 +1,12 @@
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
-import type { ProgramStatus } from "@earendil-works/pi-tui";
+import { dirname, join } from "node:path";
+import { type ProgramStatus, visibleWidth } from "@earendil-works/pi-tui";
 
 const AGENT = "atelier";
 const SOURCE = "atelier";
+/** The sidebar's summary is reported apart from the state, as Herdr's own bridges do. */
+const ACTIVITY_SOURCE = "atelier:activity";
 /** The variable the TUI gives the core, and so its tools' commands: an Atelier started by one finds its pane taken. */
 export const PANE_MARKER = "ATELIER_HERDR_PANE";
 
@@ -11,6 +14,15 @@ export const PANE_MARKER = "ATELIER_HERDR_PANE";
 const ATTEMPT_MS = [500, 1500];
 /** How long exiting waits for the release to reach Herdr. */
 const RELEASE_WAIT_MS = 1000;
+/** The summary lives 30 s in Herdr unless it is reported again, every 10 s while a turn runs. */
+const SUMMARY_TTL_MS = 30_000;
+const REFRESH_MS = 10_000;
+/** A sidebar row: Herdr's sidebar width less its margins, or 24 columns when its session file does not say. */
+const SIDEBAR_MARGIN = 5;
+const DEFAULT_ROW_WIDTH = 24;
+/** Herdr's limits: 80 characters a token and 256 bytes for both, so each row gets half. */
+const TOKEN_CHARS = 80;
+const TOKEN_BYTES = 128;
 
 /** What the user is asked about while the core waits; Herdr only gets a fixed message for it. */
 const BLOCKED_MESSAGES = {
@@ -20,12 +32,54 @@ const BLOCKED_MESSAGES = {
 
 type State = Exclude<ProgramStatus["state"], "clear">;
 type Blocked = { kind: keyof typeof BLOCKED_MESSAGES; message: string };
+/** The ODD task in progress. */
+export type Activity = { id: string; title: string };
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what is taken out
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]+/g;
+const BIDI = /[؜‎‏‪-‮⁦-⁩]/g;
+
+/** The text without control or bidi characters, its spaces collapsed. */
+const plain = (text: string) => text.replace(BIDI, "").replace(CONTROL, " ").replace(/\s+/g, " ").trim();
+
+/** The longest start of `text` that fits `width` columns, TOKEN_CHARS characters and TOKEN_BYTES bytes. */
+function fitting(text: string, width: number): string {
+	let cut = "";
+	for (const { segment } of new Intl.Segmenter().segment(text)) {
+		const next = cut + segment;
+		if (visibleWidth(next) > width || [...next].length > TOKEN_CHARS || Buffer.byteLength(next) > TOKEN_BYTES) break;
+		cut = next;
+	}
+	return cut;
+}
+
+/** `◐ <ID> <title>` in two sidebar rows at most: the first breaks between words, the second ends in `…` when cut. */
+export function summaryRows(activity: Activity, width: number): [string, string | null] {
+	const text = plain(`◐ ${activity.id} ${activity.title}`);
+	let first = fitting(text, width);
+	if (first.length < text.length && text[first.length] !== " " && first.lastIndexOf(" ") > 0)
+		first = first.slice(0, first.lastIndexOf(" "));
+	const rest = text.slice(first.length).trim();
+	if (rest === "") return [first.trimEnd(), null];
+	const second = fitting(rest, width);
+	return [first.trimEnd(), second.length < rest.length ? `${fitting(rest, width - 1).trimEnd()}…` : second];
+}
+
+/** The width of a sidebar row, from the `session.json` Herdr keeps next to its socket. */
+function rowWidth(socketPath: string): number {
+	try {
+		const { sidebar_width: width } = JSON.parse(readFileSync(join(dirname(socketPath), "session.json"), "utf8"));
+		if (typeof width === "number" && width - SIDEBAR_MARGIN > 1) return Math.floor(width - SIDEBAR_MARGIN);
+	} catch {}
+	return DEFAULT_ROW_WIDTH;
+}
 
 /** One request to Herdr; `key` names what a newer request of the same kind replaces while it waits. */
 interface Pending {
 	key: string;
 	method: string;
 	params: Record<string, unknown>;
+	source?: string;
 }
 
 /** Herdr answered with an error: trying again would get the same answer. */
@@ -76,14 +130,24 @@ export class HerdrStatusReporter {
 	#asked: string | undefined;
 	#sent: string | undefined;
 	#released = false;
+	/** The task in progress, whether a turn runs, and whether the sidebar was last asked to show it. */
+	#activity: Activity | undefined;
+	#running = false;
+	#summarized = false;
+	#refresh: NodeJS.Timeout | undefined;
+	readonly #refreshMs: number;
 
-	private constructor(paneId: string, socketPath: string) {
+	private constructor(paneId: string, socketPath: string, refreshMs: number) {
 		this.paneId = paneId;
 		this.#socketPath = socketPath;
+		this.#refreshMs = refreshMs;
 	}
 
 	/** A reporter for the Herdr pane the TUI runs in; none outside Herdr or when an Atelier already reports the pane. */
-	static fromEnv(env: Record<string, string | undefined>): HerdrStatusReporter | undefined {
+	static fromEnv(
+		env: Record<string, string | undefined>,
+		options: { refreshMs?: number } = {},
+	): HerdrStatusReporter | undefined {
 		const paneId = env.HERDR_PANE_ID?.trim();
 		const socketPath = env.HERDR_SOCKET_PATH;
 		if (env.HERDR_ENV !== "1" || !paneId || !socketPath || env[PANE_MARKER] === paneId) return undefined;
@@ -92,7 +156,7 @@ export class HerdrStatusReporter {
 		} catch {
 			return undefined;
 		}
-		return new HerdrStatusReporter(paneId, socketPath);
+		return new HerdrStatusReporter(paneId, socketPath, options.refreshMs ?? REFRESH_MS);
 	}
 
 	/** Reports the state, unless it is the one asked for last; done and error are idle to Herdr. */
@@ -105,6 +169,41 @@ export class HerdrStatusReporter {
 		if (key === this.#asked) return;
 		this.#asked = key;
 		this.#enqueue({ key: "state", method: "pane.report_agent", params });
+		const running = state === "working" || state === "blocked";
+		if (running === this.#running) return;
+		this.#running = running;
+		this.#summarize();
+	}
+
+	/** Takes the ODD task in progress, none when no task is; the sidebar shows it while a turn runs. */
+	activity(activity: Activity | undefined) {
+		if (activity?.id === this.#activity?.id && activity?.title === this.#activity?.title) return;
+		this.#activity = activity;
+		this.#summarize();
+	}
+
+	/** Shows the task in the sidebar, refreshed while the turn runs, or clears it once if it was shown. */
+	#summarize() {
+		clearInterval(this.#refresh);
+		this.#refresh = undefined;
+		const activity = this.#running && !this.#released ? this.#activity : undefined;
+		if (activity === undefined) {
+			if (this.#summarized) this.#metadata({ tokens: { summary: null, summary2: null } });
+			this.#summarized = false;
+			return;
+		}
+		const show = () => {
+			const [summary, summary2] = summaryRows(activity, rowWidth(this.#socketPath));
+			this.#metadata({ tokens: { summary, summary2 }, ttl_ms: SUMMARY_TTL_MS });
+		};
+		show();
+		this.#summarized = true;
+		this.#refresh = setInterval(show, this.#refreshMs);
+		this.#refresh.unref();
+	}
+
+	#metadata(params: Record<string, unknown>) {
+		this.#enqueue({ key: "activity", method: "pane.report_metadata", params, source: ACTIVITY_SOURCE });
 	}
 
 	/** Reports the session the TUI runs; a saved one comes with the command that resumes it. */
@@ -119,6 +218,8 @@ export class HerdrStatusReporter {
 	/** Takes the TUI off the pane; waits for Herdr at most RELEASE_WAIT_MS, and never fails. */
 	async release(): Promise<void> {
 		if (this.#released) return;
+		this.#running = false;
+		this.#summarize();
 		this.#enqueue({ key: "release", method: "pane.release_agent", params: {} });
 		this.#released = true;
 		let timer: NodeJS.Timeout | undefined;
@@ -154,11 +255,11 @@ export class HerdrStatusReporter {
 		this.#flight = undefined;
 	}
 
-	async #send({ method, params }: Pending) {
+	async #send({ method, params, source = SOURCE }: Pending) {
 		const request = {
 			id: `atelier:${process.pid}:${++this.#requests}`,
 			method,
-			params: { pane_id: this.paneId, source: SOURCE, agent: AGENT, seq: ++this.#seq, ...params },
+			params: { pane_id: this.paneId, source, agent: AGENT, seq: ++this.#seq, ...params },
 		};
 		for (const timeoutMs of ATTEMPT_MS) {
 			try {
