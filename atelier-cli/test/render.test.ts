@@ -422,6 +422,18 @@ describe("Renderer", () => {
 		expect(both.stderr).toBe(
 			'skill /w/.agents/skills/a/SKILL.md: no description; not loaded\nskill /h/.agents/skills/pdf/SKILL.md: skill "pdf" is already loaded\n',
 		);
+		const evil = "evil\u001b[31mRED\u001b]0;PWNED\u0007\u001b[2J";
+		const hostile = render([
+			{
+				type: "skills_loaded",
+				skills: [{ name: evil, path: `/w/${evil}/SKILL.md` }],
+				warnings: [{ path: `/w/${evil}/SKILL.md`, message: `name "${evil}" should be lowercase` }],
+			},
+		]);
+		expect(hostile.stdout).toBe("skills: evil␛[31mRED␛]0;PWNED⟨U+0007⟩␛[2J\n");
+		expect(hostile.stderr).not.toContain("\u001b");
+		expect(hostile.stderr).not.toContain("\u0007");
+		expect(hostile.stderr).toContain("␛]0;PWNED⟨U+0007⟩");
 		const warned = render([{ type: "skills_loaded", skills: [], warnings: [{ path: "/s/SKILL.md", message: "m" }] }]);
 		expect(warned.stdout).toBe("");
 		expect(warned.stderr).toBe("skill /s/SKILL.md: m\n");

@@ -491,11 +491,14 @@ export class Renderer {
 				if (event.files.length > 0) this.#line(this.#style("dim", `instructions: ${event.files.join(", ")}`));
 				if (event.dropped.length > 0) this.#warn(`instructions over 32 KiB, left out: ${event.dropped.join(", ")}`);
 				return;
-			case "skills_loaded":
+			case "skills_loaded": {
+				// Names, paths and messages come from a repository's files, loaded without trust: hidden characters are shown.
+				const shown = (text: string) => visibleText(text).text;
 				if (event.skills.length > 0)
-					this.#line(this.#style("dim", `skills: ${event.skills.map(({ name }) => name).join(", ")}`));
-				for (const { path, message } of event.warnings) this.#warn(`skill ${path}: ${message}`);
+					this.#line(this.#style("dim", `skills: ${event.skills.map(({ name }) => shown(name)).join(", ")}`));
+				for (const { path, message } of event.warnings) this.#warn(`skill ${shown(path)}: ${shown(message)}`);
 				return;
+			}
 			case "review_status":
 				if (!event.available) this.#warn(`no review: ${event.reason ?? "unavailable"}`);
 				return;
