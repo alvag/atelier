@@ -8,7 +8,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectEngram, EngramMemory, parseObservationText } from "../src/memory/engram.ts";
-import { FakeMemory, MemoryUnavailableError } from "../src/memory/port.ts";
+import { FakeMemory, MemoryError, MemoryUnavailableError, MemoryUncertainError } from "../src/memory/port.ts";
 
 const engramInstalled = (() => {
 	try {
@@ -91,13 +91,13 @@ describe("FakeMemory", () => {
 	});
 });
 
-/** An EngramMemory over an in-process MCP server whose mem_save answers `answer`; `calls` counts the saves. */
-async function engramAnswering(answer: Record<string, unknown>) {
+/** An EngramMemory over an in-process MCP server whose tools answer `answer`; `calls` counts the calls. */
+async function engramAnswering(answer: Record<string, unknown>, isError = false) {
 	const server = new Server({ name: "engram", version: "0.0.0" }, { capabilities: { tools: {} } });
 	const calls: string[] = [];
 	server.setRequestHandler(CallToolRequestSchema, async (request) => {
 		calls.push(request.params.name);
-		return { content: [{ type: "text", text: JSON.stringify(answer) }] };
+		return { content: [{ type: "text", text: JSON.stringify(answer) }], isError };
 	});
 	const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
 	await server.connect(serverSide);
@@ -114,6 +114,19 @@ describe("EngramMemory save", () => {
 		expect(saved.id).toBe(12);
 		expect(saved.warning).toMatch(/conflict/i);
 		expect(calls).toEqual(["mem_save"]);
+	});
+
+	it("tells a refusal from a call that got no answer, which may have saved", async () => {
+		const refused = await engramAnswering({ error: "refused" }, true);
+		const error = await refused.memory.save({ title: "A", type: "decision", content: "alpha" }).catch((e) => e);
+		await refused.memory.close();
+		expect(error).toBeInstanceOf(MemoryError);
+		expect(error).not.toBeInstanceOf(MemoryUncertainError);
+
+		const gone = await engramAnswering({ id: 1 });
+		await gone.memory.close();
+		const lost = await gone.memory.save({ title: "A", type: "decision", content: "alpha" }).catch((e) => e);
+		expect(lost).toBeInstanceOf(MemoryUncertainError);
 	});
 
 	it("has no warning when conflict detection finished or is not reported", async () => {

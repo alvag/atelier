@@ -10,6 +10,7 @@ import {
 	type MemoryHit,
 	type MemoryPort,
 	MemoryUnavailableError,
+	MemoryUncertainError,
 	type NewMemory,
 	type SavedMemory,
 } from "./port.ts";
@@ -161,8 +162,8 @@ export class EngramMemory implements MemoryPort {
 		try {
 			result = await this.#client.callTool({ name, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
 		} catch (error) {
-			// A timeout or a dead Engram process is a memory failure, never a crash of the caller.
-			throw new MemoryError(`Engram ${name} failed: ${describeError(error)}`);
+			// A timeout or a dead Engram process is a memory failure, never a crash of the caller; the call may have landed.
+			throw new MemoryUncertainError(`Engram ${name} failed: ${describeError(error)}`);
 		}
 		const content = Array.isArray(result.content) ? result.content : [];
 		const first = content[0] as { type?: string; text?: string } | undefined;

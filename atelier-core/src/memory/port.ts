@@ -67,6 +67,11 @@ export class MemoryError extends Error {
 	override name = "MemoryError";
 }
 
+/** A memory call got no answer (a timeout, a closed service): what it asked may or may not have happened. */
+export class MemoryUncertainError extends MemoryError {
+	override name = "MemoryUncertainError";
+}
+
 /** In-memory MemoryPort for tests. */
 export class FakeMemory implements MemoryPort {
 	readonly project: string;

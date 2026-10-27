@@ -35,7 +35,10 @@ import {
 	findSecret,
 	MEMORY_TOOL,
 	type MemoryPort,
+	MemoryUncertainError,
+	recoveryNotice,
 	SESSION_SUMMARY_TYPE,
+	type SummaryOutcome,
 } from "./memory/index.ts";
 import type { PermissionMode } from "./modes.ts";
 import type { CompletedFeature } from "./odd/tracker.ts";
@@ -300,8 +303,12 @@ export class Session {
 	#child: Session | undefined;
 	readonly #odd: OddTracker | undefined;
 	readonly #review: SessionReview | undefined;
-	/** Recent memory, fetched once at start and given with the first prompt only. */
+	/** Recent memory, fetched at start and given with the first prompt only; fetched again after each compaction. */
 	#memoryContext = "";
+	/** What the agent is told after a compaction, with the recent memory; it goes before the next prompt, once. */
+	#recovery: string | undefined;
+	/** The recovery notice is in the prompt the backend is taking now, until its first event. */
+	#recoverySent = false;
 	/** The instruction files read at start; reported with the first turn. */
 	#instructions: ProjectInstructions | undefined;
 	/** The skills found at start; reported with the first turn. */
@@ -494,8 +501,9 @@ export class Session {
 			lines.push(`feature: ${odd.path}${task}`);
 		}
 		if (odd?.phase !== undefined) lines.push(`phase: ${odd.phase}`);
+		// The recovery notice brings the memory with the same prompt; said twice, it would only cost context.
 		const memory = this.#memoryContext.trim();
-		if (memory !== "") lines.push(`memory:\n${memory}`);
+		if (memory !== "" && this.#recovery === undefined && !this.#recoverySent) lines.push(`memory:\n${memory}`);
 		return lines.length === 0 ? undefined : `<state>\n${lines.join("\n")}\n</state>`;
 	}
 
@@ -627,6 +635,11 @@ export class Session {
 					turn.push(errorEvent("permission_mode_invalid", this.#options.permissionModeProblem, true));
 				if (this.#memoryContext.trim() !== "") sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
 			}
+			if (this.#recovery !== undefined) {
+				sent = `${this.#recovery}\n\n${sent}`;
+				this.#recovery = undefined;
+				this.#recoverySent = true;
+			}
 			const mcpStatus = this.mcpStatus();
 			if (mcpStatus !== undefined && JSON.stringify(mcpStatus) !== this.#mcpSaid) {
 				this.#mcpSaid = JSON.stringify(mcpStatus);
@@ -648,6 +661,7 @@ export class Session {
 			this.#steerable = true;
 			try {
 				for await (const event of backendSession.send(sent)) {
+					this.#recoverySent = false;
 					if (event.type === "turn_finished") finish ??= event;
 					else {
 						if (event.type === "error") failed = true;
@@ -661,6 +675,7 @@ export class Session {
 				turn.push(errorEvent("backend_error", describeError(error)));
 			} finally {
 				this.#steerable = false;
+				this.#recoverySent = false;
 			}
 			this.#previousTurn = { request: prompt, lastMessage: lastMessageTail(this.#lastMessage) };
 			await logged;
@@ -1057,11 +1072,12 @@ export class Session {
 		this.#backendChange = { from, summarized: summary !== undefined };
 		this.#unannounced = true;
 		if (summary !== undefined) {
+			// Saved first, so the state knows whether the recovery notice already brings the memory.
+			if (this.#carried === undefined) await this.#saveSummary(summary.text);
 			const state = this.#compactionState();
 			this.#handoff = [`${COMPACTED_HEADER}\n\n<summary>\n${summary.text}\n</summary>`, state]
 				.filter((part) => part !== undefined)
 				.join("\n\n");
-			if (this.#carried === undefined) await this.#saveSummary(summary.text);
 			this.#carried = summary.text;
 		}
 		await old.close().catch(() => {});
@@ -1684,10 +1700,32 @@ export class Session {
 		this.#archiving.add(saving);
 	}
 
-	/** Keeps the summary in memory, once, under the session's key. Never throws: the compaction already happened. */
+	/**
+	 * Keeps the summary in memory, then fetches the recent memory for the recovery notice the next prompt carries.
+	 * Never throws: the compaction already happened.
+	 */
 	async #saveSummary(summary: string): Promise<void> {
 		const memory = this.#options.memory;
 		if (!memory) return;
+		const outcome = await this.#storeSummary(memory, summary);
+		let context = "";
+		try {
+			context = await memory.context(CONTEXT_BYTES);
+			this.#memoryContext = context;
+		} catch (error) {
+			this.#say(
+				errorEvent(
+					"memory_recovery_failed",
+					`Recent memory could not be fetched after the compaction: ${describeError(error)}`,
+					true,
+				),
+			);
+		}
+		this.#recovery = recoveryNotice(memory.project, context, outcome, this.#summaryKey);
+	}
+
+	/** Saves the summary once, under the session's key, and says how it went; a failure is a recoverable error. */
+	async #storeSummary(memory: MemoryPort, summary: string): Promise<SummaryOutcome> {
 		const secret = findSecret(summary);
 		if (secret) {
 			this.#say(
@@ -1697,7 +1735,7 @@ export class Session {
 					true,
 				),
 			);
-			return;
+			return "skipped";
 		}
 		try {
 			const { warning } = await memory.save({
@@ -1714,6 +1752,7 @@ export class Session {
 						true,
 					),
 				);
+			return "saved";
 		} catch (error) {
 			this.#say(
 				errorEvent(
@@ -1722,6 +1761,7 @@ export class Session {
 					true,
 				),
 			);
+			return error instanceof MemoryUncertainError ? "uncertain" : "failed";
 		}
 	}
 

@@ -61,6 +61,7 @@ export {
 	type MemoryPort,
 	type MemoryType,
 	MemoryUnavailableError,
+	MemoryUncertainError,
 	type NewMemory,
 } from "./memory/index.ts";
 export {

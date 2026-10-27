@@ -13,6 +13,7 @@ import {
 	FakeMemory,
 	type FakeStep,
 	MemoryError,
+	MemoryUncertainError,
 	RpcServer,
 	type ServerMessage,
 	Session,
@@ -361,22 +362,35 @@ describe("compaction summary", () => {
 		return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 	};
 
-	/** A backend that reports `summaries` through the core's callback as it compacts, mid-turn or on /compact. */
-	function summarizing(summaries: string[]) {
+	/**
+	 * A backend that reports `summaries` through the core's callback as it compacts, mid-turn or on /compact. Turns
+	 * after the first only answer; like Claude Code's, each prompt records the core's state that would go with it.
+	 */
+	function summarizing(summaries: string[], compactEvery = true) {
 		let options: BackendStartOptions | undefined;
+		const prompts: string[] = [];
+		const states: (string | undefined)[] = [];
 		const compaction = async function* (reason: "threshold" | "manual"): AsyncGenerator<AtelierEventBody> {
 			yield { type: "compaction_started", reason, tokens: 900 };
 			options?.compacted?.(summaries.shift() ?? SUMMARY);
 			yield { type: "compaction_finished", ok: true, reason, tokensBefore: 900, tokensAfter: 100, kept: 2, usage };
 		};
-		const backend: AgentBackend & { options: () => BackendStartOptions | undefined } = {
+		const backend: AgentBackend & {
+			options: () => BackendStartOptions | undefined;
+			prompts: string[];
+			states: (string | undefined)[];
+		} = {
 			id: "fake",
 			options: () => options,
+			prompts,
+			states,
 			start: async (start) => {
 				options = start;
 				return {
-					async *send() {
-						yield* compaction("threshold");
+					async *send(prompt) {
+						prompts.push(prompt);
+						states.push(options?.compactionState?.());
+						if (compactEvery || prompts.length === 1) yield* compaction("threshold");
 						yield finished;
 					},
 					async *compact() {
@@ -477,6 +491,104 @@ describe("compaction summary", () => {
 				recoverable: true,
 			}),
 		]);
+	});
+
+	describe("recovery", () => {
+		const SAVED = "The compaction summary is already in memory; do not save it again.";
+
+		async function afterCompaction(memory: FakeMemory, summary = SUMMARY) {
+			const backend = summarizing([summary], false);
+			const s = await Session.start({ backend, cwd, tools, memory });
+			const compacted = await run(s.send("go"));
+			const next = await run(s.send("next"));
+			const later = await run(s.send("later"));
+			await s.close();
+			return { backend, compacted, next, later };
+		}
+
+		it("gives the next prompt the recent memory and says the summary is saved, once", async () => {
+			const memory = new FakeMemory("proj");
+			const { backend, compacted } = await afterCompaction(memory);
+			expect(compacted.filter((e) => e.type === "error")).toEqual([]);
+			expect(backend.prompts[1]).toBe(
+				[
+					"<memory-recovery>",
+					"The conversation was compacted. Recent memory of project proj:",
+					`- [session_summary] Session summary: proj, ${today()}`,
+					SAVED,
+					"</memory-recovery>",
+					"",
+					"next",
+				].join("\n"),
+			);
+			expect(backend.prompts[2]).toBe("later");
+		});
+
+		it("keeps the memory out of the state that goes with the same prompt", async () => {
+			const memory = new FakeMemory("proj");
+			await memory.save({ title: "Old decision", type: "decision", content: "x" });
+			const { backend } = await afterCompaction(memory);
+			expect(backend.states[0]).toContain("memory:\n- [decision] Old decision");
+			expect(backend.states[1]).toBeUndefined();
+			expect(backend.prompts[1]).toContain("- [decision] Old decision\n- [session_summary]");
+			// Once said, the state carries the fresh memory again.
+			expect(backend.states[2]).toContain("- [session_summary]");
+		});
+
+		it("tells the agent what to do when the save failed, may have happened or was skipped", async () => {
+			const failed = new FakeMemory("proj");
+			failed.save = async () => {
+				throw new MemoryError("Engram mem_save: refused");
+			};
+			const f = await afterCompaction(failed);
+			const key = /session\/[^ ]+\/summary/.exec(f.backend.prompts[1] ?? "")?.[0];
+			expect(key).toMatch(/^session\/.+\/summary$/);
+			expect(f.backend.prompts[1]).toBe(
+				`<memory-recovery>\nThe conversation was compacted.\nThe compaction summary was not saved to memory. Save its key points once with the memory tool, under topicKey ${key}.\n</memory-recovery>\n\nnext`,
+			);
+
+			const uncertain = new FakeMemory("proj");
+			uncertain.save = async () => {
+				throw new MemoryUncertainError("Engram mem_save failed: timed out");
+			};
+			const u = await afterCompaction(uncertain);
+			expect(u.backend.prompts[1]).toContain(
+				"It is unclear whether the compaction summary was saved to memory. Do not save it again blindly: search memory for it first and save it once only if it is absent.",
+			);
+			expect(u.compacted.filter((e) => e.type === "error")).toEqual([
+				expect.objectContaining({ code: "memory_summary_failed", recoverable: true }),
+			]);
+
+			const skipped = new FakeMemory("proj");
+			const s = await afterCompaction(skipped, `${SUMMARY}\nkey sk-ant-api03-abcdefghijklmnopqrstuvwx`);
+			expect(s.backend.prompts[1]).toContain(
+				"The compaction summary was not saved to memory because it contains what looks like a credential; do not save it.",
+			);
+		});
+
+		it("still says what to do when the recent memory does not come, and warns", async () => {
+			const memory = new FakeMemory("proj");
+			const backend = summarizing([SUMMARY], false);
+			const s = await Session.start({ backend, cwd, tools, memory });
+			memory.context = async () => {
+				throw new MemoryError("Engram mem_context failed: closed");
+			};
+			const compacted = await run(s.send("go"));
+			const next = await run(s.send("next"));
+			await s.close();
+			expect(compacted.filter((e) => e.type === "error")).toEqual([
+				expect.objectContaining({
+					code: "memory_recovery_failed",
+					message: "Recent memory could not be fetched after the compaction: Engram mem_context failed: closed",
+					recoverable: true,
+				}),
+			]);
+			expect(compacted.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+			expect(next.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+			expect(backend.prompts[1]).toBe(
+				`<memory-recovery>\nThe conversation was compacted.\n${SAVED}\n</memory-recovery>\n\nnext`,
+			);
+		});
 	});
 
 	it("is not asked for without memory, nor by subagents", async () => {
