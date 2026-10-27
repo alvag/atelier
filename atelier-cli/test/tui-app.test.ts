@@ -15,7 +15,7 @@ import {
 } from "@atelier/core";
 import type { CoreExit } from "@atelier/core/client";
 import { decodeServerMessage, encodeMessage, LineSplitter } from "@atelier/core/protocol";
-import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
+import { type ProgramStatus, resetCapabilitiesCache, type Terminal } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
@@ -39,6 +39,8 @@ beforeEach(async () => {
 });
 afterEach(async () => {
 	vi.unstubAllEnvs();
+	// pi-tui reads the terminal's capabilities from the environment once and keeps them.
+	resetCapabilitiesCache();
 	await rm(cwd, { recursive: true, force: true });
 	await rm(home, { recursive: true, force: true });
 });
@@ -120,6 +122,11 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 	return { connect, commands, envs, closed: () => closed, exit };
 }
 
+/** Takes out styles and terminal sequences; OSC and APC ones (hyperlinks, Kitty images) end at BEL or ST. */
+const plain = (text: string) =>
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: the styles are what is taken out
+	text.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b[\]_][^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
+
 /** A terminal that keeps what the TUI wrote, without its styles, and types keys into it. */
 function fakeTerminal() {
 	let onInput: ((data: string) => void) | undefined;
@@ -157,8 +164,7 @@ function fakeTerminal() {
 	};
 	return {
 		terminal,
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: the styles are what is taken out
-		screen: () => written.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b_[^\x07]*\x07/g, ""),
+		screen: () => plain(written),
 		type: (data: string) => onInput?.(data),
 		/** Everything written, styles and terminal sequences included. */
 		raw: () => written,
@@ -353,8 +359,6 @@ describe("TUI", { timeout: 20_000 }, () => {
 	});
 
 	describe("full screen", () => {
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: the styles are what is taken out
-		const plain = (text: string) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b_[^\x07]*\x07/g, "");
 		const ALT_ON = "\x1b[?1049h";
 		const ALT_OFF = "\x1b[?1049l";
 		const rows = (count: number, word: string) =>
@@ -385,6 +389,17 @@ describe("TUI", { timeout: 20_000 }, () => {
 			expect(after).toContain("Hello back.");
 			// The editor and the status line stay behind in the alternate screen.
 			expect(after).not.toContain("sandbox ✗");
+		});
+
+		it("shows the header in a terminal with Kitty images, such as Herdr or Warp", async () => {
+			vi.stubEnv("TERM_PROGRAM", "herdr");
+			resetCapabilitiesCache();
+			const h = harness([]);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("Atelier "));
+			expect(h.screen.screen()).toMatch(new RegExp(`Atelier \\S+ · \\S*${basename(cwd)}`));
+			h.screen.type("\x04");
+			expect(await code).toBe(0);
 		});
 
 		it("keeps the main screen with --no-fullscreen or the setting", async () => {
