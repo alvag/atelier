@@ -16,6 +16,7 @@ A pnpm monorepo: `atelier-core` (sessions, backends, tools, review), `atelier-cl
 - Run `pnpm check` (Biome, TypeScript for core/CLI and desktop, Vitest) before every commit. Fix formatting with `pnpm format`. Do not commit with failing checks.
 - `pnpm-lock.yaml` belongs to pnpm: Biome skips it (`biome.json`), so commit it as `pnpm add` or `pnpm install` writes it, without formatting it.
 - When the checks pass, commit your work on the branch before reporting the task done; leave nothing uncommitted.
+- A release adds its section to `CHANGELOG.md` and publishes the same notes as its GitHub release (see `docs/development.md`, "Versioning").
 - Keep each commit reviewable: one unit of behavior, about 400 changed lines at most.
 - Wait for a condition in tests instead of a fixed delay (see the `until` helper in `atelier-cli/test/run.test.ts`).
 

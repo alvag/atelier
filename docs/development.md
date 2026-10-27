@@ -48,11 +48,16 @@ node atelier-core/scripts/measure-compaction.ts --backend anthropic-api   # forc
 
 Atelier has one version, [semantic](https://semver.org) and still `0.x`: the root `package.json`, every package's `package.json` and `VERSION` in `atelier-core/src/version.ts` carry the same one, and a test fails when they differ. `atelier --version` prints it, and the core sends it in the protocol's `hello`.
 
-To release, on `main` with `pnpm check` green: bump the version in those five places in one commit (`chore: release v0.2.0`), then tag that commit and push both:
+To release, on `main` with `pnpm check` green:
+1. Bump the version in those five places and add a section for it at the top of `CHANGELOG.md` saying what the release brings, in one commit (`chore: release v0.2.0`).
+2. Tag that commit with the same notes, push both, and publish the GitHub release with them:
 
 ```bash
 git tag -a v0.2.0 -m "Atelier v0.2.0"
 git push origin main v0.2.0
+gh release create v0.2.0 --title "Atelier v0.2.0" --notes "<the v0.2.0 section of CHANGELOG.md>"
 ```
+
+`install.sh` and `atelier update` pick the newest `vX.Y.Z` tag, so a release reaches every installed copy on its next `atelier update`.
 
 While the version is `0.x`, a minor bump (`0.2.0`) may change behavior and a patch (`0.1.1`) only fixes.
