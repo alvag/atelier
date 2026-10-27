@@ -87,6 +87,16 @@ export {
 	writeDefaultPermissionMode,
 } from "./permission-mode.ts";
 export {
+	type CurrentPermissionRules,
+	type ListedPermissionRule,
+	type PermissionRule,
+	type PermissionRuleKind,
+	type PermissionRuleScope,
+	PermissionRules,
+	PermissionRulesError,
+	permissionRulesPath,
+} from "./permission-rules.ts";
+export {
 	costOfRequest,
 	EFFORT_LEVELS,
 	PRICES,
