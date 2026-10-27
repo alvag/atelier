@@ -29,7 +29,14 @@ import { savedTranscript } from "../transcript.ts";
 import { Conversation } from "./conversation.ts";
 import { type Choice, ChoiceDialog, type Folded, PasteFilter } from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
-import { type FooterState, footerAfter, footerLine, footerWithConfiguration, footerWithMode } from "./footer.ts";
+import {
+	type FooterState,
+	footerAfter,
+	footerLine,
+	footerWithConfiguration,
+	footerWithMode,
+	type StatusItem,
+} from "./footer.ts";
 import { ProgramStatusReporter, settledState } from "./program-status.ts";
 import {
 	choicesOf,
@@ -40,6 +47,7 @@ import {
 	profileChoices,
 	sessionChoices,
 } from "./selectors.ts";
+import { readTuiSettings } from "./settings.ts";
 import { editorTheme, type Paint, painter } from "./style.ts";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
@@ -142,16 +150,18 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 /** The review question: why it is asked is in the review block just above it. */
 const CONSENT_TITLE = "Review this high-risk change?";
 
-/** The fixed line under the editor. */
+/** The fixed status line under the editor, with the items chosen in the settings. */
 class Footer implements Component {
 	state: FooterState = {};
 	readonly #paint: Paint;
-	constructor(paint: Paint) {
+	readonly #items: readonly StatusItem[];
+	constructor(paint: Paint, items: readonly StatusItem[]) {
 		this.#paint = paint;
+		this.#items = items;
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		return [footerLine(this.state, width, this.#paint)];
+		return [footerLine(this.state, width, this.#paint, this.#items)];
 	}
 }
 
@@ -307,7 +317,10 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		options.stderr(`error: The core could not start: ${describeError(error)}\n`);
 		return EXIT_FAILED;
 	}
+	const settings = await readTuiSettings(options.home);
 	let conversation = new Conversation(paint, args.cwd);
+	// A wrong setting does not stop the session: it says what it used instead.
+	for (const warning of settings.warnings) conversation.note(`warning: ${warning}`, true);
 	let chosen: Chosen = {
 		...(args.model === undefined ? {} : { model: args.model }),
 		...(args.profile === undefined ? {} : { profile: args.profile }),
@@ -327,7 +340,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	let { sessionId, savedId } = opened;
 
 	const tui = new TuiMainScreen(options.terminal);
-	const footer = new Footer(paint);
+	const footer = new Footer(paint, settings.statusLine);
 	// What the core answered, until the session's own events say more.
 	if (opened.configuration !== undefined) footer.state = footerWithConfiguration({}, opened.configuration);
 	let modeRequests = modeRequestsOf(sessionId, footer.state.mode);

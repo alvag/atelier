@@ -1,7 +1,7 @@
 import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import { type FooterState, footerAfter, footerLine } from "../src/tui/footer.ts";
+import { DEFAULT_STATUS_LINE, type FooterState, footerAfter, footerLine } from "../src/tui/footer.ts";
 import { painter } from "../src/tui/style.ts";
 
 const plain = painter(false);
@@ -59,5 +59,29 @@ describe("footer", () => {
 		);
 		expect(footerLine(state, 120, plain)).toBe(" anthropic-api low · yolo");
 		expect(visibleWidth(footerLine({ ...state, profile: "x".repeat(200) }, 30, plain))).toBeLessThanOrEqual(30);
+	});
+
+	it("shows the items chosen in their order and leaves out the ones without a value", () => {
+		const state: FooterState = {
+			backend: "claude-code",
+			model: "claude-opus-5-5",
+			effort: "high",
+			mode: "auto",
+			cwd: "/work/atelier",
+			branch: "feat/x",
+			version: "0.2.0",
+			costUsd: 0.5,
+		};
+		expect(footerLine(state, 120, plain, ["cost", "mode", "phase", "git-branch", "version", "cwd"])).toBe(
+			" $0.50 · auto · feat/x · v0.2.0 · atelier",
+		);
+		expect(footerLine(state, 120, plain, ["effort", "backend", "model"])).toBe(" high · claude-code · claude-opus-5-5");
+		expect(footerLine(state, 120, plain, [])).toBe(" ");
+	});
+
+	it("by default adds the working folder and the branch after the model", () => {
+		const state: FooterState = { model: "m", effort: "low", cwd: "/work/atelier", branch: "main", mode: "normal" };
+		expect(footerLine(state, 120, plain)).toBe(" m low · atelier · main · normal");
+		expect(footerLine(state, 120, plain, DEFAULT_STATUS_LINE)).toBe(" m low · atelier · main · normal");
 	});
 });

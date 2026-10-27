@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -222,6 +222,23 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(h.screen.stopped()).toBe(true);
 		expect(h.core.closed()).toBe(true);
 		expect(h.backend.closed).toBe(true);
+	});
+
+	it("shows the status line items of ~/.atelier/settings.json, and starts with a warning when one is wrong", async () => {
+		const h = harness([[{ event: started }, { event: finished }]]);
+		await mkdir(join(home, ".atelier"));
+		await writeFile(
+			join(home, ".atelier", "settings.json"),
+			JSON.stringify({ kind: "atelier.settings", version: 1, tui: { statusLine: ["cost", "weather", "mode"] } }),
+		);
+		const code = run(["--no-session", "--mode", "auto"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes(" $0.50 · auto"));
+		expect(h.screen.screen().replace(/\s+/g, " ")).toContain('unknown status line item "weather"; skipped');
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
 	});
 
 	it("asks an approval in a dialog that starts on Allow, and denies what is chosen", async () => {

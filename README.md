@@ -121,6 +121,7 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 | ---------------------- | -------------------------------------------------------------------------------------------------- |
 | `profiles.json`        | Model, backend and thinking level per agent role ([profiles](docs/profiles.md)).                   |
 | `permission-mode.json` | Default permission mode, written by `/mode default <mode>`.                                        |
+| `settings.json`        | The TUI's status line items ([settings](docs/cli.md#settings)).                                    |
 | `sandbox.json`         | Extra writable paths and hidden paths for `bash` ([sandbox](docs/sandbox.md#configuration-files)). |
 | `sessions/`            | Saved sessions ([saved sessions](docs/sessions.md)).                                               |
 
