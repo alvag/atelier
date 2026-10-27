@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
@@ -81,7 +81,10 @@ export class McpAuthStore {
 	#read(): Record<string, Credentials> {
 		let parsed: unknown;
 		try {
-			parsed = JSON.parse(readFileSync(this.#file, "utf8"));
+			const text = readFileSync(this.#file, "utf8");
+			// A file another tool left readable by others is made the user's own again before its tokens are used.
+			if ((statSync(this.#file).mode & 0o777) !== 0o600) chmodSync(this.#file, 0o600);
+			parsed = JSON.parse(text);
 		} catch {
 			return {};
 		}
@@ -107,6 +110,8 @@ export class McpOAuthProvider implements OAuthClientProvider {
 	readonly #store: McpAuthStore;
 	readonly #redirectUrl: string | undefined;
 	readonly #onRedirect: ((url: URL) => void | Promise<void>) | undefined;
+	/** A sign-in that stopped (aborted, or cancelled by a sign-out) saves nothing more. */
+	readonly #signal: AbortSignal | undefined;
 	#verifier: string | undefined;
 	/** The `state` sent with the authorization request, to check the browser's answer against. */
 	expectedState: string | undefined;
@@ -114,8 +119,9 @@ export class McpOAuthProvider implements OAuthClientProvider {
 	constructor(
 		server: HttpServerConfig,
 		store: McpAuthStore,
-		options: { redirectUrl?: string; onRedirect?: (url: URL) => void | Promise<void> } = {},
+		options: { redirectUrl?: string; onRedirect?: (url: URL) => void | Promise<void>; signal?: AbortSignal } = {},
 	) {
+		this.#signal = options.signal;
 		this.#server = server;
 		this.#store = store;
 		this.#redirectUrl = options.redirectUrl;
@@ -154,6 +160,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
 	}
 
 	saveClientInformation(client: OAuthClientInformationMixed): void {
+		if (this.#signal?.aborted) return;
 		const redirectUrl = this.redirectUrl;
 		this.#store.update(this.#server, (credentials) => ({ ...credentials, client, redirectUrl }));
 	}
@@ -163,6 +170,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
 	}
 
 	saveTokens(tokens: OAuthTokens): void {
+		if (this.#signal?.aborted) return;
 		this.#store.update(this.#server, (credentials) => ({ ...credentials, tokens }));
 	}
 
@@ -243,6 +251,9 @@ export async function loginMcpServer(
 	// A configured port is the registered redirect URI's; the port of an earlier registration is only preferred.
 	const configured = server.oauth?.callbackPort;
 	const callback = await listenForCallback(configured ?? portOf(stored?.redirectUrl), configured !== undefined);
+	// The whole sign-in, the first connection included, stops on abort or timeout, and the callback closes then.
+	const deadline = stopAt(options.timeoutMs ?? LOGIN_TIMEOUT_MS, options.signal);
+	const guarded = <T>(work: Promise<T>) => Promise.race([work, deadline.stopped]);
 	try {
 		// A client registered with another redirect URI cannot use this one; a new sign-in starts without old tokens.
 		store.update(server, ({ client, redirectUrl }) =>
@@ -251,25 +262,32 @@ export async function loginMcpServer(
 		const provider = new McpOAuthProvider(server, store, {
 			redirectUrl: callback.url,
 			onRedirect: options.openBrowser,
+			...(options.signal === undefined ? {} : { signal: options.signal }),
 		});
 		const transport = httpTransport(server, provider) as Transport & { finishAuth(code: string): Promise<void> };
 		const first = new Client({ name: "atelier", version: VERSION });
 		try {
-			await first.connect(transport, { timeout: server.timeoutMs });
+			await guarded(first.connect(transport, { timeout: server.timeoutMs }));
 			await first.close();
 			return;
 		} catch (error) {
-			if (!(error instanceof UnauthorizedError)) throw error;
+			if (!(error instanceof UnauthorizedError)) {
+				await first.close().catch(() => {});
+				throw error;
+			}
 		}
-		const answer = await withTimeout(callback.answer, options.timeoutMs ?? LOGIN_TIMEOUT_MS, options.signal);
+		const answer = await guarded(callback.answer);
 		if (answer.error !== undefined) throw new Error(`the authorization server refused the sign-in: ${answer.error}`);
 		if (answer.state !== provider.expectedState) throw new Error("the sign-in answer does not match the request");
-		await transport.finishAuth(answer.code ?? "");
+		await guarded(transport.finishAuth(answer.code ?? ""));
 		await first.close().catch(() => {});
 		const check = new Client({ name: "atelier", version: VERSION });
-		await check.connect(httpTransport(server, new McpOAuthProvider(server, store)), { timeout: server.timeoutMs });
+		await guarded(
+			check.connect(httpTransport(server, new McpOAuthProvider(server, store)), { timeout: server.timeoutMs }),
+		);
 		await check.close();
 	} finally {
+		deadline.clear();
 		callback.close();
 	}
 }
@@ -348,19 +366,26 @@ function portOf(url: string | undefined): number | undefined {
 	}
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, signal: AbortSignal | undefined): Promise<T> {
+/** A promise that rejects when the sign-in times out or is aborted (with the abort's reason when it is an error). */
+function stopAt(ms: number, signal: AbortSignal | undefined): { stopped: Promise<never>; clear: () => void } {
 	let timer: NodeJS.Timeout | undefined;
 	let onAbort: (() => void) | undefined;
-	return Promise.race([
-		promise,
-		new Promise<never>((_resolve, reject) => {
-			timer = setTimeout(() => reject(new Error(`no answer from the browser in ${Math.round(ms / 1000)} s`)), ms);
-			onAbort = () => reject(new Error("the sign-in stopped: the MCP servers closed"));
-			if (signal?.aborted) onAbort();
-			else signal?.addEventListener("abort", onAbort, { once: true });
-		}),
-	]).finally(() => {
-		clearTimeout(timer);
-		if (onAbort) signal?.removeEventListener("abort", onAbort);
+	const stopped = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => reject(new Error(`no answer from the browser in ${Math.round(ms / 1000)} s`)), ms);
+		onAbort = () =>
+			reject(
+				signal?.reason instanceof Error ? signal.reason : new Error("the sign-in stopped: the MCP servers closed"),
+			);
+		if (signal?.aborted) onAbort();
+		else signal?.addEventListener("abort", onAbort, { once: true });
 	});
+	// Nobody may be waiting on it when it fires.
+	stopped.catch(() => {});
+	return {
+		stopped,
+		clear: () => {
+			clearTimeout(timer);
+			if (onAbort) signal?.removeEventListener("abort", onAbort);
+		},
+	};
 }

@@ -50,10 +50,11 @@ export function createMcpTools(manager: McpManager): ToolDefinition[] {
 			const parts = matches.map(({ server: name, tool }) => describeTool(name, tool));
 			if (parts.length === 0) parts.push(`No MCP tool matches "${query}".`);
 			if (unreachable.length > 0) parts.push(`Not reachable: ${unreachable.join(", ")}`);
+			// Names and descriptions come from the servers: a secret in them is hidden like anywhere else.
 			return {
 				ok: true,
-				output: parts.join("\n\n"),
-				summary: `"${query}" (${matches.length} tools)`,
+				output: manager.hide(parts.join("\n\n")),
+				summary: manager.hide(`"${query}" (${matches.length} tools)`),
 				truncated: false,
 			};
 		},
@@ -74,23 +75,24 @@ export function createMcpTools(manager: McpManager): ToolDefinition[] {
 			const found = manager.tools(server).find((candidate) => candidate.name === tool);
 			return {
 				approval: {
-					command: `${server} › ${tool} ${JSON.stringify(args ?? {})}`,
+					command: manager.hide(`${server} › ${tool} ${JSON.stringify(args ?? {})}`),
 					tool: MCP_CALL_TOOL,
 					classifyOnly: true,
-					classifierTool: classifierText(server, tool, found),
+					classifierTool: manager.hide(classifierText(server, tool, found)),
 					denial: "The user denied this MCP call.",
 				},
 			};
 		},
 		async execute({ server, tool, arguments: args }, { signal, scratchDir }) {
-			const summary = `${server} › ${tool}`;
+			const summary = manager.hide(`${server} › ${tool}`);
 			let result: CallToolResult;
 			try {
 				result = await manager.call(server, tool, args ?? {}, signal);
 			} catch (error) {
 				return { ok: false, output: `MCP call failed: ${describeError(error)}`, summary, truncated: false };
 			}
-			const text = await resultText(result, scratchDir);
+			// The result comes from the server: a secret in it is hidden, in the file of a long one too.
+			const text = manager.hide(await resultText(result, scratchDir));
 			return { ok: result.isError !== true, summary, ...(await cut(text, scratchDir)) };
 		},
 	});

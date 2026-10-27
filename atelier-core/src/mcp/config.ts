@@ -97,7 +97,7 @@ export function loadMcpConfig(options: LoadMcpOptions): McpConfig {
 	try {
 		parsed = JSON.parse(text);
 	} catch (error) {
-		config.problems.push({ message: `${file} is not valid JSON: ${(error as Error).message}` });
+		config.problems.push({ message: `${file} is not valid JSON${jsonErrorPlace(text, error)}` });
 		return config;
 	}
 	const servers = isRecord(parsed) ? parsed.mcpServers : undefined;
@@ -295,6 +295,24 @@ export function redact(text: string, secrets: readonly string[]): string {
 
 function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Where the JSON error is, as ` (line L, column C)`, or nothing when the parser does not say. Never the parser's
+ * message: it quotes the file, and the file holds secrets.
+ */
+function jsonErrorPlace(text: string, error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	const place = /line (\d+) column (\d+)/.exec(message);
+	if (place) return ` (line ${place[1]}, column ${place[2]})`;
+	const position = /position (\d+)/.exec(message);
+	if (position) {
+		const before = text.slice(0, Number(position[1]));
+		const line = before.split("\n").length;
+		return ` (line ${line}, column ${before.length - before.lastIndexOf("\n")})`;
+	}
+	if (/end of JSON input/.test(message)) return " (it ends too early)";
+	return "";
 }
 
 function tilde(value: string, home: string): string {

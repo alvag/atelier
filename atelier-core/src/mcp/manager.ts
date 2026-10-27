@@ -48,6 +48,8 @@ export class McpManager {
 	readonly #openBrowser: (url: URL) => void | Promise<void>;
 	/** Aborted on close: a sign-in waiting for the browser stops. */
 	readonly #closing = new AbortController();
+	/** The sign-ins under way, by server: a sign-out cancels its server's. */
+	readonly #logins = new Map<string, AbortController>();
 	#closed = false;
 
 	/** `auth` holds the OAuth credentials of HTTP servers; without it no server signs in. `openBrowser` opens a sign-in page. */
@@ -85,7 +87,7 @@ export class McpManager {
 			name: config.name,
 			transport: config.transport,
 			state,
-			tools: state === "connected" ? tools.map((tool) => tool.name) : [],
+			tools: state === "connected" ? tools.map((tool) => this.hide(tool.name)) : [],
 			...(config.description === undefined ? {} : { description: config.description }),
 			...(error === undefined ? {} : { error: this.#hide(error) }),
 			...(stderr === undefined ? {} : { stderr: this.#hide(stderr) }),
@@ -104,8 +106,10 @@ export class McpManager {
 		return server?.state === "connected" ? server.tools : [];
 	}
 
+	/** The server's instructions, with the secrets hidden: the server writes them. */
 	instructions(name: string): string | undefined {
-		return this.#servers.get(name)?.instructions;
+		const instructions = this.#servers.get(name)?.instructions;
+		return instructions === undefined ? undefined : this.hide(instructions);
 	}
 
 	/** Calls a tool; a failed server is reconnected first. Rejects with the secrets hidden. */
@@ -132,21 +136,30 @@ export class McpManager {
 	/** Signs an HTTP server in with OAuth through the browser, then connects it again. Rejects with the secrets hidden. */
 	async login(name: string): Promise<void> {
 		const server = this.#oauthServer(name);
-		await server.connecting;
+		const cancel = new AbortController();
+		this.#logins.get(name)?.abort(new Error("another sign-in to this server started"));
+		this.#logins.set(name, cancel);
 		try {
+			await server.connecting;
 			await loginMcpServer(server.config as HttpServerConfig, this.#auth as McpAuthStore, {
 				openBrowser: this.#openBrowser,
-				signal: this.#closing.signal,
+				signal: AbortSignal.any([this.#closing.signal, cancel.signal]),
 			});
 		} catch (error) {
 			throw new Error(this.#hide(describeError(error)));
+		} finally {
+			if (this.#logins.get(name) === cancel) this.#logins.delete(name);
 		}
+		if (cancel.signal.aborted) return;
 		await this.#reconnect(server);
 	}
 
 	/** Deletes an HTTP server's OAuth credentials, then connects it again, now without them. */
 	async logout(name: string): Promise<void> {
 		const server = this.#oauthServer(name);
+		// A sign-in under way would save its tokens when the browser comes back: it stops first.
+		this.#logins.get(name)?.abort(new Error("the sign-in was cancelled by a sign-out"));
+		this.#logins.delete(name);
 		await server.connecting;
 		logoutMcpServer(server.config as HttpServerConfig, this.#auth as McpAuthStore);
 		await this.#reconnect(server);
@@ -175,7 +188,7 @@ export class McpManager {
 	/** Closes every server and stops their processes; later calls are refused. */
 	async close(): Promise<void> {
 		this.#closed = true;
-		this.#closing.abort();
+		this.#closing.abort(new Error("the sign-in stopped: the MCP servers closed"));
 		await Promise.all(
 			[...this.#servers.values()].map(async (server) => {
 				await server.connecting;
@@ -240,6 +253,11 @@ export class McpManager {
 		if (config.transport === "stdio") return new ProcessGroupTransport(config);
 		const signedIn = this.#auth !== undefined && usesOAuth(config) && this.#auth.get(config)?.tokens !== undefined;
 		return httpTransport(config, signedIn && this.#auth ? new McpOAuthProvider(config, this.#auth) : undefined);
+	}
+
+	/** The text with every secret of the configuration and of the OAuth sign-ins replaced by `***`. */
+	hide(text: string): string {
+		return this.#hide(text);
 	}
 
 	#hide(text: string): string {

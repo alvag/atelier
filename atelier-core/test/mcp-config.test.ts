@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadMcpConfig, mcpConfigFile, redact } from "../src/mcp/config.ts";
 
+/** `${NAME}` as the configuration writes it. */
+const ref = (name: string) => `$\{${name}}`;
+
 let home: string;
 let cwd: string;
 
@@ -62,11 +65,11 @@ describe("loadMcpConfig", () => {
 		]);
 	});
 
-	it("expands ${VAR} in env and headers", async () => {
+	it(`expands ${ref("VAR")} in env and headers`, async () => {
 		await write({
 			mcpServers: {
-				a: { command: "a", env: { TOKEN: "${A_TOKEN}" } },
-				b: { url: "https://b.example/mcp", headers: { Authorization: "Bearer ${B_TOKEN}" } },
+				a: { command: "a", env: { TOKEN: ref("A_TOKEN") } },
+				b: { url: "https://b.example/mcp", headers: { Authorization: `Bearer ${ref("B_TOKEN")}` } },
 			},
 		});
 		const { servers } = load({ A_TOKEN: "alpha-secret", B_TOKEN: "beta-secret" });
@@ -81,7 +84,7 @@ describe("loadMcpConfig", () => {
 				both: { command: "a", url: "https://x.example/mcp" },
 				none: {},
 				"bad name": { command: "a" },
-				unset: { command: "a", env: { KEY: "${NOT_SET_ANYWHERE}" } },
+				unset: { command: "a", env: { KEY: ref("NOT_SET_ANYWHERE") } },
 				dup_a: { command: "a" },
 				"dup-a": { command: "a" },
 				good: { command: "ok" },
@@ -91,12 +94,12 @@ describe("loadMcpConfig", () => {
 		expect(servers.map((server) => server.name)).toEqual(["dup_a", "good"]);
 		expect(problems.map((problem) => problem.name)).toEqual(["legacy", "both", "none", "bad name", "unset", "dup-a"]);
 		expect(problems[0]?.message).toContain("SSE is not supported");
-		expect(problems[4]?.message).toContain("${NOT_SET_ANYWHERE}");
+		expect(problems[4]?.message).toContain(ref("NOT_SET_ANYWHERE"));
 	});
 
 	it("reports a file that is not JSON", async () => {
 		await write("{ nope");
-		expect(load().problems[0]?.message).toContain("is not valid JSON");
+		expect(load().problems[0]?.message).toBe(`${mcpConfigFile(home)} is not valid JSON (line 1, column 3)`);
 	});
 });
 
@@ -105,7 +108,7 @@ describe("secrets", () => {
 		await write({
 			mcpServers: {
 				literal: { url: "https://x.example/mcp", headers: { Authorization: "Bearer lit-token-1234" } },
-				expanded: { command: "a", env: { KEY: "${MY_KEY}" } },
+				expanded: { command: "a", env: { KEY: ref("MY_KEY") } },
 				query: { url: "https://y.example/mcp?api_key=query-secret-99" },
 				invalid: { type: "sse", headers: { "X-Key": "invalid-entry-secret" } },
 			},
@@ -127,10 +130,10 @@ describe("secrets", () => {
 		expect(redact("fetch failed; Bearer LITERAL-manual-secret-123", secrets)).toBe("fetch failed; Bearer ***");
 	});
 
-	it("hides every value, also short ones, literal or from ${VAR}, as a whole word", async () => {
+	it(`hides every value, also short ones, literal or from ${ref("VAR")}, as a whole word`, async () => {
 		await write({
 			mcpServers: {
-				s: { command: "a", env: { KEY: "ab1c9", OTHER: "abcd", FROM: "${T}", ONE: "${U}" } },
+				s: { command: "a", env: { KEY: "ab1c9", OTHER: "abcd", FROM: ref("T"), ONE: ref("U") } },
 				h: { url: "https://x.example/mcp", headers: { "X-Key": "k9" }, oauth: { clientSecret: "sh1" } },
 			},
 		});

@@ -43,7 +43,11 @@ function serve(connectMcp?: (cwd: string) => McpManager) {
 		}
 		throw new Error(`no response to ${id}`);
 	};
-	return { request, close: () => (input.end(), done) };
+	const close = () => {
+		input.end();
+		return done;
+	};
+	return { request, close };
 }
 
 describe("session.mcp", () => {
