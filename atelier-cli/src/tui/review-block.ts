@@ -1,9 +1,9 @@
 import { type AtelierEvent, describeRefusal, type ReviewFinding, type ReviewStep, visibleText } from "@atelier/core";
 import type { Component } from "@earendil-works/pi-tui";
 import { pathInCwd, stepText } from "../render.ts";
-import { blockLines } from "./block.ts";
+import { blockLines, RoleGroups } from "./block.ts";
 import type { Paint } from "./style.ts";
-import { AgentGroup, type CardView } from "./tool-card.ts";
+import type { CardView } from "./tool-card.ts";
 
 const shown = (text: string) => visibleText(text).text;
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -123,13 +123,12 @@ export function reviewBlockLines(
 /** A review in the transcript, which grows with its events; each role's work goes in a line under its steps. */
 export class ReviewBlock implements Component {
 	state: ReviewState = { steps: [] };
-	readonly #groups = new Map<string, AgentGroup>();
-	readonly #view: CardView;
+	readonly #roles: RoleGroups;
 	readonly #paint: Paint;
 	readonly #cwd: string | undefined;
 
 	constructor(view: CardView, paint: Paint, cwd: string | undefined) {
-		this.#view = view;
+		this.#roles = new RoleGroups(view, paint);
 		this.#paint = paint;
 		this.#cwd = cwd;
 	}
@@ -140,19 +139,13 @@ export class ReviewBlock implements Component {
 
 	/** An event of one of the review's roles. */
 	child(event: AtelierEvent): void {
-		const agent = event.agent ?? "";
-		let group = this.#groups.get(agent);
-		if (group === undefined) {
-			group = new AgentGroup(this.#view, this.#paint);
-			this.#groups.set(agent, group);
-		}
-		group.add(event);
+		this.#roles.add(event);
 	}
 
 	invalidate(): void {}
 
 	render(width: number): string[] {
 		const { head, result } = reviewBlockLines(this.state, width, this.#paint, this.#cwd);
-		return [...head, ...[...this.#groups.values()].flatMap((group) => group.render(width)), ...result];
+		return [...head, ...this.#roles.render(width), ...result];
 	}
 }

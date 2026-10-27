@@ -1,10 +1,10 @@
 import { type AtelierEvent, visibleText } from "@atelier/core";
 import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
-import { verificationLines } from "./odd.ts";
 import { ReviewBlock } from "./review-block.ts";
 import { markdownTheme, type Paint } from "./style.ts";
 import { AgentGroup, type CardView, ToolCard } from "./tool-card.ts";
+import { VerifyCard } from "./verify-card.ts";
 
 const shown = (text: string) => visibleText(text).text;
 
@@ -35,8 +35,8 @@ function configuredLine(event: Extract<AtelierEvent, { type: "session_configured
 
 /**
  * The transcript: each prompt, the agent's text as Markdown, each tool call as a folded card with the subagent it
- * ran, the verifier's and the review roles' work grouped under one line each, the verifier's verdict on each
- * requirement, each review as one block that grows with it, and the rest of the events as the CLI's own lines. The
+ * ran, each verification as a folded card with its verdict on every requirement, each review as one block that grows
+ * with it, the verifier's and the review roles' work grouped under one line each in them, and the rest of the events as the CLI's own lines. The
  * phase is left to the footer.
  */
 export class Conversation extends Container {
@@ -57,6 +57,7 @@ export class Conversation extends Container {
 	/** Each review's block by its id, and the one the latest assessment started, which has no id until it is asked or run. */
 	readonly #reviews = new Map<string, ReviewBlock>();
 	#assessed: ReviewBlock | undefined;
+	readonly #verifications = new Map<string, VerifyCard>();
 
 	constructor(paint: Paint, cwd: string) {
 		super();
@@ -115,8 +116,10 @@ export class Conversation extends Container {
 			case "review_finished":
 				this.#review(event.reviewId).event(event);
 				return;
+			case "verification_started":
 			case "verification_round":
-				this.#rendered(event, verificationLines(event, this.#paint));
+			case "verification_finished":
+				this.#verification(event.verifyId).event(event);
 				return;
 			case "tool_call_started": {
 				const card = new ToolCard(event.tool, event.input, this.view, this.#paint);
@@ -168,7 +171,7 @@ export class Conversation extends Container {
 			card.child(event);
 			return;
 		}
-		const review = this.#reviews.get(parent);
+		const review = this.#reviews.get(parent) ?? this.#verifications.get(parent);
 		if (review) {
 			review.child(event);
 			return;
@@ -195,11 +198,22 @@ export class Conversation extends Container {
 		return block;
 	}
 
-	/** The CLI's line for an event, and the `more` lines after it (already shown with markers), as a block of its own. */
-	#rendered(event: AtelierEvent, more: string[] = []): void {
+	/** The card of verification `verifyId`, a new one at its first event. */
+	#verification(verifyId: string): VerifyCard {
+		let card = this.#verifications.get(verifyId);
+		if (card === undefined) {
+			card = new VerifyCard(verifyId, this.view, this.#paint);
+			this.#verifications.set(verifyId, card);
+			this.#add(card);
+		}
+		return card;
+	}
+
+	/** The CLI's line for an event, as a block of its own. */
+	#rendered(event: AtelierEvent): void {
 		this.#renderer.render(event);
 		this.#renderer.endLine();
-		const text = [shown(this.#notes.trimEnd()), ...more].filter((line) => line !== "").join("\n");
+		const text = shown(this.#notes.trimEnd());
 		this.#notes = "";
 		if (text !== "") this.#add(new Text(text, 1, 0));
 	}

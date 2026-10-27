@@ -155,7 +155,7 @@ export function pathInCwd(path: string, cwd: string | undefined): string {
 const withReason = (error: string | undefined) => (error === undefined ? {} : { reason: error });
 
 /** What is left to decide: the cause and its value, then the reason (it lists the unverified requirements); without a cause, as before. */
-function undecided(event: Extract<AtelierEvent, { type: "verification_finished" }>): string {
+export function verificationUndecided(event: Extract<AtelierEvent, { type: "verification_finished" }>): string {
 	const reason = event.reason === undefined ? "" : ` · ${event.reason}`;
 	if (event.cause !== undefined) return `${describeRefusal(event)}${reason}`;
 	if (event.openDefects.length === 0 && event.reason !== undefined) return event.reason;
@@ -399,7 +399,7 @@ export class Renderer {
 				this.#line(this.#style("red", `✗ verify failed: ${describeRefusal(event)} · needs your decision${cost}`));
 				return;
 			case "needs_decision":
-				this.#line(this.#style("red", `✗ verify: needs your decision · ${undecided(event)}${cost}`));
+				this.#line(this.#style("red", `✗ verify: needs your decision · ${verificationUndecided(event)}${cost}`));
 				for (const defect of event.openDefects) {
 					this.#line(`  ${defect.id} ${defect.severity} — ${defect.summary}`);
 					this.#line(`    reproduce: ${defect.reproduction}`);

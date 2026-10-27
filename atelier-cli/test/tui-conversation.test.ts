@@ -99,7 +99,7 @@ describe("Conversation", () => {
 		expect(open).toContain("child text");
 	});
 
-	it("groups the verifier's events under one line next to the CLI's verification lines", () => {
+	it("groups the verifier's events under one line in the verification's card", () => {
 		const { text } = shown([
 			{ type: "verification_started", verifyId: "v1", items: [2], declaration: [{ items: [2], reason: "auth" }] },
 			{
@@ -121,7 +121,7 @@ describe("Conversation", () => {
 			},
 			{ type: "verification_finished", verifyId: "v1", outcome: "passed", rounds: 1, openDefects: [], usage },
 		]);
-		expect(text).toContain("◇ verifying · item 2\n   └ verify:verifier · 1 tool\n ✓ verify passed");
+		expect(text).toContain("▸ verify · item 2\n   └ verify:verifier · 1 tool\n ✓ verify passed");
 	});
 
 	it("shows control characters in the agent's text and tool input as markers", () => {
@@ -184,6 +184,10 @@ describe("Conversation", () => {
 		]);
 		expect(text).toContain("x␛[31my");
 		expect(text).not.toContain("\u001b");
+	});
+
+	it("leaves the phase to the footer", () => {
+		expect(shown([{ type: "phase_changed", phase: "planning", source: "inferred" }]).text).toBe("");
 	});
 
 	it("says the header once while it does not change, and what a turn took", () => {
