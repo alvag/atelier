@@ -192,3 +192,36 @@ it("does not resurrect credentials when an earlier login finishes after logout",
 		await manager.close();
 	}
 });
+
+it("saves nothing from the final check's refresh once the sign-in is aborted", async () => {
+	const controller = new AbortController();
+	let calls = 0;
+	vi.spyOn(Client.prototype, "connect").mockImplementation(async (transport) => {
+		const auth = (transport as unknown as { _authProvider?: McpOAuthProvider })._authProvider;
+		calls++;
+		if (calls === 1 && auth) {
+			auth.state();
+			auth.saveCodeVerifier("verifier");
+			queueMicrotask(() =>
+				listeners[0]?.handler(
+					{ url: `/callback?code=code&state=${auth.expectedState}` },
+					{
+						writeHead() {
+							return this;
+						},
+						end() {},
+					},
+				),
+			);
+			throw new UnauthorizedError();
+		}
+		// The final check: the sign-in is aborted while its refresh answers.
+		controller.abort(new Error("stopped"));
+		auth?.saveTokens({ access_token: secret, token_type: "Bearer" });
+	});
+	vi.spyOn(StreamableHTTPClientTransport.prototype, "finishAuth").mockResolvedValue();
+	const store = new McpAuthStore(join(dir, "auth.json"));
+	await loginMcpServer(server, store, { openBrowser: () => {}, signal: controller.signal }).catch(() => {});
+	expect(calls).toBe(2);
+	expect(store.get(server)?.tokens).toBeUndefined();
+});

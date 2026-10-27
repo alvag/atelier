@@ -48,6 +48,8 @@ export function usesOAuth(server: HttpServerConfig): boolean {
 export class McpAuthStore {
 	readonly #file: string;
 	readonly #seen = new Set<string>();
+	/** Why the file is not 0600, when it could not be set to it; said in the servers' problems. */
+	#problem: string | undefined;
 
 	constructor(file: string) {
 		this.#file = file;
@@ -72,6 +74,34 @@ export class McpAuthStore {
 		renameSync(temporary, this.#file);
 	}
 
+	/** Why the file is not `0600`, when it could not be set to it (another user's file, a read-only mount). */
+	problem(): string | undefined {
+		return this.#problem;
+	}
+
+	/**
+	 * A file another tool left readable by others is made the user's own again. When that fails, what was read is still
+	 * used, and `problem` says so.
+	 */
+	#secure(): void {
+		let mode: number;
+		try {
+			mode = statSync(this.#file).mode & 0o777;
+			if (mode === 0o600) {
+				this.#problem = undefined;
+				return;
+			}
+		} catch {
+			return;
+		}
+		try {
+			chmodSync(this.#file, 0o600);
+			this.#problem = undefined;
+		} catch (error) {
+			this.#problem = `${this.#file} is not 0600 (it is 0${mode.toString(8)}) and could not be set to it: ${(error as Error).message}`;
+		}
+	}
+
 	/** Every token and client secret seen, to hide wherever it could show. */
 	secrets(): string[] {
 		this.#read();
@@ -81,13 +111,11 @@ export class McpAuthStore {
 	#read(): Record<string, Credentials> {
 		let parsed: unknown;
 		try {
-			const text = readFileSync(this.#file, "utf8");
-			// A file another tool left readable by others is made the user's own again before its tokens are used.
-			if ((statSync(this.#file).mode & 0o777) !== 0o600) chmodSync(this.#file, 0o600);
-			parsed = JSON.parse(text);
+			parsed = JSON.parse(readFileSync(this.#file, "utf8"));
 		} catch {
 			return {};
 		}
+		this.#secure();
 		const servers = (parsed as { servers?: unknown } | null)?.servers;
 		if (typeof servers !== "object" || servers === null) return {};
 		const all = servers as Record<string, Credentials>;
@@ -282,9 +310,9 @@ export async function loginMcpServer(
 		await guarded(transport.finishAuth(answer.code ?? ""));
 		await first.close().catch(() => {});
 		const check = new Client({ name: "atelier", version: VERSION });
-		await guarded(
-			check.connect(httpTransport(server, new McpOAuthProvider(server, store)), { timeout: server.timeoutMs }),
-		);
+		// Its provider takes the signal too: a refresh answered after an abort saves nothing.
+		const checked = new McpOAuthProvider(server, store, options.signal === undefined ? {} : { signal: options.signal });
+		await guarded(check.connect(httpTransport(server, checked), { timeout: server.timeoutMs }));
 		await check.close();
 	} finally {
 		deadline.clear();

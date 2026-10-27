@@ -95,9 +95,12 @@ export class McpManager {
 		return [...listed, ...this.#invalid];
 	}
 
-	/** What is wrong with the file itself, not with one entry. */
+	/** What is wrong with the configuration file itself, not with one entry, and with the permissions of `mcp-auth.json`. */
 	problems(): string[] {
-		return [...this.#fileProblems];
+		// Reading the sign-ins checks their file's permissions.
+		this.#auth?.secrets();
+		const auth = this.#auth?.problem();
+		return [...this.#fileProblems, ...(auth === undefined ? [] : [this.#hide(auth)])];
 	}
 
 	/** The server's tools while it is connected. */
