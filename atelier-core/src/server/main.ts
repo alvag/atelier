@@ -5,7 +5,7 @@ import { createBackend as createNamedBackend } from "../backend-factory.ts";
 import { parseCompactAt } from "../compaction/compactor.ts";
 import { describeError } from "../events.ts";
 import { openMcp } from "../mcp/index.ts";
-import { connectMemory, MemoryUnavailableError } from "../memory/index.ts";
+import { connectMemory, MemoryUnavailableError, memoryPromptsEnabled } from "../memory/index.ts";
 import { SYSTEM_PROMPT_APPEND } from "../prompt.ts";
 import type { BackendName } from "../protocol/types.ts";
 import { checkRoot } from "../root.ts";
@@ -95,7 +95,7 @@ const server = new RpcServer({
 						: "No memory with the echo backend.",
 				);
 			}
-		: (cwd: string) => connectMemory({ cwd, prompts: process.env.ATELIER_MEMORY_PROMPTS !== "off" }),
+		: async (cwd: string) => connectMemory({ cwd, prompts: await memoryPromptsEnabled(process.env, homedir()) }),
 	...(mcpOff ? {} : { connectMcp: (cwd: string) => openMcp({ cwd }) }),
 });
 

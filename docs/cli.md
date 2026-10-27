@@ -82,7 +82,7 @@ rows = [
 
 ### Settings
 
-`~/.atelier/settings.json` sets how the TUI looks and when it notifies; every field is optional (`fullscreen` is `true` and `hideThinking` `false` unless set):
+`~/.atelier/settings.json` sets how the TUI looks and when it notifies, and whether your prompts go to memory; every field is optional (`fullscreen` is `true` and `hideThinking` `false` unless set):
 
 ```json
 {
@@ -110,9 +110,14 @@ rows = [
 			"sound": false,
 			"minSeconds": 10
 		}
+	},
+	"memory": {
+		"prompts": true
 	}
 }
 ```
+
+`memory.prompts: false` keeps your prompts out of long-term memory, like `ATELIER_MEMORY_PROMPTS=off`, in the TUI, the line-by-line CLI and the desktop alike; it is read when each session starts. While memory is on, prompts are saved unless the variable or this field says no; a file that cannot tell (not JSON, another `kind`, a `prompts` that is not `true` or `false`) keeps them out too.
 
 `hideThinking: true` starts the model's thinking folded to `✻ Thinking…`; Ctrl+R still opens it. `statusLine` lists the footer's items in order (the default is the list above); a list with no known item gives the default line, with a warning. The items: `model` (the backend while the backend's default model runs), `effort`, `backend`, `cwd` (the working folder's name), `git-branch` (the short commit when `HEAD` is detached), `profile`, `mode`, `sandbox`, `context`, `cost`, `phase`, `task` and `version`. An `effort` right after `model` goes with it (`claude-opus-5-5 high`). The file is read when the TUI starts. A wrong file or field does not stop the session: the TUI starts with the default for it and says why in the transcript (`warning: …/settings.json: unknown status line item "weather"; skipped`).
 

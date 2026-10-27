@@ -62,6 +62,7 @@ export {
 	type MemoryType,
 	MemoryUnavailableError,
 	MemoryUncertainError,
+	memoryPromptsEnabled,
 	type NewMemory,
 } from "./memory/index.ts";
 export {

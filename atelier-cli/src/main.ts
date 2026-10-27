@@ -9,6 +9,7 @@ import {
 	createBackend as createNamedBackend,
 	describeError,
 	MemoryUnavailableError,
+	memoryPromptsEnabled,
 	openMcp,
 	parseCompactAt,
 } from "@atelier/core";
@@ -87,7 +88,7 @@ const exitCode = await run(
 		? async () => {
 				throw new MemoryUnavailableError("Memory is off (ATELIER_MEMORY=off).");
 			}
-		: (cwd) => connectMemory({ cwd, prompts: process.env.ATELIER_MEMORY_PROMPTS !== "off" }),
+		: async (cwd) => connectMemory({ cwd, prompts: await memoryPromptsEnabled(process.env, homedir()) }),
 	process.env.ATELIER_MCP === "off" ? undefined : (cwd) => openMcp({ cwd }),
 );
 
