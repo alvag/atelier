@@ -141,13 +141,14 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 
 A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent reads `AGENTS.md` (or `CLAUDE.md`) from the working directory and its parents, and `~/.agents/AGENTS.md`. It also lists the skills in `.agents/skills/` (from the working directory up to the repository root) and in `~/.agents/skills/`, each a folder with a `SKILL.md`, and reads one when a task matches it; the first turn says which skills were loaded.
 
-| Variable              | Effect                                   |
-| --------------------- | ---------------------------------------- |
-| `ATELIER_TUI=off`     | Line-by-line session instead of the TUI. |
-| `ATELIER_REVIEW=off`  | Same as `--no-review`.                   |
-| `ATELIER_SANDBOX=off` | Same as `--no-sandbox`.                  |
-| `ATELIER_MEMORY=off`  | No long-term memory.                     |
-| `ATELIER_MCP=off`     | No MCP servers.                          |
+| Variable                    | Effect                                                                                                              |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `ATELIER_TUI=off`           | Line-by-line session instead of the TUI.                                                                            |
+| `ATELIER_REVIEW=off`        | Same as `--no-review`.                                                                                              |
+| `ATELIER_SANDBOX=off`       | Same as `--no-sandbox`.                                                                                             |
+| `ATELIER_MEMORY=off`        | No long-term memory.                                                                                                |
+| `ATELIER_MCP=off`           | No MCP servers.                                                                                                     |
+| `ATELIER_SCRATCH_SWEEP=off` | No cleanup of the temporary directories that crashed sessions left ([temporary directories](docs/architecture.md)). |
 
 ## Inspiration
 

@@ -1,8 +1,8 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createScratchDir,
 	createScratchDirSync,
@@ -39,6 +39,29 @@ function processes(live: Record<number, number | undefined>): ProcessReader {
 	};
 }
 
+/** Waits for a condition instead of a fixed delay. */
+async function until(condition: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!(await condition())) {
+		if (Date.now() > deadline) throw new Error("timed out");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
+/** A sweep that was started has had this long to delete an old directory, which takes milliseconds. */
+const NO_SWEEP_WINDOW_MS = 200;
+const settle = () => new Promise((resolve) => setTimeout(resolve, NO_SWEEP_WINDOW_MS));
+
+/** An old directory without an owner file: what any sweep deletes, whatever the system's processes are. */
+async function abandoned(name: string): Promise<string> {
+	const dir = await fakeScratch(name);
+	const then = new Date(Date.now() - OWNERLESS_AGE_MS - 60_000);
+	await utimes(join(dir, "work", "output.log"), then, then);
+	await utimes(join(dir, "work"), then, then);
+	await utimes(dir, then, then);
+	return dir;
+}
+
 const LIVE = 4242;
 const DEAD = 4343;
 const T = 1_700_000_000_000;
@@ -73,6 +96,47 @@ describe("createScratchDir", () => {
 	});
 });
 
+describe("the sweep that the first directory starts", () => {
+	const SWITCH = "ATELIER_SCRATCH_SWEEP";
+	let previous: string | undefined;
+	beforeEach(() => {
+		previous = process.env[SWITCH];
+		vi.resetModules();
+	});
+	afterEach(() => {
+		if (previous === undefined) delete process.env[SWITCH];
+		else process.env[SWITCH] = previous;
+	});
+
+	it("runs once per process, in the background, on the folder the directory went in", async () => {
+		delete process.env[SWITCH];
+		const scratch = await import("../src/scratch.ts");
+		const first = await abandoned("atelier-session-aaaaaa");
+		const created = await scratch.createScratchDir("session", { tmpRoot: root });
+		await until(async () => !(await exists(first)));
+		expect(await exists(created.path)).toBe(true);
+
+		const second = await abandoned("atelier-session-bbbbbb");
+		scratch.createScratchDirSync("bash", { tmpRoot: root });
+		await settle();
+		expect(await exists(second)).toBe(true);
+	});
+
+	it("does not run while ATELIER_SCRATCH_SWEEP is off", async () => {
+		process.env[SWITCH] = "off";
+		const scratch = await import("../src/scratch.ts");
+		const old = await abandoned("atelier-verify-cccccc");
+		await scratch.createScratchDir("verify", { tmpRoot: root });
+		scratch.createScratchDirSync("bash", { tmpRoot: root });
+		await settle();
+		expect(await exists(old)).toBe(true);
+
+		delete process.env[SWITCH];
+		await scratch.createScratchDir("freeze", { tmpRoot: root });
+		await until(async () => !(await exists(old)));
+	});
+});
+
 describe("sweepStaleScratch", () => {
 	it("deletes the directories of a dead owner and keeps those of a live one", async () => {
 		const alive = await fakeScratch("atelier-session-aaaaaa", { pid: LIVE, startedAt: T });
@@ -100,6 +164,44 @@ describe("sweepStaleScratch", () => {
 		expect(await exists(atMargin)).toBe(true);
 	});
 
+	it("keeps this process's own directories, without asking ps", async () => {
+		const mine = await createScratchDir("verify", { tmpRoot: root });
+		const before = await fakeScratch("atelier-session-tttttt", {
+			pid: process.pid,
+			startedAt: Date.now() - process.uptime() * 1000 - REUSED_PID_MARGIN_MS - 60_000,
+		});
+		const removed = await sweepStaleScratch({ tmpRoot: root });
+		expect(removed).toEqual([before]);
+		expect(await exists(mine.path)).toBe(true);
+	});
+
+	it("keeps the owner file of a deletion that fails part-way, so the next sweep deletes the rest", async () => {
+		const dir = await fakeScratch("atelier-verify-rrrrrr", { pid: DEAD, startedAt: T });
+		const locked = join(dir, "work", "locked");
+		await mkdir(locked);
+		await writeFile(join(locked, "file"), "x\n");
+		await chmod(locked, 0o500);
+		try {
+			expect(await sweepStaleScratch({ tmpRoot: root, processes: processes({}) })).toEqual([]);
+			expect(await exists(join(dir, ".atelier-owner"))).toBe(true);
+		} finally {
+			await chmod(locked, 0o700);
+		}
+		expect(await sweepStaleScratch({ tmpRoot: root, processes: processes({}) })).toEqual([dir]);
+		expect(await exists(dir)).toBe(false);
+	});
+
+	it("keeps a directory without an owner while a file in it is recent, even if the directory is old", async () => {
+		const dir = join(root, "atelier-session-ssssss");
+		await mkdir(dir);
+		await writeFile(join(dir, "bash-1.log"), "written today\n");
+		const then = new Date(Date.now() - OWNERLESS_AGE_MS - 60_000);
+		await utimes(dir, then, then);
+
+		expect(await sweepStaleScratch({ tmpRoot: root, processes: processes({}) })).toEqual([]);
+		expect(await exists(join(dir, "bash-1.log"))).toBe(true);
+	});
+
 	it("keeps a live owner whose start time cannot be read", async () => {
 		const dir = await fakeScratch("atelier-session-gggggg", { pid: LIVE, startedAt: 0 });
 		expect(await sweepStaleScratch({ tmpRoot: root, processes: processes({ [LIVE]: undefined }) })).toEqual([]);
@@ -108,9 +210,7 @@ describe("sweepStaleScratch", () => {
 
 	it("deletes a directory without an owner only once it is old", async () => {
 		const fresh = await fakeScratch("atelier-session-hhhhhh");
-		const old = await fakeScratch("atelier-verify-iiiiii");
-		const then = new Date(Date.now() - OWNERLESS_AGE_MS - 60_000);
-		await utimes(old, then, then);
+		const old = await abandoned("atelier-verify-iiiiii");
 
 		expect(await sweepStaleScratch({ tmpRoot: root, processes: processes({}) })).toEqual([old]);
 		expect(await exists(fresh)).toBe(true);
