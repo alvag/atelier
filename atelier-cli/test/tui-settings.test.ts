@@ -55,6 +55,17 @@ describe("TUI settings", () => {
 		});
 	});
 
+	it("use the default status line when the list leaves no item, and say so", async () => {
+		const empty = `${path()}: "tui.statusLine" has no known item; using the default`;
+		await save(file({ statusLine: [] }));
+		expect(await readTuiSettings(home)).toMatchObject({ statusLine: DEFAULT_STATUS_LINE, warnings: [empty] });
+		await save(file({ statusLine: ["weather"] }));
+		expect(await readTuiSettings(home)).toMatchObject({
+			statusLine: DEFAULT_STATUS_LINE,
+			warnings: [`${path()}: unknown status line item "weather"; skipped`, empty],
+		});
+	});
+
 	it("use the default of each field that is wrong and say so", async () => {
 		await save(file({ fullscreen: "yes", hideThinking: 1, statusLine: "model" }));
 		expect(await readTuiSettings(home)).toEqual({

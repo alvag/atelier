@@ -76,9 +76,12 @@ export async function readTuiSettings(home: string | undefined): Promise<TuiSett
 	else if (hideThinking !== undefined)
 		settings.warnings.push(`${path}: "tui.hideThinking" must be true or false; using the default`);
 	if (Array.isArray(statusLine)) {
-		settings.statusLine = statusLine.filter(isStatusItem);
+		const known = statusLine.filter(isStatusItem);
 		for (const item of statusLine.filter((item) => !isStatusItem(item)))
 			settings.warnings.push(`${path}: unknown status line item ${JSON.stringify(item)}; skipped`);
+		// An empty footer looks broken, not chosen: keep the default line.
+		if (known.length > 0) settings.statusLine = known;
+		else settings.warnings.push(`${path}: "tui.statusLine" has no known item; using the default`);
 	} else if (statusLine !== undefined)
 		settings.warnings.push(`${path}: "tui.statusLine" must be a list of items; using the default`);
 	if (isRecord(notifications)) settings.notifications = readNotifications(notifications, path, settings.warnings);

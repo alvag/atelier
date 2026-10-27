@@ -114,7 +114,7 @@ rows = [
 }
 ```
 
-`hideThinking: true` starts the model's thinking folded to `✻ Thinking…`; Ctrl+R still opens it. `statusLine` lists the footer's items in order (the default is the list above). The items: `model` (the backend while the backend's default model runs), `effort`, `backend`, `cwd` (the working folder's name), `git-branch` (the short commit when `HEAD` is detached), `profile`, `mode`, `sandbox`, `context`, `cost`, `phase`, `task` and `version`. An `effort` right after `model` goes with it (`claude-opus-5-5 high`). The file is read when the TUI starts. A wrong file or field does not stop the session: the TUI starts with the default for it and says why in the transcript (`warning: …/settings.json: unknown status line item "weather"; skipped`).
+`hideThinking: true` starts the model's thinking folded to `✻ Thinking…`; Ctrl+R still opens it. `statusLine` lists the footer's items in order (the default is the list above); a list with no known item gives the default line, with a warning. The items: `model` (the backend while the backend's default model runs), `effort`, `backend`, `cwd` (the working folder's name), `git-branch` (the short commit when `HEAD` is detached), `profile`, `mode`, `sandbox`, `context`, `cost`, `phase`, `task` and `version`. An `effort` right after `model` goes with it (`claude-opus-5-5 high`). The file is read when the TUI starts. A wrong file or field does not stop the session: the TUI starts with the default for it and says why in the transcript (`warning: …/settings.json: unknown status line item "weather"; skipped`).
 
 ### Notifications
 
