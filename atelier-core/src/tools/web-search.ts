@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { visibleText } from "../text.ts";
 import { errorMessage, failure } from "./limits.ts";
 import { defineTool, type ToolDefinition } from "./types.ts";
 
@@ -11,6 +12,7 @@ export const MAX_RESULTS = 10;
 const MAX_SNIPPET_CHARS = 500;
 const MAX_TITLE_CHARS = 300;
 const MAX_URL_CHARS = 1000;
+const MAX_SAMPLE_CHARS = 200;
 
 export interface WebSearchOptions {
 	/** The MCP endpoint; tests point it at a local server. */
@@ -63,6 +65,12 @@ function resultText(body: string): string {
 	if (text === undefined) throw new SearchError("the answer had no text.");
 	return text;
 }
+
+/** Exa says it found nothing, as opposed to an answer this tool cannot read. */
+const saysNoResults = (text: string) => /^\s*no (search )?results( found)?\.?\s*$/i.test(text);
+
+/** The start of an answer this tool cannot read, on one line, with control characters shown as markers. */
+const sample = (text: string) => visibleText(clip(text.replace(/\s+/g, " ").trim(), MAX_SAMPLE_CHARS)).text;
 
 /** Exa's `web_search_exa` writes one `Title:` / `URL:` block per result, with `Text:` or `Highlights:` for the content. */
 function parseResults(text: string): SearchResult[] {
@@ -174,9 +182,12 @@ export function createWebSearchTool(options: WebSearchOptions = {}): ToolDefinit
 		async execute({ query, numResults }, context) {
 			const wanted = numResults ?? DEFAULT_RESULTS;
 			try {
-				const results = parseResults(resultText(await ask(query, wanted, context.signal))).slice(0, wanted);
-				if (results.length === 0)
+				const text = resultText(await ask(query, wanted, context.signal));
+				const results = parseResults(text).slice(0, wanted);
+				if (results.length === 0 && saysNoResults(text))
 					return { ok: true, output: `No results for "${query}".`, summary: `${query} (no results)`, truncated: false };
+				if (results.length === 0)
+					throw new SearchError(`Exa's answer is not in the format this tool reads: "${sample(text)}"`);
 				const output = results
 					.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}${r.snippet === "" ? "" : `\n   ${r.snippet}`}`)
 					.join("\n\n");

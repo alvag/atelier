@@ -135,11 +135,26 @@ describe("web_search results (S3)", () => {
 		expect(out.output).not.toContain("\n\n");
 	});
 
-	it("says there were no results when Exa returns text without any", async () => {
+	it("says there were no results when Exa says so", async () => {
 		handler = sse("No results found.");
 		const out = await search(local(), { query: "zzzz" });
-		expect(out).toMatchObject({ ok: true });
-		expect(out.output).toContain("No results");
+		expect(out).toMatchObject({ ok: true, output: 'No results for "zzzz".' });
+	});
+
+	it("fails, showing the start of the answer, when Exa's text has no result it can read", async () => {
+		handler = sse(`Title: Something\nPublished: N/A\n${"x".repeat(400)}`);
+		const out = await search(local(), { query: "q" });
+		expect(out.ok).toBe(false);
+		expect(out.output).toBe(
+			`Web search failed: Exa's answer is not in the format this tool reads: "Title: Something Published: N/A ${"x".repeat(167)}…"`,
+		);
+	});
+
+	it("shows control characters of an unreadable answer as markers", async () => {
+		handler = sse("Ti\u001b[31mtle");
+		const out = await search(local(), { query: "q" });
+		expect(out.ok).toBe(false);
+		expect(out.output).toContain('"Ti␛[31mtle"');
 	});
 
 	it("bounds the answer: long titles and URLs are cut", async () => {
