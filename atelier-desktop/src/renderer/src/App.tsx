@@ -259,6 +259,19 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 						instructions over 32 KiB: {state.instructions.dropped.length} left out
 					</span>
 				) : null}
+				{state.skills && state.skills.skills.length > 0 ? (
+					<span title={state.skills.skills.map(({ name, path }) => `${name}  ${path}`).join("\n")}>
+						skills: {state.skills.skills.length}
+					</span>
+				) : null}
+				{state.skills && state.skills.warnings.length > 0 ? (
+					<span
+						className="warning"
+						title={state.skills.warnings.map(({ path, message }) => `${path}: ${message}`).join("\n")}
+					>
+						skills: {state.skills.warnings.length} {state.skills.warnings.length === 1 ? "warning" : "warnings"}
+					</span>
+				) : null}
 				{state.review ? (
 					<span className="warning" title={state.review.reason}>
 						no review{state.review.reason ? `: ${state.review.reason}` : ""}

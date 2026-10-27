@@ -222,6 +222,14 @@ describe("reduceChat", () => {
 		expect(run([{ type: "session_opened", sessionId: "s2", cwd: "/w" }], state)).not.toHaveProperty("instructions");
 	});
 
+	it("tracks the skills and their warnings, and forgets them with a new session", () => {
+		const skills = [{ name: "pdf", path: "/w/.agents/skills/pdf/SKILL.md" }];
+		const warnings = [{ path: "/w/.agents/skills/x/SKILL.md", message: "no description; not loaded" }];
+		const state = run([...ready, event({ type: "skills_loaded", skills, warnings })]);
+		expect(state.skills).toEqual({ skills, warnings });
+		expect(run([{ type: "session_opened", sessionId: "s2", cwd: "/w" }], state)).not.toHaveProperty("skills");
+	});
+
 	it("tracks the phase and the active feature", () => {
 		const tasks = [
 			{ id: "T1", title: "A", specs: ["S1"], status: "done" },

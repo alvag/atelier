@@ -544,6 +544,27 @@ describe("App", () => {
 		expect(screen.getByTitle("/AGENTS.md")).toBeTruthy();
 	});
 
+	it("shows the skills in the status bar, and warns about those with a problem", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({
+			type: "skills_loaded",
+			skills: [
+				{ name: "pdf", path: "/w/.agents/skills/pdf/SKILL.md" },
+				{ name: "notes", path: "/h/.agents/skills/notes/SKILL.md" },
+			],
+			warnings: [{ path: "/w/.agents/skills/x/SKILL.md", message: "no description; not loaded" }],
+		});
+		await waitFor(() => expect(screen.getByRole("status").textContent).toContain("skills: 2"));
+		expect(
+			screen.getByTitle(
+				/^pdf\s+\/w\/\.agents\/skills\/pdf\/SKILL\.md\s+notes\s+\/h\/\.agents\/skills\/notes\/SKILL\.md$/,
+			),
+		).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toContain("skills: 1 warning");
+		expect(screen.getByTitle("/w/.agents/skills/x/SKILL.md: no description; not loaded")).toBeTruthy();
+	});
+
 	it("shows the phase in the status bar and the feature's tasks in a panel", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

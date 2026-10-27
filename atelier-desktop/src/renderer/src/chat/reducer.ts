@@ -188,6 +188,8 @@ export interface ChatState {
 	memory?: { available: boolean; project?: string; reason?: string };
 	/** The AGENTS.md / CLAUDE.md files in the system prompt, and those the size cap left out; absent when none. */
 	instructions?: { files: string[]; dropped: string[] };
+	/** The skills listed in the system prompt, and the problems with the others; absent when none. */
+	skills?: { skills: { name: string; path: string }[]; warnings: { path: string; message: string }[] };
 	/** Why changes cannot be reviewed in this session; absent when they can. */
 	review?: { available: false; reason?: string };
 	/** The active ODD feature document, as the core last reported it. */
@@ -248,6 +250,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 				memory: _memory,
 				sandbox: _sandbox,
 				instructions: _instructions,
+				skills: _skills,
 				review: _review,
 				context: _context,
 				expectedMissTurns: _expected,
@@ -376,6 +379,8 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 			};
 		case "project_instructions":
 			return { ...state, instructions: { files: event.files, dropped: event.dropped } };
+		case "skills_loaded":
+			return { ...state, skills: { skills: event.skills, warnings: event.warnings } };
 		case "review_status":
 			return event.available
 				? state
