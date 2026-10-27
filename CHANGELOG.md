@@ -2,6 +2,15 @@
 
 Each release of Atelier, newest first. A release is the `vX.Y.Z` tag on `main`; its GitHub release carries the same notes.
 
+## v0.4.0
+
+Queued messages, remembered permissions, a clearer conversation, a cost panel and notifications.
+- Queued messages: while a turn runs, Enter sends a steer, which the agent gets with its next tool result, and Alt+Enter queues a follow-up, which runs as its own turn once the turn ends. The queue shows above the editor, Alt+Up brings it back to the editor to edit it, and interrupting a turn gives it back. The desktop shows the queue above the composer, where each message can be edited or removed.
+- Remembered permissions: an approval offers `Allow`, `Allow in this session`, `Allow always` and `Deny`, for commands outside the sandbox and for edits outside the working folder. A command a rule covers runs outside the sandbox at once, still kept away from git hooks and config, shell start-up files, secrets and `~/.atelier`. Rules never cover what the destructive-command guard asks about, commands that change their environment, or interpreters and launchers "always". `Allow always` rules are kept in `~/.atelier/permissions.json`, which the agent cannot write; `/permissions` lists and removes them.
+- A clearer conversation in the terminal interface: the agent's text opens with `●`, and the calls between two of its texts fold into one line (`Ran 3 commands · read 1 file · edited 1 file`), with failures and what the sandbox blocked still in sight. While a call runs, it shows in one line. Ctrl+O or a click opens a block. The model's thinking shows dimmed and folds with Ctrl+R; `tui.hideThinking` starts it folded. The feature's progress lines left the conversation.
+- `atelier stats` shows what the saved sessions cost: totals and a breakdown by day, project, model, phase and role, with `--since`, `--project`, `--by` and `--json`. A subscription's API-equivalent cost is shown apart from what was billed, and an unknown cost is never shown as `$0`. It only reads the sessions.
+- Notifications: when a long turn ends or fails, or the session waits for an approval or the review question, Atelier notifies through the terminal (OSC 9 in iTerm2, Ghostty, WezTerm and kitty; the bell in Orca, which turns it into a notification), `osascript` on other macOS terminals or `notify-send` on Linux. Inside Herdr it leaves notifying to Herdr. `tui.notifications` sets it.
+
 ## v0.3.0
 
 Skills, MCP servers, and a full-screen terminal interface.
