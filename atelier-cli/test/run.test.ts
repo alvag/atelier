@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, utimes, writeFil
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 import {
 	type AtelierEventBody,
 	type BackendName,
@@ -12,6 +13,8 @@ import {
 	FakeBackend,
 	FakeMemory,
 	type FakeStep,
+	McpManager,
+	type McpServerConfig,
 	MemoryUnavailableError,
 	MissingApiKeyError,
 	Sandbox,
@@ -1483,6 +1486,86 @@ describe("permission modes", () => {
 		const h = harness([turn]);
 		await run(["--yes", "--no-review", "x"], h.io, h.createBackend);
 		expect(h.out()).not.toContain("mode");
+	});
+
+	describe("MCP servers", () => {
+		const fixture = join(dirname(fileURLToPath(import.meta.url)), "../../atelier-core/test/fixtures/mcp/server.ts");
+		// Started, as openMcp gives it.
+		const manager = (servers: McpServerConfig[], problems: { name?: string; message: string }[] = []) => {
+			const created = new McpManager({
+				file: "/h/.atelier/mcp.json",
+				servers,
+				problems,
+				secrets: ["lit-secret-token"],
+			});
+			created.start();
+			return created;
+		};
+		const stdio = (name: string, env: Record<string, string> = {}): McpServerConfig => ({
+			name,
+			transport: "stdio",
+			enabled: true,
+			timeoutMs: 10_000,
+			command: process.execPath,
+			args: [fixture],
+			env,
+			cwd,
+		});
+
+		it("atelier mcp list connects every server, prints its state and tools, and exits 0 when all are up", async () => {
+			const h = harness([]);
+			const code = await run(["mcp", "list"], h.io, h.createBackend, undefined, () =>
+				manager([stdio("fixture"), { ...stdio("off"), enabled: false }]),
+			);
+			expect(code).toBe(0);
+			expect(h.out()).toBe(
+				["fixture (stdio): connected, 5 tools", "  echo, big, fail, image, slow", "off (stdio): disabled", ""].join(
+					"\n",
+				),
+			);
+			expect(h.backend.prompts).toEqual([]);
+		});
+
+		it("atelier mcp list exits 1 with the errors and stderr of failed servers, invalid entries and file problems, secrets hidden", async () => {
+			const h = harness([]);
+			const code = await run(["mcp", "list"], h.io, h.createBackend, undefined, () =>
+				manager(
+					[stdio("broken", { MCP_EXIT: "3", MCP_STDERR: "bad token lit-secret-token" })],
+					[{ name: "bad", message: '"timeout" must be a positive number of seconds' }, { message: "the file is odd" }],
+				),
+			);
+			expect(code).toBe(1);
+			expect(h.out()).toContain("broken (stdio): failed: ");
+			expect(h.out()).toContain("  stderr:\n    bad token ***\n");
+			expect(h.out()).toContain('bad: invalid: "timeout" must be a positive number of seconds\n');
+			expect(h.out()).toContain("problem: the file is odd\n");
+			expect(h.out()).not.toContain("lit-secret-token");
+		});
+
+		it("atelier mcp list says where to configure servers when there are none", async () => {
+			const h = harness([]);
+			expect(await run(["mcp", "list"], h.io, h.createBackend, undefined, () => manager([]))).toBe(0);
+			expect(h.out()).toBe("No MCP servers: configure them in /h/.atelier/mcp.json.\n");
+		});
+
+		it("atelier mcp needs list", async () => {
+			const h = harness([]);
+			expect(await run(["mcp"], h.io, h.createBackend)).toBe(2);
+			expect(h.err()).toContain("Usage: atelier mcp list");
+		});
+
+		it("shows the session's servers with /mcp, without a turn", async () => {
+			const h = harness([], { input: ["/mcp"] });
+			await run([], h.io, h.createBackend, undefined, () => manager([{ ...stdio("off"), enabled: false }]));
+			expect(h.out()).toContain("off (stdio): disabled\n");
+			expect(h.backend.prompts).toEqual([]);
+		});
+
+		it("says there are no servers with /mcp in a session without them", async () => {
+			const h = harness([], { input: ["/mcp"] });
+			await run([], h.io, h.createBackend);
+			expect(h.out()).toContain("No MCP servers in this session.\n");
+		});
 	});
 
 	it("says the mode with /mode", async () => {

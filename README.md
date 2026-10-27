@@ -37,6 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/alvag/atelier/main/install.sh | sh 
 | `atelier update v0.1.0` | Move to that release, newer or older.                                                                   |
 | `atelier update --main` | Move to the latest `main` (`atelier --version` shows it); `atelier update` goes back to a release.      |
 | `atelier desktop`       | Open the desktop app of the same version; the first time it installs and builds it.                     |
+| `atelier mcp list`      | Connect to the MCP servers of `~/.atelier/mcp.json` and show their state, tools and errors.             |
 
 `atelier update` only touches a copy installed this way, and refuses one with local changes. To work on Atelier itself, clone the repository and run it with `pnpm install` and `pnpm atelier` (see [development](docs/development.md)).
 
@@ -80,6 +81,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | `/new`                    | Start another session.                                                 |
 | `/resume [id]`            | Resume a saved session of this directory.                              |
 | `/feature`                | Open or fold the active feature's tasks.                               |
+| `/mcp`                    | Show the session's MCP servers: state, tools and errors.               |
 | `/review [ref]`           | Review the working tree now, against `HEAD` or a git ref.              |
 | `/undo-correction`        | Undo the latest escalated review correction.                           |
 | `/compact [instructions]` | Summarize the older history now.                                       |

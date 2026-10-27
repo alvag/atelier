@@ -43,6 +43,7 @@ export interface CliArgs {
 export const USAGE = `Usage: atelier [options] [prompt]
        atelier update [vX.Y.Z | --main]
        atelier desktop
+       atelier mcp list
 
 Runs a coding agent in the working directory. With a prompt, runs one turn
 and exits; without one, starts an interactive session (/exit or Ctrl+D to quit),
@@ -98,6 +99,10 @@ a prompt that starts with "update", quote it: atelier "update the readme".
 atelier desktop opens the desktop app, in the same version as the CLI. The first time in a
 copy installed with install.sh it installs Electron (about 200 MB) and builds the app; install.sh
 --desktop does that up front, and atelier update rebuilds it. It takes no options.
+
+atelier mcp list connects to every MCP server of ~/.atelier/mcp.json and prints its
+state, its tools and its errors; it exits with 1 when an entry is invalid or an enabled
+server does not connect. In a session, /mcp prints the same for the session's servers.
 
 Long-term memory is used when its memory service is installed; the session says
 which project it uses, or why it has none.

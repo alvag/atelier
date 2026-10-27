@@ -1,6 +1,8 @@
 /** A subcommand is chosen by the first positional word, exactly; anything else is a prompt. */
 export interface Subcommand {
-	name: "update" | "desktop";
+	name: "update" | "desktop" | "mcp";
+	/** What `atelier mcp` does. */
+	action?: "list";
 	/** The version `atelier update` was asked for. */
 	version?: string;
 	/** `atelier update --main`: the latest main instead of a release. */
@@ -30,6 +32,14 @@ const SPECS: Record<Subcommand["name"], SubcommandSpec> = {
 				...(version === undefined ? {} : { version }),
 				...(main ? { main: true as const } : {}),
 			};
+		},
+	},
+	mcp: {
+		usage: "atelier mcp list",
+		parse(words, prompt) {
+			if (words.length !== 1 || words[0] !== "list")
+				throw new Error(`Usage: ${this.usage}. To give a prompt that starts with "mcp", quote it: atelier "${prompt}"`);
+			return { name: "mcp", action: "list" };
 		},
 	},
 	desktop: {

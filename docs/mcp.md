@@ -60,6 +60,8 @@ Stdio servers start in their own process group, with Atelier's environment plus 
 
 The first turn of a session says the state of its servers with the `mcp_status` event (`servers`, one `{ name, transport?, state, tools, description?, error?, stderr? }` each, and `problems`, what is wrong with the file itself), and later turns say it again only when it changed. The CLI and the TUI print the servers that are up as `mcp: docs (2 tools), fs (connecting)`, and warn on stderr about each failed server (`mcp: ctx failed: <first line of the error> (/mcp for details)`), each invalid entry (`mcp: bad is invalid: <what is wrong>`) and each problem of the file. Disabled servers are not printed.
 
+`atelier mcp list` connects to every enabled server outside a session, prints its state, its tools, its error and the end of its stderr, each invalid entry and each problem of the file, and exits with 1 when an entry is invalid, the file has a problem or an enabled server is not connected. In a session, `/mcp` prints the same for the session's servers as they are now, without a turn, in the TUI and in the line-by-line CLI.
+
 Clients ask for the state at any time with the protocol command `session.mcp` (`sessionId`), answered with `{ servers, problems }` as `mcp_status` carries them, both empty for a session without MCP servers. The protocol is version 7 since this command and event.
 
 ### Secrets

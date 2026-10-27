@@ -36,6 +36,7 @@ import {
 import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { runDesktop } from "./desktop.ts";
 import { OWN_ROOT, versionLabel } from "./install-marker.ts";
+import { mcpFailed, mcpReport } from "./mcp-report.ts";
 import { Renderer } from "./render.ts";
 import { createTerminalReader, type LineReader } from "./terminal-input.ts";
 import { savedTranscript } from "./transcript.ts";
@@ -132,6 +133,7 @@ export async function run(
 		io.stdout(`atelier ${await versionLabel(io.appRoot ?? OWN_ROOT)}\n`);
 		return EXIT_OK;
 	}
+	if (args.subcommand?.name === "mcp") return runMcpList(io, args.cwd, connectMcp);
 	if (args.subcommand?.name === "desktop")
 		return runDesktop({
 			...(io.appRoot === undefined ? {} : { root: io.appRoot }),
@@ -529,6 +531,14 @@ export async function run(
 			if (quitting) return quitCode;
 			if (line === undefined || line.trim() === "/exit") break;
 			if (line.trim() === "") continue;
+			if (line.trim() === "/mcp") {
+				renderer.endLine();
+				const status = session.mcpStatus();
+				io.stdout(
+					status === undefined ? "No MCP servers in this session.\n" : mcpReport(status.servers, status.problems),
+				);
+				continue;
+			}
 			const modeCommand = parseModeCommand(line);
 			if (modeCommand) {
 				await runModeCommand(modeCommand);
@@ -611,6 +621,28 @@ function createLineReader(stdin: Readable): LineReader {
 		},
 		close: () => rl?.close(),
 	};
+}
+
+/** `atelier mcp list`: connects every server, waits for them, prints the report and closes them. */
+async function runMcpList(io: CliIO, cwd: string, connectMcp: McpConnector | undefined): Promise<number> {
+	if (connectMcp === undefined) {
+		io.stderr("error: MCP is off (ATELIER_MCP=off).\n");
+		return EXIT_FAILED;
+	}
+	const manager = connectMcp(cwd);
+	try {
+		await manager.ready();
+		const servers = manager.status();
+		const problems = manager.problems();
+		if (servers.length === 0 && problems.length === 0) {
+			io.stdout(`No MCP servers: configure them in ${manager.file}.\n`);
+			return EXIT_OK;
+		}
+		io.stdout(mcpReport(servers, problems));
+		return mcpFailed(servers, problems) ? EXIT_FAILED : EXIT_OK;
+	} finally {
+		await manager.close();
+	}
 }
 
 type ModeCommand =

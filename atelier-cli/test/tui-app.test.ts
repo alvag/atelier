@@ -790,6 +790,30 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
+	it("shows the session's MCP servers with /mcp, asking the core for them", async () => {
+		const h = harness([]);
+		const stub = stubCore({
+			answer: (command) =>
+				command.command === "session.mcp"
+					? {
+							servers: [{ name: "docs", transport: "http", state: "connected", tools: ["search", "read"] }],
+							problems: [],
+						}
+					: undefined,
+		});
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/mcp");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("docs (http): connected, 2 tools"));
+		expect(h.screen.screen()).toContain("search, read");
+		expect(stub.log.commands).toContainEqual({ command: "session.mcp", sessionId: "s1" });
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
 	it("opens the feature's tasks over the editor with Ctrl+T and /feature, from its events", async () => {
 		const h = harness([]);
 		const stub = stubCore();

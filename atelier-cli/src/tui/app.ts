@@ -4,6 +4,7 @@ import {
 	type ClientCommand,
 	describeError,
 	type JsonValue,
+	type McpServerStatus,
 	type PermissionMode,
 	type SavedEntry,
 	type SavedSessionInfo,
@@ -24,6 +25,7 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import type { CliArgs } from "../args.ts";
+import { mcpReport } from "../mcp-report.ts";
 import { savedTranscript } from "../transcript.ts";
 import { Conversation } from "./conversation.ts";
 import { type Choice, ChoiceDialog, type Folded, PasteFilter } from "./dialog.ts";
@@ -91,6 +93,7 @@ const COMMANDS = [
 	{ name: "mode", description: "Change the permission mode: [normal|auto|yolo] | default <mode>" },
 	{ name: "backend", description: "Move the session to another backend, with a summary [name]" },
 	{ name: "feature", description: "Open or fold the ODD feature's tasks (Ctrl+T)" },
+	{ name: "mcp", description: "Show the MCP servers: state, tools and errors" },
 	{ name: "new", description: "Start a new session" },
 	{ name: "resume", description: "Resume a saved session of this folder [id]" },
 	{ name: "review", description: "Review the current changes, against HEAD or a git ref" },
@@ -779,6 +782,21 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		feature.toggle();
 	};
 
+	/** Prints the session's MCP servers as the core has them now. */
+	const runMcp = async () => {
+		try {
+			const { servers, problems } = (await link.request({ command: "session.mcp", sessionId })) as {
+				servers: McpServerStatus[];
+				problems: string[];
+			};
+			const report = mcpReport(servers, problems);
+			if (report === "") conversation.note("No MCP servers in this session.");
+			else conversation.plain(report);
+		} catch (error) {
+			conversation.note(`error: ${describeError(error)}`, true);
+		}
+	};
+
 	/** Starts a new session with what was chosen and the mode in use; the one before stays on screen. */
 	const runNew = async () => {
 		const mode = isMode(footer.state.mode) ? footer.state.mode : undefined;
@@ -846,6 +864,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		["/backend", `/backend [${BACKEND_NAMES.join("|")}]`],
 		["/new", "/new"],
 		["/feature", "/feature"],
+		["/mcp", "/mcp"],
 		["/resume", "/resume [id]"],
 		["/undo-correction", "/undo-correction"],
 		["/review", "/review [ref]"],
@@ -861,6 +880,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (command === "/backend" && single) await runBackend(argument);
 		else if (text === "/new") await runNew();
 		else if (text === "/feature") toggleFeature();
+		else if (text === "/mcp") await runMcp();
 		else if (command === "/resume" && single) await runResume(argument);
 		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });
 		else if (/^\/review(?:\s+\S+)?$/.test(text))

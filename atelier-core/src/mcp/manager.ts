@@ -28,6 +28,8 @@ interface Server {
  * and closes them. A dropped or failed server reconnects on its next call.
  */
 export class McpManager {
+	/** The configuration file the servers come from. */
+	readonly file: string;
 	readonly #servers = new Map<string, Server>();
 	readonly #invalid: McpServerStatus[];
 	readonly #fileProblems: string[];
@@ -35,6 +37,7 @@ export class McpManager {
 	#closed = false;
 
 	constructor(config: McpConfig) {
+		this.file = config.file;
 		this.#secrets = config.secrets;
 		for (const server of config.servers)
 			this.#servers.set(server.name, { config: server, state: server.enabled ? "connecting" : "disabled", tools: [] });

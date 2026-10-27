@@ -44,6 +44,7 @@ export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
 export {
 	McpManager,
+	type McpServerConfig,
 	type McpServerState,
 	type McpServerStatus,
 	mcpConfigFile,
