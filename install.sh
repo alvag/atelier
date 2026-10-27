@@ -24,7 +24,11 @@ MIN_NODE_MAJOR=22
 MIN_NODE_MINOR=19
 
 WITH_DESKTOP=0
+# 1 once this run created INSTALL_DIR: only then may cleanup remove it.
 CLONED=0
+# While 1, a signal is only recorded in PENDING_SIGNAL, so it cannot land between mkdir and CLONED=1.
+DEFER_SIGNALS=0
+PENDING_SIGNAL=
 
 fail() {
 	printf 'error: %s\n' "$1" >&2
@@ -43,6 +47,31 @@ cleanup() {
 		rm -rf "$INSTALL_DIR"
 	fi
 	exit "$status"
+}
+
+# An interrupt exits with the signal's code (128 + its number), and the EXIT trap cleans up.
+on_signal() {
+	if [ "$DEFER_SIGNALS" -eq 1 ]; then
+		PENDING_SIGNAL=$1
+	else
+		exit "$1"
+	fi
+}
+
+# Creates INSTALL_DIR and marks it as this run's, atomically as far as signals go: mkdir fails when
+# another run got there first, so cleanup never removes a directory this run did not create.
+claim_install_dir() {
+	mkdir -p "$(dirname "$INSTALL_DIR")"
+	DEFER_SIGNALS=1
+	if mkdir "$INSTALL_DIR" 2>/dev/null; then
+		CLONED=1
+	fi
+	DEFER_SIGNALS=0
+	[ -z "$PENDING_SIGNAL" ] || exit "$PENDING_SIGNAL"
+	if [ "$CLONED" -eq 0 ]; then
+		[ -e "$INSTALL_DIR" ] && fail "Atelier is already installed in $INSTALL_DIR. Run: atelier update"
+		fail "Could not create $INSTALL_DIR."
+	fi
 }
 
 parse_args() {
@@ -111,12 +140,12 @@ main() {
 	[ -e "$INSTALL_DIR" ] && fail "Atelier is already installed in $INSTALL_DIR. Run: atelier update"
 
 	trap cleanup EXIT
-	# An interrupt exits with the signal's code (128 + its number), and the EXIT trap cleans up.
-	trap 'exit 129' HUP
-	trap 'exit 130' INT
-	trap 'exit 143' TERM
+	trap 'on_signal 129' HUP
+	trap 'on_signal 130' INT
+	trap 'on_signal 143' TERM
+	claim_install_dir
+	# git clones into the empty directory this run just created.
 	git clone --quiet "$REPO" "$INSTALL_DIR"
-	CLONED=1
 
 	tag=$(newest_release_tag)
 	[ -n "$tag" ] || fail "No vX.Y.Z release found in the repository."

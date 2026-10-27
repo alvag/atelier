@@ -187,6 +187,21 @@ describe("install.sh", () => {
 		expect(existsSync(join(binDir, "atelier"))).toBe(false);
 	});
 
+	it.each([
+		["INT", 130],
+		["TERM", 143],
+		["HUP", 129],
+	] as const)("removes the clone when SIG%s arrives just as git clone ends", async (signal, code) => {
+		// The real clone completes, then the installer gets the signal before it goes on.
+		await fake("git", `${which("git")} "$@" || exit\ncase "$1" in clone) kill -${signal} $PPID ;; esac`);
+
+		const out = install();
+
+		expect(out.status).toBe(code);
+		expect(existsSync(installDir)).toBe(false);
+		expect(existsSync(join(root, "pnpm.log"))).toBe(false);
+	});
+
 	it("refuses to touch an existing install", async () => {
 		await mkdir(installDir, { recursive: true });
 		await writeFile(join(installDir, "keep.txt"), "mine");
