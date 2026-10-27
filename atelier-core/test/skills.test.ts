@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadSkills } from "../src/index.ts";
+import { loadSkills, MAX_SKILLS_BYTES, skillsPrompt } from "../src/index.ts";
 
 let root: string;
 let home: string;
@@ -114,7 +114,72 @@ describe("loadSkills", () => {
 			},
 			{
 				path: join(root, "work/.agents/skills/long/SKILL.md"),
-				message: "description is longer than 1024 characters",
+				message: "description is longer than 1024 characters; cut to 1024",
+			},
+		]);
+		expect(loaded.skills[1]?.description).toBe("x".repeat(1024));
+		expect(skillsPrompt(loaded.skills)).toContain(`<description>${"x".repeat(1024)}</description>`);
+		expect(skillsPrompt(loaded.skills)).not.toContain("x".repeat(1025));
+	});
+
+	it("counts characters, not UTF-16 units, when it cuts a description", async () => {
+		await put("work/.agents/skills/emoji/SKILL.md", skill("emoji", "😀".repeat(1030)));
+		const loaded = await loadSkills(join(root, "work"), home);
+		expect(loaded.skills[0]?.description).toBe("😀".repeat(1024));
+	});
+
+	it("lists skills up to the cap, in the order found, and warns about each one left out", async () => {
+		const description = "d".repeat(1000);
+		for (let i = 0; i < 30; i++) {
+			const name = `s${String(i).padStart(2, "0")}`;
+			await put(`work/.agents/skills/${name}/SKILL.md`, skill(name, description));
+		}
+		const loaded = await loadSkills(join(root, "work"), home);
+		const prompt = skillsPrompt(loaded.skills);
+		expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(MAX_SKILLS_BYTES);
+		expect(loaded.skills.length).toBeGreaterThan(0);
+		expect(loaded.skills.length).toBeLessThan(30);
+		expect(loaded.skills.map(({ name }) => name)).toEqual(
+			Array.from({ length: loaded.skills.length }, (_, i) => `s${String(i).padStart(2, "0")}`),
+		);
+		expect(loaded.warnings).toEqual(
+			Array.from({ length: 30 - loaded.skills.length }, (_, i) => {
+				const name = `s${String(loaded.skills.length + i).padStart(2, "0")}`;
+				return {
+					path: join(root, "work/.agents/skills", name, "SKILL.md"),
+					message: "the skills list is over 24 KiB; not listed",
+				};
+			}),
+		);
+	});
+
+	it("says a description that is not text must be a string", async () => {
+		await put("work/.agents/skills/number/SKILL.md", "---\nname: number\ndescription: 42\n---\n");
+		await put("work/.agents/skills/list/SKILL.md", "---\nname: list\ndescription: [a, b]\n---\n");
+		const loaded = await loadSkills(join(root, "work"), home);
+		expect(loaded.skills).toEqual([]);
+		expect(loaded.warnings).toEqual([
+			{ path: join(root, "work/.agents/skills/list/SKILL.md"), message: "description must be a string; not loaded" },
+			{ path: join(root, "work/.agents/skills/number/SKILL.md"), message: "description must be a string; not loaded" },
+		]);
+	});
+
+	it("says nothing about an invalid sandbox configuration when there are no skills", async () => {
+		await put("home/.atelier/sandbox.json", "{ not json");
+		expect(await loadSkills(join(root, "work"), home)).toEqual({ skills: [], warnings: [] });
+	});
+
+	it("loads no skill when the sandbox configuration is invalid, and says why", async () => {
+		await put("work/.agents/skills/ok/SKILL.md", skill("ok", "Fine."));
+		await put("home/.atelier/sandbox.json", "{ not json");
+		const loaded = await loadSkills(join(root, "work"), home);
+		expect(loaded.skills).toEqual([]);
+		expect(loaded.warnings).toEqual([
+			{
+				path: join(root, "work"),
+				message: expect.stringMatching(
+					new RegExp(`^no skills loaded: Invalid sandbox configuration ${join(home, ".atelier", "sandbox.json")}: .+`),
+				),
 			},
 		]);
 	});

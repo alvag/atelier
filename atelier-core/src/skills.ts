@@ -2,7 +2,6 @@ import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { parse } from "yaml";
 import { isProtected, protectedReadPaths } from "./tools/paths.ts";
-import { secretDirectories } from "./tools/sandbox-paths.ts";
 
 /** A skill as the system prompt lists it: the agent reads `path` when a task matches `description`. */
 export interface Skill {
@@ -27,6 +26,8 @@ export interface Skills {
 const NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_NAME = 64;
 const MAX_DESCRIPTION = 1024;
+/** The most the skills block may add to the system prompt, its instructions included: twice a large personal set of about 25 skills. */
+export const MAX_SKILLS_BYTES = 24 * 1024;
 
 /**
  * Folders from `cwd` up to the repository root, the closest first: the first one
@@ -99,8 +100,12 @@ async function readSkill(
 		warn(`invalid frontmatter: ${reason}; not loaded`);
 		return undefined;
 	}
-	const description = typeof data.description === "string" ? data.description.trim() : "";
-	if (description === "") {
+	if (data.description !== undefined && data.description !== null && typeof data.description !== "string") {
+		warn("description must be a string; not loaded");
+		return undefined;
+	}
+	const full = typeof data.description === "string" ? data.description.trim() : "";
+	if (full === "") {
 		warn("no description; not loaded");
 		return undefined;
 	}
@@ -110,61 +115,87 @@ async function readSkill(
 			: (dirname(file).split(/[/\\]/).pop() ?? "");
 	if (name.length > MAX_NAME || !NAME.test(name))
 		warn(`name "${name}" should be lowercase letters, digits and hyphens, at most ${MAX_NAME}`);
-	if (description.length > MAX_DESCRIPTION) warn(`description is longer than ${MAX_DESCRIPTION} characters`);
-	return { name, description, path: file };
+	// Characters, not UTF-16 units, so a cut never splits one.
+	const characters = Array.from(full);
+	if (characters.length > MAX_DESCRIPTION)
+		warn(`description is longer than ${MAX_DESCRIPTION} characters; cut to ${MAX_DESCRIPTION}`);
+	return { name, description: characters.slice(0, MAX_DESCRIPTION).join(""), path: file };
 }
 
 function escapeXml(text: string): string {
 	return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
+const PROMPT_HEAD = [
+	"The following skills provide specialized instructions for specific tasks.",
+	"When a task matches a skill's description, read its SKILL.md with the read tool before acting.",
+	"Resolve paths relative to a skill against its folder (the folder of its SKILL.md).",
+	"",
+	"<available_skills>",
+].join("\n");
+const PROMPT_TAIL = "</available_skills>";
+
+/** One skill's entry in the block. */
+function promptEntry({ name, description, path }: Skill): string {
+	return `  <skill>\n    <name>${escapeXml(name)}</name>\n    <description>${escapeXml(description)}</description>\n    <location>${escapeXml(path)}</location>\n  </skill>`;
+}
+
 /** What the system prompt says about `skills`: how to use them, and each one's name, description and SKILL.md; empty without skills. */
 export function skillsPrompt(skills: readonly Skill[]): string {
 	if (skills.length === 0) return "";
-	const entries = skills.map(
-		({ name, description, path }) =>
-			`  <skill>\n    <name>${escapeXml(name)}</name>\n    <description>${escapeXml(description)}</description>\n    <location>${escapeXml(path)}</location>\n  </skill>`,
-	);
-	return [
-		"The following skills provide specialized instructions for specific tasks.",
-		"When a task matches a skill's description, read its SKILL.md with the read tool before acting.",
-		"Resolve paths relative to a skill against its folder (the folder of its SKILL.md).",
-		"",
-		"<available_skills>",
-		...entries,
-		"</available_skills>",
-	].join("\n");
+	return [PROMPT_HEAD, ...skills.map(promptEntry), PROMPT_TAIL].join("\n");
+}
+
+/** The first of `skills` whose block fits in MAX_SKILLS_BYTES; each one left out gets a warning. */
+function withinCap(skills: readonly Skill[], warnings: SkillWarning[]): Skill[] {
+	let size = Buffer.byteLength(PROMPT_HEAD) + 1 + Buffer.byteLength(PROMPT_TAIL);
+	const kept: Skill[] = [];
+	for (const skill of skills) {
+		size += Buffer.byteLength(promptEntry(skill)) + 1;
+		if (size > MAX_SKILLS_BYTES)
+			warnings.push({
+				path: skill.path,
+				message: `the skills list is over ${MAX_SKILLS_BYTES / 1024} KiB; not listed`,
+			});
+		else kept.push(skill);
+	}
+	return kept;
 }
 
 /**
  * Finds the skills in `.agents/skills/` from `cwd` up to the repository root, then in the user's
  * `home`/.agents/skills/, once. A skill is a folder with a SKILL.md whose frontmatter has a description;
- * of two with the same name the first found wins. Skills the agent's `read` could not open are left out.
+ * of two with the same name the first found wins. Skills the agent's `read` could not open are left out, and so
+ * are those past MAX_SKILLS_BYTES; with an invalid sandbox configuration no skill is loaded.
  */
 export async function loadSkills(cwd: string, home: string): Promise<Skills> {
-	// The same places `read` refuses; with an invalid sandbox file, at least the secret directories.
-	const protectedPaths = await protectedReadPaths(cwd, home).catch(() =>
-		Promise.all(secretDirectories(home).map((dir) => realpath(dir).catch(() => dir))),
-	);
 	const folders = [...(await projectFolders(cwd)), resolve(home)].map((dir) => join(dir, ".agents", "skills"));
+	const files = (await Promise.all([...new Set(folders)].map((folder) => skillFiles(folder)))).flat();
+	if (files.length === 0) return { skills: [], warnings: [] };
+	// The same places `read` refuses; without them (an invalid sandbox file) nothing is loaded.
+	let protectedPaths: string[];
+	try {
+		protectedPaths = await protectedReadPaths(cwd, home);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return { skills: [], warnings: [{ path: resolve(cwd), message: `no skills loaded: ${reason}` }] };
+	}
 	const skills: Skill[] = [];
 	const warnings: SkillWarning[] = [];
 	const byName = new Map<string, Skill>();
-	for (const folder of [...new Set(folders)]) {
-		for (const file of await skillFiles(folder)) {
-			const skill = await readSkill(file, protectedPaths, warnings);
-			if (skill === undefined) continue;
-			const first = byName.get(skill.name);
-			if (first !== undefined) {
-				warnings.push({
-					path: file,
-					message: `skill "${skill.name}" is already loaded from ${first.path}; this one is ignored`,
-				});
-				continue;
-			}
-			byName.set(skill.name, skill);
-			skills.push(skill);
+	for (const file of files) {
+		const skill = await readSkill(file, protectedPaths, warnings);
+		if (skill === undefined) continue;
+		const first = byName.get(skill.name);
+		if (first !== undefined) {
+			warnings.push({
+				path: file,
+				message: `skill "${skill.name}" is already loaded from ${first.path}; this one is ignored`,
+			});
+			continue;
 		}
+		byName.set(skill.name, skill);
+		skills.push(skill);
 	}
-	return { skills, warnings };
+	return { skills: withinCap(skills, warnings), warnings };
 }

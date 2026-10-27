@@ -118,7 +118,7 @@ export {
 	SessionRecorder,
 	SessionStore,
 } from "./sessions/index.ts";
-export { loadSkills, type Skill, type Skills, type SkillWarning } from "./skills.ts";
+export { loadSkills, MAX_SKILLS_BYTES, type Skill, type Skills, type SkillWarning, skillsPrompt } from "./skills.ts";
 export {
 	BUILTIN_AGENTS,
 	boundReport,
