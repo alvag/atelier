@@ -640,8 +640,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 	};
 	/** Puts queued messages back in the editor, before what it holds, each apart from the next by a blank line. */
-	const giveBack = (messages: readonly QueuedMessage[]) => {
-		const texts = [...messages.map((message) => message.text), editor.getText()].filter((text) => text.trim() !== "");
+	const giveBack = (messages: readonly (QueuedMessage | string)[]) => {
+		const back = messages.map((message) => (typeof message === "string" ? message : message.text));
+		const texts = [...back, editor.getText()].filter((text) => text.trim() !== "");
 		if (texts.length > 0) editor.setText(texts.join("\n\n"));
 	};
 	/** Queues what was typed while a turn runs; a slash command waits in the editor for the turn to end. */
@@ -654,7 +655,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 		editor.addToHistory(line);
 		editor.setText("");
-		void request({ command: "session.queue", sessionId, kind, text: line });
+		const asked = sessionId;
+		void request({ command: "session.queue", sessionId, kind, text: line }).then((answer) => {
+			// Not taken, it goes back before whatever was typed meanwhile.
+			if (answer !== undefined || asked !== sessionId) return;
+			giveBack([line]);
+			tui.requestRender();
+		});
 	};
 	const takeBackQueue = async () => {
 		const asked = sessionId;

@@ -95,7 +95,11 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 		const prompt = draft.trim();
 		if (!prompt || !state.session) return;
 		setDraft("");
-		if (state.busy) void chat.queue(prompt, kind);
+		if (state.busy)
+			// Not taken, it goes back before whatever was typed meanwhile.
+			void chat.queue(prompt, kind).then((queued) => {
+				if (!queued) setDraft((typed) => [prompt, typed].filter((text) => text.trim() !== "").join("\n\n"));
+			});
 		else void chat.send(prompt);
 	};
 	// What an interrupted or failed turn gave back goes before what is being typed.

@@ -31,8 +31,11 @@ export interface Chat {
 	/** The profile names in `~/.atelier/profiles.json` and its `active`, asked each time the core is ready; none when it cannot say. */
 	profiles: ProfileList;
 	send(prompt: string): Promise<void>;
-	/** Queues a message while a turn runs: a steer for the running turn, a follow-up for a turn of its own after it. */
-	queue(text: string, kind: QueueKind): Promise<void>;
+	/**
+	 * Queues a message while a turn runs: a steer for the running turn, a follow-up for a turn of its own after it.
+	 * Answers whether the core took it; when it did not, the text is the caller's again.
+	 */
+	queue(text: string, kind: QueueKind): Promise<boolean>;
 	/** Changes a queued message's text; nothing happens when it already entered the conversation. */
 	editQueued(messageId: string, text: string): Promise<void>;
 	/** Takes a queued message off the queue. */
@@ -123,9 +126,10 @@ export function useChat(bridge: AtelierBridge): Chat {
 	 * A command on the queue: its failure is shown but leaves the turn running, and a message that entered the
 	 * conversation before the command arrived (`not_queued`) is no failure.
 	 */
-	const queueCommand = async (command: ClientCommand) => {
+	const queueCommand = async (command: ClientCommand): Promise<boolean> => {
 		const result = await bridge.request(command);
 		if (!result.ok && result.error.code !== "not_queued") dispatch({ type: "queue_failed", ...result.error });
+		return result.ok;
 	};
 
 	/** `session.mcp`, or `session.mcp_login` for `server`; the answer is the servers as they are now. */
@@ -196,7 +200,8 @@ export function useChat(bridge: AtelierBridge): Chat {
 		},
 		queue: async (text, kind) => {
 			const session = stateRef.current.session;
-			if (session) await queueCommand({ command: "session.queue", sessionId: session.id, kind, text });
+			if (!session) return false;
+			return queueCommand({ command: "session.queue", sessionId: session.id, kind, text });
 		},
 		editQueued: async (messageId, text) => {
 			const session = stateRef.current.session;

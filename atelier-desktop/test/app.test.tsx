@@ -645,6 +645,18 @@ describe("App", () => {
 		await waitFor(() => expect(screen.queryByRole("list", { name: "Queued messages" })).toBeNull());
 	});
 
+	it("puts the text back in the composer when the core does not queue it", async () => {
+		const fake = fakeBridge();
+		fake.answers["session.queue"] = { ok: false, error: { code: "turn_ended", message: "not queued" } };
+		await openFolderAndSend(fake, "go");
+		const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+		fireEvent.change(box, { target: { value: "use tabs" } });
+		fireEvent.keyDown(box, { key: "Enter" });
+		await waitFor(() => expect(fake.commands.at(-1)?.command).toBe("session.queue"));
+		await waitFor(() => expect(box.value).toBe("use tabs"));
+		expect(screen.getByText("turn_ended: not queued")).toBeTruthy();
+	});
+
 	it("drops the queue with the session when the core goes away", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "go");

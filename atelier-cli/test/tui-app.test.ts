@@ -55,6 +55,8 @@ const until = async (condition: () => boolean) => {
 /** The core in this process, over the protocol's own encoding: what the TUI sends is what a server receives. */
 function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: FakeBackend[], backendId?: string) {
 	const commands: ClientCommand[] = [];
+	/** Commands the core answers with an error instead of running them. */
+	const failing = new Set<string>();
 	const envs: Record<string, string>[] = [];
 	const exitListeners = new Set<(exit: CoreExit) => void>();
 	let closed = false;
@@ -96,6 +98,7 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 		return {
 			request(command) {
 				commands.push(command);
+				if (failing.has(command.command)) return Promise.reject(new Error(`${command.command} refused`));
 				const id = `r${++nextId}`;
 				return new Promise((resolve, reject) => {
 					pending.set(id, { resolve, reject });
@@ -121,7 +124,7 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 	const exit = (coreExit: CoreExit) => {
 		for (const listener of exitListeners) listener(coreExit);
 	};
-	return { connect, commands, envs, closed: () => closed, exit };
+	return { connect, commands, failing, envs, closed: () => closed, exit };
 }
 
 /** Takes out styles and terminal sequences; OSC and APC ones (hyperlinks, Kitty images) end at BEL or ST. */
@@ -684,6 +687,31 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("\x03");
 		h.screen.type("/exit");
 		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
+	it("puts the text back in the editor when the core does not queue it", async () => {
+		const h = harness([
+			[{ event: { type: "text_delta", text: "working" } }, { waitForInterrupt: true }],
+			[{ event: finished }],
+		]);
+		h.core.failing.add("session.queue");
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("working"));
+		h.screen.type("use tabs");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("session.queue refused"));
+		// Back in the editor: once the turn is over, Enter sends it.
+		h.screen.type("\x1b");
+		await until(() => h.screen.screen().includes("interrupted"));
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 2);
+		expect(h.backend.prompts[1]).toBe("use tabs");
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("\x04");
 		expect(await code).toBe(0);
 	});
 
