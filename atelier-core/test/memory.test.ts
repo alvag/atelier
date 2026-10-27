@@ -306,3 +306,31 @@ describe("memory boundary", () => {
 		]);
 	});
 });
+
+it("classifies a definite protocol rejection as failed, not uncertain (S1)", async () => {
+	const { McpError, ErrorCode } = await import("@modelcontextprotocol/sdk/types.js");
+	const client = {
+		callTool: async () => {
+			throw new McpError(ErrorCode.InvalidParams, "Invalid params");
+		},
+	} as unknown as Client;
+	const memory = new EngramMemory(client, "proj");
+	const error = await memory.save({ title: "A", type: "decision", content: "x" }).catch((e) => e);
+	expect(error).toBeInstanceOf(MemoryError);
+	expect(error).not.toBeInstanceOf(MemoryUncertainError);
+});
+
+it("classifies a timeout or a closed connection as uncertain: the call may have landed", async () => {
+	const { McpError, ErrorCode } = await import("@modelcontextprotocol/sdk/types.js");
+	for (const code of [ErrorCode.RequestTimeout, ErrorCode.ConnectionClosed]) {
+		const client = {
+			callTool: async () => {
+				throw new McpError(code, "lost");
+			},
+		} as unknown as Client;
+		const error = await new EngramMemory(client, "proj")
+			.save({ title: "A", type: "decision", content: "x" })
+			.catch((e) => e);
+		expect(error).toBeInstanceOf(MemoryUncertainError);
+	}
+});

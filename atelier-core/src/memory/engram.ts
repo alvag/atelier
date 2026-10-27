@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { describeError } from "../events.ts";
 import { VERSION } from "../version.ts";
@@ -200,13 +201,22 @@ export class EngramMemory implements MemoryPort {
 		try {
 			result = await this.#client.callTool({ name, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
 		} catch (error) {
-			// A timeout or a dead Engram process is a memory failure, never a crash of the caller; the call may have landed.
-			throw new MemoryUncertainError(`Engram ${name} failed: ${describeError(error)}`);
+			// Never a crash of the caller. Engram refusing the request is a clear failure; a timeout, a dead process or a
+			// cut connection leave unknown whether the call landed.
+			const message = `Engram ${name} failed: ${describeError(error)}`;
+			throw isRefusal(error) ? new MemoryError(message) : new MemoryUncertainError(message);
 		}
 		const content = Array.isArray(result.content) ? result.content : [];
 		const first = content[0] as { type?: string; text?: string } | undefined;
 		return { isError: result.isError === true, text: first?.type === "text" ? (first.text ?? "") : "" };
 	}
+}
+
+/** An answer from Engram that refuses the request (invalid params, unknown tool...), so nothing was done. */
+function isRefusal(error: unknown): boolean {
+	return (
+		error instanceof McpError && error.code !== ErrorCode.RequestTimeout && error.code !== ErrorCode.ConnectionClosed
+	);
 }
 
 /**
