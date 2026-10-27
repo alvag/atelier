@@ -1,5 +1,5 @@
 import { type AtelierEvent, visibleText } from "@atelier/core";
-import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, Markdown, Text } from "@earendil-works/pi-tui";
 import { phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
 import { PromptBlock } from "./prompt.ts";
 import { ReviewBlock } from "./review-block.ts";
@@ -8,6 +8,18 @@ import { AgentGroup, type CardView, ToolCard } from "./tool-card.ts";
 import { VerifyCard } from "./verify-card.ts";
 
 const shown = (text: string) => visibleText(text).text;
+
+/** A line with nothing on it: no text and no style, so a shaded row is not one. */
+const isBlank = (line: string) => line.trim() === "";
+
+/** `lines` without the blank lines at their start and end. */
+function withoutBlankEdges(lines: string[]): string[] {
+	let start = 0;
+	let end = lines.length;
+	while (start < end && isBlank(lines[start] ?? "")) start++;
+	while (end > start && isBlank(lines[end - 1] ?? "")) end--;
+	return lines.slice(start, end);
+}
 
 /** `◇ 12.3s · 3 requests`, what a turn took; its cost is left to the footer and `/status`. */
 function finishedLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): string {
@@ -90,9 +102,8 @@ export class Conversation extends Container {
 		this.view.expanded = !this.view.expanded;
 	}
 
-	/** The user's prompt, after a blank line that separates it from the turn before: on the shade, or after `❯` without it. */
+	/** The user's prompt: on the shade, or after `❯` without it. */
 	prompt(text: string): void {
-		this.#add(new Spacer(1));
 		if (this.#shade.on) this.#add(new PromptBlock(shown(text), this.#paint, this.#shade));
 		else this.#add(new Text(`${this.#paint(["bold", "cyan"], "❯")} ${shown(text)}`, 1, 0));
 	}
@@ -279,6 +290,17 @@ export class Conversation extends Container {
 		}
 		this.#text.source += delta;
 		this.#text.block.setText(shown(this.#text.source));
+	}
+
+	/**
+	 * Each block with one blank line between it and the next, as Codex spaces its transcript, and one after the last,
+	 * which separates the next session's; the blank lines a block has at its edges are left out, so none is doubled.
+	 */
+	override render(width: number): string[] {
+		const blocks = this.children
+			.map((child) => withoutBlankEdges(child.render(width)))
+			.filter((lines) => lines.length > 0);
+		return blocks.flatMap((lines) => [...lines, ""]);
 	}
 
 	/** Shows a block after everything so far; the agent's next text starts a block of its own. */

@@ -1,5 +1,5 @@
 import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, stripTerminalSequences, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { Conversation } from "../src/tui/conversation.ts";
 import { type Paint, painter, Shade } from "../src/tui/style.ts";
@@ -220,6 +220,62 @@ describe("Conversation", () => {
 			"skills: review",
 			"memory: other",
 		]);
+	});
+
+	it("leaves one blank line between the prompt, the agent's text, each card, the turn's end and each note", () => {
+		const conversation = new Conversation(plain, "/repo");
+		conversation.prompt("hi");
+		for (const event of stamp([
+			{ type: "text_delta", text: "Hello." },
+			{ type: "tool_call_started", callId: "c1", tool: "read", input: { path: "a.ts" } },
+			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "a.ts (2 lines)", truncated: false },
+			{ type: "tool_call_started", callId: "c2", tool: "read", input: { path: "b.ts" } },
+			{ type: "tool_call_finished", callId: "c2", ok: true, summary: "b.ts (3 lines)", truncated: false },
+			{ type: "text_delta", text: "Done." },
+			{ type: "turn_finished", stopReason: "end_turn", usage, requests: 1, durationMs: 1800 },
+		]))
+			conversation.event(event);
+		conversation.prompt("/status");
+		conversation.note("cost: none yet");
+		// A session after it starts under its rule, with no blank lines doubled where two separations meet.
+		const next = new Conversation(plain, "/repo");
+		next.addChild(new Text("── new session ──", 1, 1));
+		next.prompt("again");
+		const transcript = new Container();
+		transcript.addChild(conversation);
+		transcript.addChild(next);
+		expect(transcript.render(60).map((line) => line.trim())).toEqual([
+			"❯ hi",
+			"",
+			"Hello.",
+			"",
+			"▸ read a.ts · 2 lines ✓",
+			"",
+			"▸ read b.ts · 3 lines ✓",
+			"",
+			"Done.",
+			"",
+			"◇ 1.8s · 1 request",
+			"",
+			"❯ /status",
+			"",
+			"cost: none yet",
+			"",
+			"── new session ──",
+			"",
+			"❯ again",
+			"",
+		]);
+	});
+
+	it("leaves a blank line between the shaded prompt and the answer", () => {
+		const conversation = new Conversation(painter(true), "/repo", new Shade(true));
+		conversation.prompt("hi");
+		conversation.event(stamp([{ type: "text_delta", text: "Hello." }])[0] as AtelierEvent);
+		const lines = conversation.render(40).map((line) => stripTerminalSequences(line).trim());
+		expect(lines).toEqual(["", "› hi", "", "", "Hello.", ""]);
+		// The separation is the terminal's own background, under the shaded rows.
+		expect(conversation.render(40)[3]).toBe("");
 	});
 
 	it("shows each prompt as a full-width block on the shade, after › and lined up on every line", () => {
