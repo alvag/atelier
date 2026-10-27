@@ -1873,6 +1873,59 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(h.screen.raw()).toContain("\x1b[?1004l");
 		});
 
+		it("keeps focus reports out of the editor and of a question full screen, alone or among other keys", async () => {
+			await settle({ minSeconds: 0 });
+			const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo first" } } }, { event: finished }]]);
+			inGhostty(h);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("\x1b[I");
+			h.screen.type("o\x1b[On\x1b[Ie");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("Run this command?"));
+			// An Esc reaching the question would deny the command.
+			h.screen.type("\x1b[O");
+			h.screen.type("\x1b[I\x1b[O");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("$0.50"));
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+			expect(h.backend.prompts).toEqual(["one"]);
+			expect(h.core.commands).toContainEqual(expect.objectContaining({ command: "session.approve", approved: true }));
+		});
+
+		it("gives the terminal back even when turning its focus reports off fails", async () => {
+			const h = harness([]);
+			inGhostty(h);
+			const write = h.screen.terminal.write;
+			h.screen.terminal.write = (data) => {
+				// Only the TUI's own write: pi-tui's full screen turns them off among its own sequences.
+				if (data === "\x1b[?1004l") throw new Error("the terminal went away");
+				write(data);
+			};
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+			expect(h.screen.stopped()).toBe(true);
+		});
+
+		it("tells a turn that stopped for a reason other than an error as finished", async () => {
+			await settle({ minSeconds: 0 });
+			const h = harness([[{ event: { ...finished, stopReason: "max_tokens" } }]]);
+			inGhostty(h);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("one");
+			h.screen.type("\r");
+			await until(() => notices(h.screen.raw()).length === 1);
+			expect(notices(h.screen.raw())).toEqual([`${title()}: Turn finished`]);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
 		it("leaves the notices to Herdr, and rings the bell for Orca", async () => {
 			await settle({ minSeconds: 0 });
 			for (const [env, rung] of [

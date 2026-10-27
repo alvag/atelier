@@ -5,7 +5,10 @@ import type { NotificationSettings } from "./settings.ts";
 
 /** The terminal's focus reports, which `CSI ? 1004 h` turns on. */
 const FOCUS_IN = "\x1b[I";
-const FOCUS_OUT = "\x1b[O";
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the focus reports are what is taken out
+const FOCUS_REPORTS = /\x1b\[[IO]/g;
+/** A bracketed paste is the user's text: a focus report inside it is not the terminal's. */
+const PASTE_START = "\x1b[200~";
 const REPORT_FOCUS = "\x1b[?1004h";
 const STOP_REPORTING_FOCUS = "\x1b[?1004l";
 
@@ -56,24 +59,34 @@ export class Attention {
 	}
 
 	/**
-	 * The terminal the TUI should use: it asks for focus reports and reads them before the TUI does. The full screen
-	 * gets them too, since it handles them itself; the main screen does not, so they never reach the editor.
+	 * The terminal the TUI should use: it asks for focus reports and takes them out of the input, alone or among other
+	 * keys, so they never reach the editor or a question. The full screen gets the last one on its own, the only way it
+	 * takes one (it ends a mouse selection when the focus goes); the main screen gets none.
 	 */
 	watch(terminal: Terminal, fullscreen: boolean): Terminal {
 		if (this.#notifier === undefined) return terminal;
 		const start: Terminal["start"] = (onInput, onResize) => {
 			terminal.start((data) => {
-				if (data === FOCUS_IN || data === FOCUS_OUT) {
-					this.#focused = data === FOCUS_IN;
-					if (!fullscreen) return;
-				}
-				onInput(data);
+				const reports = data.startsWith(PASTE_START) ? null : data.match(FOCUS_REPORTS);
+				if (reports === null) return onInput(data);
+				const last = reports[reports.length - 1];
+				this.#focused = last === FOCUS_IN;
+				if (fullscreen && last !== undefined) onInput(last);
+				const rest = data.replace(FOCUS_REPORTS, "");
+				if (rest !== "") onInput(rest);
 			}, onResize);
-			terminal.write(REPORT_FOCUS);
+			try {
+				terminal.write(REPORT_FOCUS);
+			} catch {}
 		};
+		// The terminal is given back even when it cannot be written to anymore.
 		const stop: Terminal["stop"] = () => {
-			terminal.write(STOP_REPORTING_FOCUS);
-			terminal.stop();
+			try {
+				terminal.write(STOP_REPORTING_FOCUS);
+			} catch {
+			} finally {
+				terminal.stop();
+			}
 		};
 		return new Proxy(terminal, {
 			get(target, key) {
@@ -89,12 +102,12 @@ export class Attention {
 		this.#turnStartedAt = Date.now();
 	}
 
-	/** Tells the end of a main turn that ran long enough, unless the user interrupted it. */
+	/** Tells the end of a main turn that ran long enough, unless the user interrupted it; only an error is a failure. */
 	turnFinished(stopReason: string) {
 		const startedAt = this.#turnStartedAt;
 		this.#turnStartedAt = undefined;
 		if (stopReason === "interrupted" || startedAt === undefined || Date.now() - startedAt < this.#minMs) return;
-		this.#tell(stopReason === "end_turn" ? "Turn finished" : "Turn failed");
+		this.#tell(stopReason === "error" ? "Turn failed" : "Turn finished");
 	}
 
 	/** Tells that the session waits for the user's answer. */
