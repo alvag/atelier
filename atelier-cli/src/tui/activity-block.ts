@@ -15,6 +15,8 @@ const KINDS = [
 	{ kind: "subagent", tools: ["task"], say: (n: number) => `ran ${plural(n, "subagent")}` },
 ] as const;
 
+const isThought = (step: ToolCard | Thought): step is Thought => !("tool" in step);
+
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 /** Files count once however many times they are read or edited; the rest counts each call. */
@@ -36,12 +38,20 @@ export function activitySummary(cards: readonly ToolCard[]): string {
 	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+/** A stretch of the model's thinking, as its deltas arrive. */
+interface Thought {
+	text: string;
+}
+
+const FOLDED_THOUGHT = "✻ Thinking…";
+
 /**
- * The calls the agent made between two of its texts, as one block: folded, a line that sums them up,
- * `⎿ Ran 3 commands · read 1 file`, with every failure and what the sandbox blocked under it; open, each call's card.
+ * The calls the agent made between two of its texts, and its thinking among them, as one block: folded, the thinking
+ * and a line that sums the calls up, `⎿ Ran 3 commands · read 1 file`, with every failure and what the sandbox blocked
+ * under it; open, the thinking and each call's card in order.
  */
 export class ActivityBlock implements Component {
-	readonly #cards: ToolCard[] = [];
+	readonly #steps: (ToolCard | Thought)[] = [];
 	readonly #view: CardView;
 	readonly #paint: Paint;
 
@@ -50,8 +60,19 @@ export class ActivityBlock implements Component {
 		this.#paint = paint;
 	}
 
+	get #cards(): ToolCard[] {
+		return this.#steps.filter((step): step is ToolCard => !isThought(step));
+	}
+
 	add(card: ToolCard): void {
-		this.#cards.push(card);
+		this.#steps.push(card);
+	}
+
+	/** More of the model's thinking: the stretch it is in, or a new one after a call. */
+	think(text: string): void {
+		const last = this.#steps.at(-1);
+		if (last !== undefined && isThought(last)) last.text += text;
+		else this.#steps.push({ text });
 	}
 
 	invalidate(): void {}
@@ -60,22 +81,37 @@ export class ActivityBlock implements Component {
 		const paint = this.#paint;
 		const counted = this.#cards.filter((card) => !HIDDEN_TOOLS.has(card.tool));
 		const shown = this.#cards.filter((card) => !HIDDEN_TOOLS.has(card.tool) || card.failed);
-		if (shown.length === 0) return [];
+		const thoughts = this.#steps.filter(isThought);
 		const lines: string[] = [];
-		const running = counted.filter((card) => card.running).at(-1);
-		if (running !== undefined && !this.#view.expanded) lines.push(truncateToWidth(this.#runningLine(running), width));
-		else if (counted.length > 0) {
-			const arrow = this.#view.expanded ? "▾ " : "";
-			lines.push(truncateToWidth(paint("dim", ` ⎿ ${arrow}${activitySummary(counted)}`), width));
-		}
 		if (this.#view.expanded) {
-			for (const card of shown) lines.push(...card.render(Math.max(1, width - 2)).map((line) => `  ${line}`));
+			if (counted.length > 0) lines.push(truncateToWidth(paint("dim", ` ⎿ ▾ ${activitySummary(counted)}`), width));
+			for (const step of this.#steps) {
+				if (isThought(step)) lines.push(...this.#thought(step, width));
+				else if (shown.includes(step)) lines.push(...step.render(Math.max(1, width - 2)).map((line) => `  ${line}`));
+			}
 			return lines;
 		}
+		if (this.#view.thinking === false) {
+			if (thoughts.length > 0) lines.push(...this.#thought(undefined, width));
+		} else lines.push(...thoughts.flatMap((thought) => this.#thought(thought, width)));
+		if (shown.length === 0) return lines;
+		const running = counted.filter((card) => card.running).at(-1);
+		if (running !== undefined) lines.push(truncateToWidth(this.#runningLine(running), width));
+		else if (counted.length > 0) lines.push(truncateToWidth(paint("dim", ` ⎿ ${activitySummary(counted)}`), width));
 		const room = Math.max(1, width - 3);
 		for (const alert of shown.flatMap((card) => card.alerts()))
 			lines.push(...wrapTextWithAnsi(alert, room).map((part) => `   ${part}`));
 		return lines;
+	}
+
+	/** `✻ Checking the alias.`, dimmed, italic and magenta; `✻ Thinking…` while thinking is folded or for `undefined`. */
+	#thought(thought: Thought | undefined, width: number): string[] {
+		const text = thought === undefined || this.#view.thinking === false ? FOLDED_THOUGHT : `✻ ${thought.text.trim()}`;
+		const room = Math.max(1, width - 3);
+		return text
+			.split("\n")
+			.flatMap((line) => wrapTextWithAnsi(line, room))
+			.map((line, index) => `${index === 0 ? " " : "   "}${this.#paint(["dim", "italic", "magenta"], line)}`);
 	}
 
 	/** `⎿ ◐ bash pnpm test… (ran 2 commands)`: the call running now in the summary's place, and what is done so far. */

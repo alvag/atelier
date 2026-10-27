@@ -9,6 +9,8 @@ const VERSION = 1;
 export interface TuiSettings {
 	/** Whether the TUI takes the alternate screen (default) or runs in the main one. */
 	fullscreen: boolean;
+	/** Whether the model's thinking starts folded to `✻ Thinking…`; Ctrl+R opens it. */
+	hideThinking: boolean;
 	/** The status line's items, in order. */
 	statusLine: StatusItem[];
 	/** What was wrong with the file and what was used instead: the session starts anyway and shows them. */
@@ -19,6 +21,7 @@ export const settingsPath = (home: string) => join(home, ".atelier", "settings.j
 
 const defaults = (warnings: string[] = []): TuiSettings => ({
 	fullscreen: true,
+	hideThinking: false,
 	statusLine: DEFAULT_STATUS_LINE,
 	warnings,
 });
@@ -51,10 +54,13 @@ export async function readTuiSettings(home: string | undefined): Promise<TuiSett
 	if (raw.tui === undefined) return defaults();
 	if (!isRecord(raw.tui)) return defaults([`${path}: "tui" must be an object; using the defaults`]);
 	const settings = defaults();
-	const { fullscreen, statusLine } = raw.tui;
+	const { fullscreen, hideThinking, statusLine } = raw.tui;
 	if (typeof fullscreen === "boolean") settings.fullscreen = fullscreen;
 	else if (fullscreen !== undefined)
 		settings.warnings.push(`${path}: "tui.fullscreen" must be true or false; using the default`);
+	if (typeof hideThinking === "boolean") settings.hideThinking = hideThinking;
+	else if (hideThinking !== undefined)
+		settings.warnings.push(`${path}: "tui.hideThinking" must be true or false; using the default`);
 	if (Array.isArray(statusLine)) {
 		settings.statusLine = statusLine.filter(isStatusItem);
 		for (const item of statusLine.filter((item) => !isStatusItem(item)))

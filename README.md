@@ -101,6 +101,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit.                                               |
 | Ctrl+D            | Quit, on an empty editor.                                                                                      |
 | Ctrl+O            | Expand or fold the blocks of calls and every card, or the whole command of an approval.                        |
+| Ctrl+R            | Open or fold the model's thinking.                                                                             |
 | Ctrl+T            | Open or fold the active feature's tasks.                                                                       |
 | Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                                        |
 | PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.                         |
@@ -129,7 +130,7 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 | ---------------------- | -------------------------------------------------------------------------------------------------- |
 | `profiles.json`        | Model, backend and thinking level per agent role ([profiles](docs/profiles.md)).                   |
 | `permission-mode.json` | Default permission mode, written by `/mode default <mode>`.                                        |
-| `settings.json`        | Full screen or not, and the status line items ([settings](docs/cli.md#settings)).                  |
+| `settings.json`        | Full screen or not, thinking folded, and the status line items ([settings](docs/cli.md#settings)). |
 | `sandbox.json`         | Extra writable paths and hidden paths for `bash` ([sandbox](docs/sandbox.md#configuration-files)). |
 | `mcp.json`             | MCP servers the agent can use, in the `mcpServers` format of Claude Code ([MCP](docs/mcp.md)).     |
 | `mcp-auth.json`        | OAuth sign-ins of MCP servers (`0600`), written by `atelier mcp login`.                            |

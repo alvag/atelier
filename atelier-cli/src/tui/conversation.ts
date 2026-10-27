@@ -49,6 +49,26 @@ function configuredLine(event: Extract<AtelierEvent, { type: "session_configured
 	return `◇ now ${parts.join(" · ")}${moved}`;
 }
 
+/** The agent's text after a `●`, the rest of its lines under the text, so it stands apart from its activity. */
+class AgentText implements Component {
+	readonly #markdown: Markdown;
+	readonly #paint: Paint;
+
+	constructor(markdown: Markdown, paint: Paint) {
+		this.#markdown = markdown;
+		this.#paint = paint;
+	}
+
+	invalidate(): void {
+		this.#markdown.invalidate();
+	}
+
+	render(width: number): string[] {
+		const lines = withoutBlankEdges(this.#markdown.render(Math.max(1, width - 3)));
+		return lines.map((line, index) => (index === 0 ? ` ${this.#paint("bold", "●")} ${line}` : `   ${line}`));
+	}
+}
+
 /**
  * The transcript: each prompt, the agent's text as Markdown, each tool call as a folded card with the subagent it
  * ran, each verification as a folded card with its verdict on every requirement, each review as one block that grows
@@ -56,7 +76,7 @@ function configuredLine(event: Extract<AtelierEvent, { type: "session_configured
  * phase is left to the footer.
  */
 export class Conversation extends Container {
-	readonly view: CardView = { expanded: false };
+	readonly view: CardView = { expanded: false, thinking: true };
 	readonly #paint: Paint;
 	readonly #shade: Shade;
 	readonly #now: () => Date;
@@ -113,6 +133,11 @@ export class Conversation extends Container {
 		this.view.expanded = !this.view.expanded;
 	}
 
+	/** Opens or folds the model's thinking. */
+	toggleThinking(): void {
+		this.view.thinking = this.view.thinking === false;
+	}
+
 	/** The user's prompt: on the shade, or after `❯` without it. */
 	prompt(text: string): void {
 		if (this.#shade.on) this.#add(new PromptBlock(shown(text), this.#paint, this.#shade));
@@ -139,6 +164,9 @@ export class Conversation extends Container {
 				this.#appendText(event.text);
 				return;
 			case "thinking_delta":
+				// A model that omits its thinking still sends empty deltas: they show nothing.
+				if (event.text !== "") this.#activityBlock().think(shown(event.text));
+				return;
 			case "approval_requested":
 			case "phase_changed":
 			// The queue shows over the editor.
@@ -322,10 +350,10 @@ export class Conversation extends Container {
 
 	#appendText(delta: string): void {
 		if (this.#text === undefined) {
-			const block = new Markdown("", 1, 0, markdownTheme(this.#paint));
+			const block = new Markdown("", 0, 0, markdownTheme(this.#paint));
 			this.#activity = undefined;
 			this.#text = { block, source: "" };
-			this.addChild(block);
+			this.addChild(new AgentText(block, this.#paint));
 		}
 		this.#text.source += delta;
 		this.#text.block.setText(shown(this.#text.source));

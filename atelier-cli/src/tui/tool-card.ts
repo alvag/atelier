@@ -2,9 +2,11 @@ import { type AtelierEvent, type JsonValue, visibleText } from "@atelier/core";
 import { type Component, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Paint } from "./style.ts";
 
-/** Whether tool cards show their details; one switch for every card of the conversation. */
+/** Whether tool cards show their details, and whether the model's thinking shows; one switch each for the conversation. */
 export interface CardView {
 	expanded: boolean;
+	/** Absent counts as shown. */
+	thinking?: boolean;
 }
 
 /** Lines of a call's input or a subagent's text shown in a card before it says how many more there are. */
