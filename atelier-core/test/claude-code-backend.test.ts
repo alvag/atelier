@@ -420,6 +420,7 @@ describe("ClaudeCodeBackend turns", () => {
 					},
 				},
 				durationMs: expect.any(Number),
+				at: expect.any(String),
 			},
 		]);
 	});
