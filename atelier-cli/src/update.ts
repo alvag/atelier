@@ -36,13 +36,14 @@ export async function runUpdate(options: UpdateOptions): Promise<number> {
 		if (target === undefined) return fail("No vX.Y.Z release found in the repository.");
 		if (!releases.includes(target)) return fail(`No release ${target}; available: ${releases.join(", ")}`);
 
-		const current = await currentVersion(exec);
-		if (current === target) {
+		// Compared by commit: a local commit on top of a release is not that release, whatever version it says.
+		const previous = await exec("git", ["rev-parse", "HEAD"]);
+		if (previous === (await exec("git", ["rev-parse", `${target}^{commit}`]))) {
 			options.stdout(`atelier is already at ${target}\n`);
 			return 0;
 		}
+		const current = await currentVersion(exec, previous);
 
-		const previous = await exec("git", ["rev-parse", "HEAD"]);
 		await exec("git", ["checkout", "--quiet", "--detach", target]);
 		try {
 			await installDependencies(exec, marker.desktop);
@@ -75,10 +76,10 @@ function installDependencies(exec: Exec, desktop: boolean): Promise<string> {
 	return desktop ? installFull(exec) : exec("pnpm", ["install", "--frozen-lockfile", "--prod"]);
 }
 
-/** The `vX.Y.Z` tag at HEAD, or the version the core was built with when HEAD has none. */
-async function currentVersion(exec: Exec): Promise<string> {
+/** The `vX.Y.Z` tag at HEAD, or the core's version and HEAD's short id when HEAD is not a release. */
+async function currentVersion(exec: Exec, head: string): Promise<string> {
 	const tag = await exec("git", ["describe", "--tags", "--exact-match"]).catch(() => "");
-	return RELEASE_TAG.test(tag) ? tag : `v${VERSION}`;
+	return RELEASE_TAG.test(tag) ? tag : `v${VERSION} (local ${head.slice(0, 7)})`;
 }
 
 /** The release tags (strictly vX.Y.Z), oldest first by numeric order. */

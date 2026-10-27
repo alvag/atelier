@@ -146,10 +146,26 @@ describe("atelier update", () => {
 		git(install, "add", ".");
 		git(install, "commit", "--quiet", "-m", "local");
 
+		const local = head().slice(0, 7);
+
 		const c = cli(["update", "v0.9.0"]);
 		expect(await c.code()).toBe(0);
 
-		expect(c.out()).toBe(`Updated atelier v${VERSION} → v0.9.0\n`);
+		expect(c.out()).toBe(`Updated atelier v${VERSION} (local ${local}) → v0.9.0\n`);
+	});
+
+	it("moves a local commit to the requested release even when the core's version matches it", async () => {
+		const tagged = head();
+		await writeFile(join(install, "local.txt"), "x");
+		git(install, "add", ".");
+		git(install, "commit", "--quiet", "-m", "local");
+		const local = head().slice(0, 7);
+
+		const c = cli(["update", `v${VERSION}`]);
+		expect(await c.code()).toBe(0);
+
+		expect(c.out()).toBe(`Updated atelier v${VERSION} (local ${local}) → v${VERSION}\n`);
+		expect(head()).toBe(tagged);
 	});
 
 	it("refuses an unknown version, listing the releases", async () => {
