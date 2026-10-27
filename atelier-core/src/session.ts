@@ -636,8 +636,10 @@ export class Session {
 						skills: this.#skills.skills.map(({ name, path }) => ({ name, path })),
 						warnings: this.#skills.warnings,
 					});
-				if (memory) turn.push({ type: "memory_status", available: true, project: memory.project });
-				else if (this.#options.memoryUnavailable !== undefined)
+				if (memory) {
+					turn.push({ type: "memory_status", available: true, project: memory.project });
+					for (const warning of memory.warnings) turn.push(errorEvent("memory_settings_invalid", warning, true));
+				} else if (this.#options.memoryUnavailable !== undefined)
 					turn.push({ type: "memory_status", available: false, reason: this.#options.memoryUnavailable });
 				if (!this.#options.review && this.#options.reviewUnavailable !== undefined)
 					turn.push({ type: "review_status", available: false, reason: this.#options.reviewUnavailable });

@@ -48,6 +48,8 @@ export interface SavedMemory {
 export interface MemoryPort {
 	/** The project the memories belong to, as the memory service resolved it for the session folder. */
 	readonly project: string;
+	/** What the user should know about this memory from the start (a setting that could not be used), said in the first turn. */
+	readonly warnings: readonly string[];
 	/** Recent memory of the project, at most `maxBytes` bytes. */
 	context(maxBytes: number): Promise<string>;
 	search(query: string, limit: number): Promise<MemoryHit[]>;
@@ -86,6 +88,7 @@ export class FakeMemory implements MemoryPort {
 	readonly saved: NewMemory[] = [];
 	readonly summaries: string[] = [];
 	readonly prompts: string[] = [];
+	readonly warnings: string[] = [];
 	readonly began: { id: string; directory: string }[] = [];
 	ended = 0;
 	closed = false;

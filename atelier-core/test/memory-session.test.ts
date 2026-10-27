@@ -759,6 +759,23 @@ describe("user prompts", () => {
 		expect(memory.prompts).toEqual([`${"x".repeat(1995)} `]);
 	});
 
+	it("says in the first turn what memory warned about at start", async () => {
+		const memory = new FakeMemory("proj");
+		memory.warnings.push('settings.json: "memory.prompts" must be true or false; your prompts are not saved to memory');
+		const { session: s, send } = await session([[{ event: finished }], [{ event: finished }]], {}, memory);
+		const first = await send("one");
+		const second = await send("two");
+		await s.close();
+		expect(first.filter((e) => e.type === "error")).toEqual([
+			expect.objectContaining({
+				code: "memory_settings_invalid",
+				message: 'settings.json: "memory.prompts" must be true or false; your prompts are not saved to memory',
+				recoverable: true,
+			}),
+		]);
+		expect(second.filter((e) => e.type === "error")).toEqual([]);
+	});
+
 	it("warns once when saving prompts fails, and the turns go on", async () => {
 		const memory = new FakeMemory("proj");
 		let attempts = 0;

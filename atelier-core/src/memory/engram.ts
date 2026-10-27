@@ -48,12 +48,15 @@ export interface EngramOptions {
 	command?: string;
 	/** False keeps the user's prompts out of Engram; on by default, when Engram has mem_save_prompt. */
 	prompts?: boolean;
+	/** What the session says in its first turn about this memory, such as a setting that could not be used. */
+	warnings?: readonly string[];
 }
 
 /** The optional tools this Engram has and the user allows. */
 interface EngramFeatures {
 	prompts?: boolean;
 	sessions?: boolean;
+	warnings?: readonly string[];
 }
 
 const projectResponse = z.object({ project: z.string().min(1) });
@@ -91,6 +94,7 @@ export async function connectEngram(options: EngramOptions): Promise<EngramMemor
 		return new EngramMemory(client, project, {
 			prompts: options.prompts !== false && tools.has("mem_save_prompt"),
 			sessions: tools.has("mem_session_start") && tools.has("mem_session_end"),
+			warnings: options.warnings ?? [],
 		});
 	} catch (error) {
 		await client.close().catch(() => {});
@@ -101,6 +105,7 @@ export async function connectEngram(options: EngramOptions): Promise<EngramMemor
 
 export class EngramMemory implements MemoryPort {
 	readonly project: string;
+	readonly warnings: readonly string[];
 	readonly #client: Client;
 	readonly #features: EngramFeatures;
 	/** The session Engram registered; every write names it. */
@@ -110,6 +115,7 @@ export class EngramMemory implements MemoryPort {
 		this.#client = client;
 		this.project = project;
 		this.#features = features;
+		this.warnings = features.warnings ?? [];
 	}
 
 	async context(maxBytes: number): Promise<string> {

@@ -95,7 +95,11 @@ const server = new RpcServer({
 						: "No memory with the echo backend.",
 				);
 			}
-		: async (cwd: string) => connectMemory({ cwd, prompts: await memoryPromptsEnabled(process.env, homedir()) }),
+		: async (cwd: string) => {
+				const prompts = await memoryPromptsEnabled(process.env, homedir());
+				const warnings = prompts.warning === undefined ? [] : [prompts.warning];
+				return connectMemory({ cwd, prompts: prompts.enabled, warnings });
+			},
 	...(mcpOff ? {} : { connectMcp: (cwd: string) => openMcp({ cwd }) }),
 });
 

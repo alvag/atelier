@@ -88,7 +88,11 @@ const exitCode = await run(
 		? async () => {
 				throw new MemoryUnavailableError("Memory is off (ATELIER_MEMORY=off).");
 			}
-		: async (cwd) => connectMemory({ cwd, prompts: await memoryPromptsEnabled(process.env, homedir()) }),
+		: async (cwd) => {
+				const prompts = await memoryPromptsEnabled(process.env, homedir());
+				const warnings = prompts.warning === undefined ? [] : [prompts.warning];
+				return connectMemory({ cwd, prompts: prompts.enabled, warnings });
+			},
 	process.env.ATELIER_MCP === "off" ? undefined : (cwd) => openMcp({ cwd }),
 );
 
