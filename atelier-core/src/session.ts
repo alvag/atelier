@@ -65,6 +65,7 @@ import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "
 import { RISK_TOOL } from "./review/tool.ts";
 import type { SavedConfig } from "./sessions/format.ts";
 import type { SessionRecorder } from "./sessions/recorder.ts";
+import { loadSkills, type Skills, skillsPrompt } from "./skills.ts";
 import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
 import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
@@ -152,6 +153,8 @@ export interface SessionOptions {
 	reviewUnavailable?: string;
 	/** Adds `home`/.agents/AGENTS.md and the AGENTS.md / CLAUDE.md files from `cwd` up to `home` (excluded) to the system prompt, read once at start. Never given to subagents. */
 	projectInstructions?: { home: string };
+	/** Lists the skills of `.agents/skills/` (from `cwd` up to the repo root, then `home`'s) in the system prompt, found once at start. Never given to subagents. */
+	skills?: { home: string };
 	/** Turns on RDD: the risk tool, the assessment at the end of each turn and `Session.review`. Never given to subagents. */
 	review?: ReviewOptions;
 	/**
@@ -257,6 +260,8 @@ export class Session {
 	#memoryContext = "";
 	/** The instruction files read at start; reported with the first turn. */
 	#instructions: ProjectInstructions | undefined;
+	/** The skills found at start; reported with the first turn. */
+	#skills: Skills | undefined;
 	#announced = false;
 	/** The configuration the session started with was saved. */
 	#recordedConfig = false;
@@ -357,6 +362,10 @@ export class Session {
 			const instructions = await loadProjectInstructions(options.cwd, options.projectInstructions.home);
 			if (instructions.files.length > 0 || instructions.dropped.length > 0) session.#instructions = instructions;
 		}
+		if (options.skills) {
+			const skills = await loadSkills(options.cwd, options.skills.home);
+			if (skills.skills.length > 0 || skills.warnings.length > 0) session.#skills = skills;
+		}
 		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-session-"));
 		session.#scratchDir = scratchDir;
 		session.#systemPrompt = [
@@ -365,6 +374,7 @@ export class Session {
 			options.memory ? MEMORY_RULES : "",
 			options.review ? RISK_RULES : "",
 			session.#instructions?.text ?? "",
+			skillsPrompt(session.#skills?.skills ?? []),
 		]
 			.filter((part) => part !== "")
 			.join("\n\n");
@@ -456,6 +466,12 @@ export class Session {
 						type: "project_instructions",
 						files: this.#instructions.files,
 						dropped: this.#instructions.dropped,
+					});
+				if (this.#skills)
+					turn.push({
+						type: "skills_loaded",
+						skills: this.#skills.skills.map(({ name, path }) => ({ name, path })),
+						warnings: this.#skills.warnings,
 					});
 				if (memory) turn.push({ type: "memory_status", available: true, project: memory.project });
 				else if (this.#options.memoryUnavailable !== undefined)

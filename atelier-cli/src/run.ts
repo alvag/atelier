@@ -368,7 +368,7 @@ export async function run(
 		permissionMode: mode,
 		...(saved?.problem === undefined ? {} : { permissionModeProblem: saved.problem }),
 		odd: true,
-		...(io.home === undefined ? {} : { projectInstructions: { home: io.home } }),
+		...(io.home === undefined ? {} : { projectInstructions: { home: io.home }, skills: { home: io.home } }),
 		cwd: args.cwd,
 		...(model === undefined ? {} : { model }),
 		tools: io.tools ?? coreTools,

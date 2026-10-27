@@ -586,7 +586,9 @@ export class RpcServer {
 				approve: ({ callId }) => new Promise<boolean>((resolve) => approvals.set(callId, resolve)),
 				permissionClassifier: { createBackend: (name) => this.#options.createBackend(name ?? backend) },
 				odd: true,
-				...(this.#options.home === undefined ? {} : { projectInstructions: { home: this.#options.home } }),
+				...(this.#options.home === undefined
+					? {}
+					: { projectInstructions: { home: this.#options.home }, skills: { home: this.#options.home } }),
 				...(review
 					? {
 							review: {

@@ -314,6 +314,8 @@ export type AtelierEventBody =
 	| { type: "memory_status"; available: boolean; project?: string; reason?: string }
 	/** Sent first in a session's first turn when AGENTS.md / CLAUDE.md files were found: those added to the system prompt, and those left out by the size cap. */
 	| { type: "project_instructions"; files: string[]; dropped: string[] }
+	/** Sent in a session's first turn, after `project_instructions`, when skills or problems with them were found: the skills listed in the system prompt, and what is wrong with the others. */
+	| { type: "skills_loaded"; skills: { name: string; path: string }[]; warnings: { path: string; message: string }[] }
 	/** The active ODD feature document changed. */
 	| { type: "feature_changed"; name: string; path: string; title: string; tasks: FeatureTask[] }
 	/** Whether the review of uncommitted changes (RDD) works in this session; sent when it does not, once per reason. */

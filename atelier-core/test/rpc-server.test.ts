@@ -129,6 +129,22 @@ describe("RpcServer", () => {
 		);
 	});
 
+	it("lists the skills of the working directory in the system prompt and reports them", async () => {
+		await mkdir(join(cwd, ".agents", "skills", "notes"), { recursive: true });
+		await writeFile(
+			join(cwd, ".agents", "skills", "notes", "SKILL.md"),
+			"---\nname: notes\ndescription: Take notes.\n---\n",
+		);
+		const h = harness([[[{ event: finished }]]]);
+		const sessionId = await h.start();
+		h.send({ command: "session.send", sessionId, prompt: "hi" });
+		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
+		expect(h.backends[0]?.startOptions?.systemPromptAppend).toContain("<name>notes</name>");
+		expect(h.events(sessionId)).toContainEqual(
+			expect.objectContaining({ type: "skills_loaded", skills: [expect.objectContaining({ name: "notes" })] }),
+		);
+	});
+
 	it("gives an auto session a classifier on the session's own backend", async () => {
 		const verdict = JSON.stringify({ decision: "allow", reason: "it is what was asked" });
 		const h = harness([

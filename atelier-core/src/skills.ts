@@ -113,6 +113,28 @@ async function readSkill(
 	return { name, description, path: file };
 }
 
+function escapeXml(text: string): string {
+	return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+/** What the system prompt says about `skills`: how to use them, and each one's name, description and SKILL.md; empty without skills. */
+export function skillsPrompt(skills: readonly Skill[]): string {
+	if (skills.length === 0) return "";
+	const entries = skills.map(
+		({ name, description, path }) =>
+			`  <skill>\n    <name>${escapeXml(name)}</name>\n    <description>${escapeXml(description)}</description>\n    <location>${escapeXml(path)}</location>\n  </skill>`,
+	);
+	return [
+		"The following skills provide specialized instructions for specific tasks.",
+		"When a task matches a skill's description, read its SKILL.md with the read tool before acting.",
+		"Resolve paths relative to a skill against its folder (the folder of its SKILL.md).",
+		"",
+		"<available_skills>",
+		...entries,
+		"</available_skills>",
+	].join("\n");
+}
+
 /**
  * Finds the skills in `.agents/skills/` from `cwd` up to the repository root, then in the user's
  * `home`/.agents/skills/, once. A skill is a folder with a SKILL.md whose frontmatter has a description;
