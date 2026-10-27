@@ -144,6 +144,13 @@ function classifiedLine(event: Extract<AtelierEvent, { type: "permission_classif
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
+/** `path` relative to `cwd` when it is inside it; as it is otherwise. */
+export function pathInCwd(path: string, cwd: string | undefined): string {
+	if (cwd === undefined || !isAbsolute(path)) return path;
+	const shown = relative(cwd, path);
+	return shown.startsWith("..") || isAbsolute(shown) ? path : shown;
+}
+
 /** A round's `error` is its reason. */
 const withReason = (error: string | undefined) => (error === undefined ? {} : { reason: error });
 
@@ -315,10 +322,7 @@ export class Renderer {
 	}
 
 	#receiptPath(path: string): string {
-		const { cwd } = this.#options;
-		if (cwd === undefined || !isAbsolute(path)) return path;
-		const shown = relative(cwd, path);
-		return shown.startsWith("..") || isAbsolute(shown) ? path : shown;
+		return pathInCwd(path, this.#options.cwd);
 	}
 
 	#renderReviewFinished(event: Extract<AtelierEvent, { type: "review_finished" }>): void {

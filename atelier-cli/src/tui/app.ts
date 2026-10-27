@@ -29,7 +29,6 @@ import { Conversation } from "./conversation.ts";
 import { type Choice, ChoiceDialog } from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
 import { type FooterState, footerAfter, footerLine, footerWithConfiguration, footerWithMode } from "./footer.ts";
-import { WorkStatus } from "./odd.ts";
 import {
 	choicesOf,
 	LIST_ROWS,
@@ -327,11 +326,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const transcript = new Container();
 	transcript.addChild(conversation);
 	const status = new Container();
-	// What the review and the verifier are doing, and the ODD feature's tasks, over the questions and the editor.
+	// The ODD feature's tasks, over the questions and the editor.
 	const odd = new Container();
-	let work = new WorkStatus(paint);
 	let feature = new FeaturePanel(paint);
-	odd.addChild(work);
 	odd.addChild(feature);
 	const dialogs = new Container();
 	const editor = new Editor(tui, editorTheme(paint));
@@ -434,7 +431,6 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if (id !== sessionId) return;
 		footer.state = footerAfter(footer.state, event);
 		conversation.event(event);
-		work.event(event);
 		feature.event(event);
 		// A subagent asks the same user through the same session: its questions are asked like the main agent's.
 		if (event.type === "approval_requested")
@@ -647,13 +643,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		conversation = shownIn;
 		footer.state = next.configuration === undefined ? {} : footerWithConfiguration({}, next.configuration);
 		modeRequests = modeRequestsOf(sessionId, footer.state.mode);
-		// The session before's feature and work say nothing about the next one; the panel stays as open as it was.
+		// The session before's feature says nothing about the next one; the panel stays as open as it was.
 		const open = feature.open;
 		odd.clear();
-		work = new WorkStatus(paint);
 		feature = new FeaturePanel(paint);
 		feature.open = open;
-		odd.addChild(work);
 		odd.addChild(feature);
 		void request({ command: "session.close", sessionId: previous });
 	};
