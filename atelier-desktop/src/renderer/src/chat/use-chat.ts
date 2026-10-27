@@ -41,7 +41,7 @@ export interface Chat {
 	/** Takes a queued message off the queue. */
 	unqueue(messageId: string): Promise<void>;
 	interrupt(): Promise<void>;
-	answerApproval(callId: string, approved: boolean): Promise<void>;
+	answerApproval(callId: string, approved: boolean, remember?: "session" | "always"): Promise<void>;
 	answerReviewConsent(reviewId: string, answer: ReviewConsentAnswer): Promise<void>;
 	/** Reviews the session's current uncommitted change, at any risk. */
 	review(): Promise<void>;
@@ -215,11 +215,12 @@ export function useChat(bridge: AtelierBridge): Chat {
 			const session = stateRef.current.session;
 			if (session) await request({ command: "session.interrupt", sessionId: session.id });
 		},
-		answerApproval: async (callId, approved) => {
+		answerApproval: async (callId, approved, remember) => {
 			const session = stateRef.current.session;
 			if (!session) return;
-			dispatch({ type: "approval_answered", callId, approved });
-			await request({ command: "session.approve", sessionId: session.id, callId, approved });
+			const remembering = approved && remember !== undefined ? { remember } : {};
+			dispatch({ type: "approval_answered", callId, approved, ...remembering });
+			await request({ command: "session.approve", sessionId: session.id, callId, approved, ...remembering });
 		},
 		answerReviewConsent: async (reviewId, answer) => {
 			const session = stateRef.current.session;

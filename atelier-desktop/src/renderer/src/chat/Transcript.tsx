@@ -53,13 +53,22 @@ function ToolRow({ item }: { item: Extract<TurnItem, { kind: "tool" }> }) {
 	);
 }
 
-function ApprovalCard({
-	item,
-	onAnswer,
-}: {
-	item: Extract<TurnItem, { kind: "approval" }>;
-	onAnswer: (callId: string, approved: boolean) => void;
-}) {
+/** How a card names the rules an answer would remember: `"open", "npm install"`, or `edits in <folder>`, as plain text. */
+function ruleText(tool: string | undefined, rules: readonly string[]): string {
+	const text =
+		tool === "edit" || tool === "write" ? `edits in ${rules.join(", ")}` : rules.map((rule) => `"${rule}"`).join(", ");
+	return visibleText(text).text;
+}
+
+/** What a card says once answered. */
+function answeredText(item: Extract<TurnItem, { kind: "approval" }>): string {
+	if (item.state === "denied") return "Denied";
+	if (item.remembered === "always") return "Allowed always";
+	if (item.remembered === "session") return "Allowed for this session";
+	return "Allowed";
+}
+
+function ApprovalCard({ item, onAnswer }: { item: Extract<TurnItem, { kind: "approval" }>; onAnswer: OnAnswer }) {
 	const command = visibleText(item.command);
 	const fileTool = item.tool === "edit" || item.tool === "write";
 	// An edit's or a write's reason is the legend itself; only bash's says why it leaves the sandbox.
@@ -85,12 +94,22 @@ function ApprovalCard({
 					<button type="button" onClick={() => onAnswer(item.callId, true)}>
 						Allow
 					</button>
+					{item.remember ? (
+						<button type="button" onClick={() => onAnswer(item.callId, true, "session")}>
+							{`Allow ${ruleText(item.tool, item.remember.rules)} in this session`}
+						</button>
+					) : null}
+					{item.remember?.always ? (
+						<button type="button" onClick={() => onAnswer(item.callId, true, "always")}>
+							{`Allow ${ruleText(item.tool, item.remember.rules)} always`}
+						</button>
+					) : null}
 					<button type="button" onClick={() => onAnswer(item.callId, false)}>
 						Deny
 					</button>
 				</div>
 			) : (
-				<div className="approval-state">{item.state === "approved" ? "Allowed" : "Denied"}</div>
+				<div className="approval-state">{answeredText(item)}</div>
 			)}
 		</fieldset>
 	);
@@ -442,7 +461,7 @@ function TokenLine({ finished }: { finished: NonNullable<Turn["finished"]> }) {
 	return <div className="tokens">tokens: {parts.join(" · ")}</div>;
 }
 
-type OnAnswer = (callId: string, approved: boolean) => void;
+type OnAnswer = (callId: string, approved: boolean, remember?: "session" | "always") => void;
 
 function Items({
 	items,

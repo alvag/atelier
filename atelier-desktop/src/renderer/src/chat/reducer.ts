@@ -51,7 +51,11 @@ export type TurnItem =
 			tool?: string;
 			/** The guard rule (`recursive removal`, `git push`, ...) that makes the command ask, also inside the sandbox; absent otherwise. */
 			confirm?: string;
+			/** What "Allow in this session" and "Allow always" would remember; absent when only Allow and Deny are offered. */
+			remember?: { rules: string[]; always: boolean };
 			state: "pending" | "approved" | "denied";
+			/** How the answer was remembered, when it was. */
+			remembered?: "session" | "always";
 	  }
 	| {
 			kind: "review_consent";
@@ -223,7 +227,7 @@ export type ChatAction =
 	| { type: "session_opened"; sessionId: string; cwd: string; noSandbox?: boolean }
 	| { type: "prompt_sent"; text: string }
 	| { type: "turn_accepted"; turnId: string }
-	| { type: "approval_answered"; callId: string; approved: boolean }
+	| { type: "approval_answered"; callId: string; approved: boolean; remember?: "session" | "always" }
 	| { type: "review_consent_answered"; reviewId: string; answer: ReviewConsentAnswer }
 	| { type: "command_failed"; code: string; message: string }
 	/** A command on the queue failed: shown, with the turn left running. */
@@ -292,7 +296,11 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 		case "approval_answered":
 			return mapItems(state, (item) =>
 				item.kind === "approval" && item.callId === action.callId
-					? { ...item, state: action.approved ? "approved" : "denied" }
+					? {
+							...item,
+							state: action.approved ? "approved" : "denied",
+							...(action.approved && action.remember !== undefined ? { remembered: action.remember } : {}),
+						}
 					: item,
 			);
 		case "review_consent_answered":
@@ -566,6 +574,7 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					...(event.reason === undefined ? {} : { reason: event.reason }),
 					...(event.tool === undefined ? {} : { tool: event.tool }),
 					...(event.confirm === undefined ? {} : { confirm: event.confirm }),
+					...(event.remember === undefined ? {} : { remember: event.remember }),
 					state: "pending",
 				},
 			];

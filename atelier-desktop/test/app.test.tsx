@@ -725,6 +725,46 @@ describe("App", () => {
 		expect(await screen.findByText("Denied")).toBeTruthy();
 	});
 
+	it("offers to remember an approval's rules and sends the chosen one", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "ego-browser nodejs" } });
+		fake.emit({
+			type: "approval_requested",
+			callId: "c1",
+			command: "ego-browser nodejs",
+			reason: "a GUI app",
+			remember: { rules: ["ego-browser nodejs"], always: true },
+		});
+		fireEvent.click(await screen.findByRole("button", { name: 'Allow "ego-browser nodejs" always' }));
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({
+				command: "session.approve",
+				sessionId: "s1",
+				callId: "c1",
+				approved: true,
+				remember: "always",
+			}),
+		);
+		expect(await screen.findByText("Allowed always")).toBeTruthy();
+
+		fake.emit({ type: "tool_call_started", callId: "c2", tool: "edit", input: { path: "/tmp/notes/a.txt" } });
+		fake.emit({
+			type: "approval_requested",
+			callId: "c2",
+			command: "edit /tmp/notes/a.txt",
+			reason: "outside the working directory",
+			tool: "edit",
+			remember: { rules: ["/tmp/notes"], always: false },
+		});
+		fireEvent.click(await screen.findByRole("button", { name: "Allow edits in /tmp/notes in this session" }));
+		expect(screen.queryByRole("button", { name: "Allow edits in /tmp/notes always" })).toBeNull();
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toMatchObject({ callId: "c2", approved: true, remember: "session" }),
+		);
+		expect(await screen.findByText("Allowed for this session")).toBeTruthy();
+	});
+
 	it("shows the reason on an approval card that asks to leave the sandbox", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

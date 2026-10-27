@@ -74,7 +74,8 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 	const [draft, setDraft] = useState("");
 	const [mcpOpen, setMcpOpen] = useState(false);
 	const onAnswer = useCallback(
-		(callId: string, approved: boolean) => void chat.answerApproval(callId, approved),
+		(callId: string, approved: boolean, remember?: "session" | "always") =>
+			void chat.answerApproval(callId, approved, remember),
 		[chat],
 	);
 
