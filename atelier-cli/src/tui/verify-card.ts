@@ -91,7 +91,7 @@ function roundLines(round: Round, expanded: boolean, paint: Paint, openUnmet = f
 }
 
 /** How the verification ended, and the defects left to decide on; its cost is left to the footer and `/status`. */
-function finishedLines(finished: Finished, expanded: boolean, paint: Paint): string[] {
+function finishedLines(finished: Finished, paint: Paint): string[] {
 	switch (finished.outcome) {
 		case "passed":
 			return [`${paint("green", "✓")} verify passed`];
@@ -136,7 +136,7 @@ export function verifyCardLines(
 		...state.rounds.flatMap((round, at) =>
 			roundLines(round, expanded, paint, undecided && at === state.rounds.length - 1),
 		),
-		...(state.finished === undefined ? [] : finishedLines(state.finished, expanded, paint)),
+		...(state.finished === undefined ? [] : finishedLines(state.finished, paint)),
 	];
 	return { head: blockLines(head, width), rest: blockLines(rest, width) };
 }

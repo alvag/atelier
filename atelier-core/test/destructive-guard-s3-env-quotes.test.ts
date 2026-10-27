@@ -3,7 +3,7 @@ import { findDestructiveCommand } from "../src/tools/destructive-guard.ts";
 
 const context = { cwd: "/work/project", home: "/home/person" };
 const join = (words: string[]) => words.join(" ");
-const quote = (text: string) => "'" + text.replaceAll("'", "'\\''") + "'";
+const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 const root = "recursive removal of /";
 const project = "recursive removal of the project directory";
 const home = "recursive removal of the home directory";
@@ -13,8 +13,9 @@ for (const [target, rule] of [
 	[".", project],
 	[context.home, home],
 ]) {
+	if (target === undefined) throw new Error(`no target for the rule ${rule}`);
 	it(`refuses removal of ${target} after a single-quoted literal escape`, () => {
-		const payload = join(["rm", "-rf", "'entry\\c'", target!]);
+		const payload = join(["rm", "-rf", "'entry\\c'", target]);
 		expect(findDestructiveCommand(join(["env", "-S", quote(payload)]), context)).toBe(rule);
 	});
 }

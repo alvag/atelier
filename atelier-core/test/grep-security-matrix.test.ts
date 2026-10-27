@@ -49,18 +49,20 @@ for (const useRipgrep of [true, false]) {
 				).toBe(expected);
 				expect(await hash(secret)).toBe(before);
 			}
-			await symlink(join(home, ".ssh", names[0]!), join(outside, "file-link.txt"));
+			const first = names[0];
+			if (first === undefined) throw new Error("no secret file names to test");
+			await symlink(join(home, ".ssh", first), join(outside, "file-link.txt"));
 			await symlink(join(home, ".ssh"), join(outside, "dir-link"));
 			for (const glob of ["*", "**", "**/*.txt", "{*.txt,*.md}", "!*.md", "!dir-link/**"]) {
 				const result = await grep.execute({ pattern: "MARKER", path: root, glob }, { cwd });
 				expect(result.ok).toBe(true);
 				expect(result.output).not.toContain("SECRET_MARKER");
 			}
-			const denied = join(outside, names[0]!);
+			const denied = join(outside, first);
 			await writeFile(denied, "DENIED_MARKER\n".repeat(400));
 			await writeFile(join(outside, "public.txt"), "PUBLIC_MARKER\n".repeat(101));
 			const before = await hash(denied);
-			for (const entry of [denied, relative(cwd, denied), denied + "/"]) {
+			for (const entry of [denied, relative(cwd, denied), `${denied}/`]) {
 				await writeFile(join(cwd, ".atelier", "sandbox.json"), JSON.stringify({ denyRead: [entry] }));
 				const result = await grep.execute({ pattern: "MARKER", path: outside, glob: "*.txt" }, { cwd });
 				expect(result.output).not.toContain("DENIED_MARKER");

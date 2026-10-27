@@ -32,7 +32,6 @@ import {
 	SYSTEM_PROMPT_APPEND,
 	sessionBackend,
 	type ToolDefinition,
-	VERSION,
 	visibleText,
 	writeDefaultPermissionMode,
 } from "@atelier/core";
