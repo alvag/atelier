@@ -38,12 +38,19 @@ export interface CliArgs {
 	noFullscreen?: true;
 	/** The first positional word names a subcommand (`atelier update`): no session starts. */
 	subcommand?: Subcommand;
+	/** The options of `atelier stats`, as given. */
+	stats?: { since?: string; project?: string; by?: string; json?: true };
 }
+
+/** The options only `atelier stats` takes. */
+const STATS_OPTIONS = ["since", "project", "by", "json"] as const;
 
 export const USAGE = `Usage: atelier [options] [prompt]
        atelier update [vX.Y.Z | --main]
        atelier desktop
        atelier mcp list | login <server> | logout <server>
+       atelier stats [--since 7d|30d|all|YYYY-MM-DD] [--project <dir>]
+                     [--by day|project|model|phase|role] [--json]
 
 Runs a coding agent in the working directory. With a prompt, runs one turn
 and exits; without one, starts an interactive session (/exit or Ctrl+D to quit),
@@ -169,8 +176,16 @@ export function parseCliArgs(
 		throw new UsageError(error instanceof Error ? error.message : String(error));
 	}
 	if (values.main && subcommand === undefined) throw new UsageError("--main is only valid with atelier update.");
+	const statsOption = STATS_OPTIONS.find((name) => values[name] !== undefined);
+	if (statsOption !== undefined && subcommand?.name !== "stats")
+		throw new UsageError(`--${statsOption} is only valid with atelier stats.`);
 	if (subcommand !== undefined) {
-		const allowed = subcommand.name === "update" ? ["help", "version", "main"] : ["help", "version"];
+		const allowed =
+			subcommand.name === "update"
+				? ["help", "version", "main"]
+				: subcommand.name === "stats"
+					? ["help", "version", ...STATS_OPTIONS]
+					: ["help", "version"];
 		const given = Object.keys(values).filter((name) => !allowed.includes(name));
 		if (given.length > 0)
 			throw new UsageError(
@@ -197,6 +212,16 @@ export function parseCliArgs(
 		...(values["no-session"] ? { noSession: true as const } : {}),
 		...(values["no-fullscreen"] ? { noFullscreen: true as const } : {}),
 		...(subcommand === undefined ? {} : { subcommand }),
+		...(subcommand?.name === "stats"
+			? {
+					stats: {
+						...(values.since === undefined ? {} : { since: values.since }),
+						...(values.project === undefined ? {} : { project: values.project }),
+						...(values.by === undefined ? {} : { by: values.by }),
+						...(values.json ? { json: true as const } : {}),
+					},
+				}
+			: {}),
 	};
 }
 
@@ -221,6 +246,10 @@ function parse(argv: readonly string[]) {
 			"no-session": { type: "boolean" },
 			"no-fullscreen": { type: "boolean" },
 			main: { type: "boolean" },
+			since: { type: "string" },
+			project: { type: "string" },
+			by: { type: "string" },
+			json: { type: "boolean" },
 		},
 	});
 }
