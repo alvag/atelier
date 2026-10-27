@@ -80,18 +80,20 @@ export class McpAuthStore {
 	}
 
 	/**
-	 * A file another tool left readable by others is made the user's own again. When that fails, what was read is still
-	 * used, and `problem` says so.
+	 * A file another tool left readable by others is made the user's own again, whether it parses or not. When that
+	 * fails, what was read is still used, and `problem` says so; it always says how the file is now, not how it was.
 	 */
 	#secure(): void {
 		let mode: number;
 		try {
 			mode = statSync(this.#file).mode & 0o777;
-			if (mode === 0o600) {
-				this.#problem = undefined;
-				return;
-			}
 		} catch {
+			// No file, nothing readable by others.
+			this.#problem = undefined;
+			return;
+		}
+		if (mode === 0o600) {
+			this.#problem = undefined;
 			return;
 		}
 		try {
@@ -109,13 +111,13 @@ export class McpAuthStore {
 	}
 
 	#read(): Record<string, Credentials> {
+		this.#secure();
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(readFileSync(this.#file, "utf8"));
 		} catch {
 			return {};
 		}
-		this.#secure();
 		const servers = (parsed as { servers?: unknown } | null)?.servers;
 		if (typeof servers !== "object" || servers === null) return {};
 		const all = servers as Record<string, Credentials>;
@@ -282,6 +284,7 @@ export async function loginMcpServer(
 	// The whole sign-in, the first connection included, stops on abort or timeout, and the callback closes then.
 	const deadline = stopAt(options.timeoutMs ?? LOGIN_TIMEOUT_MS, options.signal);
 	const guarded = <T>(work: Promise<T>) => Promise.race([work, deadline.stopped]);
+	const stop = { signal: deadline.signal };
 	try {
 		// A client registered with another redirect URI cannot use this one; a new sign-in starts without old tokens.
 		store.update(server, ({ client, redirectUrl }) =>
@@ -290,7 +293,7 @@ export async function loginMcpServer(
 		const provider = new McpOAuthProvider(server, store, {
 			redirectUrl: callback.url,
 			onRedirect: options.openBrowser,
-			...(options.signal === undefined ? {} : { signal: options.signal }),
+			...stop,
 		});
 		const transport = httpTransport(server, provider) as Transport & { finishAuth(code: string): Promise<void> };
 		const first = new Client({ name: "atelier", version: VERSION });
@@ -310,10 +313,13 @@ export async function loginMcpServer(
 		await guarded(transport.finishAuth(answer.code ?? ""));
 		await first.close().catch(() => {});
 		const check = new Client({ name: "atelier", version: VERSION });
-		// Its provider takes the signal too: a refresh answered after an abort saves nothing.
-		const checked = new McpOAuthProvider(server, store, options.signal === undefined ? {} : { signal: options.signal });
-		await guarded(check.connect(httpTransport(server, checked), { timeout: server.timeoutMs }));
-		await check.close();
+		// The timeout or the abort cuts it, and a refresh answered after either saves nothing.
+		const checked = new McpOAuthProvider(server, store, stop);
+		try {
+			await guarded(check.connect(httpTransport(server, checked), { timeout: server.timeoutMs, ...stop }));
+		} finally {
+			await check.close().catch(() => {});
+		}
 	} finally {
 		deadline.clear();
 		callback.close();
@@ -394,26 +400,34 @@ function portOf(url: string | undefined): number | undefined {
 	}
 }
 
-/** A promise that rejects when the sign-in times out or is aborted (with the abort's reason when it is an error). */
-function stopAt(ms: number, signal: AbortSignal | undefined): { stopped: Promise<never>; clear: () => void } {
-	let timer: NodeJS.Timeout | undefined;
-	let onAbort: (() => void) | undefined;
+/**
+ * When the sign-in times out or is aborted: `stopped` rejects (with the abort's reason when it is an error) and
+ * `signal` aborts with the same error, for the work the race alone would leave running.
+ */
+function stopAt(
+	ms: number,
+	signal: AbortSignal | undefined,
+): { stopped: Promise<never>; signal: AbortSignal; clear: () => void } {
+	const stop = new AbortController();
+	const timer = setTimeout(() => stop.abort(new Error(`no answer from the browser in ${Math.round(ms / 1000)} s`)), ms);
+	const onAbort = () =>
+		stop.abort(
+			signal?.reason instanceof Error ? signal.reason : new Error("the sign-in stopped: the MCP servers closed"),
+		);
+	if (signal?.aborted) onAbort();
+	else signal?.addEventListener("abort", onAbort, { once: true });
 	const stopped = new Promise<never>((_resolve, reject) => {
-		timer = setTimeout(() => reject(new Error(`no answer from the browser in ${Math.round(ms / 1000)} s`)), ms);
-		onAbort = () =>
-			reject(
-				signal?.reason instanceof Error ? signal.reason : new Error("the sign-in stopped: the MCP servers closed"),
-			);
-		if (signal?.aborted) onAbort();
-		else signal?.addEventListener("abort", onAbort, { once: true });
+		if (stop.signal.aborted) reject(stop.signal.reason);
+		else stop.signal.addEventListener("abort", () => reject(stop.signal.reason), { once: true });
 	});
 	// Nobody may be waiting on it when it fires.
 	stopped.catch(() => {});
 	return {
 		stopped,
+		signal: stop.signal,
 		clear: () => {
 			clearTimeout(timer);
-			if (onAbort) signal?.removeEventListener("abort", onAbort);
+			signal?.removeEventListener("abort", onAbort);
 		},
 	};
 }
