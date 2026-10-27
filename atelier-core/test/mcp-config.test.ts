@@ -118,4 +118,12 @@ describe("secrets", () => {
 			expect(shown).not.toContain(secret);
 		expect(shown).toContain("auth *** failed");
 	});
+
+	it("hides the token-like words of a value, not its ordinary words", async () => {
+		await write({
+			mcpServers: { a: { command: "a", env: { NOTE: "auth failed for token LITERAL-manual-secret-123" } } },
+		});
+		const { secrets } = load();
+		expect(redact("fetch failed; Bearer LITERAL-manual-secret-123", secrets)).toBe("fetch failed; Bearer ***");
+	});
 });

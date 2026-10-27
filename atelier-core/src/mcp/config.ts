@@ -241,15 +241,19 @@ function expand(raw: string, env: NodeJS.ProcessEnv): { value: string; missing?:
 /** Values shorter than this are not secrets worth hiding: hiding them would blank ordinary words. */
 const MIN_SECRET = 6;
 
+/** A word of a value that looks like a token: long, with a digit or a symbol. Ordinary words stay visible. */
+const tokenLike = (word: string) => word.length >= 8 && /[^A-Za-z]/.test(word);
+
 /**
  * What an entry holds that must never be shown: every value of `env` and `headers` and `oauth.clientSecret`, as written and as expanded,
- * each word of it (the token of `Bearer <token>`), and the values of the URL's query (`?key=...`).
+ * each word of it that looks like a token (the token of `Bearer <token>`), and the values of the URL's query (`?key=...`).
  */
 export function secretsOf(entry: unknown, env: NodeJS.ProcessEnv): string[] {
 	if (!isRecord(entry)) return [];
 	const found: string[] = [];
 	const add = (value: string) => {
-		for (const candidate of [value, ...value.split(/\s+/)]) if (candidate.length >= MIN_SECRET) found.push(candidate);
+		if (value.length >= MIN_SECRET) found.push(value);
+		for (const word of value.split(/\s+/)) if (word !== value && tokenLike(word)) found.push(word);
 	};
 	const oauth = isRecord(entry.oauth) ? { clientSecret: entry.oauth.clientSecret } : undefined;
 	for (const field of [entry.env, entry.headers, oauth]) {
