@@ -49,6 +49,8 @@ atelier --cwd ~/code/my-app                                      # work on anoth
 atelier --continue                                               # resume the newest session of the directory
 ```
 
+The interactive session shows the agent's text as Markdown, with code blocks colored by language.
+
 | Option                             | Effect                                                                                   |
 | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | `--mode <mode>`                    | Permission mode: `normal` (default), `auto` or `yolo` (see below).                       |

@@ -2,7 +2,7 @@ import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { Conversation } from "../src/tui/conversation.ts";
-import { painter } from "../src/tui/style.ts";
+import { type Paint, painter } from "../src/tui/style.ts";
 
 const plain = painter(false);
 const usage = { input: 1200, output: 85, cacheRead: 0, cacheWrite: 0 };
@@ -225,5 +225,56 @@ describe("Conversation", () => {
 			true,
 		);
 		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+	});
+});
+
+describe("Conversation code blocks", () => {
+	/** Marks each painted piece with its style, so a test sees which color each token asked for. */
+	const tagged: Paint = (style, text) => `<${[style].flat().join("+")}>${text}</>`;
+	const untag = (line: string) => line.replace(/<[^>]*>/g, "");
+
+	function codeLines(markdown: string, paint: Paint) {
+		const conversation = new Conversation(paint, "/repo");
+		for (const event of stamp([{ type: "text_delta", text: markdown }])) conversation.event(event);
+		const lines = conversation.render(80).map((line) => line.trimEnd());
+		const open = lines.findIndex((line) => line.includes("```"));
+		const close = lines.findIndex((line, i) => i > open && line.includes("```"));
+		return lines.slice(open + 1, close);
+	}
+
+	it("colors the tokens of a block with a language and keeps its text", () => {
+		const source = 'const name = "atelier"; // the app\nreturn 42;';
+		const lines = codeLines(`\`\`\`ts\n${source}\n\`\`\``, tagged);
+		const text = lines.join("\n");
+		expect(text).toContain("<magenta>const</>");
+		expect(text).toContain('<green>"atelier"</>');
+		expect(text).toContain("<dim>// the app</>");
+		expect(text).toContain("<yellow>42</>");
+		expect(lines.map((line) => untag(line).trim())).toEqual(source.split("\n"));
+	});
+
+	it("colors bash and json blocks", () => {
+		expect(codeLines('```bash\necho "hi" # greet\n```', tagged).join("\n")).toContain("<dim># greet</>");
+		expect(codeLines('```json\n{ "port": 8080 }\n```', tagged).join("\n")).toContain("<yellow>8080</>");
+	});
+
+	it("leaves a block without a language or with an unknown one as plain text", () => {
+		for (const fence of ["```", "```klingon"]) {
+			const lines = codeLines(`${fence}\nconst x = "y"; // z\n\`\`\``, tagged);
+			expect(lines.map((line) => line.trim())).toEqual(['const x = "y"; // z']);
+		}
+	});
+
+	it("adds no escape when the terminal has no color", () => {
+		const lines = codeLines('```ts\nconst x = "y"; // z\n```', painter(false));
+		expect(lines.map((line) => line.trim())).toEqual(['const x = "y"; // z']);
+		expect(lines.join("\n")).not.toContain("\x1b[");
+	});
+
+	it("closes every color on its own line in a token that spans lines", () => {
+		const lines = codeLines("```ts\n/* one\n   two */\nlet a = `x\ny`;\n```", tagged);
+		expect(lines.map(untag).map((line) => line.trim())).toEqual(["/* one", "two */", "let a = `x", "y`;"]);
+		for (const line of lines) expect(line.match(/<[^/>]+>/g)?.length).toBe(line.match(/<\/>/g)?.length);
+		expect(lines[1]).toContain("<dim>   two */</>");
 	});
 });

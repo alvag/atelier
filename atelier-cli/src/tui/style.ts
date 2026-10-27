@@ -1,5 +1,6 @@
 import { styleText } from "node:util";
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@earendil-works/pi-tui";
+import { highlightCode } from "./highlight.ts";
 
 export type Style = Parameters<typeof styleText>[0];
 
@@ -19,6 +20,7 @@ export function markdownTheme(paint: Paint): MarkdownTheme {
 		code: (text) => paint("yellow", text),
 		codeBlock: (text) => text,
 		codeBlockBorder: (text) => paint("dim", text),
+		highlightCode: (code, lang) => highlightCode(paint, code, lang),
 		quote: (text) => paint("italic", text),
 		quoteBorder: (text) => paint("dim", text),
 		hr: (text) => paint("dim", text),
