@@ -158,8 +158,8 @@ const CONSENT_TITLE = "Review this high-risk change?";
 class Footer implements Component {
 	/** What the session says. */
 	state: FooterState = {};
-	/** Where the TUI works, which a new or resumed session keeps. */
-	place: Pick<FooterState, "cwd" | "branch"> = {};
+	/** Where the TUI works and which Atelier runs, which a new or resumed session keeps. */
+	place: Pick<FooterState, "cwd" | "branch" | "version"> = {};
 	readonly #paint: Paint;
 	readonly #items: readonly StatusItem[];
 	constructor(paint: Paint, items: readonly StatusItem[]) {
@@ -348,14 +348,15 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const tui = createScreen(options.terminal, settings.fullscreen && !args.noFullscreen, paint);
 	const footer = new Footer(paint, settings.statusLine);
-	footer.place = { cwd: args.cwd };
+	const version = options.version === undefined ? {} : { version: options.version };
+	footer.place = { cwd: args.cwd, ...version };
 	/** Reads the branch again, without blocking: the agent may have changed it. Only the newest read is shown. */
 	let branchReads = 0;
 	const readBranch = async () => {
 		const read = ++branchReads;
 		const branch = await readGitBranch(args.cwd);
 		if (read !== branchReads) return;
-		footer.place = { cwd: args.cwd, ...(branch === undefined ? {} : { branch }) };
+		footer.place = { cwd: args.cwd, ...version, ...(branch === undefined ? {} : { branch }) };
 		tui.requestRender();
 	};
 	// What the core answered, until the session's own events say more.
@@ -577,11 +578,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		quitting = true;
 		finish(code);
 	};
+	/** Why the TUI quit, said once the terminal is given back: in the alternate screen it would be wiped with it. */
+	let farewell: string | undefined;
 	const coreExited = (exit: CoreExit) => {
 		if (quitting) return;
-		options.stderr(
-			`error: The core exited (${exit.signal ?? `exit code ${exit.code ?? "unknown"}`}).${exit.stderr ? `\n${exit.stderr}` : ""}\n`,
-		);
+		farewell = `error: The core exited (${exit.signal ?? `exit code ${exit.code ?? "unknown"}`}).${exit.stderr ? `\n${exit.stderr}` : ""}\n`;
 		quit(EXIT_FAILED);
 	};
 	const startTurn = async (command: ClientCommand) => {
@@ -930,6 +931,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		// The editor and the footer stay behind; the transcript is printed where the terminal was.
 		keepDocument(tui, document);
 		tui.stop();
+		if (farewell !== undefined) options.stderr(farewell);
 		// A core that does not answer must not keep the terminal's owner waiting: close the link anyway.
 		let timer: NodeJS.Timeout | undefined;
 		const gaveUp = new Promise<void>((resolve) => {

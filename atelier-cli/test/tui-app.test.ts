@@ -52,13 +52,14 @@ const until = async (condition: () => boolean) => {
 function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: FakeBackend[], backendId?: string) {
 	const commands: ClientCommand[] = [];
 	const envs: Record<string, string>[] = [];
+	const exitListeners = new Set<(exit: CoreExit) => void>();
 	let closed = false;
 	const connect = async (env: Record<string, string>): Promise<CoreLink> => {
 		envs.push(env);
 		const input = new PassThrough();
 		const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 		const eventListeners = new Set<(sessionId: string, event: AtelierEvent) => void>();
-		const exitListeners = new Set<(exit: CoreExit) => void>();
+		exitListeners.clear();
 		const splitter = new LineSplitter();
 		const server = new RpcServer({
 			input,
@@ -112,7 +113,11 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 			},
 		};
 	};
-	return { connect, commands, envs, closed: () => closed };
+	/** Tells the TUI the core exited, as a crashed process would. */
+	const exit = (coreExit: CoreExit) => {
+		for (const listener of exitListeners) listener(coreExit);
+	};
+	return { connect, commands, envs, closed: () => closed, exit };
 }
 
 /** A terminal that keeps what the TUI wrote, without its styles, and types keys into it. */
@@ -343,6 +348,32 @@ describe("TUI", { timeout: 20_000 }, () => {
 			await until(() => since(mark).includes("fresh answer"));
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
+		});
+
+		it("says why the core exited after giving the terminal back", async () => {
+			const h = harness([]);
+			let saidAt = -1;
+			h.io.stderr = (text: string) => {
+				if (text.includes("The core exited")) saidAt = h.screen.raw().length;
+			};
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("Atelier "));
+			h.core.exit({ code: 1, signal: null, stderr: "boom" });
+			expect(await code).toBe(1);
+			expect(saidAt).toBeGreaterThan(h.screen.raw().lastIndexOf(ALT_OFF));
+		});
+
+		it("shows Atelier's version in the status line when it is chosen", async () => {
+			const h = harness([]);
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "settings.json"),
+				JSON.stringify({ kind: "atelier.settings", version: 1, tui: { statusLine: ["version", "mode"] } }),
+			);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => /v\d+\.\d+\.\d+\S* · normal/.test(h.screen.screen()));
+			h.screen.type("\x04");
+			expect(await code).toBe(0);
 		});
 
 		it("copies the text selected with the mouse to the clipboard", async () => {
