@@ -232,7 +232,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		const screen = h.screen.screen();
 		expect(screen).toContain("❯ fix it");
 		expect(screen).toContain("Done now.");
-		expect(screen).toContain("▸ read a.ts · 2 lines ✓");
+		expect(screen).toContain("⎿ Read 1 file");
 		expect(screen).toContain(`m · ${basename(cwd)} · profile default · auto · sandbox ✗ · $0.50`);
 		h.screen.type("/exit");
 		h.screen.type("\r");
@@ -608,7 +608,9 @@ describe("TUI", { timeout: 20_000 }, () => {
 		await until(() => worker.toolResults.length === 1);
 		expect(worker.toolResults[0]?.output).toContain("childcmd\n");
 		await until(() => h.screen.screen().includes("◇ "));
-		expect(h.screen.screen()).toContain("└ worker · 1 tool");
+		expect(h.screen.screen()).toContain("⎿ Ran 1 subagent");
+		h.screen.type("\x0f");
+		await until(() => h.screen.screen().includes("└ worker · 1 tool"));
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});
@@ -862,7 +864,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("run");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("$0.50"));
-		expect(h.screen.screen()).toContain("▸ bash echo one · exit 0 ✓");
+		expect(h.screen.screen()).toContain("⎿ Ran 1 command");
 		expect(h.screen.screen()).not.toContain("│ $ echo one");
 		h.screen.type("\x0f");
 		await until(() => h.screen.screen().includes("│ $ echo one"));

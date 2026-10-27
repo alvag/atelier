@@ -24,22 +24,96 @@ function shown(bodies: Body[], width = 80, expanded = false) {
 }
 
 describe("Conversation", () => {
-	it("shows the agent's text as Markdown and each tool call as one folded line", () => {
-		const { text } = shown([
-			{ type: "text_delta", text: "Reading **the** " },
-			{ type: "text_delta", text: "parser." },
-			{ type: "tool_call_started", callId: "c1", tool: "read", input: { path: "src/args.ts" } },
-			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "src/args.ts (132 lines)", truncated: false },
-			{ type: "tool_call_started", callId: "c2", tool: "bash", input: { command: "pnpm test\n--run" } },
-			{ type: "tool_call_finished", callId: "c2", ok: false, summary: "pnpm test (exit 1)", truncated: false },
-			{ type: "tool_call_started", callId: "c3", tool: "grep", input: { pattern: "mode" } },
-		]);
+	it("shows the agent's text as Markdown and the calls between two texts as one folded line", () => {
+		const { text } = shown(
+			[
+				{ type: "text_delta", text: "Reading **the** " },
+				{ type: "text_delta", text: "parser." },
+				{ type: "tool_call_started", callId: "c1", tool: "read", input: { path: "src/args.ts" } },
+				{ type: "tool_call_finished", callId: "c1", ok: true, summary: "src/args.ts (132 lines)", truncated: false },
+				{ type: "tool_call_started", callId: "c2", tool: "bash", input: { command: "pnpm test\n--run" } },
+				{ type: "tool_call_finished", callId: "c2", ok: true, summary: "pnpm test (exit 0)", truncated: false },
+				{ type: "tool_call_started", callId: "c3", tool: "bash", input: { command: "git status" } },
+				{ type: "tool_call_finished", callId: "c3", ok: true, summary: "git status (exit 0)", truncated: false },
+				{ type: "tool_call_started", callId: "c4", tool: "edit", input: { path: "a.ts", edits: [] } },
+				{ type: "tool_call_finished", callId: "c4", ok: true, summary: "a.ts (1 edit)", truncated: false },
+				{ type: "tool_call_started", callId: "c5", tool: "edit", input: { path: "a.ts", edits: [] } },
+				{ type: "tool_call_finished", callId: "c5", ok: true, summary: "a.ts (1 edit)", truncated: false },
+				{ type: "tool_call_started", callId: "c6", tool: "grep", input: { pattern: "mode" } },
+				{ type: "tool_call_finished", callId: "c6", ok: true, summary: "mode (3 matches)", truncated: false },
+				{ type: "tool_call_started", callId: "c7", tool: "memory", input: { action: "search" } },
+				{ type: "tool_call_finished", callId: "c7", ok: true, summary: "search (1 result)", truncated: false },
+				{ type: "text_delta", text: "Done." },
+			],
+			120,
+		);
 		expect(text).toContain("Reading the parser.");
 		expect(text).not.toContain("**");
-		expect(text).toContain("▸ read src/args.ts · 132 lines ✓");
-		expect(text).toContain("▸ bash pnpm test · exit 1 ✗");
-		expect(text).toContain("▸ grep mode …");
+		expect(text).toContain(
+			"⎿ Ran 2 commands · read 1 file · edited 1 file · searched 1 time · used 1 other tool\n\n Done.",
+		);
+		expect(text).not.toContain("▸");
 		expect(text).not.toContain("--run");
+	});
+
+	it("keeps a block's failures and what the sandbox blocked in sight while it is folded", () => {
+		const { text } = shown([
+			{ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "pnpm test" } },
+			{ type: "tool_call_finished", callId: "c1", ok: false, summary: "pnpm test (exit 1)", truncated: false },
+			{ type: "tool_call_started", callId: "c2", tool: "bash", input: { command: "pnpm install" } },
+			{
+				type: "tool_call_finished",
+				callId: "c2",
+				ok: true,
+				summary: "pnpm install (exit 0)",
+				truncated: false,
+				blocked: ["network to registry.npmjs.org"],
+			},
+			{ type: "tool_call_started", callId: "c3", tool: "read", input: { path: "a.ts" } },
+		]);
+		expect(text).toContain("⎿ ◐ read a.ts…  (ran 2 commands)");
+		expect(text).toContain("✗ bash pnpm test · exit 1");
+		expect(text).toContain("sandbox blocked: network to registry.npmjs.org");
+		expect(text).not.toContain("pnpm install");
+	});
+
+	it("shows the call running now in the summary's place, a subagent's own call included", () => {
+		const { text } = shown([
+			{ type: "tool_call_started", callId: "c1", tool: "read", input: { path: "a.ts" } },
+			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "a.ts (2 lines)", truncated: false },
+			{ type: "tool_call_started", callId: "t1", tool: "task", input: { agent: "worker", prompt: "fix" } },
+			{ type: "tool_call_started", callId: "k1", tool: "edit", input: { path: "b.ts" }, parentCallId: "t1" },
+		]);
+		expect(text).toContain("⎿ ◐ task worker · edit b.ts…  (read 1 file)");
+		expect(text).not.toContain("Read 1 file");
+	});
+
+	it("leaves ODD's progress out of the transcript and says only when the task in progress changes", () => {
+		const tasks = (now: string) => [
+			{ id: "T1", title: "Parser", status: now === "T1" ? "in_progress" : "done", specs: [] },
+			{ id: "T2", title: "Footer", status: now === "T2" ? "in_progress" : "pending", specs: [] },
+		];
+		const changed = (now: string): Body => ({
+			type: "feature_changed",
+			name: "tui",
+			path: "odd/tasks/tui.md",
+			title: "TUI",
+			tasks: tasks(now) as never,
+		});
+		const { text } = shown([
+			{ type: "tool_call_started", callId: "f1", tool: "feature", input: { action: "start" } },
+			{ type: "tool_call_finished", callId: "f1", ok: true, summary: "start (2 tasks)", truncated: false },
+			changed("T1"),
+			changed("T1"),
+			{ type: "tool_call_started", callId: "f2", tool: "feature", input: { action: "update_task" } },
+			{ type: "tool_call_finished", callId: "f2", ok: false, summary: "update_task (no task T9)", truncated: false },
+			changed("T2"),
+		]);
+		expect(text).not.toContain("done");
+		expect(text).not.toContain("start");
+		expect(text.match(/◆ now T1 Parser/g)).toHaveLength(1);
+		expect(text).toContain("✗ feature update_task · no task T9");
+		expect(text).toContain("◆ now T2 Footer");
 	});
 
 	it("expands every card to show the call's input and where its full output is", () => {
@@ -65,10 +139,11 @@ describe("Conversation", () => {
 			80,
 			true,
 		);
+		expect(text).toContain("⎿ ▾ Ran 1 command · edited 1 file");
 		expect(text).toContain("▾ bash pnpm test · exit 0 ✓");
-		expect(text).toContain("│ $ pnpm test\n   │ --run");
+		expect(text).toContain("│ $ pnpm test\n     │ --run");
 		expect(text).toContain("│ full output: /tmp/out.txt");
-		expect(text).toContain("│ - old\n   │ + new");
+		expect(text).toContain("│ - old\n     │ + new");
 	});
 
 	it("groups a subagent's work under its task call, with its tools and cost", () => {
@@ -96,11 +171,12 @@ describe("Conversation", () => {
 			{ type: "tool_call_finished", callId: "task1", ok: true, summary: "worker (done)", truncated: false },
 		];
 		const folded = shown(bodies).text;
-		expect(folded).toContain("▸ task worker · done ✓\n   └ worker · claude-sonnet-5-5 · 1 tool");
+		expect(folded).toContain("⎿ Ran 1 subagent");
 		expect(folded).not.toContain("$");
 		expect(folded).not.toContain("child text");
 		expect(folded).not.toContain("b.ts");
 		const open = shown(bodies, 80, true).text;
+		expect(open).toContain("▾ task worker · done ✓\n     └ worker · claude-sonnet-5-5 · 1 tool");
 		expect(open).toContain("▸ read b.ts · 3 lines ✓");
 		expect(open).toContain("child text");
 	});
@@ -263,9 +339,7 @@ describe("Conversation", () => {
 			"",
 			"Hello.",
 			"",
-			"▸ read a.ts · 2 lines ✓",
-			"",
-			"▸ read b.ts · 3 lines ✓",
+			"⎿ Read 2 files",
 			"",
 			"Done.",
 			"",

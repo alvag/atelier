@@ -73,7 +73,7 @@ function inputLines(tool: string, input: JsonValue, paint: Paint): string[] {
 export class AgentActivity {
 	agent: string | undefined;
 	#model: string | undefined;
-	readonly #tools = new Map<string, { tool: string; summary?: string; ok?: boolean }>();
+	readonly #tools = new Map<string, { tool: string; target: string; summary?: string; ok?: boolean }>();
 	#text = "";
 
 	constructor(agent?: string) {
@@ -90,7 +90,7 @@ export class AgentActivity {
 				this.#text += event.text;
 				return;
 			case "tool_call_started":
-				this.#tools.set(event.callId, { tool: event.tool });
+				this.#tools.set(event.callId, { tool: event.tool, target: target(event.input) });
 				return;
 			case "tool_call_finished": {
 				const call = this.#tools.get(event.callId);
@@ -98,6 +98,21 @@ export class AgentActivity {
 				return;
 			}
 		}
+	}
+
+	/** `edit src/a.ts`, the call it runs now, or nothing between calls. */
+	current(): string | undefined {
+		const running = [...this.#tools.values()].filter(({ ok }) => ok === undefined).at(-1);
+		return running === undefined ? undefined : `${shown(running.tool)} ${running.target}`.trimEnd();
+	}
+
+	/** `✗ worker · edit a.ts · 1 edit`, each of its calls that failed. */
+	failures(): string[] {
+		return [...this.#tools.values()]
+			.filter(({ ok }) => ok === false)
+			.map(
+				({ tool, summary }) => `✗ ${shown(this.agent ?? "subagent")} · ${shown(tool)} ${summaryText(summary ?? "")}`,
+			);
 	}
 
 	/** `worker · claude-sonnet-5-5 · 3 tools`; its cost is left to the footer and `/status`. */
@@ -132,17 +147,52 @@ function indented(lines: readonly string[], width: number, indent: string): stri
  */
 export class ToolCard implements Component {
 	readonly tool: string;
+	readonly callId: string;
 	readonly #input: JsonValue;
 	readonly #view: CardView;
 	readonly #paint: Paint;
 	#finished: Extract<AtelierEvent, { type: "tool_call_finished" }> | undefined;
 	#activity: AgentActivity | undefined;
 
-	constructor(tool: string, input: JsonValue, view: CardView, paint: Paint) {
+	constructor(tool: string, input: JsonValue, view: CardView, paint: Paint, callId = "") {
 		this.tool = tool;
+		this.callId = callId;
 		this.#input = input;
 		this.#view = view;
 		this.#paint = paint;
+	}
+
+	/** The file the call works on, when it names one. */
+	get path(): string | undefined {
+		return field(this.#input, "path");
+	}
+
+	get running(): boolean {
+		return this.#finished === undefined;
+	}
+
+	/** Whether the call failed, or a call of the subagent it ran did. */
+	get failed(): boolean {
+		return this.#finished?.ok === false || (this.#activity?.failures().length ?? 0) > 0;
+	}
+
+	/** `bash pnpm test`, or `task worker · edit src/a.ts` with the call its subagent runs now. */
+	current(): string {
+		const label = `${shown(this.tool)} ${target(this.#input)}`.trimEnd();
+		const child = this.#activity?.current();
+		return child === undefined ? label : `${label} · ${child}`;
+	}
+
+	/** What must show even folded: `✗ bash pnpm test · exit 1`, its subagent's failures and what the sandbox blocked. */
+	alerts(): string[] {
+		const paint = this.#paint;
+		const done = this.#finished;
+		const lines: string[] = [];
+		if (done?.ok === false)
+			lines.push(`${paint("red", "✗")} ${paint("bold", shown(this.tool))} ${summaryText(done.summary)}`);
+		for (const failure of this.#activity?.failures() ?? []) lines.push(paint("red", failure));
+		for (const cause of done?.blocked ?? []) lines.push(paint("yellow", `sandbox blocked: ${shown(cause)}`));
+		return lines;
 	}
 
 	finish(event: Extract<AtelierEvent, { type: "tool_call_finished" }>): void {

@@ -100,7 +100,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Up / Down         | Prompt history; move in lists and questions.                                                                   |
 | Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit.                                               |
 | Ctrl+D            | Quit, on an empty editor.                                                                                      |
-| Ctrl+O            | Expand or fold every tool, subagent and verification card, or the whole command of an approval.                |
+| Ctrl+O            | Expand or fold the blocks of calls and every card, or the whole command of an approval.                        |
 | Ctrl+T            | Open or fold the active feature's tasks.                                                                       |
 | Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                                        |
 | PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.                         |
