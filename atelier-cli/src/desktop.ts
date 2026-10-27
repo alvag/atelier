@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { VERSION } from "@atelier/core";
 import {
@@ -22,9 +23,19 @@ export interface DesktopOptions {
 	open?: (binary: string, args: string[]) => void | Promise<void>;
 }
 
-/** Builds the desktop app (`electron-vite build`, into atelier-desktop/out/). */
-export function buildDesktop(exec: Exec): Promise<string> {
-	return exec("pnpm", ["-C", "atelier-desktop", "build"]);
+/**
+ * Builds the desktop app (`electron-vite build`, into atelier-desktop/out/). The output is removed first, and again
+ * when the build fails, so `atelier desktop` never opens an old bundle or a partial one: a missing output is rebuilt.
+ */
+export async function buildDesktop(exec: Exec, root: string): Promise<void> {
+	const out = join(root, "atelier-desktop", "out");
+	await rm(out, { recursive: true, force: true });
+	try {
+		await exec("pnpm", ["-C", "atelier-desktop", "build"]);
+	} catch (error) {
+		await rm(out, { recursive: true, force: true });
+		throw error;
+	}
 }
 
 /** Installs the full dependencies, which Electron and the build tooling are among. */
@@ -58,14 +69,14 @@ export async function runDesktop(options: DesktopOptions): Promise<number> {
 		if (marker?.desktop === false) {
 			options.stdout("Installing the desktop (Electron, about 200 MB), once...\n");
 			await installFull(exec);
-			await buildDesktop(exec);
+			await buildDesktop(exec, root);
 			await writeDesktopMarker(root, true);
 		} else {
 			if (marker === undefined && !existsSync(electron)) {
 				options.stderr("error: Electron is not installed in a development clone; run: pnpm install\n");
 				return 1;
 			}
-			if (!built()) await buildDesktop(exec);
+			if (!built()) await buildDesktop(exec, root);
 		}
 		try {
 			await (options.open ?? spawnDetached)(electron, [desktopDir]);

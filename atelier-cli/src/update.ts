@@ -1,5 +1,3 @@
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
 import { VERSION } from "@atelier/core";
 import { buildDesktop, installFull } from "./desktop.ts";
 import { CommandError, describeCommand, type Exec, execute, OWN_ROOT, readMarker } from "./install-marker.ts";
@@ -55,10 +53,8 @@ export async function runUpdate(options: UpdateOptions): Promise<number> {
 			return fail(`${describeCommand(error)}\natelier stays at ${current}; retry with: atelier update ${target}`);
 		}
 		if (marker.desktop) {
-			// A failed rebuild must not leave the old bundle for `atelier desktop` to open.
-			await rm(join(root, "atelier-desktop", "out"), { recursive: true, force: true });
 			try {
-				await buildDesktop(exec);
+				await buildDesktop(exec, root);
 			} catch (error) {
 				if (!(error instanceof CommandError)) throw error;
 				return fail(

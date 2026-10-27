@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -335,4 +336,38 @@ it("retries a failed desktop rebuild before opening", async () => {
 	expect(stderr).toBe("error: pnpm -C atelier-desktop build failed (exit 7): boom\n");
 	expect(stdout).not.toContain("Opened");
 	expect(opened).toEqual([]);
+});
+
+// S5: a build that wrote part of its output before failing leaves nothing to open.
+it("rebuilds after a failed rebuild that left partial output", async () => {
+	await writeFile(join(install, marker), "desktop=1\n");
+	await writeFile(join(install, ".git", "info", "exclude"), "atelier-desktop/\n");
+	await writeFile(
+		join(fakes, "pnpm"),
+		`#!/bin/sh\necho "$PWD: $*" >> "${pnpmLog}"\ncase "$*" in *build*) mkdir -p atelier-desktop/out/main; echo '// main only' > atelier-desktop/out/main/index.js; echo "renderer build failed" >&2; exit 7 ;; esac\n`,
+	);
+	expect(await cli(["update", "v0.9.0"]).code()).toBe(1);
+	expect(existsSync(join(install, "atelier-desktop", "out"))).toBe(false);
+	const opened: string[] = [];
+	let stderr = "";
+	const code = await run(["desktop"], {
+		stdin: new PassThrough(),
+		isTTY: false,
+		cwd: root,
+		color: false,
+		appRoot: install,
+		env: { ...process.env, HOME: root, PATH: `${fakes}:${process.env.PATH ?? ""}` },
+		stdout: () => {},
+		stderr: (s) => {
+			stderr += s;
+		},
+		openDesktop: (binary) => {
+			opened.push(binary);
+		},
+	});
+	expect(code).toBe(1);
+	expect(stderr).toBe("error: pnpm -C atelier-desktop build failed (exit 7): renderer build failed\n");
+	expect(opened).toEqual([]);
+	expect((await pnpmCalls()).filter((line) => line.endsWith("-C atelier-desktop build"))).toHaveLength(2);
+	expect(existsSync(join(install, "atelier-desktop", "out"))).toBe(false);
 });
