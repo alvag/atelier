@@ -7,6 +7,8 @@ export interface CardView {
 	expanded: boolean;
 	/** Absent counts as shown. */
 	thinking?: boolean;
+	/** Counts the switches: what a click opened or folded holds until the next one. */
+	epoch?: number;
 }
 
 /** Lines of a call's input or a subagent's text shown in a card before it says how many more there are. */
@@ -209,17 +211,18 @@ export class ToolCard implements Component {
 
 	invalidate(): void {}
 
-	render(width: number): string[] {
+	/** `open` is the view's switch unless the block it is in was opened or folded on its own. */
+	render(width: number, open = this.#view.expanded): string[] {
 		const paint = this.#paint;
 		const done = this.#finished;
-		const arrow = paint("cyan", this.#view.expanded ? "▾" : "▸");
+		const arrow = paint("cyan", open ? "▾" : "▸");
 		const what = done === undefined ? target(this.#input) : summaryText(done.summary);
 		const mark = done === undefined ? paint("dim", "…") : done.ok ? paint("green", "✓") : paint("red", "✗");
 		const lines = [truncateToWidth(` ${arrow} ${paint("bold", shown(this.tool))} ${what} ${mark}`, width)];
 		if (this.#activity) lines.push(truncateToWidth(paint("dim", `   └ ${this.#activity.summary()}`), width));
 		for (const cause of done?.blocked ?? [])
 			lines.push(...indented([paint("yellow", `sandbox blocked: ${shown(cause)}`)], width, "   "));
-		if (!this.#view.expanded) return lines;
+		if (!open) return lines;
 		const details = inputLines(this.tool, this.#input, paint);
 		if (done?.truncated)
 			details.push(

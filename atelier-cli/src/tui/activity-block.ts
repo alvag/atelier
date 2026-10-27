@@ -1,4 +1,10 @@
-import { type Component, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	truncateToWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import type { Paint } from "./style.ts";
 import type { CardView, ToolCard } from "./tool-card.ts";
 
@@ -38,22 +44,33 @@ export function activitySummary(cards: readonly ToolCard[]): string {
 	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** A stretch of the model's thinking, as its deltas arrive. */
+/** A stretch of the model's thinking, as its deltas arrive, and what a click made of it. */
 interface Thought {
 	text: string;
+	clicked?: Clicked;
+}
+
+/** Shown or open by a click, which holds while the view's switches are as they were (the same `epoch`). */
+interface Clicked {
+	epoch: number;
+	value: boolean;
 }
 
 const FOLDED_THOUGHT = "✻ Thinking…";
 
+/** A rendered line and what a click on it opens or folds: the block or one stretch of thinking. */
+type Row = { line: string; target: "block" | Thought[] };
+
 /**
  * The calls the agent made between two of its texts, and its thinking among them, as one block: folded, the thinking
  * and a line that sums the calls up, `⎿ Ran 3 commands · read 1 file`, with every failure and what the sandbox blocked
- * under it; open, the thinking and each call's card in order.
+ * under it; open, the thinking and each call's card in order. A click opens or folds the block, or the thinking under it.
  */
 export class ActivityBlock implements Component {
 	readonly #steps: (ToolCard | Thought)[] = [];
 	readonly #view: CardView;
 	readonly #paint: Paint;
+	#clicked: Clicked | undefined;
 
 	constructor(view: CardView, paint: Paint) {
 		this.#view = view;
@@ -62,6 +79,18 @@ export class ActivityBlock implements Component {
 
 	get #cards(): ToolCard[] {
 		return this.#steps.filter((step): step is ToolCard => !isThought(step));
+	}
+
+	get #epoch(): number {
+		return this.#view.epoch ?? 0;
+	}
+
+	get #expanded(): boolean {
+		return this.#clicked?.epoch === this.#epoch ? this.#clicked.value : this.#view.expanded;
+	}
+
+	#shows(thought: Thought): boolean {
+		return thought.clicked?.epoch === this.#epoch ? thought.clicked.value : this.#view.thinking !== false;
 	}
 
 	add(card: ToolCard): void {
@@ -78,40 +107,67 @@ export class ActivityBlock implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
+		return this.#rows(width).map(({ line }) => line);
+	}
+
+	/** A left click opens or folds what its row belongs to; a press is left to the text selection. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		const target = this.#rows(event.width)[event.y]?.target;
+		if (target === undefined) return undefined;
+		const epoch = this.#epoch;
+		if (target === "block") this.#clicked = { epoch, value: !this.#expanded };
+		else {
+			const value = !target.some((thought) => this.#shows(thought));
+			for (const thought of target) thought.clicked = { epoch, value };
+		}
+		return { handled: true };
+	}
+
+	#rows(width: number): Row[] {
 		const paint = this.#paint;
 		const counted = this.#cards.filter((card) => !HIDDEN_TOOLS.has(card.tool));
 		const shown = this.#cards.filter((card) => !HIDDEN_TOOLS.has(card.tool) || card.failed);
 		const thoughts = this.#steps.filter(isThought);
-		const lines: string[] = [];
-		if (this.#view.expanded) {
-			if (counted.length > 0) lines.push(truncateToWidth(paint("dim", ` ⎿ ▾ ${activitySummary(counted)}`), width));
+		const block = (line: string): Row => ({ line, target: "block" });
+		const rows: Row[] = [];
+		if (this.#expanded) {
+			if (counted.length > 0)
+				rows.push(block(truncateToWidth(paint("dim", ` ⎿ ▾ ${activitySummary(counted)}`), width)));
 			for (const step of this.#steps) {
-				if (isThought(step)) lines.push(...this.#thought(step, width));
-				else if (shown.includes(step)) lines.push(...step.render(Math.max(1, width - 2)).map((line) => `  ${line}`));
+				if (isThought(step)) rows.push(...this.#thought([step], width));
+				else if (shown.includes(step))
+					rows.push(...step.render(Math.max(1, width - 2), true).map((line) => block(`  ${line}`)));
 			}
-			return lines;
+			return rows;
 		}
-		if (this.#view.thinking === false) {
-			if (thoughts.length > 0) lines.push(...this.#thought(undefined, width));
-		} else lines.push(...thoughts.flatMap((thought) => this.#thought(thought, width)));
-		if (shown.length === 0) return lines;
+		// Folded, thinking that is all folded takes one line.
+		if (thoughts.length > 0 && !thoughts.some((thought) => this.#shows(thought)))
+			rows.push(...this.#thought(thoughts, width));
+		else rows.push(...thoughts.flatMap((thought) => this.#thought([thought], width)));
+		if (shown.length === 0) return rows;
 		const running = counted.filter((card) => card.running).at(-1);
-		if (running !== undefined) lines.push(truncateToWidth(this.#runningLine(running), width));
-		else if (counted.length > 0) lines.push(truncateToWidth(paint("dim", ` ⎿ ${activitySummary(counted)}`), width));
+		if (running !== undefined) rows.push(block(truncateToWidth(this.#runningLine(running), width)));
+		else if (counted.length > 0)
+			rows.push(block(truncateToWidth(paint("dim", ` ⎿ ${activitySummary(counted)}`), width)));
 		const room = Math.max(1, width - 3);
 		for (const alert of shown.flatMap((card) => card.alerts()))
-			lines.push(...wrapTextWithAnsi(alert, room).map((part) => `   ${part}`));
-		return lines;
+			rows.push(...wrapTextWithAnsi(alert, room).map((part) => block(`   ${part}`)));
+		return rows;
 	}
 
-	/** `✻ Checking the alias.`, dimmed, italic and magenta; `✻ Thinking…` while thinking is folded or for `undefined`. */
-	#thought(thought: Thought | undefined, width: number): string[] {
-		const text = thought === undefined || this.#view.thinking === false ? FOLDED_THOUGHT : `✻ ${thought.text.trim()}`;
+	/** `✻ Checking the alias.`, dimmed, italic and magenta; `✻ Thinking…` while it is folded, one line for all of `thoughts`. */
+	#thought(thoughts: Thought[], width: number): Row[] {
+		const [first] = thoughts;
+		const text = first === undefined || !this.#shows(first) ? FOLDED_THOUGHT : `✻ ${first.text.trim()}`;
 		const room = Math.max(1, width - 3);
 		return text
 			.split("\n")
 			.flatMap((line) => wrapTextWithAnsi(line, room))
-			.map((line, index) => `${index === 0 ? " " : "   "}${this.#paint(["dim", "italic", "magenta"], line)}`);
+			.map((line, index) => ({
+				line: `${index === 0 ? " " : "   "}${this.#paint(["dim", "italic", "magenta"], line)}`,
+				target: thoughts,
+			}));
 	}
 
 	/** `⎿ ◐ bash pnpm test… (ran 2 commands)`: the call running now in the summary's place, and what is done so far. */

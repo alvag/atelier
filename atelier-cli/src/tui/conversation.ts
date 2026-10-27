@@ -1,5 +1,5 @@
 import { type AtelierEvent, visibleText } from "@atelier/core";
-import { type Component, Container, Markdown, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, Markdown, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
 import { ActivityBlock } from "./activity-block.ts";
 import { PromptBlock } from "./prompt.ts";
@@ -131,11 +131,33 @@ export class Conversation extends Container {
 	/** Toggles the details of every tool card. */
 	toggleCards(): void {
 		this.view.expanded = !this.view.expanded;
+		this.view.epoch = (this.view.epoch ?? 0) + 1;
 	}
 
 	/** Opens or folds the model's thinking. */
 	toggleThinking(): void {
 		this.view.thinking = this.view.thinking === false;
+		this.view.epoch = (this.view.epoch ?? 0) + 1;
+	}
+
+	/** A click goes to the block on its row, laid out as `render` lays the blocks out. */
+	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+		let top = 0;
+		for (const child of this.children) {
+			const lines = child.render(event.width);
+			const start = lines.findIndex((line) => !isBlank(line));
+			const height = withoutBlankEdges(lines).length;
+			if (height === 0) continue;
+			if (event.y >= top && event.y < top + height) {
+				const y = event.y - top + start;
+				const result = child.handleMouse?.({ ...event, y, height: lines.length });
+				if (!result?.handled) return undefined;
+				const target = { component: child, originX: event.screenX - event.x, originY: event.screenY - y };
+				return { ...result, handled: true, target: { ...target, width: event.width, height: lines.length } };
+			}
+			top += height + 1;
+		}
+		return undefined;
 	}
 
 	/** The user's prompt: on the shade, or after `❯` without it. */
