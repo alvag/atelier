@@ -272,6 +272,31 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(0);
 	});
 
+	it("shows the editor as a shaded band after ›, with a placeholder while it is empty, with color", async () => {
+		const h = harness([]);
+		h.io.color = true;
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(() => h.screen.screen().includes("Ask Atelier to do anything"));
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: the background's sequence is what is checked
+		expect(h.screen.raw()).toMatch(/\x1b\[100m› .*Ask Atelier to do anything/);
+		expect(h.screen.screen()).not.toContain("─".repeat(20));
+		h.screen.type("fix it");
+		await until(() => h.screen.screen().includes("› fix it"));
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("keeps the editor's lines and no placeholder without color", async () => {
+		const h = harness([]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(() => h.screen.screen().includes("─".repeat(20)));
+		expect(h.screen.screen()).not.toContain("Ask Atelier to do anything");
+		expect(h.screen.screen()).not.toContain("›");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
 	it("shows the status line items of ~/.atelier/settings.json, and starts with a warning when one is wrong", async () => {
 		const h = harness([[{ event: started }, { event: finished }]]);
 		await mkdir(join(home, ".atelier"));

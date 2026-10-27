@@ -18,7 +18,6 @@ import {
 	CombinedAutocompleteProvider,
 	type Component,
 	Container,
-	Editor,
 	getTerminalColorMode,
 	Loader,
 	matchesKey,
@@ -44,6 +43,7 @@ import { readGitBranch } from "./git-branch.ts";
 import { Header, type HeaderState } from "./header.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
 import { ProgramStatusReporter, settledState } from "./program-status.ts";
+import { PromptEditor } from "./prompt.ts";
 import {
 	choicesOf,
 	LIST_ROWS,
@@ -401,7 +401,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	let feature = new FeaturePanel(paint);
 	odd.addChild(feature);
 	const dialogs = new Container();
-	const editor = new Editor(tui, editorTheme(paint));
+	const editor = new PromptEditor(tui, editorTheme(paint), paint, shade);
 	editor.setAutocompleteProvider(new CombinedAutocompleteProvider(COMMANDS, args.cwd, null));
 	const loader = new Loader(
 		tui,

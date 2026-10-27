@@ -51,7 +51,7 @@ atelier --cwd ~/code/my-app                                      # work on anoth
 atelier --continue                                               # resume the newest session of the directory
 ```
 
-The interactive session runs full screen: the transcript scrolls above (mouse wheel, PageUp/PageDown) and the editor and the status line stay at the bottom; on exit the transcript is left in the terminal. It shows the agent's text as Markdown, with code blocks colored by language. Text selected with the mouse is copied to the clipboard.
+The interactive session runs full screen: the transcript scrolls above (mouse wheel, PageUp/PageDown) and the editor and the status line stay at the bottom; on exit the transcript is left in the terminal. It shows your prompts and the editor on a subtle background after `›`, as Codex does, and the agent's text as Markdown, with code blocks colored by language. What the session loaded (instructions, skills, memory) and its cost are in `/status` and the status line, not in the transcript. Text selected with the mouse is copied to the clipboard.
 
 | Option                             | Effect                                                                                   |
 | ---------------------------------- | ---------------------------------------------------------------------------------------- |
