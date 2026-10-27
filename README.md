@@ -86,6 +86,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | `/review [ref]`            | Review the working tree now, against `HEAD` or a git ref.              |
 | `/undo-correction`         | Undo the latest escalated review correction.                           |
 | `/compact [instructions]`  | Summarize the older history now.                                       |
+| `/status`                  | Show the model, sandbox, instructions, skills, memory and cost.        |
 | `/exit`                    | Quit.                                                                  |
 
 ### Keys

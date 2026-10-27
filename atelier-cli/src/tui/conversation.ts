@@ -50,8 +50,16 @@ export class Conversation extends Container {
 	readonly #cards = new Map<string, ToolCard>();
 	/** The verifier's and the review roles' groups, by call and agent: a review gives all its roles one call id. */
 	readonly #groups = new Map<string, AgentGroup>();
-	/** The header last shown: it is repeated only when it changes. */
+	/** The header last said: the yolo warning is repeated only when it changes. */
 	#header: string | undefined;
+	/** What the session said it runs with and loaded, kept for `/status` instead of the transcript; the newest of each. */
+	readonly #status = new Map<"header" | "bash" | "instructions" | "skills" | "memory", string>([
+		["header", ""],
+		["bash", ""],
+		["instructions", ""],
+		["skills", ""],
+		["memory", ""],
+	]);
 	#backend: string | undefined;
 	readonly #cwd: string;
 	/** Each review's block by its id, and the one the latest assessment started, which has no id until it is asked or run. */
@@ -68,6 +76,11 @@ export class Conversation extends Container {
 		};
 		// Plain on purpose: the lines are shown with markers for control characters, which would also break its colors.
 		this.#renderer = new Renderer({ stdout: write, stderr: write, color: false, cwd });
+	}
+
+	/** The lines `/status` prints: the session's header and profile, the sandbox, and what it loaded. */
+	status(): string[] {
+		return [...this.#status.values()].filter((line) => line !== "").flatMap((line) => line.split("\n"));
 	}
 
 	/** Toggles the details of every tool card. */
@@ -136,6 +149,24 @@ export class Conversation extends Container {
 			case "session_configured":
 				this.note(configuredLine(event));
 				return;
+			// What runs as usual goes to `/status`; what runs with less protection, or failed to load, stays in sight.
+			case "sandbox_status":
+				if (event.sandboxed) this.#status.set("bash", `bash: sandboxed (${shown(event.mechanism ?? "sandbox")})`);
+				else this.#rendered(event);
+				return;
+			case "memory_status":
+				if (event.available) this.#status.set("memory", `memory: ${shown(event.project ?? "on")}`);
+				else this.#rendered(event);
+				return;
+			case "project_instructions":
+				if (event.files.length > 0) this.#status.set("instructions", `instructions: ${shown(event.files.join(", "))}`);
+				this.#rendered({ ...event, files: [] });
+				return;
+			case "skills_loaded":
+				if (event.skills.length > 0)
+					this.#status.set("skills", `skills: ${event.skills.map(({ name }) => shown(name)).join(", ")}`);
+				this.#rendered({ ...event, skills: [] });
+				return;
 			case "turn_finished": {
 				// The renderer counts the turns after a compaction, which decide whether a cache miss is expected.
 				this.#renderer.render(event);
@@ -155,7 +186,9 @@ export class Conversation extends Container {
 		const header = [startedLine(event), ...(event.profile === undefined ? [] : [profileLine(event.profile)])].join(
 			"\n",
 		);
-		if (header !== this.#header) this.note(shown(header));
+		this.#status.set("header", shown(header));
+		if (header !== this.#header && event.permissionMode === "yolo")
+			this.note("mode: yolo · what normal mode would ask runs without asking", true);
 		this.#header = header;
 		if (event.authSource !== "subscription" && event.backend !== "anthropic-api")
 			this.note(

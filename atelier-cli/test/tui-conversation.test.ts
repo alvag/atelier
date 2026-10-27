@@ -191,19 +191,80 @@ describe("Conversation", () => {
 		expect(shown([{ type: "phase_changed", phase: "planning", source: "inferred" }]).text).toBe("");
 	});
 
-	it("says the header once while it does not change, and what a turn took", () => {
-		const started: Body = {
-			type: "session_started",
-			backend: "claude-code",
-			model: "claude-opus-5-5",
-			authSource: "subscription",
-		};
-		const { text } = shown([
-			started,
-			{ type: "turn_finished", stopReason: "end_turn", usage, costUsd: 0.0421, requests: 3, durationMs: 12_300 },
-			started,
+	it("keeps what the session loaded out of the transcript and gives it to /status, the newest of each", () => {
+		const conversation = new Conversation(plain, "/repo");
+		for (const event of stamp([
+			{
+				type: "session_started",
+				backend: "claude-code",
+				model: "claude-opus-5-5",
+				authSource: "subscription",
+				effort: "high",
+				profile: { origin: "default", roles: { verifier: { model: "claude-sonnet-5-5" } } },
+			},
+			{ type: "sandbox_status", sandboxed: true, mechanism: "macOS seatbelt" },
+			{ type: "project_instructions", files: ["/repo/AGENTS.md"], dropped: [] },
+			{ type: "skills_loaded", skills: [{ name: "review", path: "/s/review" }], warnings: [] },
+			{ type: "memory_status", available: true, project: "atelier" },
+			{ type: "memory_status", available: true, project: "other" },
+		]))
+			conversation.event(event);
+		expect(conversation.render(100).join("\n").trim()).toBe("");
+		expect(conversation.status()).toEqual([
+			"atelier · claude-code · claude-opus-5-5 · subscription · effort high",
+			"profile default · verifier claude-sonnet-5-5",
+			"bash: sandboxed (macOS seatbelt)",
+			"instructions: /repo/AGENTS.md",
+			"skills: review",
+			"memory: other",
 		]);
-		expect(text.match(/atelier · claude-code · claude-opus-5-5/g)).toHaveLength(1);
+	});
+
+	it("shows control characters in what /status prints as markers", () => {
+		const esc = "x\u001b[31my";
+		const conversation = new Conversation(plain, "/repo");
+		for (const event of stamp([
+			{ type: "session_started", backend: "fake", model: esc, authSource: "subscription" },
+			{ type: "sandbox_status", sandboxed: true, mechanism: esc },
+			{ type: "project_instructions", files: [esc], dropped: [] },
+			{ type: "skills_loaded", skills: [{ name: esc, path: esc }], warnings: [] },
+			{ type: "memory_status", available: true, project: esc },
+		]))
+			conversation.event(event);
+		const status = conversation.status().join("\n");
+		expect(status.match(/x␛\[31my/g)).toHaveLength(5);
+		expect(status).not.toContain("\u001b");
+	});
+
+	it("still shows the warnings and what runs with less protection", () => {
+		const { text } = shown([
+			{ type: "session_started", backend: "claude-code", model: "m", authSource: "api_key", permissionMode: "yolo" },
+			{ type: "sandbox_status", sandboxed: false, reason: "no bwrap" },
+			{ type: "review_status", available: false, reason: "ATELIER_REVIEW=off" },
+			{ type: "project_instructions", files: ["/repo/AGENTS.md"], dropped: ["/repo/BIG.md"] },
+			{
+				type: "skills_loaded",
+				skills: [{ name: "ok", path: "/s/ok" }],
+				warnings: [{ path: "/s/bad", message: "no name" }],
+			},
+			{ type: "memory_status", available: false, reason: "offline" },
+		]);
+		expect(text).toContain("mode: yolo · what normal mode would ask runs without asking");
+		expect(text).toContain("warning: not using a Claude subscription (auth: api_key)");
+		expect(text).toContain("bash: not sandboxed (no bwrap)");
+		expect(text).toContain("no review: ATELIER_REVIEW=off");
+		expect(text).toContain("instructions over 32 KiB, left out: /repo/BIG.md");
+		expect(text).toContain("skill /s/bad: no name");
+		expect(text).toContain("no memory: offline");
+		expect(text).not.toContain("atelier · claude-code");
+		expect(text).not.toContain("instructions: ");
+		expect(text).not.toContain("skills: ");
+	});
+
+	it("says what a turn took", () => {
+		const { text } = shown([
+			{ type: "turn_finished", stopReason: "end_turn", usage, costUsd: 0.0421, requests: 3, durationMs: 12_300 },
+		]);
 		expect(text).toContain("◇ 12.3s · 3 requests · $0.0421");
 	});
 

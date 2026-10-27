@@ -231,6 +231,27 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(h.backend.closed).toBe(true);
 	});
 
+	it("prints the session's setup and its cost with /status, and not in the transcript", async () => {
+		const h = harness([[{ event: started }, { event: finished }]]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/status");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("cost: none yet"));
+		h.screen.type("hi");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		expect(h.screen.screen()).not.toContain("atelier · fake · m · subscription");
+		h.screen.type("/status");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("cost: $0.5000 this session"));
+		expect(h.screen.screen()).toContain("atelier · fake · m · subscription");
+		expect(h.backend.prompts).toEqual(["hi"]);
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
 	it("shows the status line items of ~/.atelier/settings.json, and starts with a warning when one is wrong", async () => {
 		const h = harness([[{ event: started }, { event: finished }]]);
 		await mkdir(join(home, ".atelier"));
@@ -784,7 +805,6 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(screen).toContain("(guard: ru␛[31mle)");
 		expect(screen).toContain("(asked by wor␛[31mker)");
 		expect(screen).toContain("mo␛[31mdel");
-		expect(screen).toContain("atelier · fake · mo␛[31mdel");
 		expect(screen).toContain("to␛[31mol");
 		h.screen.type("\x03");
 		expect(await code).toBe(130);

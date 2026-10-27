@@ -99,6 +99,7 @@ const COMMANDS = [
 	{ name: "review", description: "Review the current changes, against HEAD or a git ref" },
 	{ name: "undo-correction", description: "Undo the latest escalated review's correction" },
 	{ name: "compact", description: "Summarize the older history now [instructions]" },
+	{ name: "status", description: "Show what the session runs with, what it loaded and its cost" },
 	{ name: "exit", description: "Close the session" },
 ];
 
@@ -813,6 +814,15 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 	};
 
+	/** What the session runs with and loaded, which the transcript leaves out, and what it has cost so far. */
+	const runStatus = () => {
+		const lines = conversation.status();
+		const { costUsd } = footer.state;
+		const cost = costUsd === undefined ? "cost: none yet" : `cost: $${costUsd.toFixed(4)} this session`;
+		const setup = lines.length === 0 ? ["the session says what it runs with at its first turn"] : lines;
+		conversation.note([...setup, cost].join("\n"));
+	};
+
 	/** Starts a new session with what was chosen and the mode in use; the one before stays on screen. */
 	const runNew = async () => {
 		const mode = isMode(footer.state.mode) ? footer.state.mode : undefined;
@@ -881,6 +891,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		["/new", "/new"],
 		["/feature", "/feature"],
 		["/mcp", "/mcp [login|logout <server>]"],
+		["/status", "/status"],
 		["/resume", "/resume [id]"],
 		["/undo-correction", "/undo-correction"],
 		["/review", "/review [ref]"],
@@ -897,6 +908,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (text === "/new") await runNew();
 		else if (text === "/feature") toggleFeature();
 		else if (command === "/mcp") await runMcp(words.slice(1));
+		else if (text === "/status") runStatus();
 		else if (command === "/resume" && single) await runResume(argument);
 		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });
 		else if (/^\/review(?:\s+\S+)?$/.test(text))
