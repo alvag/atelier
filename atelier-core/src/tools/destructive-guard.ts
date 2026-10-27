@@ -719,6 +719,52 @@ export function findDestructiveCommand(command: string, context: GuardContext, d
 	);
 }
 
+/** A command of a line as the guard reads it: the wrappers passed on the way, then its words, unquoted and as written. */
+export interface SimpleCommand {
+	wrappers: string[];
+	words: { value: string; raw: string }[];
+	/** It redirects output to a file (`> out`, `2>> log`, `&> f`); `/dev/null` and a copied descriptor (`2>&1`) are no file. */
+	writesFile: boolean;
+}
+
+/** Whether a segment's redirections write a file. */
+function writesFile(segment: readonly Token[]): boolean {
+	return segment.some((token, at) => {
+		if (token.operator || !REDIRECTION.test(token.raw) || !token.raw.includes(">")) return false;
+		if (/&(?:\d+|-)$/.test(token.raw)) return false;
+		const target = BARE_REDIRECTION.test(token.raw) ? segment[at + 1]?.value : token.raw.replace(REDIRECTION, "");
+		return target !== "/dev/null";
+	});
+}
+
+/**
+ * The simple commands of a line as the shell runs it (line continuations joined, heredoc bodies left out as data),
+ * each past its assignments, redirections and wrappers; undefined when the line runs code no simple command shows: a
+ * `$(...)` or backtick substitution, in the line or in an unquoted heredoc body, or a process substitution `<(...)`.
+ */
+export function simpleCommands(command: string): SimpleCommand[] | undefined {
+	const joined = joinContinuations(command);
+	const text = blankHeredocs(joined);
+	if (substitutionBodies(text).length > 0 || heredocSubstitutions(joined).length > 0 || /[<>]\(/.test(text))
+		return undefined;
+	const tokens = tokenize(text);
+	const commands: SimpleCommand[] = [];
+	let start = 0;
+	for (let end = 0; end <= tokens.length; end++) {
+		if (end < tokens.length && !tokens[end]?.operator) continue;
+		const queue = [tokens.slice(start, end)];
+		start = end + 1;
+		for (let at = 0; at < queue.length; at++) {
+			const { segment, cursor, wrappers, extra } = head(queue[at] as Token[]);
+			queue.push(...extra);
+			const words = segment.slice(cursor).map(({ value, raw }) => ({ value, raw }));
+			const writes = writesFile(segment);
+			if (words.length > 0 || wrappers.length > 0 || writes) commands.push({ wrappers, words, writesFile: writes });
+		}
+	}
+	return commands;
+}
+
 /** The rule a command breaks as written. */
 function destructiveRule(command: string, context: GuardContext, depth: number): string | undefined {
 	const text = blankHeredocs(command);
