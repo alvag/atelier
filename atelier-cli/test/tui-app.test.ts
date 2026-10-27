@@ -858,6 +858,28 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(0);
 	});
 
+	it("starts with the thinking folded when the setting says so, and opens and folds it with Ctrl+R", async () => {
+		const h = harness([[{ event: { type: "thinking_delta", text: "Weighing the alias." } }, { event: finished }]]);
+		await mkdir(join(home, ".atelier"));
+		await writeFile(
+			join(home, ".atelier", "settings.json"),
+			JSON.stringify({ kind: "atelier.settings", version: 1, tui: { hideThinking: true } }),
+		);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("think");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		expect(h.screen.screen()).toContain("✻ Thinking…");
+		expect(h.screen.screen()).not.toContain("Weighing the alias.");
+		h.screen.type("\x12");
+		await until(() => h.screen.screen().includes("✻ Weighing the alias."));
+		h.screen.type("\x12");
+		await until(() => h.screen.screen().includes("✻ Thinking…"));
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
 	it("expands and folds the tool cards with Ctrl+O", async () => {
 		const h = harness([
 			[{ toolCall: { tool: "bash", input: { command: "echo one\necho two" } } }, { event: finished }],

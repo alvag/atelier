@@ -370,6 +370,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const settings = await readTuiSettings(options.home);
 	const shade = new Shade(options.color);
 	let conversation = new Conversation(paint, args.cwd, shade);
+	conversation.view.thinking = !settings.hideThinking;
 	// A wrong setting does not stop the session: it says what it used instead.
 	for (const warning of settings.warnings) conversation.note(`warning: ${warning}`, true);
 	let chosen: Chosen = {
@@ -867,6 +868,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	/** A conversation for the next session, after a rule that ends the one before. */
 	const nextConversation = (title: string) => {
 		const next = new Conversation(paint, args.cwd, shade);
+		next.view.thinking = conversation.view.thinking !== false;
 		next.addChild(new Text(paint("dim", `── ${title} ──`), 1, 1));
 		transcript.addChild(next);
 		return next;
@@ -1083,6 +1085,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if (matchesKey(data, "ctrl+o")) {
 			// An open question with folded lines takes Ctrl+O; otherwise it opens or folds the cards.
 			if (!questions[0]?.dialog.toggle()) conversation.toggleCards();
+			tui.requestRender(true);
+			return { consume: true };
+		}
+		if (matchesKey(data, "ctrl+r")) {
+			conversation.toggleThinking();
 			tui.requestRender(true);
 			return { consume: true };
 		}

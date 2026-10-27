@@ -50,10 +50,48 @@ describe("Conversation", () => {
 		expect(text).toContain("Reading the parser.");
 		expect(text).not.toContain("**");
 		expect(text).toContain(
-			"⎿ Ran 2 commands · read 1 file · edited 1 file · searched 1 time · used 1 other tool\n\n Done.",
+			"⎿ Ran 2 commands · read 1 file · edited 1 file · searched 1 time · used 1 other tool\n\n ● Done.",
 		);
 		expect(text).not.toContain("▸");
 		expect(text).not.toContain("--run");
+	});
+
+	it("marks the agent's text apart from its activity", () => {
+		const { text } = shown([
+			{ type: "text_delta", text: "First line.\n\nSecond line." },
+			{ type: "tool_call_started", callId: "c1", tool: "read", input: { path: "a.ts" } },
+		]);
+		expect(text).toContain(" ● First line.\n\n   Second line.");
+	});
+
+	it("shows the model's thinking in the block, folded to one line with Ctrl+R", () => {
+		const bodies: Body[] = [
+			{ type: "thinking_delta", text: "" },
+			{ type: "thinking_delta", text: "Checking the " },
+			{ type: "thinking_delta", text: "alias." },
+			{ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "ls" } },
+			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "ls (exit 0)", truncated: false },
+			{ type: "thinking_delta", text: "It is right." },
+			{ type: "text_delta", text: "Done." },
+		];
+		const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
+		for (const event of stamp(bodies)) conversation.event(event);
+		const open = conversation.render(80).join("\n");
+		expect(open).toContain(" ✻ Checking the alias.\n ✻ It is right.\n ⎿ Ran 1 command\n\n ● Done.");
+		conversation.toggleThinking();
+		const folded = conversation.render(80).join("\n");
+		expect(folded).toContain(" ✻ Thinking…\n ⎿ Ran 1 command");
+		expect(folded).not.toContain("alias");
+		conversation.toggleCards();
+		const expanded = conversation.render(80).join("\n");
+		expect(expanded).toMatch(/⎿ ▾ Ran 1 command\n ✻ Thinking…\n.*▾ bash ls · exit 0 ✓\n(.*\n)*.*✻ Thinking…/);
+	});
+
+	it("paints the thinking dimmed, italic and magenta", () => {
+		const tagged: Paint = (style, text) => `<${[style].flat().join("+")}>${text}</>`;
+		const conversation = new Conversation(tagged, "/repo");
+		for (const event of stamp([{ type: "thinking_delta", text: "Hmm." }])) conversation.event(event);
+		expect(conversation.render(40)).toContain(" <dim+italic+magenta>✻ Hmm.</>");
 	});
 
 	it("keeps a block's failures and what the sandbox blocked in sight while it is folded", () => {
@@ -337,11 +375,11 @@ describe("Conversation", () => {
 		expect(transcript.render(60).map((line) => line.trim())).toEqual([
 			"❯ hi",
 			"",
-			"Hello.",
+			"● Hello.",
 			"",
 			"⎿ Read 2 files",
 			"",
-			"Done.",
+			"● Done.",
 			"",
 			`◇ 1.8s · 1 request · ${AT}`,
 			"",
@@ -361,7 +399,7 @@ describe("Conversation", () => {
 		conversation.prompt("hi");
 		conversation.event(stamp([{ type: "text_delta", text: "Hello." }])[0] as AtelierEvent);
 		const lines = conversation.render(40).map((line) => stripTerminalSequences(line).trim());
-		expect(lines).toEqual(["", "› hi", "", "", "Hello.", ""]);
+		expect(lines).toEqual(["", "› hi", "", "", "● Hello.", ""]);
 		// The separation is the terminal's own background, under the shaded rows.
 		expect(conversation.render(40)[3]).toBe("");
 	});
