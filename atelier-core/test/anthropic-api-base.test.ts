@@ -15,7 +15,15 @@ const usage = (input: number, output: number, cacheRead = 0, cacheWrite = 0) => 
 describe("toAnthropicTools", () => {
 	it("keeps the core tool order and emits object schemas without $schema", () => {
 		const tools = toAnthropicTools(coreTools);
-		expect(tools.map((tool) => tool.name)).toEqual(["read", "edit", "write", "bash", "grep", "web_fetch"]);
+		expect(tools.map((tool) => tool.name)).toEqual([
+			"read",
+			"edit",
+			"write",
+			"bash",
+			"grep",
+			"web_fetch",
+			"web_search",
+		]);
 		for (const tool of tools) {
 			expect(tool.description?.length).toBeGreaterThan(0);
 			expect(tool.input_schema.type).toBe("object");

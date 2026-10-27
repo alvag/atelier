@@ -421,7 +421,7 @@ describe("web_fetch roles (S5)", () => {
 		await collect(session.send("go"));
 		await session.close();
 		const names = children.map((child) => child.startOptions?.tools.map((tool) => tool.name) ?? []);
-		expect(names[0]).toEqual(["read", "grep", "web_fetch"]);
+		expect(names[0]).toEqual(["read", "grep", "web_fetch", "web_search"]);
 		expect(names[1]).toContain("web_fetch");
 	});
 });

@@ -179,6 +179,7 @@ describe("run", () => {
 			"bash",
 			"grep",
 			"web_fetch",
+			"web_search",
 			"task",
 			"risk",
 			"feature",
@@ -561,7 +562,7 @@ describe("run", () => {
 		expect(code).toBe(0);
 		expect(names).toEqual(["anthropic-api", "anthropic-api"]);
 		expect(child.prompts).toEqual(["Find it."]);
-		expect(child.startOptions?.tools.map((t) => t.name)).toEqual(["read", "grep", "web_fetch"]);
+		expect(child.startOptions?.tools.map((t) => t.name)).toEqual(["read", "grep", "web_fetch", "web_search"]);
 		expect(parent.out()).toContain("  │ It is in a.ts.\n");
 		expect(parent.backend.toolResults[0]).toEqual({ ok: true, output: "It is in a.ts." });
 	});

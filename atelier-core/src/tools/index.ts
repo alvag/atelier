@@ -4,6 +4,7 @@ import { openGrepTool } from "./grep.ts";
 import { openReadTool } from "./read.ts";
 import type { ToolDefinition } from "./types.ts";
 import { webFetchTool } from "./web-fetch.ts";
+import { webSearchTool } from "./web-search.ts";
 import { writeTool } from "./write.ts";
 
 export { type BashOptions, bashTool, createBashTool, DEFAULT_TIMEOUT_SEC } from "./bash.ts";
@@ -32,9 +33,10 @@ export {
 } from "./sandbox-config.ts";
 export * from "./types.ts";
 export { createWebFetchTool, webFetchTool } from "./web-fetch.ts";
+export { createWebSearchTool, webSearchTool } from "./web-search.ts";
 export { createWriteTool, type WriteOptions, writeTool } from "./write.ts";
 
-/** The tools every M1 session gets: `read` and `grep` may leave the working directory, `edit` and `write` may with the user's approval; `web_fetch` always asks outside `yolo`. */
+/** The tools every M1 session gets: `read` and `grep` may leave the working directory, `edit` and `write` may with the user's approval; `web_fetch` and `web_search` always ask outside `yolo`. */
 export const coreTools: readonly ToolDefinition[] = [
 	openReadTool,
 	editTool,
@@ -42,4 +44,5 @@ export const coreTools: readonly ToolDefinition[] = [
 	bashTool,
 	openGrepTool,
 	webFetchTool,
+	webSearchTool,
 ];

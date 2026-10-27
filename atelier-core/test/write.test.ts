@@ -475,10 +475,18 @@ describe("write: APFS missing-path protections", () => {
 
 describe("who has write", () => {
 	it("is in the main agent's tools and the worker's, not the explorer's", () => {
-		expect(coreTools.map((tool) => tool.name)).toEqual(["read", "edit", "write", "bash", "grep", "web_fetch"]);
+		expect(coreTools.map((tool) => tool.name)).toEqual([
+			"read",
+			"edit",
+			"write",
+			"bash",
+			"grep",
+			"web_fetch",
+			"web_search",
+		]);
 		const tools = Object.fromEntries(BUILTIN_AGENTS.map((agent) => [agent.name, agent.tools]));
-		expect(tools.worker).toEqual(["read", "edit", "write", "grep", "bash", "web_fetch"]);
-		expect(tools.explorer).toEqual(["read", "grep", "web_fetch"]);
+		expect(tools.worker).toEqual(["read", "edit", "write", "grep", "bash", "web_fetch", "web_search"]);
+		expect(tools.explorer).toEqual(["read", "grep", "web_fetch", "web_search"]);
 	});
 
 	it("describes itself next to edit", () => {
