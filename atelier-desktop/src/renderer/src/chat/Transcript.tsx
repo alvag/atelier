@@ -466,6 +466,12 @@ function Items({
 			case "text":
 				// biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized by DOMPurify in renderMarkdown
 				return <div key={key} className="text" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }} />;
+			case "steer":
+				return (
+					<div key={key} className="prompt steer">
+						{item.text}
+					</div>
+				);
 			case "tool":
 				return item.subagent ? (
 					<SubagentBlock key={key} item={item} subagent={item.subagent} onAnswer={onAnswer} />

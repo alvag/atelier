@@ -227,6 +227,49 @@ main {
 	color: var(--at-muted);
 }
 
+.queue {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin: 0;
+	padding: 8px 16px 0;
+	list-style: none;
+	border-top: 1px solid var(--at-border);
+}
+
+.queue li {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	opacity: 0.8;
+}
+
+.queue-kind {
+	font-family: var(--at-mono);
+	font-size: 12px;
+}
+
+.queue-text {
+	flex: 1;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.queue textarea {
+	flex: 1;
+	font: inherit;
+	color: inherit;
+	background: var(--at-bg);
+	border: 1px solid var(--at-border);
+	border-radius: var(--at-radius);
+	padding: 4px 8px;
+}
+
+.prompt.steer {
+	margin-left: 24px;
+}
+
 .composer {
 	display: flex;
 	gap: 8px;

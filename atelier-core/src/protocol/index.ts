@@ -13,6 +13,8 @@ export type {
 	PhaseAgent,
 	PhaseSpent,
 	ProfileRoleEntry,
+	QueuedMessage,
+	QueueKind,
 	RefusalCause,
 	RiskDeclaration,
 	SessionProfile,

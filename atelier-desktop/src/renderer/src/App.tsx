@@ -2,6 +2,7 @@ import {
 	BACKEND_MODELS,
 	type BackendName,
 	DEFAULT_BACKEND,
+	type QueueKind,
 	type ReviewConsentAnswer,
 	type SessionProfile,
 } from "@atelier/core/protocol";
@@ -9,6 +10,7 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import type { AtelierBridge } from "../../shared/bridge.ts";
 import { FeaturePanel } from "./chat/FeaturePanel.tsx";
 import { McpPanel, mcpChipLabel, mcpTroubled } from "./chat/McpPanel.tsx";
+import { QueueList } from "./chat/QueueList.tsx";
 import type { PermissionMode } from "./chat/reducer.ts";
 import { Transcript, UNSANDBOXED_EFFECT } from "./chat/Transcript.tsx";
 import { useChat } from "./chat/use-chat.ts";
@@ -87,13 +89,21 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 		const cwd = await chat.pickFolder();
 		if (cwd) await chat.openSession(cwd, model, backend, noSandbox, profile || undefined, mode || undefined);
 	};
-	const submit = (event?: FormEvent) => {
+	/** Enter sends, or queues a steer while a turn runs; Alt+Enter queues a follow-up then. */
+	const submit = (event?: FormEvent, kind: QueueKind = "steer") => {
 		event?.preventDefault();
 		const prompt = draft.trim();
-		if (!prompt || state.busy || !state.session) return;
+		if (!prompt || !state.session) return;
 		setDraft("");
-		void chat.send(prompt);
+		if (state.busy) void chat.queue(prompt, kind);
+		else void chat.send(prompt);
 	};
+	// What an interrupted or failed turn gave back goes before what is being typed.
+	const returned = state.returned;
+	useEffect(() => {
+		if (returned === undefined) return;
+		setDraft((typed) => [...returned.texts, typed].filter((text) => text.trim() !== "").join("\n\n"));
+	}, [returned]);
 	const coreDown = state.core.status === "failed" || state.core.status === "exited";
 
 	return (
@@ -185,24 +195,35 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 				{mcpOpen && state.mcp ? <McpPanel mcp={state.mcp} onLogin={(server) => void chat.loginMcp(server)} /> : null}
 			</div>
 
+			{state.queue ? (
+				<QueueList
+					queue={state.queue}
+					onEdit={(id, text) => void chat.editQueued(id, text)}
+					onRemove={(id) => void chat.unqueue(id)}
+				/>
+			) : null}
 			<form className="composer" onSubmit={submit}>
 				<textarea
 					aria-label="Prompt"
 					value={draft}
 					placeholder={
-						state.session ? "Ask for a change… (Enter to send, Shift+Enter for a new line)" : "Open a folder to start"
+						!state.session
+							? "Open a folder to start"
+							: state.busy
+								? "Steer the turn… (Enter: with the next tool result, Alt+Enter: after the turn)"
+								: "Ask for a change… (Enter to send, Shift+Enter for a new line)"
 					}
 					disabled={!state.session}
 					onChange={(event) => setDraft(event.target.value)}
 					onKeyDown={(event) => {
 						if (event.key === "Enter" && !event.shiftKey) {
 							event.preventDefault();
-							submit();
+							submit(undefined, event.altKey ? "follow_up" : "steer");
 						}
 					}}
 				/>
-				<button type="submit" disabled={!state.session || state.busy || draft.trim() === ""}>
-					Send
+				<button type="submit" disabled={!state.session || draft.trim() === ""}>
+					{state.busy ? "Queue" : "Send"}
 				</button>
 			</form>
 

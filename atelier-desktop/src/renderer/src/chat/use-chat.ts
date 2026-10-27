@@ -1,4 +1,10 @@
-import type { BackendName, ClientCommand, McpServerStatus, ReviewConsentAnswer } from "@atelier/core/protocol";
+import type {
+	BackendName,
+	ClientCommand,
+	McpServerStatus,
+	QueueKind,
+	ReviewConsentAnswer,
+} from "@atelier/core/protocol";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { AtelierBridge, CommandResult, HostMessage } from "../../../shared/bridge.ts";
 import { type ChatAction, type ChatState, initialChatState, type PermissionMode, reduceChat } from "./reducer.ts";
@@ -25,6 +31,12 @@ export interface Chat {
 	/** The profile names in `~/.atelier/profiles.json` and its `active`, asked each time the core is ready; none when it cannot say. */
 	profiles: ProfileList;
 	send(prompt: string): Promise<void>;
+	/** Queues a message while a turn runs: a steer for the running turn, a follow-up for a turn of its own after it. */
+	queue(text: string, kind: QueueKind): Promise<void>;
+	/** Changes a queued message's text; nothing happens when it already entered the conversation. */
+	editQueued(messageId: string, text: string): Promise<void>;
+	/** Takes a queued message off the queue. */
+	unqueue(messageId: string): Promise<void>;
 	interrupt(): Promise<void>;
 	answerApproval(callId: string, approved: boolean): Promise<void>;
 	answerReviewConsent(reviewId: string, answer: ReviewConsentAnswer): Promise<void>;
@@ -107,6 +119,15 @@ export function useChat(bridge: AtelierBridge): Chat {
 		[bridge],
 	);
 
+	/**
+	 * A command on the queue: its failure is shown but leaves the turn running, and a message that entered the
+	 * conversation before the command arrived (`not_queued`) is no failure.
+	 */
+	const queueCommand = async (command: ClientCommand) => {
+		const result = await bridge.request(command);
+		if (!result.ok && result.error.code !== "not_queued") dispatch({ type: "queue_failed", ...result.error });
+	};
+
 	/** `session.mcp`, or `session.mcp_login` for `server`; the answer is the servers as they are now. */
 	const mcpCommand = async (server: string | undefined) => {
 		const session = stateRef.current.session;
@@ -172,6 +193,18 @@ export function useChat(bridge: AtelierBridge): Chat {
 			const result = await request({ command: "session.send", sessionId: session.id, prompt });
 			if (result.ok && typeof result.result.turnId === "string")
 				dispatch({ type: "turn_accepted", turnId: result.result.turnId });
+		},
+		queue: async (text, kind) => {
+			const session = stateRef.current.session;
+			if (session) await queueCommand({ command: "session.queue", sessionId: session.id, kind, text });
+		},
+		editQueued: async (messageId, text) => {
+			const session = stateRef.current.session;
+			if (session) await queueCommand({ command: "session.queue_edit", sessionId: session.id, messageId, text });
+		},
+		unqueue: async (messageId) => {
+			const session = stateRef.current.session;
+			if (session) await queueCommand({ command: "session.unqueue", sessionId: session.id, messageId });
 		},
 		interrupt: async () => {
 			const session = stateRef.current.session;

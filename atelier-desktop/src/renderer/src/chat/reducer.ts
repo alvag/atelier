@@ -7,6 +7,7 @@ import type {
 	JsonValue,
 	McpServerStatus,
 	Phase,
+	QueuedMessage,
 	RefusalCause,
 	ReviewConsentAnswer,
 	RiskDeclaration,
@@ -23,6 +24,8 @@ const DENIED_SUMMARY = "The user denied this command.";
 
 export type TurnItem =
 	| { kind: "text"; text: string }
+	/** What the user steered the turn with, where it entered. */
+	| { kind: "steer"; text: string }
 	| {
 			kind: "tool";
 			callId: string;
@@ -208,6 +211,10 @@ export interface ChatState {
 	context?: ContextUsage;
 	/** Turns, counting the current one, in which a cache miss is the expected result of a compaction. */
 	expectedMissTurns?: number;
+	/** The messages queued while a turn runs, as the core last said; absent when none. */
+	queue?: QueuedMessage[];
+	/** The texts of the latest queue an interrupted or failed turn gave back, for the composer; `seq` tells one from the next. */
+	returned?: { seq: number; texts: string[] };
 }
 
 /** Host messages plus what the renderer itself knows (it sent a prompt, a command failed...). */
@@ -219,6 +226,8 @@ export type ChatAction =
 	| { type: "approval_answered"; callId: string; approved: boolean }
 	| { type: "review_consent_answered"; reviewId: string; answer: ReviewConsentAnswer }
 	| { type: "command_failed"; code: string; message: string }
+	/** A command on the queue failed: shown, with the turn left running. */
+	| { type: "queue_failed"; code: string; message: string }
 	/** The core answered `session.set_mode` with this mode. */
 	| { type: "mode_changed"; mode: PermissionMode }
 	/** The core answered `session.mcp`. */
@@ -263,6 +272,7 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 				effort: _effort,
 				profile: _profile,
 				permissionMode: _permissionMode,
+				queue: _queue,
 				...rest
 			} = state;
 			return {
@@ -296,6 +306,8 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 			const withError = updateLast(state, (turn) => ({ ...turn, items: [...turn.items, { kind: "error", ...error }] }));
 			return { ...withError, busy: false, lastError: error };
 		}
+		case "queue_failed":
+			return { ...state, lastError: { code: action.code, message: action.message } };
 		case "mode_changed":
 			return { ...state, permissionMode: action.mode };
 		case "mcp_answered":
@@ -371,6 +383,21 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 		}
 		case "phase_changed":
 			return { ...state, phase: event.phase };
+		case "queue_update": {
+			const { queue: _queue, ...rest } = state;
+			const queued = event.messages.length === 0 ? rest : { ...rest, queue: event.messages };
+			if (event.returned === undefined || event.returned.length === 0) return queued;
+			const seq = (state.returned?.seq ?? 0) + 1;
+			return { ...queued, returned: { seq, texts: event.returned.map((message) => message.text) } };
+		}
+		case "queued_message":
+			// A message that starts a turn is its prompt; a steer is shown where it entered the running turn.
+			if (event.seq === 1)
+				return { ...updateTurn(state, event.turnId, (turn) => ({ ...turn, prompt: event.text })), busy: true };
+			return updateTurn(state, event.turnId, (turn) => ({
+				...turn,
+				items: [...turn.items, { kind: "steer", text: event.text }],
+			}));
 		case "mcp_status":
 			return { ...state, mcp: { servers: event.servers, problems: event.problems } };
 		case "memory_status":

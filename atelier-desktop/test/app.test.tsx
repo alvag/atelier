@@ -521,8 +521,8 @@ describe("App", () => {
 		expect(
 			await screen.findByText("tokens: input 10 · output 2 · cache read 30 · cache write 0 · cache 75% · 2 requests"),
 		).toBeTruthy();
-		// The parent's composer stays busy until the parent's own turn ends.
-		expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+		// The parent's composer stays busy, queueing, until the parent's own turn ends.
+		expect(screen.getByRole("button", { name: "Queue" })).toBeTruthy();
 	});
 
 	it("shows the memory in the status bar, or why there is none", async () => {
@@ -587,6 +587,102 @@ describe("App", () => {
 		expect(panel.textContent).toContain("1/2 done");
 		const rows = screen.getAllByTestId("feature-task").map((row) => row.textContent);
 		expect(rows).toEqual(["✓T1Transliterateabc1234", "▸T2Run the tests"]);
+	});
+
+	it("queues a steer with Enter and a follow-up with Alt+Enter while a turn runs, and edits or removes them", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "go");
+		const box = screen.getByLabelText("Prompt");
+		fireEvent.change(box, { target: { value: "use tabs" } });
+		fireEvent.keyDown(box, { key: "Enter" });
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({
+				command: "session.queue",
+				sessionId: "s1",
+				kind: "steer",
+				text: "use tabs",
+			}),
+		);
+		expect((box as HTMLTextAreaElement).value).toBe("");
+		fireEvent.change(box, { target: { value: "then docs" } });
+		fireEvent.keyDown(box, { key: "Enter", altKey: true });
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({
+				command: "session.queue",
+				sessionId: "s1",
+				kind: "follow_up",
+				text: "then docs",
+			}),
+		);
+		fake.emit({
+			type: "queue_update",
+			messages: [
+				{ id: "q1", kind: "steer", text: "use tabs" },
+				{ id: "q2", kind: "follow_up", text: "then docs" },
+			],
+		});
+		const queue = await screen.findByRole("list", { name: "Queued messages" });
+		expect(within(queue).getByText("steer")).toBeTruthy();
+		expect(within(queue).getByText("follow-up")).toBeTruthy();
+
+		fireEvent.click(within(queue).getByRole("button", { name: "Remove use tabs" }));
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({ command: "session.unqueue", sessionId: "s1", messageId: "q1" }),
+		);
+		fireEvent.click(within(queue).getByRole("button", { name: "Edit then docs" }));
+		const editing = within(queue).getByLabelText("Queued message");
+		fireEvent.change(editing, { target: { value: "then the docs" } });
+		fireEvent.click(within(queue).getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(fake.commands.at(-1)).toEqual({
+				command: "session.queue_edit",
+				sessionId: "s1",
+				messageId: "q2",
+				text: "then the docs",
+			}),
+		);
+		fake.emit({ type: "queue_update", messages: [] });
+		await waitFor(() => expect(screen.queryByRole("list", { name: "Queued messages" })).toBeNull());
+	});
+
+	it("shows a steer where it entered, a follow-up as a turn of its own, and gives an interrupted turn's queue back", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "go");
+		fake.emit({ type: "queued_message", id: "q1", kind: "steer", text: "use tabs" });
+		expect(await screen.findByText("use tabs")).toBeTruthy();
+		fake.emit({
+			type: "turn_finished",
+			stopReason: "end_turn",
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+		});
+		await waitFor(() =>
+			expect((screen.getByRole("button", { name: "Interrupt" }) as HTMLButtonElement).disabled).toBe(true),
+		);
+		// The core starts the follow-up's turn on its own.
+		fake.push({
+			type: "event",
+			sessionId: "s1",
+			event: { type: "queued_message", id: "q2", kind: "follow_up", text: "then docs", seq: 1, turnId: "t2" },
+		});
+		expect(await screen.findByText("then docs")).toBeTruthy();
+		expect((screen.getByRole("button", { name: "Interrupt" }) as HTMLButtonElement).disabled).toBe(false);
+		const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+		fireEvent.change(box, { target: { value: "typing" } });
+		fake.push({
+			type: "event",
+			sessionId: "s1",
+			event: {
+				type: "queue_update",
+				messages: [],
+				returned: [
+					{ id: "q3", kind: "steer", text: "a" },
+					{ id: "q4", kind: "follow_up", text: "b" },
+				],
+				seq: 2,
+				turnId: "t2",
+			},
+		});
+		await waitFor(() => expect(box.value).toBe("a\n\nb\n\ntyping"));
 	});
 
 	it("answers an approval card through session.approve", async () => {
