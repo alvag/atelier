@@ -790,7 +790,7 @@ describe("ClaudeCodeBackend compaction", () => {
 });
 
 describe("createToolBridge", () => {
-	function bridgeWith(results: { ok: boolean; output: string }[]) {
+	function bridgeWith(results: { ok: boolean; output: string; steering?: string }[]) {
 		const received: ToolCall[] = [];
 		const bridge = createToolBridge([echo], async (call) => {
 			received.push(call);
@@ -826,6 +826,16 @@ describe("createToolBridge", () => {
 		await handler({ text: "a" }, { _meta: { "claudecode/toolUseId": "toolu_meta" } });
 		await handler({ text: "b" }, {});
 		expect(received.map((c) => c.callId)).toEqual(["toolu_meta", "toolu_1"]);
+	});
+
+	it("gives what the user steered as a text block of its own after the tool's output", async () => {
+		const { handler } = bridgeWith([{ ok: true, output: "hi", steering: "use tabs" }]);
+		expect(await handler({ text: "x" }, {})).toEqual({
+			content: [
+				{ type: "text", text: "hi" },
+				{ type: "text", text: "use tabs" },
+			],
+		});
 	});
 
 	it("marks failed results as MCP errors", async () => {
