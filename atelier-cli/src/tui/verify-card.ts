@@ -74,13 +74,17 @@ function defectLines(defect: VerifyDefect, indent: string, expanded: boolean, pa
 	return lines;
 }
 
-/** Each requirement's verdict, with its evidence when the card is open, then the round's defects. */
-function roundLines(round: Round, expanded: boolean, paint: Paint): string[] {
+/**
+ * Each requirement's verdict, with its evidence when the card is open (or, with `openUnmet`, when it is not met), then
+ * the round's defects.
+ */
+function roundLines(round: Round, expanded: boolean, paint: Paint, openUnmet = false): string[] {
 	const marks = { met: paint("green", "✓"), unmet: paint("red", "✗"), unverified: paint("yellow", "?") };
 	const lines = [paint("dim", `  ${roundLine(round)}`)];
 	for (const entry of round.requirements) {
 		lines.push(`    ${marks[entry.verdict]} ${shown(entry.id)} ${entry.verdict} · ${shown(entry.requirement)}`);
-		if (expanded && entry.evidence !== "") lines.push(paint("dim", `      evidence: ${shown(entry.evidence)}`));
+		const open = expanded || (openUnmet && entry.verdict !== "met");
+		if (open && entry.evidence !== "") lines.push(paint("dim", `      evidence: ${shown(entry.evidence)}`));
 	}
 	for (const defect of round.defects) lines.push(...defectLines(defect, "    ", expanded, paint));
 	return lines;
@@ -99,7 +103,8 @@ function finishedLines(finished: Finished, expanded: boolean, paint: Paint): str
 		case "needs_decision":
 			return [
 				paint("red", `✗ verify: needs your decision · ${shown(verificationUndecided(finished))}${cost}`),
-				...finished.openDefects.flatMap((defect) => defectLines(defect, "  ", expanded, paint)),
+				// What is left to decide is shown open, as the line CLI shows it.
+				...finished.openDefects.flatMap((defect) => defectLines(defect, "  ", true, paint)),
 			];
 	}
 }
@@ -107,7 +112,9 @@ function finishedLines(finished: Finished, expanded: boolean, paint: Paint): str
 /**
  * A verification's card: `head` (`▸ verify · items 2, 6`, `▾` when open, and the round running) goes before the
  * verifier's line and `rest` after it. Folded, it says each requirement's verdict and each defect; open, also the
- * declaration, the evidence and how to reproduce each defect. Every line is wrapped to the width.
+ * declaration, the evidence and how to reproduce each defect. A verification that needs the user's decision shows,
+ * even folded, the evidence of the last round's requirements not met and how to reproduce each open defect. Every
+ * line is wrapped to the width.
  */
 export function verifyCardLines(
 	state: VerifyState,
@@ -125,8 +132,11 @@ export function verifyCardLines(
 	if (expanded)
 		for (const entry of state.started?.declaration ?? [])
 			head.push(paint("dim", `  declared items ${entry.items.join(", ")}: ${shown(entry.reason)}`));
+	const undecided = state.finished?.outcome === "needs_decision";
 	const rest = [
-		...state.rounds.flatMap((round) => roundLines(round, expanded, paint)),
+		...state.rounds.flatMap((round, at) =>
+			roundLines(round, expanded, paint, undecided && at === state.rounds.length - 1),
+		),
 		...(state.finished === undefined ? [] : finishedLines(state.finished, expanded, paint)),
 	];
 	return { head: blockLines(head, width), rest: blockLines(rest, width) };

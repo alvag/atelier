@@ -130,6 +130,35 @@ describe("verify card", () => {
 		expect(shown).toContain("   D1 major · yolo accepted\n     reproduce: atelier --mode yolo");
 	});
 
+	it("folded, opens what a needs_decision leaves to decide: the open defects and the last round's requirements not met", () => {
+		const earlier = requirements.map((entry) => ({ ...entry, evidence: `earlier: ${entry.evidence}` }));
+		const state = after([
+			started,
+			round({ requirements: earlier }),
+			round({ round: 2, correcting: false }),
+			finished({ outcome: "needs_decision", openDefects: [defect] }),
+		]);
+		const shown = text(lines(state, false));
+		expect(shown).toContain("     ✗ S2 unmet · Rejects yolo\n       evidence: yolo was accepted");
+		expect(shown).toContain("     ? S3 unverified · Documents it\n       evidence: no README change");
+		expect(shown).toContain(
+			" ✗ verify: needs your decision · 1 open defect · $0.0100\n   D1 major · yolo accepted\n     reproduce: atelier --mode yolo",
+		);
+		// The rest stays folded: what was met, the earlier round and the defects of the rounds.
+		expect(shown).not.toContain("the test passes");
+		expect(shown).not.toContain("earlier:");
+		expect(shown.match(/reproduce:/g)).toHaveLength(1);
+		expect(shown).toMatch(/^ ▸ verify/);
+	});
+
+	it("keeps a verification that passed or failed folded", () => {
+		for (const outcome of ["passed", "corrected", "failed"] as const) {
+			const shown = text(lines(after([started, round(), finished({ outcome, openDefects: [defect] })]), false));
+			expect(shown).not.toContain("evidence:");
+			expect(shown).not.toContain("reproduce:");
+		}
+	});
+
 	it("says a passed and a corrected verification", () => {
 		expect(text(lines(after([started, finished({ outcome: "passed", rounds: 1 })]), false))).toContain(
 			" ✓ verify passed · $0.0100",
