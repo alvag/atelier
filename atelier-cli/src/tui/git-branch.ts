@@ -1,21 +1,24 @@
-import { readFile, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 const SHORT_COMMIT = 7;
 
-/** The folders the search must not walk up into, from `GIT_CEILING_DIRECTORIES` as git reads it: absolute paths only. */
-function ceilingDirectories(): string[] {
-	const listed = process.env.GIT_CEILING_DIRECTORIES ?? "";
-	return listed
-		.split(":")
-		.filter((path) => isAbsolute(path))
-		.map((path) => resolve(path));
+/**
+ * The folders the search must not walk up into, from `GIT_CEILING_DIRECTORIES` as git reads it: split on the platform's
+ * path list separator, absolute paths only, with their symlinks resolved; one that does not exist is ignored.
+ */
+async function ceilingDirectories(): Promise<string[]> {
+	const listed = (process.env.GIT_CEILING_DIRECTORIES ?? "").split(delimiter).filter((path) => isAbsolute(path));
+	const real = await Promise.all(listed.map((path) => realpath(path).catch(() => undefined)));
+	return real.filter((path) => path !== undefined);
 }
 
 /** The git directory of the repository `cwd` is in: `.git` itself, or where a linked worktree's `.git` file points. */
 async function gitDirOf(cwd: string): Promise<string | undefined> {
-	const ceilings = ceilingDirectories();
-	for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+	const ceilings = await ceilingDirectories();
+	// Its symlinks resolved too, as the ceilings' are, for the two to compare.
+	const start = await realpath(cwd).catch(() => resolve(cwd));
+	for (let dir = start; ; dir = dirname(dir)) {
 		const dotGit = join(dir, ".git");
 		const found = await stat(dotGit).catch(() => undefined);
 		if (found?.isDirectory()) return dotGit;
