@@ -126,4 +126,16 @@ describe("secrets", () => {
 		const { secrets } = load();
 		expect(redact("fetch failed; Bearer LITERAL-manual-secret-123", secrets)).toBe("fetch failed; Bearer ***");
 	});
+
+	it("hides every value, also short ones, literal or from ${VAR}, as a whole word", async () => {
+		await write({
+			mcpServers: {
+				s: { command: "a", env: { KEY: "ab1c9", OTHER: "abcd", FROM: "${T}", ONE: "${U}" } },
+				h: { url: "https://x.example/mcp", headers: { "X-Key": "k9" }, oauth: { clientSecret: "sh1" } },
+			},
+		});
+		const { secrets } = load({ T: "pin42", U: "a" });
+		const shown = redact("boom ab1c9 abcd pin42 a k9 sh1; fetch failed (data)", secrets);
+		expect(shown).toBe("boom *** *** *** *** *** ***; fetch failed (data)");
+	});
 });

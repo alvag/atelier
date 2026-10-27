@@ -238,7 +238,10 @@ function expand(raw: string, env: NodeJS.ProcessEnv): { value: string; missing?:
 	return missing === undefined ? { value } : { value, missing };
 }
 
-/** Values shorter than this are not secrets worth hiding: hiding them would blank ordinary words. */
+/**
+ * Secrets at least this long are hidden wherever they appear; shorter ones only as a whole word, so a value such as
+ * `a` or `1` does not blank those letters out of every text.
+ */
 const MIN_SECRET = 6;
 
 /** A word of a value that looks like a token: long, with a digit or a symbol. Ordinary words stay visible. */
@@ -252,7 +255,7 @@ export function secretsOf(entry: unknown, env: NodeJS.ProcessEnv): string[] {
 	if (!isRecord(entry)) return [];
 	const found: string[] = [];
 	const add = (value: string) => {
-		if (value.length >= MIN_SECRET) found.push(value);
+		if (value !== "") found.push(value);
 		for (const word of value.split(/\s+/)) if (word !== value && tokenLike(word)) found.push(word);
 	};
 	const oauth = isRecord(entry.oauth) ? { clientSecret: entry.oauth.clientSecret } : undefined;
@@ -276,11 +279,22 @@ export function secretsOf(entry: unknown, env: NodeJS.ProcessEnv): string[] {
 	return found;
 }
 
-/** The text with every secret replaced by `***`, longest first so a secret inside another is hidden whole. */
+/**
+ * The text with every secret replaced by `***`, longest first so a secret inside another is hidden whole. A secret
+ * shorter than `MIN_SECRET` is replaced only where it stands as a word of its own.
+ */
 export function redact(text: string, secrets: readonly string[]): string {
 	let out = text;
-	for (const secret of [...secrets].sort((a, b) => b.length - a.length)) out = out.replaceAll(secret, "***");
+	for (const secret of [...new Set(secrets)].sort((a, b) => b.length - a.length)) {
+		if (secret === "") continue;
+		if (secret.length >= MIN_SECRET) out = out.replaceAll(secret, "***");
+		else out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRegExp(secret)}(?![\\p{L}\\p{N}_])`, "gu"), "***");
+	}
 	return out;
+}
+
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function tilde(value: string, home: string): string {
