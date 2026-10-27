@@ -118,7 +118,7 @@ rows = [
 
 ### Notifications
 
-The TUI notifies when a main turn ends (`Turn finished`, or `Turn failed` only when it ends in an error; any other stop, such as `max_tokens`, is finished) after running at least `minSeconds` (10 by default), and when the session waits for the user (`Waiting for approval`, `Waiting for review consent`), once for each question as it comes on screen. A turn the user interrupted is not told, and nothing is told while the terminal has the focus: the TUI asks the terminal for focus reports (`CSI ? 1004 h`), keeps them out of the editor and the questions, and, until one arrives, takes the terminal as without the focus. The notice's title is `Atelier · <working directory name>`; it never holds the command or the prompt.
+The TUI notifies when a main turn ends (`Turn finished`, or `Turn failed` when it failed: `error`, a Claude Code `error_*` result, `turn_limit` or `incomplete`; the model's own stops, such as `max_tokens` or `stop_sequence`, are finished) after running at least `minSeconds` (10 by default), and when the session waits for the user (`Waiting for approval`, `Waiting for review consent`), once for each question as it comes on screen. A turn the user interrupted is not told, and nothing is told while the terminal has the focus: the TUI asks the terminal for focus reports (`CSI ? 1004 h`), keeps them out of the editor and the questions, and, until one arrives, takes the terminal as without the focus. The notice's title is `Atelier · <working directory name>`; it never holds the command or the prompt.
 
 `via` chooses how; `auto`, the default, picks by where the TUI runs:
 

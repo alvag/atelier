@@ -17,6 +17,14 @@ const WAITING = {
 	question: "Waiting for review consent",
 } as const;
 
+/**
+ * The ends of a turn that failed: the core's (`error`, `turn_limit` when it ran out of model requests, `incomplete`
+ * when the backend stopped without ending it) and Claude Code's `error_*` results. The model's own stops, such as
+ * `max_tokens` or `stop_sequence`, are not failures.
+ */
+const FAILED_ENDS: ReadonlySet<string> = new Set(["error", "turn_limit", "incomplete"]);
+const failed = (stopReason: string) => FAILED_ENDS.has(stopReason) || stopReason.startsWith("error_");
+
 /** Where the TUI runs, and what starts a command; tests give their own. */
 export interface AttentionOptions {
 	terminal: Terminal;
@@ -102,12 +110,12 @@ export class Attention {
 		this.#turnStartedAt = Date.now();
 	}
 
-	/** Tells the end of a main turn that ran long enough, unless the user interrupted it; only an error is a failure. */
+	/** Tells the end of a main turn that ran long enough, unless the user interrupted it, as failed or finished. */
 	turnFinished(stopReason: string) {
 		const startedAt = this.#turnStartedAt;
 		this.#turnStartedAt = undefined;
 		if (stopReason === "interrupted" || startedAt === undefined || Date.now() - startedAt < this.#minMs) return;
-		this.#tell(stopReason === "error" ? "Turn failed" : "Turn finished");
+		this.#tell(failed(stopReason) ? "Turn failed" : "Turn finished");
 	}
 
 	/** Tells that the session waits for the user's answer. */
