@@ -1,10 +1,11 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
 	chmod,
 	link,
 	lstat,
 	mkdir,
 	mkdtemp,
+	readdir,
 	readFile,
 	readlink,
 	realpath,
@@ -18,6 +19,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { freezeCandidate } from "../src/review/candidate.ts";
 import { createWorkspace, type Workspace } from "../src/review/workspace.ts";
+import { sweepStaleScratch } from "../src/scratch.ts";
 import { createBashTool } from "../src/tools/index.ts";
 
 let root: string;
@@ -86,6 +88,37 @@ describe("createWorkspace", () => {
 		expect((await stat(join(workspace.dir, "candidate/run.sh"))).mode & 0o111).not.toBe(0);
 		expect((await stat(join(workspace.dir, "candidate/src/a.ts"))).mode & 0o111).toBe(0);
 		expect(await exists(join(workspace.dir, "candidate/.git"))).toBe(false);
+	});
+
+	it("shows the verifier only its copies, and a sweep deletes them once its process is dead", async () => {
+		const previous = process.env.TMPDIR;
+		const tmp = join(root, "tmp");
+		await mkdir(tmp);
+		process.env.TMPDIR = tmp;
+		try {
+			await write("src/a.ts", "export const a = 2;\n");
+			const frozen = await freezeCandidate(repo);
+			if (!frozen.ok) throw new Error(frozen.reason);
+			expect(git("ls-tree", "-r", "--name-only", frozen.candidate.tree).split("\n").filter(Boolean).sort()).toEqual([
+				".gitignore",
+				"run.sh",
+				"src/a.ts",
+			]);
+			const workspace = await workspaceOf();
+			expect((await readdir(workspace.dir)).sort()).toEqual(["base", "candidate"]);
+			const diff = spawnSync("git", ["diff", "--no-index", "--name-only", "base", "candidate"], {
+				cwd: workspace.dir,
+				encoding: "utf8",
+			});
+			expect(diff.stdout).toBe("candidate/src/a.ts\n");
+
+			const dead = { isAlive: () => false, startedAt: async () => undefined };
+			expect(await sweepStaleScratch({ tmpRoot: tmp, processes: dead })).toHaveLength(1);
+			expect(await readdir(tmp)).toEqual([]);
+		} finally {
+			if (previous === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previous;
+		}
 	});
 
 	it("leaves the user's worktree, index and refs untouched", async () => {

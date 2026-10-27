@@ -1,4 +1,6 @@
-import { stat } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -11,6 +13,7 @@ import {
 	type SessionOptions,
 	type ToolDefinition,
 } from "../src/index.ts";
+import { sweepStaleScratch } from "../src/scratch.ts";
 
 const usage = { input: 10, output: 5, cacheRead: 3, cacheWrite: 2 };
 const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage };
@@ -486,6 +489,38 @@ describe("Session", () => {
 		expect((await stat(dir)).isDirectory()).toBe(true);
 		await session.close();
 		await expect(stat(dir)).rejects.toThrow();
+	});
+
+	it("gives tools an empty scratch directory, which a sweep deletes once its process is dead", async () => {
+		const seen: string[] = [];
+		const probe = defineTool({
+			name: "probe",
+			description: "Lists the scratch directory",
+			inputShape: {},
+			execute: async (_input, { scratchDir }) => {
+				seen.push(...(await readdir(scratchDir as string)));
+				return { ok: true, output: "", summary: "", truncated: false };
+			},
+		});
+		const previous = process.env.TMPDIR;
+		const root = await mkdtemp(join(tmpdir(), "atelier-session-test-"));
+		process.env.TMPDIR = root;
+		try {
+			const { session } = await start([[{ toolCall: { tool: "probe", input: {} } }, { event: finished }]], {
+				tools: [probe],
+			});
+			await collect(session.send("x"));
+			expect(seen).toEqual([]);
+
+			const dead = { isAlive: () => false, startedAt: async () => undefined };
+			expect(await sweepStaleScratch({ tmpRoot: root, processes: dead })).toHaveLength(1);
+			expect(await readdir(root)).toEqual([]);
+			await session.close();
+		} finally {
+			if (previous === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previous;
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 
 	it("refuses turns after close", async () => {

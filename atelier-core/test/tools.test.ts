@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { sweepStaleScratch } from "../src/scratch.ts";
 import { bashTool, createGrepTool, editTool, grepTool, readTool, resolveInside } from "../src/tools/index.ts";
 import type { ToolContext } from "../src/tools/types.ts";
 
@@ -303,6 +304,25 @@ describe("bash", () => {
 		expect(result.truncated).toBe(true);
 		expect(result.output).toContain("aaaEND");
 		expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(51_200 + 400);
+	});
+
+	it("saves the full output without a scratch directory alone in its own, which a sweep deletes once its process is dead", async () => {
+		const previous = process.env.TMPDIR;
+		const root = join(cwd, "tmp");
+		await mkdir(root);
+		process.env.TMPDIR = root;
+		try {
+			const result = await bashTool.execute({ command: "seq 1 5000" }, ctx);
+			const path = result.fullOutputPath as string;
+			expect(await readdir(join(path, ".."))).toEqual(["output.log"]);
+
+			const dead = { isAlive: () => false, startedAt: async () => undefined };
+			expect(await sweepStaleScratch({ tmpRoot: root, processes: dead })).toHaveLength(1);
+			expect(await readdir(root)).toEqual([]);
+		} finally {
+			if (previous === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previous;
+		}
 	});
 
 	it("saves the full output inside the session scratch directory when there is one", async () => {

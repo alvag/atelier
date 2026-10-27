@@ -1529,7 +1529,7 @@ describe("independent verification", () => {
 				await s.send("edit");
 				const [run] = verifierRuns(roles);
 				expect(run?.tools).toEqual(["read", "grep", "bash"]);
-				expect(basename(run?.cwd ?? "")).toMatch(/^atelier-verify-/);
+				expect(basename(dirname(run?.cwd ?? ""))).toMatch(/^atelier-verify-/);
 				expect(run?.cwd).not.toBe(s.cwd);
 				expect(roles.probed[0]?.output).toContain("base\ncandidate\n---\nbase\n");
 				expect(roles.probed[0]?.output).not.toContain(".git");
