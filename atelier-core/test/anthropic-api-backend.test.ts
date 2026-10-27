@@ -493,6 +493,34 @@ describe("AnthropicApiBackend", () => {
 		expect(withoutBreakpoints(last.slice(0, 3))).toEqual(withoutBreakpoints(messagesOf(api.bodies[1])));
 	});
 
+	it("sends what the user steered with a tool result as text after the turn's tool results, in the next request", async () => {
+		const { session, api } = await start(
+			[
+				{
+					blocks: [
+						{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "a" } },
+						{ type: "tool_use", id: "tu_2", name: "echo", input: { text: "b" } },
+					],
+					stopReason: "tool_use",
+					usage: { input: 100, output: 10 },
+				},
+				{ blocks: [{ type: "text", text: "Done." }], usage: { input: 20, output: 2 } },
+			],
+			async (call) => ({
+				ok: true,
+				output: `ran ${call.tool}`,
+				...(call.callId === "tu_1" ? { steering: "use tabs" } : {}),
+			}),
+		);
+		await collect(session.send("go"));
+		const last = messagesOf(api.bodies[1]);
+		expect(withoutBreakpoints(last[2]?.content)).toEqual([
+			{ type: "tool_result", tool_use_id: "tu_1", content: "ran echo" },
+			{ type: "tool_result", tool_use_id: "tu_2", content: "ran echo" },
+			{ type: "text", text: "use tabs" },
+		]);
+	});
+
 	it.each([
 		["no content", []],
 		["only an empty text block", [{ type: "text" as const, text: "" }]],

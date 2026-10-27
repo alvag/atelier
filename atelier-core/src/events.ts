@@ -226,6 +226,16 @@ export type McpServerStatus = {
 	stderr?: string;
 };
 
+/** `steer` enters the running turn with its next tool result; `follow_up` waits for the turn to end and starts its own. */
+export type QueueKind = "steer" | "follow_up";
+
+/** A message the user queued while a turn runs, until it enters the conversation. */
+export interface QueuedMessage {
+	id: string;
+	kind: QueueKind;
+	text: string;
+}
+
 export type AtelierEventBody =
 	/**
 	 * `effort`: the thinking level asked for, as sent with every request: the reasoning effort, `off` when thinking
@@ -324,6 +334,16 @@ export type AtelierEventBody =
 	/** The prompt cache could not reuse the previous prefix; `reason` is the API's (`system_changed`...). */
 	| { type: "cache_miss"; reason: string; missedTokens: number }
 	| { type: "phase_changed"; phase: Phase; source: "inferred" | "declared" }
+	/**
+	 * The messages queued while a turn runs, whole, each time the queue changes. `returned`: the queue an interrupted or
+	 * failed turn gives back instead of running it, for the client to put in its editor. Never saved.
+	 */
+	| { type: "queue_update"; messages: QueuedMessage[]; returned?: QueuedMessage[] }
+	/**
+	 * A queued message entered the conversation: a steer with a tool result of the running turn, a follow-up (or a steer
+	 * no tool result took) as the prompt of the turn it starts, as that turn's first event. Clients show it as a prompt.
+	 */
+	| ({ type: "queued_message" } & QueuedMessage)
 	/**
 	 * The user's MCP servers and what is wrong with their file, at the start of the first turn and of any turn in which
 	 * they changed. Never a value of their configuration: secrets are hidden as `***`.

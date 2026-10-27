@@ -50,6 +50,8 @@ export class SessionRecorder {
 	/** The messages the file holds of an `anthropic-api` history, by digest. */
 	#messages: string[];
 	#sessionId: string | undefined;
+	/** The turn of the last prompt: a queued message that started it is already saved as that prompt. */
+	#promptTurn: string | undefined;
 
 	constructor(options: RecorderOptions) {
 		this.path = options.path;
@@ -74,12 +76,17 @@ export class SessionRecorder {
 	}
 
 	prompt(turnId: string, text: string): void {
+		this.#promptTurn = turnId;
 		this.#append({ type: "prompt", turnId, text });
 	}
 
 	/** Keeps what a client needs to show the turn again: thinking is dropped and the text deltas of a segment become one entry. */
 	event(event: AtelierEvent): void {
 		if (event.type === "thinking_delta") return;
+		// What is still queued is not the conversation's yet.
+		if (event.type === "queue_update") return;
+		// A queued message that starts a turn is its first event, and that turn's prompt already holds it.
+		if (event.type === "queued_message" && event.seq === 1 && event.turnId === this.#promptTurn) return;
 		if (event.type === "text_delta") {
 			const segment = this.#segment;
 			if (

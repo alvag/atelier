@@ -23,6 +23,8 @@ import {
 	type McpServerStatus,
 	type PhaseAgent,
 	type PhaseSpent,
+	type QueuedMessage,
+	type QueueKind,
 	type SessionProfile,
 	type SubagentTag,
 	ZERO_USAGE,
@@ -304,6 +306,10 @@ export class Session {
 	#classifierSpent: PhaseSpent | undefined;
 	/** Real paths outside the usual places that the user approved for editing; only that exact file, only this session. */
 	readonly #approvedPaths = new Set<string>();
+	/** What the user queued while a turn runs, in order, until it enters the conversation. */
+	#queue: QueuedMessage[] = [];
+	/** The running turn answers a prompt, so a steer can go with its tool results. */
+	#steerable = false;
 	#abort: AbortController | undefined;
 	#closed = false;
 	#closing: Promise<void> | undefined;
@@ -489,9 +495,67 @@ export class Session {
 		return this.#turn !== undefined;
 	}
 
+	/** What is queued now, in the order it would enter. */
+	get queued(): readonly QueuedMessage[] {
+		return this.#queue.map((message) => ({ ...message }));
+	}
+
+	/**
+	 * Queues a message while a turn runs: a steer goes to the model with the turn's next tool result, a follow-up waits
+	 * for `nextQueued`. Whatever no tool result took is left for `nextQueued`, steers first.
+	 */
+	queue(kind: QueueKind, text: string): QueuedMessage {
+		const message = { id: this.#createId(), kind, text };
+		this.#queue.push(message);
+		this.#sayQueue();
+		return { ...message };
+	}
+
+	/** Changes a queued message's text; false once it entered the conversation or left the queue. */
+	editQueued(id: string, text: string): boolean {
+		const message = this.#queue.find((queued) => queued.id === id);
+		if (!message) return false;
+		message.text = text;
+		this.#sayQueue();
+		return true;
+	}
+
+	/** Takes the message `id` off the queue, or every message without an id, and answers what it took. */
+	unqueue(id?: string): QueuedMessage[] {
+		const taken = this.#queue.filter((message) => id === undefined || message.id === id);
+		if (taken.length === 0) return [];
+		this.#queue = this.#queue.filter((message) => !taken.includes(message));
+		this.#sayQueue();
+		return taken;
+	}
+
+	/**
+	 * The turn of the next queued message, a steer before any follow-up, which starts by saying it entered; undefined
+	 * when nothing is queued. The message leaves the queue now.
+	 */
+	nextQueued(turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> | undefined {
+		const next = this.#queue.find((message) => message.kind === "steer") ?? this.#queue[0];
+		if (!next) return undefined;
+		this.#queue = this.#queue.filter((message) => message !== next);
+		return this.#send(next.text, turnId, next);
+	}
+
+	/** The queue as it stands, to the clients of the running turn. */
+	#sayQueue(returned?: QueuedMessage[]): void {
+		this.#turn?.push({
+			type: "queue_update",
+			messages: this.#queue.map((message) => ({ ...message })),
+			...(returned === undefined ? {} : { returned }),
+		});
+	}
+
 	/** Runs one turn. `turnId` lets a caller know the id before the first event (the RPC server answers with it). */
 	async *send(prompt: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
-		yield* this.#stream(turnId, prompt, async (turn, signal, backendSession) => {
+		yield* this.#send(prompt, turnId);
+	}
+
+	async *#send(prompt: string, turnId: string, entered?: QueuedMessage): AsyncGenerator<AtelierEvent> {
+		yield* this.#stream(turnId, prompt, entered, async (turn, signal, backendSession) => {
 			// The user's words reach the feature log as the turn starts, without delaying the backend;
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
 			this.#turnPrompt = prompt;
@@ -546,6 +610,7 @@ export class Session {
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }> | undefined;
 			let failed = false;
 			this.#lastMessage = "";
+			this.#steerable = true;
 			try {
 				for await (const event of backendSession.send(sent)) {
 					if (event.type === "turn_finished") finish ??= event;
@@ -559,6 +624,8 @@ export class Session {
 			} catch (error) {
 				failed = true;
 				turn.push(errorEvent("backend_error", describeError(error)));
+			} finally {
+				this.#steerable = false;
 			}
 			this.#previousTurn = { request: prompt, lastMessage: lastMessageTail(this.#lastMessage) };
 			await logged;
@@ -582,7 +649,7 @@ export class Session {
 	 * A turn like `send`, with one `turn_finished`.
 	 */
 	async *review(turnId: string = this.#createId(), base?: string): AsyncGenerator<AtelierEvent> {
-		yield* this.#stream(turnId, undefined, async (turn, signal, backendSession) => {
+		yield* this.#stream(turnId, undefined, undefined, async (turn, signal, backendSession) => {
 			if (!this.#review) {
 				turn.push(errorEvent("review_unavailable", "Review is off for this session.", true));
 				return { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
@@ -599,7 +666,7 @@ export class Session {
 	 * call and no review follow it.
 	 */
 	async *undoCorrection(reviewId?: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
-		yield* this.#stream(turnId, undefined, async (turn) => {
+		yield* this.#stream(turnId, undefined, undefined, async (turn) => {
 			if (!this.#review) {
 				turn.push(errorEvent("review_unavailable", "Review is off for this session.", true));
 				return { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
@@ -611,7 +678,7 @@ export class Session {
 
 	/** Summarizes the older history now. A turn like `send`, with one `turn_finished`; no review follows it. */
 	async *compact(instructions?: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
-		yield* this.#stream(turnId, undefined, async (turn, _signal, backendSession) => {
+		yield* this.#stream(turnId, undefined, undefined, async (turn, _signal, backendSession) => {
 			if (!backendSession.compact) {
 				turn.push(errorEvent("compaction_unavailable", "This backend cannot compact its context.", true));
 				return { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
@@ -639,6 +706,8 @@ export class Session {
 		turnId: string,
 		/** The user's prompt when the turn answers one: the saved transcript starts the turn with it. */
 		prompt: string | undefined,
+		/** The queued message the prompt comes from: the turn starts by saying it entered. */
+		entered: QueuedMessage | undefined,
 		work: (
 			turn: Channel<TurnEvent>,
 			signal: AbortSignal,
@@ -663,6 +732,10 @@ export class Session {
 		const turn = new Channel<TurnEvent>();
 		this.#turn = turn;
 		this.#recordStart(prompt, turnId);
+		if (entered) {
+			turn.push({ type: "queued_message", ...entered });
+			this.#sayQueue();
+		}
 		this.#warned = false;
 		this.#turnPrompt = undefined;
 		this.#classifier = { consecutive: 0, denials: 0, failures: 0 };
@@ -689,6 +762,12 @@ export class Session {
 			} catch (error) {
 				turn.push(errorEvent("turn_failed", describeError(error)));
 				finish = { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
+			}
+			// An interrupted or failed turn gives the queue back instead of running it after.
+			if (this.#queue.length > 0 && (abort.signal.aborted || UNCLEAN_ENDS.has(finish.stopReason))) {
+				const returned = this.#queue;
+				this.#queue = [];
+				this.#sayQueue(returned);
 			}
 			await Promise.all(this.#archiving);
 			// The state of the backend that ran the turn, before a change made at its end can replace the backend.
@@ -1172,7 +1251,19 @@ export class Session {
 		return this.#closing;
 	}
 
+	/** Runs a call of the main agent; in a turn that answers a prompt, the steers queued so far go with its result. */
 	async #executeTool(call: ToolCall): Promise<ToolCallResult> {
+		const result = await this.#runTool(call);
+		if (!this.#steerable || this.#abort?.signal.aborted) return result;
+		const steers = this.#queue.filter((message) => message.kind === "steer");
+		if (steers.length === 0) return result;
+		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
+		for (const steer of steers) this.#turn?.push({ type: "queued_message", ...steer });
+		this.#sayQueue();
+		return { ...result, steering: steeringText(steers.map((steer) => steer.text)) };
+	}
+
+	async #runTool(call: ToolCall): Promise<ToolCallResult> {
 		const callId = call.callId ?? this.#createId();
 		const emit = (event: AtelierEventBody) => this.#turn?.push(event);
 		emit({ type: "tool_call_started", callId, tool: call.tool, input: call.input });
@@ -1582,6 +1673,13 @@ function localDate(date: Date): string {
 
 /** Stop reasons after which a turn is neither assessed nor trusted as a correction. */
 const NOT_REVIEWED = new Set(["error", "interrupted", "incomplete"]);
+/** Ends after which the queue goes back to the user instead of running. */
+const UNCLEAN_ENDS: ReadonlySet<string> = new Set(["error", "interrupted"]);
+
+/** How steers reach the model with a tool result: as the user's words, apart from the tool's output. */
+function steeringText(texts: string[]): string {
+	return `The user sent this while you were working; take it into account as you continue:\n\n${texts.join("\n\n")}`;
+}
 
 /** The main agent's own closing event, with what it cost as the turn's `main` part. */
 function withMainPhase(

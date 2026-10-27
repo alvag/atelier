@@ -15,6 +15,8 @@ export type FakeStep =
 	| { event: AtelierEventBody }
 	| { toolCall: ToolCall }
 	| { throw: string }
+	/** Runs code at this point of the turn, as a client acting while it runs would. */
+	| { run: () => void | Promise<void> }
 	/** Blocks until `interrupt()` is called, then yields `turn_finished` with stopReason "interrupted". */
 	| { waitForInterrupt: true }
 	/** Ignores `interrupt()` and blocks until `close()`, then ends the turn without finishing it. */
@@ -91,6 +93,7 @@ export class FakeBackend implements AgentBackend {
 					if ("event" in step) yield step.event;
 					else if ("toolCall" in step) backend.toolResults.push(await options.executeTool(step.toolCall));
 					else if ("throw" in step) throw new Error(step.throw);
+					else if ("run" in step) await step.run();
 					else if ("hang" in step) {
 						if (!backend.closed) await new Promise<void>((resolve) => closeWaiters.push(resolve));
 						return;

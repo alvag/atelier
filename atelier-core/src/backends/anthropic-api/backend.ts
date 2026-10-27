@@ -659,9 +659,13 @@ class AnthropicApiSession implements BackendSession {
 		return message.replaceAll(this.#apiKey, "[redacted]");
 	}
 
-	/** Runs tool_use blocks in order; once interrupted, the rest get an error result so the history stays valid. */
-	async #runTools(content: Anthropic.ContentBlock[], signal: AbortSignal): Promise<Anthropic.ToolResultBlockParam[]> {
+	/**
+	 * Runs tool_use blocks in order; once interrupted, the rest get an error result so the history stays valid. What the
+	 * user steered with a result follows all of them as text, since tool results come first in a user message.
+	 */
+	async #runTools(content: Anthropic.ContentBlock[], signal: AbortSignal): Promise<Anthropic.ContentBlockParam[]> {
 		const results: Anthropic.ToolResultBlockParam[] = [];
+		const steering: Anthropic.TextBlockParam[] = [];
 		for (const block of content) {
 			if (block.type !== "tool_use") continue;
 			if (signal.aborted) {
@@ -678,8 +682,9 @@ class AnthropicApiSession implements BackendSession {
 				content: result.output,
 				...(result.ok ? {} : { is_error: true }),
 			});
+			if (result.steering !== undefined) steering.push({ type: "text", text: result.steering });
 		}
-		return results;
+		return [...results, ...steering];
 	}
 
 	/** Roles must alternate: after an interrupt the last message may already be the user's. */

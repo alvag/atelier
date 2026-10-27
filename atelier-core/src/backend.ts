@@ -14,6 +14,8 @@ export interface ToolCallResult {
 	ok: boolean;
 	/** Text returned to the model. */
 	output: string;
+	/** What the user said while the turn ran, for the model with this result, apart from the tool's output. */
+	steering?: string;
 }
 
 export type ToolExecutor = (call: ToolCall, signal?: AbortSignal) => Promise<ToolCallResult>;
