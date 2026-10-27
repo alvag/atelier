@@ -177,6 +177,7 @@ export async function run(
 			stderr: io.stderr,
 			color: io.color,
 			version: await versionLabel(io.appRoot ?? OWN_ROOT),
+			env: io.env ?? {},
 			...(io.home === undefined ? {} : { home: io.home }),
 			...(io.onTerminate === undefined ? {} : { onTerminate: io.onTerminate }),
 		});

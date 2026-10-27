@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -19,6 +20,7 @@ import { type ProgramStatus, resetCapabilitiesCache, type Terminal } from "@eare
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
+import { HerdrStatusReporter } from "../src/tui/herdr-status.ts";
 
 const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 };
 const started: AtelierEventBody = { type: "session_started", backend: "fake", model: "m", authSource: "subscription" };
@@ -1542,6 +1544,235 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(h.screen.statuses).toEqual([atelier("idle")]);
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
+		});
+	});
+
+	describe("herdr", () => {
+		interface HerdrCall {
+			id: string;
+			method: string;
+			params: Record<string, unknown>;
+		}
+
+		/** A Herdr socket that keeps every request; `hold` keeps the replies back until `answer` sends them. */
+		async function fakeHerdr(options: { hold?: boolean } = {}) {
+			const path = join(cwd, "herdr.sock");
+			const calls: HerdrCall[] = [];
+			const held: (() => void)[] = [];
+			const sockets = new Set<Socket>();
+			const server = createServer((socket) => {
+				sockets.add(socket);
+				socket.on("close", () => sockets.delete(socket));
+				let buffered = "";
+				socket.on("data", (chunk) => {
+					buffered += chunk.toString();
+					const lines = buffered.split("\n");
+					buffered = lines.pop() ?? "";
+					for (const line of lines) {
+						const call = JSON.parse(line) as HerdrCall;
+						calls.push(call);
+						const reply = () => socket.end(`${JSON.stringify({ id: call.id, result: {} })}\n`);
+						if (options.hold) held.push(reply);
+						else reply();
+					}
+				});
+			});
+			await new Promise<void>((resolve) => server.listen(path, resolve));
+			const close = () =>
+				new Promise<void>((resolve) => {
+					for (const socket of sockets) socket.destroy();
+					server.close(() => resolve());
+				});
+			const answer = () => {
+				for (const reply of held.splice(0)) reply();
+			};
+			return { path, calls, close, answer };
+		}
+
+		const herdrEnv = (socket: string) => ({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_SOCKET_PATH: socket });
+		/** What a call says, without what every call carries. */
+		const said = ({ method, params }: HerdrCall): Record<string, unknown> => {
+			const { pane_id: _pane, source: _source, agent: _agent, seq: _seq, ...rest } = params;
+			return { method, ...rest };
+		};
+
+		it("reports the session, its states and the release to the pane, with a growing seq", async () => {
+			const herdr = await fakeHerdr();
+			const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo secret" } } }, { event: finished }]]);
+			h.io = { ...h.io, env: herdrEnv(herdr.path) } as typeof h.io;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			await until(() => herdr.calls.some((call) => call.params.state === "idle"));
+			h.screen.type("one");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("Run this command?"));
+			await until(() => herdr.calls.some((call) => call.params.state === "blocked"));
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("$0.50"));
+			h.screen.type("/new");
+			h.screen.type("\r");
+			await until(() => herdr.calls.filter((call) => call.method === "pane.report_agent_session").length === 2);
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+			await herdr.close();
+
+			const [first, second] = h.core.commands
+				.filter((command) => command.command === "session.close")
+				.map((command) => (command as { sessionId: string }).sessionId);
+			// A state that a newer one replaces before Herdr answers the one in flight is never sent: a working may be missing.
+			const reported = herdr.calls.map(said).filter((call) => call.state !== "working");
+			const states = herdr.calls.map((call) => call.params.state).filter((state) => state !== undefined);
+			expect(states.filter((state, at) => state === states[at - 1])).toEqual([]);
+			expect(reported).toEqual([
+				{ method: "pane.report_agent_session", agent_session_id: first },
+				{ method: "pane.report_agent", state: "idle" },
+				{ method: "pane.report_agent", state: "blocked", message: "Approval awaiting input" },
+				{ method: "pane.report_agent", state: "idle" },
+				{ method: "pane.report_agent_session", agent_session_id: second },
+				{ method: "pane.release_agent" },
+			]);
+			for (const call of herdr.calls)
+				expect(call.params).toMatchObject({ pane_id: "w1:p1", source: "atelier", agent: "atelier" });
+			const seqs = herdr.calls.map((call) => call.params.seq as number);
+			expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+			expect(new Set(seqs).size).toBe(seqs.length);
+			expect(JSON.stringify(herdr.calls)).not.toContain("secret");
+			// A nested Atelier started by a tool finds the pane taken.
+			expect(h.core.envs).toEqual([{ ATELIER_HERDR_PANE: "w1:p1" }]);
+			expect(h.err()).toBe("");
+		});
+
+		it("gives a saved session the command that resumes it, again after a backend change", async () => {
+			const herdr = await fakeHerdr();
+			const h = harness([]);
+			const stub = listingCore();
+			h.io = { ...h.io, env: herdrEnv(herdr.path) } as typeof h.io;
+			h.io.tui = {
+				terminal: h.screen.terminal,
+				connect: async () => ({
+					...stub.link,
+					request: async (command) => {
+						const answer = (await stub.link.request(command)) as Record<string, unknown>;
+						return command.command === "session.start" ? { ...answer, savedId: "saved-1" } : answer;
+					},
+				}),
+			};
+			const code = run([], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("/backend anthropic-api");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("Move this session to anthropic-api?"));
+			h.screen.type("\x1b[A");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("with a summary of the conversation"));
+			const sessions = () => herdr.calls.filter((call) => call.method === "pane.report_agent_session");
+			await until(() => sessions().length === 2);
+			for (const call of sessions())
+				expect(said(call)).toEqual({
+					method: "pane.report_agent_session",
+					agent_session_id: "saved-1",
+					resume_argv: ["atelier", "--resume", "saved-1"],
+				});
+			h.screen.type("\x04");
+			expect(await code).toBe(0);
+			await herdr.close();
+		});
+
+		it("reports a review consent as blocked with a generic message", async () => {
+			const herdr = await fakeHerdr();
+			const h = harness([]);
+			const stub = stubCore();
+			h.io = { ...h.io, env: herdrEnv(herdr.path) } as typeof h.io;
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			stub.emit({ type: "review_consent_requested", reviewId: "r1", level: "high", reasons: [], lenses: [] });
+			await until(() => herdr.calls.some((call) => call.params.state === "blocked"));
+			expect(said(herdr.calls.at(-1) as HerdrCall)).toEqual({
+				method: "pane.report_agent",
+				state: "blocked",
+				message: "Review consent awaiting input",
+			});
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			await herdr.close();
+		});
+
+		it.each([
+			["outside Herdr", { HERDR_ENV: undefined }],
+			["without a pane", { HERDR_PANE_ID: " " }],
+			["inside an Atelier that already reports the pane", { ATELIER_HERDR_PANE: "w1:p1" }],
+		])("reports nothing %s", async (_name, change) => {
+			const herdr = await fakeHerdr();
+			const h = harness([[{ event: finished }]]);
+			h.io = { ...h.io, env: { ...herdrEnv(herdr.path), ...change } } as typeof h.io;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("one");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("$0.50"));
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+			await herdr.close();
+			expect(herdr.calls).toEqual([]);
+			expect(h.core.envs).toEqual([{}]);
+		});
+
+		it("reports nothing when the socket path is not a socket", async () => {
+			const path = join(cwd, "not-a-socket");
+			await writeFile(path, "");
+			const h = harness([]);
+			h.io = { ...h.io, env: herdrEnv(path) } as typeof h.io;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("\x04");
+			expect(await code).toBe(0);
+			expect(h.core.envs).toEqual([{}]);
+		});
+
+		it("runs and exits as usual when the socket goes away", async () => {
+			const herdr = await fakeHerdr();
+			const h = harness([[{ event: finished }]]);
+			h.io = { ...h.io, env: herdrEnv(herdr.path) } as typeof h.io;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			await until(() => herdr.calls.length === 2);
+			await herdr.close();
+			h.screen.type("one");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("$0.50"));
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+			expect(h.err()).toBe("");
+			expect(h.screen.screen()).not.toMatch(/herdr|ENOENT|ECONNREFUSED/i);
+		});
+
+		it("sends only the newest state while one is in flight, and never one Herdr already has", async () => {
+			const herdr = await fakeHerdr({ hold: true });
+			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
+			reporter?.report("working");
+			await until(() => herdr.calls.length === 1);
+			reporter?.report("idle");
+			reporter?.report("working");
+			reporter?.report("blocked", { kind: "permission", message: "Run this command?" });
+			herdr.answer();
+			await until(() => herdr.calls.length === 2);
+			reporter?.report("idle");
+			reporter?.report("blocked", { kind: "permission", message: "Run this command?" });
+			herdr.answer();
+			const released = reporter?.release();
+			await until(() => herdr.calls.length === 3);
+			herdr.answer();
+			await released;
+			await herdr.close();
+			expect(herdr.calls.map(said)).toEqual([
+				{ method: "pane.report_agent", state: "working" },
+				{ method: "pane.report_agent", state: "blocked", message: "Approval awaiting input" },
+				{ method: "pane.release_agent" },
+			]);
 		});
 	});
 });

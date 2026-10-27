@@ -41,6 +41,7 @@ import {
 } from "./footer.ts";
 import { readGitBranch } from "./git-branch.ts";
 import { Header, type HeaderState } from "./header.ts";
+import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
 import { ProgramStatusReporter, settledState } from "./program-status.ts";
 import { PromptEditor } from "./prompt.ts";
@@ -73,6 +74,8 @@ export interface TuiOptions {
 	color: boolean;
 	/** Atelier's version, for the header. */
 	version?: string;
+	/** The CLI's environment, where Herdr says which pane the TUI runs in. */
+	env?: Record<string, string | undefined>;
 	/** Registers a handler for SIGTERM and SIGHUP, given the signal's number; returns a function that removes it. */
 	onTerminate?: (handler: (signal: number) => void) => () => void;
 	/** How long closing the session may take before the core is closed anyway (default 3000 ms). */
@@ -327,9 +330,11 @@ async function openSession(
  */
 export async function runTui(args: CliArgs, options: TuiOptions): Promise<number> {
 	const paint = painter(options.color);
+	const herdr = HerdrStatusReporter.fromEnv(options.env ?? {});
 	const env: Record<string, string> = {
 		...(args.noSandbox ? { ATELIER_SANDBOX: "off" } : {}),
 		...(args.review ? {} : { ATELIER_REVIEW: "off" }),
+		...(herdr === undefined ? {} : { [PANE_MARKER]: herdr.paneId }),
 	};
 	let link: CoreLink;
 	try {
@@ -436,11 +441,18 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		blocked?: Blocked | undefined;
 	}[] = [];
 	const programStatus = new ProgramStatusReporter(options.terminal);
+	/** Tells the terminal, and Herdr when the TUI runs in one of its panes, what the TUI is doing. */
+	const reportState = (state: Parameters<ProgramStatusReporter["report"]>[0], blocked?: Blocked) => {
+		programStatus.report(state, blocked);
+		herdr?.report(state, blocked);
+	};
+	/** Tells Herdr which session the TUI runs. */
+	const reportSession = () => herdr?.session(savedId ?? sessionId, savedId !== undefined);
 	/** What the terminal is told while a turn runs: blocked when the core's own question is on screen. */
 	const reportRunning = () => {
 		const blocked = questions[0]?.blocked;
-		if (blocked) programStatus.report("blocked", blocked);
-		else if (busy) programStatus.report("working");
+		if (blocked) reportState("blocked", blocked);
+		else if (busy) reportState("working");
 	};
 
 	const setBusy = (on: boolean) => {
@@ -582,7 +594,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			void readBranch();
 			dropQuestions();
 			setBusy(false);
-			programStatus.report(settledState(event.stopReason));
+			reportState(settledState(event.stopReason));
 		}
 		tui.requestRender();
 	};
@@ -606,7 +618,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const answer = await request(command);
 		if (answer === undefined) {
 			setBusy(false);
-			programStatus.report("idle");
+			reportState("idle");
 		}
 	};
 	const interrupt = () => {
@@ -751,6 +763,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		// The model chosen was the old backend's; the new one starts with the profile's or its default.
 		const { model: _model, ...rest } = chosen;
 		chosen = { ...rest, backend };
+		reportSession();
 		const carried = configuration.backendChange?.summarized
 			? "with a summary of the conversation"
 			: "nothing to carry yet";
@@ -772,6 +785,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		feature.open = open;
 		odd.addChild(feature);
 		void request({ command: "session.close", sessionId: previous });
+		reportSession();
 	};
 	/** A conversation for the next session, after a rule that ends the one before. */
 	const nextConversation = (title: string) => {
@@ -993,7 +1007,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			.catch(() => {});
 	}
 	options.terminal.setTitle(`Atelier - ${basename(args.cwd)}`);
-	programStatus.report("idle");
+	reportSession();
+	reportState("idle");
 	try {
 		return await done;
 	} finally {
@@ -1005,6 +1020,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		programStatus.clear();
 		// The editor and the footer stay behind; the transcript is printed where the terminal was.
 		keepDocument(tui, document);
+		const released = herdr?.release();
 		tui.stop();
 		if (farewell !== undefined) options.stderr(farewell);
 		// A core that does not answer must not keep the terminal's owner waiting: close the link anyway.
@@ -1014,6 +1030,6 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		});
 		await Promise.race([link.request({ command: "session.close", sessionId }).catch(() => {}), gaveUp]);
 		clearTimeout(timer);
-		await link.close();
+		await Promise.all([link.close(), released]);
 	}
 }

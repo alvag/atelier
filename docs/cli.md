@@ -53,6 +53,8 @@ Without a prompt, when stdin and stdout are both terminals, the session runs in 
 
 The TUI also tells the terminal what it is doing, so terminals like Orca show it as an agent with a live state: it sets the title to `Atelier - <working directory name>` and reports `idle`, `working`, `blocked` (while the core waits for an approval or a review consent), `done`, `error` or `idle` again (interrupted) with the OSC 7501 Program Status Protocol, and clears it on exit. Terminals that do not answer the protocol are not sent anything.
 
+Inside a Herdr pane (`HERDR_ENV=1`, a `HERDR_PANE_ID` and a `HERDR_SOCKET_PATH` that is a Unix socket), the TUI also reports itself to Herdr through that socket as the agent `atelier` (source `atelier`): `pane.report_agent_session` with the session's id at start and whenever it moves to another session (`/new`, `/resume`, `/backend`), with the command `atelier --resume <id>` when the session is saved; `pane.report_agent` with `working` while a turn runs, `blocked` while the core waits (`Approval awaiting input` or `Review consent awaiting input`, never the command or the question) and `idle` at start and when a turn ends; and `pane.release_agent` on exit. Herdr derives `done` from `working` followed by `idle`. A Herdr that does not answer within 500 ms, then 1500 ms, or answers an error, is ignored. The TUI starts its core with `ATELIER_HERDR_PANE=<pane id>`, which the commands of its tools inherit: an Atelier started from one of them in the same pane reports nothing, so it does not take the pane over. Line mode, a prompt run, the desktop and subagents never report to Herdr.
+
 ### Settings
 
 `~/.atelier/settings.json` sets how the TUI looks; every field is optional (`fullscreen` is `true` unless set):
