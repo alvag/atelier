@@ -313,6 +313,17 @@ export class RpcServer {
 			}
 			case "session.mcp":
 				return { ...(this.#session(message.sessionId).session.mcpStatus() ?? { servers: [], problems: [] }) };
+			case "session.mcp_login":
+			case "session.mcp_logout": {
+				const { session } = this.#session(message.sessionId);
+				try {
+					if (message.command === "session.mcp_login") await session.mcpLogin(message.server);
+					else await session.mcpLogout(message.server);
+				} catch (error) {
+					throw new CommandError("mcp_failed", describeError(error));
+				}
+				return { ...(session.mcpStatus() ?? { servers: [], problems: [] }) };
+			}
 			case "session.interrupt": {
 				const entry = this.#session(message.sessionId);
 				denyAll(entry);

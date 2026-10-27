@@ -182,7 +182,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 					<Transcript turns={state.turns} onAnswer={onAnswer} onConsent={onConsent} onUndo={onUndo} />
 				</main>
 				{state.feature ? <FeaturePanel feature={state.feature} /> : null}
-				{mcpOpen && state.mcp ? <McpPanel mcp={state.mcp} /> : null}
+				{mcpOpen && state.mcp ? <McpPanel mcp={state.mcp} onLogin={(server) => void chat.loginMcp(server)} /> : null}
 			</div>
 
 			<form className="composer" onSubmit={submit}>

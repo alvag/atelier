@@ -471,6 +471,20 @@ export class Session {
 		return servers.length === 0 && problems.length === 0 ? undefined : { servers, problems };
 	}
 
+	/** Signs an HTTP server in with OAuth through the browser and connects it again; rejects without MCP. */
+	async mcpLogin(server: string): Promise<void> {
+		const mcp = this.#options.mcp;
+		if (mcp === undefined) throw new Error(`No MCP server named "${server}"`);
+		await mcp.login(server);
+	}
+
+	/** Deletes a server's OAuth credentials and connects it again; rejects without MCP. */
+	async mcpLogout(server: string): Promise<void> {
+		const mcp = this.#options.mcp;
+		if (mcp === undefined) throw new Error(`No MCP server named "${server}"`);
+		await mcp.logout(server);
+	}
+
 	get busy(): boolean {
 		return this.#turn !== undefined;
 	}

@@ -19,7 +19,14 @@ export function mcpTroubled(mcp: NonNullable<ChatState["mcp"]>): boolean {
 }
 
 /** The session's MCP servers: state, tools, errors and the end of a failed server's stderr. Server text is plain text. */
-export function McpPanel({ mcp }: { mcp: NonNullable<ChatState["mcp"]> }) {
+export function McpPanel({
+	mcp,
+	onLogin,
+}: {
+	mcp: NonNullable<ChatState["mcp"]>;
+	/** Signs a server that needs it in. */
+	onLogin: (server: string) => void;
+}) {
 	return (
 		<aside className="feature-panel mcp-panel" aria-label="MCP servers">
 			<h2>MCP servers</h2>
@@ -34,6 +41,11 @@ export function McpPanel({ mcp }: { mcp: NonNullable<ChatState["mcp"]> }) {
 									? `${label}: connected, ${tools.length} ${tools.length === 1 ? "tool" : "tools"}`
 									: `${label}: ${state === "needs_auth" ? "needs sign-in" : state}`}
 							</div>
+							{state === "needs_auth" ? (
+								<button type="button" aria-label={`Sign in to ${shown(name)}`} onClick={() => onLogin(name)}>
+									Sign in
+								</button>
+							) : null}
 							{tools.length > 0 ? <div className="mcp-tools">{tools.map(shown).join(", ")}</div> : null}
 							{error === undefined ? null : <pre className="mcp-error">{shown(error)}</pre>}
 							{stderr === undefined ? null : <pre className="mcp-stderr">{shown(stderr)}</pre>}

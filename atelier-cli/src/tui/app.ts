@@ -93,7 +93,7 @@ const COMMANDS = [
 	{ name: "mode", description: "Change the permission mode: [normal|auto|yolo] | default <mode>" },
 	{ name: "backend", description: "Move the session to another backend, with a summary [name]" },
 	{ name: "feature", description: "Open or fold the ODD feature's tasks (Ctrl+T)" },
-	{ name: "mcp", description: "Show the MCP servers: state, tools and errors" },
+	{ name: "mcp", description: "Show the MCP servers; login|logout <server> signs one in or out" },
 	{ name: "new", description: "Start a new session" },
 	{ name: "resume", description: "Resume a saved session of this folder [id]" },
 	{ name: "review", description: "Review the current changes, against HEAD or a git ref" },
@@ -782,10 +782,26 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		feature.toggle();
 	};
 
-	/** Prints the session's MCP servers as the core has them now. */
-	const runMcp = async () => {
+	/** `/mcp` prints the session's MCP servers as the core has them now; `/mcp login|logout <server>` signs one in or out first. */
+	const runMcp = async (words: string[]) => {
+		const [action, server, ...extra] = words;
+		if (
+			action !== undefined &&
+			((action !== "login" && action !== "logout") || server === undefined || extra.length > 0)
+		)
+			return conversation.note("usage: /mcp | /mcp login <server> | /mcp logout <server>", true);
 		try {
-			const { servers, problems } = (await link.request({ command: "session.mcp", sessionId })) as {
+			if (action === "login" && server !== undefined) {
+				conversation.note(
+					`Signing in to ${shown(server).text}: the browser opens the authorization page; waiting for it…`,
+				);
+				tui.requestRender();
+			}
+			const command: ClientCommand =
+				server === undefined
+					? { command: "session.mcp", sessionId }
+					: { command: action === "login" ? "session.mcp_login" : "session.mcp_logout", sessionId, server };
+			const { servers, problems } = (await link.request(command)) as {
 				servers: McpServerStatus[];
 				problems: string[];
 			};
@@ -864,7 +880,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		["/backend", `/backend [${BACKEND_NAMES.join("|")}]`],
 		["/new", "/new"],
 		["/feature", "/feature"],
-		["/mcp", "/mcp"],
+		["/mcp", "/mcp [login|logout <server>]"],
 		["/resume", "/resume [id]"],
 		["/undo-correction", "/undo-correction"],
 		["/review", "/review [ref]"],
@@ -880,7 +896,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (command === "/backend" && single) await runBackend(argument);
 		else if (text === "/new") await runNew();
 		else if (text === "/feature") toggleFeature();
-		else if (text === "/mcp") await runMcp();
+		else if (command === "/mcp") await runMcp(words.slice(1));
 		else if (command === "/resume" && single) await runResume(argument);
 		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });
 		else if (/^\/review(?:\s+\S+)?$/.test(text))

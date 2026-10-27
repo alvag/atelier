@@ -212,4 +212,31 @@ describe("MCP OAuth", () => {
 		expect(manager.status()[0]?.state).toBe("needs_auth");
 		await manager.close();
 	});
+
+	it("signs a session's server in and out, reconnecting it each time", async () => {
+		const manager = new McpManager(
+			{ file: "mcp.json", servers: [remote()], problems: [], secrets: [] },
+			{ auth: new McpAuthStore(mcpAuthFile(home)), openBrowser: browser },
+		);
+		manager.start();
+		await manager.ready();
+		expect(manager.status()[0]?.state).toBe("needs_auth");
+		await manager.login("remote");
+		expect(manager.status()[0]).toMatchObject({ state: "connected", tools: ["whoami"] });
+		await manager.logout("remote");
+		expect(manager.status()[0]?.state).toBe("needs_auth");
+		await expect(manager.login("nope")).rejects.toThrow('No MCP server named "nope"');
+		await manager.close();
+	});
+
+	it("stops waiting for the browser when the manager closes", async () => {
+		const manager = new McpManager(
+			{ file: "mcp.json", servers: [remote()], problems: [], secrets: [] },
+			{ auth: new McpAuthStore(mcpAuthFile(home)), openBrowser: () => {} },
+		);
+		const login = manager.login("remote");
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		await manager.close();
+		await expect(login).rejects.toThrow("closed");
+	});
 });

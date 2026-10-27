@@ -34,6 +34,8 @@ export interface Chat {
 	undoCorrection(reviewId: string): Promise<void>;
 	/** Asks the core for the session's MCP servers as they are now. */
 	refreshMcp(): Promise<void>;
+	/** Signs an MCP server in with OAuth: the core opens the browser and waits for it. */
+	loginMcp(server: string): Promise<void>;
 	restartCore(): Promise<void>;
 	pickFolder(): Promise<string | undefined>;
 }
@@ -104,6 +106,25 @@ export function useChat(bridge: AtelierBridge): Chat {
 		},
 		[bridge],
 	);
+
+	/** `session.mcp`, or `session.mcp_login` for `server`; the answer is the servers as they are now. */
+	const mcpCommand = async (server: string | undefined) => {
+		const session = stateRef.current.session;
+		if (!session) return;
+		const result = await request(
+			server === undefined
+				? { command: "session.mcp", sessionId: session.id }
+				: { command: "session.mcp_login", sessionId: session.id, server },
+		);
+		if (!result.ok) return;
+		const { servers, problems } = result.result;
+		if (Array.isArray(servers) && Array.isArray(problems))
+			dispatch({
+				type: "mcp_answered",
+				servers: servers as unknown as McpServerStatus[],
+				problems: problems.filter((problem): problem is string => typeof problem === "string"),
+			});
+	};
 
 	return {
 		state,
@@ -184,19 +205,8 @@ export function useChat(bridge: AtelierBridge): Chat {
 			if (result.ok && typeof result.result.turnId === "string")
 				dispatch({ type: "turn_accepted", turnId: result.result.turnId });
 		},
-		refreshMcp: async () => {
-			const session = stateRef.current.session;
-			if (!session) return;
-			const result = await request({ command: "session.mcp", sessionId: session.id });
-			if (!result.ok) return;
-			const { servers, problems } = result.result;
-			if (Array.isArray(servers) && Array.isArray(problems))
-				dispatch({
-					type: "mcp_answered",
-					servers: servers as unknown as McpServerStatus[],
-					problems: problems.filter((problem): problem is string => typeof problem === "string"),
-				});
-		},
+		refreshMcp: () => mcpCommand(undefined),
+		loginMcp: (server) => mcpCommand(server),
 		restartCore: () => bridge.restartCore(),
 		pickFolder: () => bridge.pickFolder(),
 	};

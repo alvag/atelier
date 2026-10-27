@@ -800,6 +800,31 @@ describe("App", () => {
 		expect(screen.queryByRole("complementary", { name: "MCP servers" })).toBeNull();
 	});
 
+	it("signs a server that needs it in from the MCP panel", async () => {
+		const fake = fakeBridge();
+		const needsAuth = {
+			name: "jira",
+			transport: "http" as const,
+			state: "needs_auth" as const,
+			tools: [],
+			error: "sign-in required",
+		};
+		fake.answers["session.mcp"] = { ok: true, result: { servers: [needsAuth], problems: [] } };
+		fake.answers["session.mcp_login"] = {
+			ok: true,
+			result: { servers: [{ name: "jira", transport: "http", state: "connected", tools: ["search"] }], problems: [] },
+		};
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "mcp_status", servers: [needsAuth], problems: [] });
+		fireEvent.click(await screen.findByRole("button", { name: "MCP 0/1" }));
+		const panel = await screen.findByRole("complementary", { name: "MCP servers" });
+		fireEvent.click(await within(panel).findByRole("button", { name: "Sign in to jira" }));
+		await waitFor(() =>
+			expect(fake.commands).toContainEqual({ command: "session.mcp_login", sessionId: "s1", server: "jira" }),
+		);
+		await within(panel).findByText("jira (http): connected, 1 tool");
+	});
+
 	it("asks to call an MCP tool the classifier left to the user", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

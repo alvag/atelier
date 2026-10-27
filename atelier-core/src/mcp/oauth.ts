@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -204,6 +205,28 @@ export interface LoginOptions {
 	/** Opens the authorization page; the browser comes back to a loopback callback. */
 	openBrowser: (url: URL) => void | Promise<void>;
 	timeoutMs?: number;
+	/** Stops waiting for the browser. */
+	signal?: AbortSignal;
+}
+
+/** Opens a page in the user's browser; rejects naming the page when it cannot. */
+export function openInBrowser(url: URL): Promise<void> {
+	const [command, args] =
+		process.platform === "darwin"
+			? ["open", [url.href]]
+			: process.platform === "win32"
+				? ["cmd", ["/c", "start", "", url.href]]
+				: ["xdg-open", [url.href]];
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args as string[], { stdio: "ignore", detached: true });
+		child.once("error", (error) =>
+			reject(new Error(`could not open the browser (${error.message}); open ${url.href}`)),
+		);
+		child.once("spawn", () => {
+			child.unref();
+			resolve();
+		});
+	});
 }
 
 /**
@@ -238,7 +261,7 @@ export async function loginMcpServer(
 		} catch (error) {
 			if (!(error instanceof UnauthorizedError)) throw error;
 		}
-		const answer = await withTimeout(callback.answer, options.timeoutMs ?? LOGIN_TIMEOUT_MS);
+		const answer = await withTimeout(callback.answer, options.timeoutMs ?? LOGIN_TIMEOUT_MS, options.signal);
 		if (answer.error !== undefined) throw new Error(`the authorization server refused the sign-in: ${answer.error}`);
 		if (answer.state !== provider.expectedState) throw new Error("the sign-in answer does not match the request");
 		await transport.finishAuth(answer.code ?? "");
@@ -325,12 +348,19 @@ function portOf(url: string | undefined): number | undefined {
 	}
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, signal: AbortSignal | undefined): Promise<T> {
 	let timer: NodeJS.Timeout | undefined;
+	let onAbort: (() => void) | undefined;
 	return Promise.race([
 		promise,
 		new Promise<never>((_resolve, reject) => {
 			timer = setTimeout(() => reject(new Error(`no answer from the browser in ${Math.round(ms / 1000)} s`)), ms);
+			onAbort = () => reject(new Error("the sign-in stopped: the MCP servers closed"));
+			if (signal?.aborted) onAbort();
+			else signal?.addEventListener("abort", onAbort, { once: true });
 		}),
-	]).finally(() => clearTimeout(timer));
+	]).finally(() => {
+		clearTimeout(timer);
+		if (onAbort) signal?.removeEventListener("abort", onAbort);
+	});
 }

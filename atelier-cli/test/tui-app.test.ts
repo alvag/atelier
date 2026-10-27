@@ -809,6 +809,10 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		await until(() => h.screen.screen().includes("docs (http): connected, 2 tools"));
 		expect(h.screen.screen()).toContain("search, read");
 		expect(stub.log.commands).toContainEqual({ command: "session.mcp", sessionId: "s1" });
+		h.screen.type("/mcp login docs");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Signing in to docs: the browser opens"));
+		expect(stub.log.commands).toContainEqual({ command: "session.mcp_login", sessionId: "s1", server: "docs" });
 		h.screen.type("\x03");
 		h.screen.type("\x03");
 		expect(await code).toBe(130);

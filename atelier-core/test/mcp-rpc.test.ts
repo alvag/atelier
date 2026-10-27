@@ -83,4 +83,18 @@ describe("session.mcp", () => {
 		expect(await rpc.request({ command: "session.mcp", sessionId: "nope" })).toMatchObject({ ok: false });
 		await rpc.close();
 	});
+
+	it("answers an error when signing in to a server the session does not have", async () => {
+		const rpc = serve(() => new McpManager({ file: "mcp.json", servers: [], problems: [], secrets: [] }));
+		const started = await rpc.request({ command: "session.start", cwd });
+		const sessionId = (started as unknown as { result: { sessionId: string } }).result.sessionId;
+		expect(await rpc.request({ command: "session.mcp_login", sessionId, server: "nope" })).toMatchObject({
+			ok: false,
+			error: { message: 'No MCP server named "nope"' },
+		});
+		expect(await rpc.request({ command: "session.mcp_logout", sessionId, server: "nope" })).toMatchObject({
+			ok: false,
+		});
+		await rpc.close();
+	});
 });

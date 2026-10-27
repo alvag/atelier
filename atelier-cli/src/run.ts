@@ -133,7 +133,10 @@ export async function run(
 		io.stdout(`atelier ${await versionLabel(io.appRoot ?? OWN_ROOT)}\n`);
 		return EXIT_OK;
 	}
-	if (args.subcommand?.name === "mcp") return runMcpList(io, args.cwd, connectMcp);
+	if (args.subcommand?.name === "mcp")
+		return args.subcommand.action === "list" || args.subcommand.server === undefined
+			? runMcpList(io, args.cwd, connectMcp)
+			: runMcpSignIn(io, args.cwd, connectMcp, args.subcommand.action ?? "login", args.subcommand.server);
 	if (args.subcommand?.name === "desktop")
 		return runDesktop({
 			...(io.appRoot === undefined ? {} : { root: io.appRoot }),
@@ -531,12 +534,10 @@ export async function run(
 			if (quitting) return quitCode;
 			if (line === undefined || line.trim() === "/exit") break;
 			if (line.trim() === "") continue;
-			if (line.trim() === "/mcp") {
+			const mcpWords = line.trim().split(/\s+/);
+			if (mcpWords[0] === "/mcp") {
 				renderer.endLine();
-				const status = session.mcpStatus();
-				io.stdout(
-					status === undefined ? "No MCP servers in this session.\n" : mcpReport(status.servers, status.problems),
-				);
+				await runMcpCommand(io, session, mcpWords.slice(1));
 				continue;
 			}
 			const modeCommand = parseModeCommand(line);
@@ -621,6 +622,67 @@ function createLineReader(stdin: Readable): LineReader {
 		},
 		close: () => rl?.close(),
 	};
+}
+
+/** Signs a server in through the browser, or deletes its sign-in, saying so; a failure is said on stderr. */
+async function signIn(
+	io: CliIO,
+	action: "login" | "logout",
+	server: string,
+	run: { login: (server: string) => Promise<void>; logout: (server: string) => Promise<void> },
+): Promise<boolean> {
+	try {
+		if (action === "login") {
+			io.stdout(`Signing in to ${server}: the browser opens the authorization page; waiting for it…\n`);
+			await run.login(server);
+			io.stdout(`Signed in to ${server}.\n`);
+		} else {
+			await run.logout(server);
+			io.stdout(`Signed out of ${server}.\n`);
+		}
+		return true;
+	} catch (error) {
+		io.stderr(`error: ${describeError(error)}\n`);
+		return false;
+	}
+}
+
+/** `atelier mcp login|logout <server>`, outside a session. */
+async function runMcpSignIn(
+	io: CliIO,
+	cwd: string,
+	connectMcp: McpConnector | undefined,
+	action: "login" | "logout",
+	server: string,
+): Promise<number> {
+	if (connectMcp === undefined) {
+		io.stderr("error: MCP is off (ATELIER_MCP=off).\n");
+		return EXIT_FAILED;
+	}
+	const manager = connectMcp(cwd);
+	try {
+		return (await signIn(io, action, server, manager)) ? EXIT_OK : EXIT_FAILED;
+	} finally {
+		await manager.close();
+	}
+}
+
+/** `/mcp`, `/mcp login <server>` and `/mcp logout <server>` in the line-by-line session. Not a turn. */
+async function runMcpCommand(io: CliIO, session: Session, words: readonly string[]): Promise<void> {
+	const [action, server, ...extra] = words;
+	if (action === undefined) {
+		const status = session.mcpStatus();
+		io.stdout(status === undefined ? "No MCP servers in this session.\n" : mcpReport(status.servers, status.problems));
+		return;
+	}
+	if ((action !== "login" && action !== "logout") || server === undefined || extra.length > 0) {
+		io.stderr("usage: /mcp | /mcp login <server> | /mcp logout <server>\n");
+		return;
+	}
+	await signIn(io, action, server, {
+		login: (name) => session.mcpLogin(name),
+		logout: (name) => session.mcpLogout(name),
+	});
 }
 
 /** `atelier mcp list`: connects every server, waits for them, prints the report and closes them. */

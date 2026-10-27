@@ -1548,10 +1548,34 @@ describe("permission modes", () => {
 			expect(h.out()).toBe("No MCP servers: configure them in /h/.atelier/mcp.json.\n");
 		});
 
-		it("atelier mcp needs list", async () => {
+		it("atelier mcp needs list, or login or logout with a server", async () => {
+			for (const argv of [["mcp"], ["mcp", "login"], ["mcp", "logout", "a", "b"], ["mcp", "list", "x"]]) {
+				const h = harness([]);
+				expect(await run(argv, h.io, h.createBackend)).toBe(2);
+				expect(h.err()).toContain("Usage: atelier mcp list | atelier mcp login <server> | atelier mcp logout <server>");
+			}
+		});
+
+		it("atelier mcp login and logout say why they cannot sign a server in", async () => {
+			for (const action of ["login", "logout"]) {
+				const h = harness([]);
+				const code = await run(["mcp", action, "nope"], h.io, h.createBackend, undefined, () => manager([]));
+				expect(code).toBe(1);
+				expect(h.err()).toBe('error: No MCP server named "nope"\n');
+			}
 			const h = harness([]);
-			expect(await run(["mcp"], h.io, h.createBackend)).toBe(2);
-			expect(h.err()).toContain("Usage: atelier mcp list");
+			expect(
+				await run(["mcp", "login", "fixture"], h.io, h.createBackend, undefined, () => manager([stdio("fixture")])),
+			).toBe(1);
+			expect(h.err()).toContain("only HTTP servers without an Authorization header do");
+		});
+
+		it("says why /mcp login cannot sign a server in, without a turn", async () => {
+			const h = harness([], { input: ["/mcp login nope", "/mcp logout nope", "/mcp nope"] });
+			await run([], h.io, h.createBackend, undefined, () => manager([]));
+			expect(h.err()).toContain('error: No MCP server named "nope"\n');
+			expect(h.err()).toContain("usage: /mcp | /mcp login <server> | /mcp logout <server>\n");
+			expect(h.backend.prompts).toEqual([]);
 		});
 
 		it("shows the session's servers with /mcp, without a turn", async () => {

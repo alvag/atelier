@@ -38,6 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/alvag/atelier/main/install.sh | sh 
 | `atelier update --main` | Move to the latest `main` (`atelier --version` shows it); `atelier update` goes back to a release.      |
 | `atelier desktop`       | Open the desktop app of the same version; the first time it installs and builds it.                     |
 | `atelier mcp list`      | Connect to the MCP servers of `~/.atelier/mcp.json` and show their state, tools and errors.             |
+| `atelier mcp login <s>` | Sign a remote MCP server in with OAuth, in the browser; `atelier mcp logout <s>` signs it out.          |
 
 `atelier update` only touches a copy installed this way, and refuses one with local changes. To work on Atelier itself, clone the repository and run it with `pnpm install` and `pnpm atelier` (see [development](docs/development.md)).
 
@@ -71,21 +72,21 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 ### Commands
 
-| Command                   | Effect                                                                 |
-| ------------------------- | ---------------------------------------------------------------------- |
-| `/model [name]`           | Change the model from the next turn; without a name, pick from a list. |
-| `/effort [level]`         | Change the thinking level (`off`, `minimal`, `low` … `max`).           |
-| `/profile [name]`         | Change the agent profile.                                              |
-| `/mode [mode]`            | Change the permission mode; `/mode default <mode>` saves the default.  |
-| `/backend [name]`         | Move the session to another backend (it continues from a summary).     |
-| `/new`                    | Start another session.                                                 |
-| `/resume [id]`            | Resume a saved session of this directory.                              |
-| `/feature`                | Open or fold the active feature's tasks.                               |
-| `/mcp`                    | Show the session's MCP servers: state, tools and errors.               |
-| `/review [ref]`           | Review the working tree now, against `HEAD` or a git ref.              |
-| `/undo-correction`        | Undo the latest escalated review correction.                           |
-| `/compact [instructions]` | Summarize the older history now.                                       |
-| `/exit`                   | Quit.                                                                  |
+| Command                    | Effect                                                                 |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `/model [name]`            | Change the model from the next turn; without a name, pick from a list. |
+| `/effort [level]`          | Change the thinking level (`off`, `minimal`, `low` … `max`).           |
+| `/profile [name]`          | Change the agent profile.                                              |
+| `/mode [mode]`             | Change the permission mode; `/mode default <mode>` saves the default.  |
+| `/backend [name]`          | Move the session to another backend (it continues from a summary).     |
+| `/new`                     | Start another session.                                                 |
+| `/resume [id]`             | Resume a saved session of this directory.                              |
+| `/feature`                 | Open or fold the active feature's tasks.                               |
+| `/mcp [login\|logout <s>]` | Show the session's MCP servers, or sign one in or out.                 |
+| `/review [ref]`            | Review the working tree now, against `HEAD` or a git ref.              |
+| `/undo-correction`         | Undo the latest escalated review correction.                           |
+| `/compact [instructions]`  | Summarize the older history now.                                       |
+| `/exit`                    | Quit.                                                                  |
 
 ### Keys
 

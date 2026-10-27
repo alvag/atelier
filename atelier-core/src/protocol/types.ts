@@ -109,6 +109,13 @@ export type ClientCommand =
 	| { command: "session.close"; sessionId: string }
 	/** The session's MCP servers now: answers `{ servers, problems }` as `mcp_status` carries them; both empty without MCP. */
 	| { command: "session.mcp"; sessionId: string }
+	/**
+	 * Signs an HTTP server of the session in with OAuth: the core opens the authorization page in the browser and waits
+	 * for it, up to five minutes, then connects the server again. Answers `{ servers, problems }` as `session.mcp`.
+	 */
+	| { command: "session.mcp_login"; sessionId: string; server: string }
+	/** Deletes a server's OAuth credentials and connects it again. Answers `{ servers, problems }` as `session.mcp`. */
+	| { command: "session.mcp_logout"; sessionId: string; server: string }
 	| { command: "shutdown" };
 
 export type CommandName = ClientCommand["command"];

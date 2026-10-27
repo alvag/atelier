@@ -5,8 +5,16 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { type CallToolResult, type Tool, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { describeError, type McpServerStatus } from "../events.ts";
 import { VERSION } from "../version.ts";
-import { type McpConfig, type McpServerConfig, redact } from "./config.ts";
-import { httpTransport, type McpAuthStore, McpOAuthProvider, usesOAuth } from "./oauth.ts";
+import { type HttpServerConfig, type McpConfig, type McpServerConfig, redact } from "./config.ts";
+import {
+	httpTransport,
+	loginMcpServer,
+	logoutMcpServer,
+	type McpAuthStore,
+	McpOAuthProvider,
+	openInBrowser,
+	usesOAuth,
+} from "./oauth.ts";
 import { ProcessGroupTransport } from "./stdio.ts";
 
 /** A server as clients see it: never a value of its configuration, and every secret hidden. */
@@ -37,11 +45,18 @@ export class McpManager {
 	readonly #fileProblems: string[];
 	readonly #secrets: readonly string[];
 	readonly #auth: McpAuthStore | undefined;
+	readonly #openBrowser: (url: URL) => void | Promise<void>;
+	/** Aborted on close: a sign-in waiting for the browser stops. */
+	readonly #closing = new AbortController();
 	#closed = false;
 
-	/** `auth` holds the OAuth credentials of HTTP servers; without it no server signs in. */
-	constructor(config: McpConfig, options: { auth?: McpAuthStore } = {}) {
+	/** `auth` holds the OAuth credentials of HTTP servers; without it no server signs in. `openBrowser` opens a sign-in page. */
+	constructor(
+		config: McpConfig,
+		options: { auth?: McpAuthStore; openBrowser?: (url: URL) => void | Promise<void> } = {},
+	) {
 		this.#auth = options.auth;
+		this.#openBrowser = options.openBrowser ?? openInBrowser;
 		this.file = config.file;
 		this.#secrets = config.secrets;
 		for (const server of config.servers)
@@ -114,9 +129,53 @@ export class McpManager {
 		}
 	}
 
+	/** Signs an HTTP server in with OAuth through the browser, then connects it again. Rejects with the secrets hidden. */
+	async login(name: string): Promise<void> {
+		const server = this.#oauthServer(name);
+		await server.connecting;
+		try {
+			await loginMcpServer(server.config as HttpServerConfig, this.#auth as McpAuthStore, {
+				openBrowser: this.#openBrowser,
+				signal: this.#closing.signal,
+			});
+		} catch (error) {
+			throw new Error(this.#hide(describeError(error)));
+		}
+		await this.#reconnect(server);
+	}
+
+	/** Deletes an HTTP server's OAuth credentials, then connects it again, now without them. */
+	async logout(name: string): Promise<void> {
+		const server = this.#oauthServer(name);
+		await server.connecting;
+		logoutMcpServer(server.config as HttpServerConfig, this.#auth as McpAuthStore);
+		await this.#reconnect(server);
+	}
+
+	#oauthServer(name: string): Server {
+		const server = this.#servers.get(name);
+		if (server === undefined) throw new Error(`No MCP server named "${name}"`);
+		if (this.#auth === undefined || server.config.transport !== "http" || !usesOAuth(server.config))
+			throw new Error(
+				`The MCP server "${name}" does not sign in: only HTTP servers without an Authorization header do`,
+			);
+		if (server.state === "disabled") throw new Error(`The MCP server "${name}" is disabled`);
+		return server;
+	}
+
+	async #reconnect(server: Server): Promise<void> {
+		if (this.#closed) return;
+		const client = server.client;
+		server.client = undefined;
+		await client?.close().catch(() => {});
+		this.#connect(server);
+		await server.connecting;
+	}
+
 	/** Closes every server and stops their processes; later calls are refused. */
 	async close(): Promise<void> {
 		this.#closed = true;
+		this.#closing.abort();
 		await Promise.all(
 			[...this.#servers.values()].map(async (server) => {
 				await server.connecting;
