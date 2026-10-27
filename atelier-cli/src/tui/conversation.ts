@@ -1,6 +1,7 @@
 import { type AtelierEvent, visibleText } from "@atelier/core";
 import { type Component, Container, Markdown, Text } from "@earendil-works/pi-tui";
 import { phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
+import { ActivityBlock } from "./activity-block.ts";
 import { PromptBlock } from "./prompt.ts";
 import { ReviewBlock } from "./review-block.ts";
 import { markdownTheme, type Paint, Shade } from "./style.ts";
@@ -64,6 +65,10 @@ export class Conversation extends Container {
 	#notes = "";
 	/** The Markdown block the agent's text goes on, until something else is shown after it. */
 	#text: { block: Markdown; source: string } | undefined;
+	/** The block the agent's calls go in, until something else is shown after it. */
+	#activity: ActivityBlock | undefined;
+	/** The feature and task last said to be in progress, so the line comes only when it changes. */
+	#task: string | undefined;
 	readonly #cards = new Map<string, ToolCard>();
 	/** The verifier's and the review roles' groups, by call and agent: a review gives all its roles one call id. */
 	readonly #groups = new Map<string, AgentGroup>();
@@ -160,11 +165,14 @@ export class Conversation extends Container {
 				this.#verification(event.verifyId).event(event);
 				return;
 			case "tool_call_started": {
-				const card = new ToolCard(event.tool, event.input, this.view, this.#paint);
+				const card = new ToolCard(event.tool, event.input, this.view, this.#paint, event.callId);
 				this.#cards.set(event.callId, card);
-				this.#add(card);
+				this.#activityBlock().add(card);
 				return;
 			}
+			case "feature_changed":
+				this.#taskChanged(event);
+				return;
 			case "tool_call_finished":
 				this.#cards.get(event.callId)?.finish(event);
 				return;
@@ -262,6 +270,24 @@ export class Conversation extends Container {
 		group.add(event);
 	}
 
+	/** The block the agent's calls go in: the open one, or a new one after everything so far. */
+	#activityBlock(): ActivityBlock {
+		if (this.#activity === undefined) {
+			const block = new ActivityBlock(this.view, this.#paint);
+			this.#add(block);
+			this.#activity = block;
+		}
+		return this.#activity;
+	}
+
+	/** `◆ now T2 Footer` when the task in progress changes; the rest of a feature's progress is the footer's and the panel's. */
+	#taskChanged(event: Extract<AtelierEvent, { type: "feature_changed" }>): void {
+		const now = event.tasks.find((task) => task.status === "in_progress");
+		const key = now === undefined ? undefined : `${event.path}\0${now.id}`;
+		if (now !== undefined && key !== this.#task) this.note(`◆ now ${shown(now.id)} ${shown(now.title)}`);
+		this.#task = key;
+	}
+
 	/** The block of review `reviewId`: the one the latest assessment started, or a new one when there is none. */
 	#review(reviewId: string): ReviewBlock {
 		let block = this.#reviews.get(reviewId);
@@ -297,6 +323,7 @@ export class Conversation extends Container {
 	#appendText(delta: string): void {
 		if (this.#text === undefined) {
 			const block = new Markdown("", 1, 0, markdownTheme(this.#paint));
+			this.#activity = undefined;
 			this.#text = { block, source: "" };
 			this.addChild(block);
 		}
@@ -318,6 +345,7 @@ export class Conversation extends Container {
 	/** Shows a block after everything so far; the agent's next text starts a block of its own. */
 	#add(block: Component): void {
 		this.#text = undefined;
+		this.#activity = undefined;
 		this.addChild(block);
 	}
 }
