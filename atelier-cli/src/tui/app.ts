@@ -22,7 +22,6 @@ import {
 	matchesKey,
 	type Terminal,
 	Text,
-	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import type { CliArgs } from "../args.ts";
 import { savedTranscript } from "../transcript.ts";
@@ -38,6 +37,8 @@ import {
 	type StatusItem,
 } from "./footer.ts";
 import { readGitBranch } from "./git-branch.ts";
+import { Header, type HeaderState } from "./header.ts";
+import { createScreen, keepDocument, mount } from "./layout.ts";
 import { ProgramStatusReporter, settledState } from "./program-status.ts";
 import {
 	choicesOf,
@@ -66,6 +67,8 @@ export interface TuiOptions {
 	stderr: (text: string) => void;
 	home?: string;
 	color: boolean;
+	/** Atelier's version, for the header. */
+	version?: string;
 	/** Registers a handler for SIGTERM and SIGHUP, given the signal's number; returns a function that removes it. */
 	onTerminate?: (handler: (signal: number) => void) => () => void;
 	/** How long closing the session may take before the core is closed anyway (default 3000 ms). */
@@ -343,7 +346,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	}
 	let { sessionId, savedId } = opened;
 
-	const tui = new TuiMainScreen(options.terminal);
+	const tui = createScreen(options.terminal, settings.fullscreen && !args.noFullscreen, paint);
 	const footer = new Footer(paint, settings.statusLine);
 	footer.place = { cwd: args.cwd };
 	/** Reads the branch again, without blocking: the agent may have changed it. Only the newest read is shown. */
@@ -361,6 +364,21 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	// Each session gets a conversation of its own, after the ones before it.
 	const transcript = new Container();
 	transcript.addChild(conversation);
+	const headerState = (): HeaderState => {
+		const { model, backend, effort } = footer.state;
+		const running = model ?? backend;
+		return {
+			cwd: args.cwd,
+			...(options.home === undefined ? {} : { home: options.home }),
+			...(options.version === undefined ? {} : { version: options.version }),
+			...(running === undefined ? {} : { model: running }),
+			...(effort === undefined ? {} : { effort }),
+		};
+	};
+	// What scrolls, and what stays in the terminal on exit: the header, then each session's conversation.
+	const document = new Container();
+	document.addChild(new Header(paint, headerState));
+	document.addChild(transcript);
 	const status = new Container();
 	// The ODD feature's tasks, over the questions and the editor.
 	const odd = new Container();
@@ -375,7 +393,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		(text) => paint("dim", text),
 		"working… (Esc to interrupt)",
 	);
-	for (const component of [transcript, status, odd, dialogs, editor, footer]) tui.addChild(component);
+	mount(tui, document, [
+		{ component: status },
+		{ component: odd },
+		{ component: dialogs },
+		{ component: editor, editor: true },
+		{ component: footer },
+	]);
 	tui.setFocus(editor);
 
 	let busy = false;
@@ -903,6 +927,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		removeTerminate?.();
 		loader.stop();
 		programStatus.clear();
+		// The editor and the footer stay behind; the transcript is printed where the terminal was.
+		keepDocument(tui, document);
 		tui.stop();
 		// A core that does not answer must not keep the terminal's owner waiting: close the link anyway.
 		let timer: NodeJS.Timeout | undefined;

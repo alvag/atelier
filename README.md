@@ -49,7 +49,7 @@ atelier --cwd ~/code/my-app                                      # work on anoth
 atelier --continue                                               # resume the newest session of the directory
 ```
 
-The interactive session shows the agent's text as Markdown, with code blocks colored by language.
+The interactive session runs full screen: the transcript scrolls above (mouse wheel, PageUp/PageDown) and the editor and the status line stay at the bottom; on exit the transcript is left in the terminal. It shows the agent's text as Markdown, with code blocks colored by language. Text selected with the mouse is copied to the clipboard.
 
 | Option                             | Effect                                                                                   |
 | ---------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -61,6 +61,7 @@ The interactive session shows the agent's text as Markdown, with code blocks col
 | `--continue`                       | Resume the newest saved session of the working directory.                                |
 | `--resume <id>`                    | Resume that saved session of the working directory.                                      |
 | `--no-session`                     | Do not save this session.                                                                |
+| `--no-fullscreen`                  | Run the interactive session in the terminal's main screen, under what was there.         |
 | `--no-review`                      | Do not review or verify changes.                                                         |
 | `--no-sandbox`                     | Run `bash` without the macOS sandbox.                                                    |
 | `-h`, `--help` / `-v`, `--version` | Help and version.                                                                        |
@@ -86,16 +87,17 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 ### Keys
 
-| Key       | Effect                                                                                          |
-| --------- | ----------------------------------------------------------------------------------------------- |
-| Enter     | Send the prompt.                                                                                |
-| Up / Down | Prompt history; move in lists and questions.                                                    |
-| Esc       | Interrupt the running turn; in a question or a list, deny or cancel.                            |
-| Ctrl+C    | Interrupt the turn; with none running, clear the editor or quit.                                |
-| Ctrl+D    | Quit, on an empty editor.                                                                       |
-| Ctrl+O    | Expand or fold every tool, subagent and verification card, or the whole command of an approval. |
-| Ctrl+T    | Open or fold the active feature's tasks.                                                        |
-| Shift+Tab | Switch the permission mode between `normal` and `auto`.                                         |
+| Key               | Effect                                                                                          |
+| ----------------- | ----------------------------------------------------------------------------------------------- |
+| Enter             | Send the prompt.                                                                                |
+| Up / Down         | Prompt history; move in lists and questions.                                                    |
+| Esc               | Interrupt the running turn; in a question or a list, deny or cancel.                            |
+| Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit.                                |
+| Ctrl+D            | Quit, on an empty editor.                                                                       |
+| Ctrl+O            | Expand or fold every tool, subagent and verification card, or the whole command of an approval. |
+| Ctrl+T            | Open or fold the active feature's tasks.                                                        |
+| Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                         |
+| PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.          |
 
 ### Permission modes
 
@@ -121,7 +123,7 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 | ---------------------- | -------------------------------------------------------------------------------------------------- |
 | `profiles.json`        | Model, backend and thinking level per agent role ([profiles](docs/profiles.md)).                   |
 | `permission-mode.json` | Default permission mode, written by `/mode default <mode>`.                                        |
-| `settings.json`        | The TUI's status line items ([settings](docs/cli.md#settings)).                                    |
+| `settings.json`        | Full screen or not, and the status line items ([settings](docs/cli.md#settings)).                  |
 | `sandbox.json`         | Extra writable paths and hidden paths for `bash` ([sandbox](docs/sandbox.md#configuration-files)). |
 | `sessions/`            | Saved sessions ([saved sessions](docs/sessions.md)).                                               |
 

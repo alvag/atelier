@@ -155,6 +155,8 @@ function fakeTerminal() {
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: the styles are what is taken out
 		screen: () => written.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b_[^\x07]*\x07/g, ""),
 		type: (data: string) => onInput?.(data),
+		/** Everything written, styles and terminal sequences included. */
+		raw: () => written,
 		started: () => onInput !== undefined,
 		stopped: () => stopped,
 		statuses,
@@ -253,6 +255,111 @@ describe("TUI", { timeout: 20_000 }, () => {
 		await until(() => h.screen.screen().includes(`${basename(cwd)} · feat/next ·`));
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
+	});
+
+	describe("full screen", () => {
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: the styles are what is taken out
+		const plain = (text: string) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b_[^\x07]*\x07/g, "");
+		const ALT_ON = "\x1b[?1049h";
+		const ALT_OFF = "\x1b[?1049l";
+		const rows = (count: number, word: string) =>
+			Array.from({ length: count }, (_, i) => `${word} ${String(i + 1).padStart(2, "0")}`).join("\n\n");
+
+		it("takes the alternate screen with a header, and leaves the transcript in the terminal on exit", async () => {
+			const h = harness([
+				[{ event: started }, { event: { type: "text_delta", text: "Hello back." } }, { event: finished }],
+			]);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("Atelier "));
+			expect(h.screen.raw()).toContain(ALT_ON);
+			const header = h.screen.screen();
+			expect(header).toMatch(new RegExp(`Atelier \\S+ · \\S*${basename(cwd)}`));
+			h.screen.type("hello");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("$0.50"));
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+			const after = plain(h.screen.raw().slice(h.screen.raw().lastIndexOf(ALT_OFF)));
+			expect(after).toContain("Atelier ");
+			expect(after).toContain("❯ hello");
+			expect(after).toContain("Hello back.");
+			// The editor and the status line stay behind in the alternate screen.
+			expect(after).not.toContain("sandbox ✗");
+		});
+
+		it("keeps the main screen with --no-fullscreen or the setting", async () => {
+			const flag = harness([]);
+			const first = run(["--no-session", "--no-fullscreen"], flag.io, () => flag.backend);
+			await until(() => flag.screen.screen().includes("Atelier "));
+			flag.screen.type("\x04");
+			expect(await first).toBe(0);
+			expect(flag.screen.raw()).not.toContain(ALT_ON);
+
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "settings.json"),
+				JSON.stringify({ kind: "atelier.settings", version: 1, tui: { fullscreen: false } }),
+			);
+			const setting = harness([]);
+			const second = run(["--no-session"], setting.io, () => setting.backend);
+			await until(() => setting.screen.screen().includes("Atelier "));
+			setting.screen.type("\x04");
+			expect(await second).toBe(0);
+			expect(setting.screen.raw()).not.toContain(ALT_ON);
+		});
+
+		it("scrolls with PageUp, PageDown and the wheel, and follows new output only at the end", async () => {
+			const h = harness([
+				[{ event: started }, { event: { type: "text_delta", text: rows(60, "row") } }, { event: finished }],
+				[{ event: { type: "text_delta", text: "fresh answer" } }, { event: { ...finished, costUsd: 1 } }],
+			]);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("long");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("row 60"));
+			await until(() => h.screen.screen().includes("$0.50"));
+			const since = (mark: number) => plain(h.screen.raw().slice(mark));
+
+			let mark = h.screen.raw().length;
+			for (let i = 0; i < 4; i++) h.screen.type("\x1b[5~");
+			await until(() => since(mark).includes("row 01"));
+			mark = h.screen.raw().length;
+			for (let i = 0; i < 4; i++) h.screen.type("\x1b[6~");
+			await until(() => since(mark).includes("row 60"));
+
+			// Scrolled up with the wheel, a new answer does not move the view; back at the end, it shows.
+			mark = h.screen.raw().length;
+			for (let i = 0; i < 30; i++) h.screen.type("\x1b[<64;10;5M");
+			await until(() => since(mark).includes("Jump to latest"));
+			mark = h.screen.raw().length;
+			h.screen.type("more");
+			h.screen.type("\r");
+			await until(() => since(mark).includes("$1.50"));
+			expect(since(mark)).not.toContain("fresh answer");
+			mark = h.screen.raw().length;
+			for (let i = 0; i < 60; i++) h.screen.type("\x1b[<65;10;5M");
+			await until(() => since(mark).includes("fresh answer"));
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("copies the text selected with the mouse to the clipboard", async () => {
+			const h = harness([]);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("Atelier "));
+			// Pressed on the header's first column (the first row), dragged to its 40th and released.
+			h.screen.type("\x1b[<0;1;1M");
+			h.screen.type("\x1b[<32;40;1M");
+			h.screen.type("\x1b[<0;40;1m");
+			await until(() => h.screen.raw().includes("\x1b]52;c;"));
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: the clipboard sequence is what is read
+			const copied = /\x1b\]52;c;([A-Za-z0-9+/=]*)\x07/.exec(h.screen.raw())?.[1] ?? "";
+			expect(Buffer.from(copied, "base64").toString()).toContain("Atelier");
+			h.screen.type("\x04");
+			expect(await code).toBe(0);
+		});
 	});
 
 	it("asks an approval in a dialog that starts on Allow, and denies what is chosen", async () => {

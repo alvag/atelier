@@ -34,6 +34,8 @@ export interface CliArgs {
 	resume?: string;
 	/** --no-session: the session is not saved. */
 	noSession?: true;
+	/** --no-fullscreen: the TUI runs in the terminal's main screen, over `tui.fullscreen` in the settings. */
+	noFullscreen?: true;
 	/** The first positional word names a subcommand (`atelier update`): no session starts. */
 	subcommand?: Subcommand;
 }
@@ -71,6 +73,8 @@ Options:
       --continue         Resume the newest saved session of the working directory
       --resume <id>      Resume that saved session of the working directory
       --no-session       Do not save this session (it cannot be resumed)
+      --no-fullscreen    Run the interactive session in the terminal's main screen,
+                         under what was there, instead of the full screen
       --no-review        Do not review or verify changes (see below)
       --no-sandbox       Run bash without the macOS sandbox: every command asks in
                          normal mode and goes to the classifier in auto mode, and
@@ -184,6 +188,7 @@ export function parseCliArgs(
 		...(values.continue ? { continueSession: true as const } : {}),
 		...(values.resume === undefined ? {} : { resume: values.resume }),
 		...(values["no-session"] ? { noSession: true as const } : {}),
+		...(values["no-fullscreen"] ? { noFullscreen: true as const } : {}),
 		...(subcommand === undefined ? {} : { subcommand }),
 	};
 }
@@ -207,6 +212,7 @@ function parse(argv: readonly string[]) {
 			continue: { type: "boolean" },
 			resume: { type: "string" },
 			"no-session": { type: "boolean" },
+			"no-fullscreen": { type: "boolean" },
 			main: { type: "boolean" },
 		},
 	});

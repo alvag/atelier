@@ -91,6 +91,11 @@ describe("parseCliArgs", () => {
 		expect(parseCliArgs(["--no-review", "x"], "/h", {}).review).toBe(false);
 	});
 
+	it("asks for the main screen with --no-fullscreen", () => {
+		expect(parseCliArgs([], "/h").noFullscreen).toBeUndefined();
+		expect(parseCliArgs(["--no-fullscreen"], "/h").noFullscreen).toBe(true);
+	});
+
 	it("runs bash in the sandbox unless --no-sandbox or ATELIER_SANDBOX=off", () => {
 		expect(parseCliArgs(["x"], "/h").noSandbox).toBeUndefined();
 		expect(parseCliArgs(["--no-sandbox", "x"], "/h").noSandbox).toBe(true);
