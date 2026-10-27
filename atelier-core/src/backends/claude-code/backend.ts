@@ -30,6 +30,7 @@ import {
 } from "../../events.ts";
 import { type ThinkingSend, thinkingToSend } from "../../pricing.ts";
 import type { ToolDefinition } from "../../tools/types.ts";
+import { VERSION } from "../../version.ts";
 import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./map.ts";
 
 export const DEFAULT_MODEL = "opus";
@@ -118,7 +119,7 @@ function childEnv(options: ClaudeCodeBackendOptions): Record<string, string | un
 	const env: Record<string, string | undefined> = { ...(options.env ?? process.env) };
 	if (!options.keepApiKey) delete env.ANTHROPIC_API_KEY;
 	env.ENABLE_CLAUDEAI_MCP_SERVERS = "0";
-	env.CLAUDE_AGENT_SDK_CLIENT_APP = "atelier/0.0.0";
+	env.CLAUDE_AGENT_SDK_CLIENT_APP = `atelier/${VERSION}`;
 	return env;
 }
 
@@ -134,7 +135,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 	async start(start: BackendStartOptions): Promise<BackendSession> {
 		const resumed = await this.#resumable(start);
 		const bridge = createToolBridge(start.tools, start.executeTool);
-		const server = createSdkMcpServer({ name: MCP_SERVER_NAME, version: "0.0.0", tools: bridge.definitions });
+		const server = createSdkMcpServer({ name: MCP_SERVER_NAME, version: VERSION, tools: bridge.definitions });
 		const input = new Channel<SDKUserMessage>();
 		const run = this.#options.query ?? (sdkQuery as QueryFunction);
 		const model = start.model ?? DEFAULT_MODEL;

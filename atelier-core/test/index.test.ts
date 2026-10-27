@@ -3,6 +3,6 @@ import { VERSION } from "../src/index.ts";
 
 describe("@atelier/core", () => {
 	it("exposes its version", () => {
-		expect(VERSION).toBe("0.0.0");
+		expect(VERSION).toMatch(/^\d+\.\d+\.\d+$/);
 	});
 });

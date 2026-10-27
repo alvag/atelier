@@ -15,6 +15,7 @@ import {
 	type PinPlaces,
 	RpcServer,
 	type ServerMessage,
+	VERSION,
 } from "../src/index.ts";
 import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 
@@ -117,7 +118,7 @@ describe("RpcServer", () => {
 	it("greets with the protocol version first", async () => {
 		const h = harness([]);
 		await h.waitFor(() => true);
-		expect(h.messages[0]).toEqual({ type: "hello", protocol: 6, core: "0.0.0" });
+		expect(h.messages[0]).toEqual({ type: "hello", protocol: 6, core: VERSION });
 	});
 
 	it("offers subagents in every session, on the session's own backend", async () => {

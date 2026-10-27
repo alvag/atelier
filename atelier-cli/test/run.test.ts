@@ -16,6 +16,7 @@ import {
 	Sandbox,
 	type SandboxManagerLike,
 	SessionStore,
+	VERSION,
 } from "@atelier/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../src/run.ts";
@@ -613,7 +614,7 @@ describe("run", () => {
 
 		const version = harness([]);
 		expect(await run(["--version"], version.io, version.createBackend)).toBe(0);
-		expect(version.out()).toBe("atelier 0.0.0\n");
+		expect(version.out()).toBe(`atelier ${VERSION}\n`);
 	});
 
 	it("exits 2 on usage errors and a missing working directory", async () => {

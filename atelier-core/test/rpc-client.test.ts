@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AtelierEvent, RpcClient, RpcError } from "../src/index.ts";
+import { type AtelierEvent, RpcClient, RpcError, VERSION } from "../src/index.ts";
 
 const MAIN = fileURLToPath(new URL("../src/server/main.ts", import.meta.url));
 const echoCore = { command: process.execPath, args: [MAIN, "serve"], env: { ...process.env, ATELIER_BACKEND: "echo" } };
@@ -33,7 +33,7 @@ async function connect(options: Parameters<typeof RpcClient.connect>[0]) {
 describe("RpcClient", () => {
 	it("connects, runs a turn and receives its events", async () => {
 		const client = await connect(echoCore);
-		expect(client.coreVersion).toBe("0.0.0");
+		expect(client.coreVersion).toBe(VERSION);
 		const events: AtelierEvent[] = [];
 		const finished = new Promise<void>((resolve) => {
 			client.onEvent((sessionId, event) => {

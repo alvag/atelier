@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 import { describeError } from "../events.ts";
+import { VERSION } from "../version.ts";
 import {
 	type MemoryEntry,
 	MemoryError,
@@ -68,7 +69,7 @@ export async function connectEngram(options: EngramOptions): Promise<EngramMemor
 	if (compareVersions(version, ENGRAM_MIN_VERSION) < 0)
 		throw new MemoryUnavailableError(`Engram ${version} is too old; Atelier needs ${ENGRAM_MIN_VERSION} or newer.`);
 
-	const client = new Client({ name: "atelier", version: "0.0.0" });
+	const client = new Client({ name: "atelier", version: VERSION });
 	const transport = new StdioClientTransport({ command, args: ["mcp"], env, cwd: options.cwd, stderr: "ignore" });
 	try {
 		await client.connect(transport);

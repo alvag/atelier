@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { decodeServerMessage, LineSplitter, type ServerMessage } from "../src/index.ts";
+import { decodeServerMessage, LineSplitter, type ServerMessage, VERSION } from "../src/index.ts";
 
 const MAIN = fileURLToPath(new URL("../src/server/main.ts", import.meta.url));
 
@@ -73,7 +73,7 @@ describe("atelier-core serve as a normal user", () => {
 describe("atelier-core serve", () => {
 	it("greets, runs a turn with the echo backend and exits 0 on shutdown", async () => {
 		const s = serve();
-		expect(await s.waitFor(() => true)).toEqual({ type: "hello", protocol: 6, core: "0.0.0" });
+		expect(await s.waitFor(() => true)).toEqual({ type: "hello", protocol: 6, core: VERSION });
 
 		const startId = s.send({ command: "session.start", cwd });
 		const started = await s.waitFor((m) => m.type === "response" && m.id === startId);

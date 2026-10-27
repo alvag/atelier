@@ -53,3 +53,16 @@ node atelier-core/scripts/measure-compaction.ts --backend anthropic-api   # forc
 ```
 
 `ATELIER_RECORD_SDK=<file.jsonl>` appends every raw SDK message during a real run; that is how `atelier-core/test/fixtures/claude-code/` is recorded.
+
+## Versioning
+
+Atelier has one version, [semantic](https://semver.org) and still `0.x`: the root `package.json`, every package's `package.json` and `VERSION` in `atelier-core/src/version.ts` carry the same one, and a test fails when they differ. `atelier --version` prints it, and the core sends it in the protocol's `hello`.
+
+To release, on `main` with `pnpm check` green: bump the version in those five places in one commit (`chore: release v0.2.0`), then tag that commit and push both:
+
+```bash
+git tag -a v0.2.0 -m "Atelier v0.2.0"
+git push origin main v0.2.0
+```
+
+While the version is `0.x`, a minor bump (`0.2.0`) may change behavior and a patch (`0.1.1`) only fixes.
