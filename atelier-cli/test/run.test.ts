@@ -178,6 +178,12 @@ describe("run", () => {
 		expect(h.backend.prompts).toEqual(["update the readme"]);
 	});
 
+	it("still runs a quoted prompt that starts with desktop", async () => {
+		const h = harness([[{ event: started }, { event: finished }]]);
+		expect(await run(["desktop app is slow"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toEqual(["desktop app is slow"]);
+	});
+
 	it("runs one prompt and exits 0", async () => {
 		const h = harness([[{ event: started }, { event: { type: "text_delta", text: "hello" } }, { event: finished }]]);
 		const code = await run(["say hi"], h.io, h.createBackend);
@@ -622,6 +628,7 @@ describe("run", () => {
 		expect(help.out()).toContain("Usage: atelier [options] [prompt]");
 		expect(help.out()).toContain("--backend <name>");
 		expect(help.out()).toContain("atelier update [vX.Y.Z]");
+		expect(help.out()).toContain("atelier desktop");
 		expect(help.out()).toContain("ATELIER_MEMORY=off");
 		expect(help.backend.startOptions).toBeUndefined();
 

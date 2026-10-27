@@ -1,6 +1,6 @@
 /** A subcommand is chosen by the first positional word, exactly; anything else is a prompt. */
 export interface Subcommand {
-	name: "update";
+	name: "update" | "desktop";
 	/** The version `atelier update` was asked for. */
 	version?: string;
 }
@@ -23,6 +23,16 @@ const SPECS: Record<Subcommand["name"], SubcommandSpec> = {
 					`Usage: ${this.usage}. To give a prompt that starts with "update", quote it: atelier "${prompt}"`,
 				);
 			return { name: "update", ...(version === undefined ? {} : { version }) };
+		},
+	},
+	desktop: {
+		usage: "atelier desktop",
+		parse(words, prompt) {
+			if (words.length > 0)
+				throw new Error(
+					`Usage: ${this.usage}. To give a prompt that starts with "desktop", quote it: atelier "${prompt}"`,
+				);
+			return { name: "desktop" };
 		},
 	},
 };

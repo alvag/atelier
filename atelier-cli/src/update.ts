@@ -1,12 +1,8 @@
-import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { VERSION } from "@atelier/core";
+import { buildDesktop, installFull } from "./desktop.ts";
+import { CommandError, describeCommand, type Exec, execute, OWN_ROOT, readMarker } from "./install-marker.ts";
 import { RELEASE_TAG } from "./subcommands.ts";
-
-/** The repository this file belongs to: atelier-cli/src/update.ts sits two levels below it. */
-const OWN_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 export interface UpdateOptions {
 	/** The release to move to; the newest one when absent. */
@@ -16,20 +12,6 @@ export interface UpdateOptions {
 	env: Record<string, string | undefined>;
 	stdout: (text: string) => void;
 	stderr: (text: string) => void;
-}
-
-/** A command that failed, named as the user would type it. */
-class CommandError extends Error {
-	override name = "CommandError";
-	readonly command: string;
-	readonly status: number | string | undefined;
-	readonly detail: string;
-	constructor(command: string, status: number | string | undefined, detail: string) {
-		super(`${command} failed`);
-		this.command = command;
-		this.status = status;
-		this.detail = detail;
-	}
 }
 
 /** Moves the installed copy to a release and reinstalls its dependencies; returns the exit code. */
@@ -71,7 +53,16 @@ export async function runUpdate(options: UpdateOptions): Promise<number> {
 			await exec("git", ["checkout", "--quiet", "--detach", previous]);
 			return fail(`${describeCommand(error)}\natelier stays at ${current}; retry with: atelier update ${target}`);
 		}
-		if (marker.desktop) await rebuildDesktop(root);
+		if (marker.desktop) {
+			try {
+				await buildDesktop(exec);
+			} catch (error) {
+				if (!(error instanceof CommandError)) throw error;
+				return fail(
+					`${describeCommand(error)}\natelier is updated to ${target} but the desktop is not rebuilt; retry with: pnpm -C ${join(root, "atelier-desktop")} build`,
+				);
+			}
+		}
 		options.stdout(`Updated atelier ${current} → ${target}\n`);
 		return 0;
 	} catch (error) {
@@ -80,18 +71,10 @@ export async function runUpdate(options: UpdateOptions): Promise<number> {
 	}
 }
 
-type Exec = (file: string, args: string[]) => Promise<string>;
-
-const describeCommand = (error: CommandError) =>
-	`${error.command} failed${error.status === undefined ? "" : ` (exit ${error.status})`}: ${error.detail}`;
-
 /** Full install when the desktop is there, because its build needs the dev dependencies; the CLI alone needs only production ones. */
 function installDependencies(exec: Exec, desktop: boolean): Promise<string> {
-	return exec("pnpm", desktop ? ["install", "--frozen-lockfile"] : ["install", "--frozen-lockfile", "--prod"]);
+	return desktop ? installFull(exec) : exec("pnpm", ["install", "--frozen-lockfile", "--prod"]);
 }
-
-/** Hook for `atelier desktop`: rebuilds the desktop app after an update when it is installed. */
-async function rebuildDesktop(_root: string): Promise<void> {}
 
 /** The `vX.Y.Z` tag at HEAD, or the version the core was built with when HEAD has none. */
 async function currentVersion(exec: Exec): Promise<string> {
@@ -108,22 +91,4 @@ function sortReleases(tags: readonly string[]): string[] {
 			const [x, y] = [numbers(a), numbers(b)];
 			return (x[0] ?? 0) - (y[0] ?? 0) || (x[1] ?? 0) - (y[1] ?? 0) || (x[2] ?? 0) - (y[2] ?? 0);
 		});
-}
-
-/** What install.sh wrote in `.git/atelier-install`; undefined when the file is not there. */
-async function readMarker(root: string): Promise<{ desktop: boolean } | undefined> {
-	const text = await readFile(join(root, ".git", "atelier-install"), "utf8").catch(() => undefined);
-	if (text === undefined) return undefined;
-	return { desktop: text.split("\n").includes("desktop=1") };
-}
-
-function execute(file: string, args: string[], cwd: string, env: Record<string, string | undefined>): Promise<string> {
-	return new Promise((resolve, reject) => {
-		execFile(file, args, { cwd, env, encoding: "utf8" }, (error, stdout, stderr) => {
-			if (error === null) return resolve(stdout.trim());
-			const status = typeof error.code === "number" || typeof error.code === "string" ? error.code : undefined;
-			const detail = (stderr || stdout || error.message).trim().split("\n")[0] ?? error.message;
-			reject(new CommandError(`${file} ${args.join(" ")}`, status, detail));
-		});
-	});
 }

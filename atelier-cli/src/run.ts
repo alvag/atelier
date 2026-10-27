@@ -33,6 +33,7 @@ import {
 	writeDefaultPermissionMode,
 } from "@atelier/core";
 import { parseCliArgs, USAGE, UsageError } from "./args.ts";
+import { runDesktop } from "./desktop.ts";
 import { Renderer } from "./render.ts";
 import { createTerminalReader, type LineReader } from "./terminal-input.ts";
 import { savedTranscript } from "./transcript.ts";
@@ -75,6 +76,8 @@ export interface CliIO {
 	tui?: Pick<TuiOptions, "terminal" | "connect">;
 	/** The repository the CLI runs from, which `atelier update` updates; derived from the CLI's own location when absent. */
 	appRoot?: string;
+	/** Starts Electron for `atelier desktop` without waiting for it; tests pass their own, so none is launched. */
+	openDesktop?: (binary: string, args: string[]) => void;
 }
 
 /** Connects long-term memory for the working directory; may fail, and then the session runs without it. */
@@ -120,6 +123,14 @@ export async function run(
 		io.stdout(`atelier ${VERSION}\n`);
 		return EXIT_OK;
 	}
+	if (args.subcommand?.name === "desktop")
+		return runDesktop({
+			...(io.appRoot === undefined ? {} : { root: io.appRoot }),
+			env: io.env ?? process.env,
+			stdout: io.stdout,
+			stderr: io.stderr,
+			...(io.openDesktop === undefined ? {} : { open: io.openDesktop }),
+		});
 	if (args.subcommand?.name === "update")
 		return runUpdate({
 			...(args.subcommand.version === undefined ? {} : { version: args.subcommand.version }),

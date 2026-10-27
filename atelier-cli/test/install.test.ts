@@ -122,6 +122,26 @@ describe("install.sh", () => {
 		expect(log).toBe(`${installDir}: install --frozen-lockfile --prod\n`);
 	});
 
+	it("with --desktop installs the full dependencies, builds the desktop and marks it", async () => {
+		const out = install(["--desktop"]);
+
+		expect(out.status).toBe(0);
+		const log = await readFile(join(root, "pnpm.log"), "utf8");
+		expect(log).toBe(`${installDir}: install --frozen-lockfile\n${installDir}: -C atelier-desktop build\n`);
+		expect(await readFile(join(installDir, ".git", "atelier-install"), "utf8")).toBe("desktop=1\n");
+		expect(existsSync(join(binDir, "atelier"))).toBe(true);
+	});
+
+	it("with --desktop, a failed build fails the install and removes the clone", async () => {
+		await fake("pnpm", `echo "$PWD: $*" >> "${join(root, "pnpm.log")}"\ncase "$*" in *build*) exit 3 ;; esac`);
+
+		const out = install(["--desktop"]);
+
+		expect(out.status).not.toBe(0);
+		expect(existsSync(installDir)).toBe(false);
+		expect(existsSync(join(binDir, "atelier"))).toBe(false);
+	});
+
 	it("creates an executable launcher script that runs the CLI from the install", async () => {
 		install();
 

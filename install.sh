@@ -74,10 +74,18 @@ newest_release_tag() {
 		grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true
 }
 
-install_desktop() {
-	# Hook for `install.sh --desktop`: installing Electron and building the
-	# desktop app comes with the desktop command.
-	:
+install_dependencies() {
+	# The desktop needs the dev dependencies (Electron, electron-vite) to install and build.
+	if [ "$WITH_DESKTOP" -eq 1 ]; then
+		(cd "$INSTALL_DIR" && pnpm install --frozen-lockfile)
+		(cd "$INSTALL_DIR" && pnpm -C atelier-desktop build)
+	else
+		(cd "$INSTALL_DIR" && pnpm install --frozen-lockfile --prod)
+	fi
+}
+
+write_marker() {
+	printf 'desktop=%s\n' "$WITH_DESKTOP" >"$INSTALL_DIR/.git/atelier-install"
 }
 
 write_launcher() {
@@ -106,10 +114,8 @@ main() {
 	[ -n "$tag" ] || fail "No vX.Y.Z release found in the repository."
 	git -C "$INSTALL_DIR" -c advice.detachedHead=false checkout --quiet --detach "$tag"
 
-	(cd "$INSTALL_DIR" && pnpm install --frozen-lockfile --prod)
-	[ "$WITH_DESKTOP" -eq 1 ] && install_desktop
-
-	printf 'desktop=0\n' >"$INSTALL_DIR/.git/atelier-install"
+	install_dependencies
+	write_marker
 	write_launcher
 	warn_if_off_path
 	printf 'Installed atelier %s in %s. Run: atelier\n' "$tag" "$INSTALL_DIR"

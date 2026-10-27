@@ -32,7 +32,7 @@ async function fakePnpm(): Promise<void> {
 	const file = join(fakes, "pnpm");
 	await writeFile(
 		file,
-		`#!/bin/sh\necho "$PWD: $*" >> "${pnpmLog}"\nif [ -e "${join(root, "pnpm-fails")}" ]; then echo "boom" >&2; exit 7; fi\n`,
+		`#!/bin/sh\necho "$PWD: $*" >> "${pnpmLog}"\nif [ -e "${join(root, "pnpm-fails")}" ]; then echo "boom" >&2; exit 7; fi\nif [ -e "${join(root, "pnpm-fails-on")}" ] && case " $* " in *" $(cat "${join(root, "pnpm-fails-on")}") "*) true ;; *) false ;; esac; then echo "boom" >&2; exit 7; fi\n`,
 	);
 	await chmod(file, 0o755);
 }
@@ -196,13 +196,38 @@ describe("atelier update", () => {
 		expect(await pnpmCalls()).toEqual([]);
 	});
 
-	it("installs the full dependencies when the desktop is installed", async () => {
+	it("installs the full dependencies and rebuilds the desktop when it is installed", async () => {
 		await writeFile(join(install, marker), "desktop=1\n");
 
 		const c = cli(["update", "v0.9.0"]);
 		expect(await c.code()).toBe(0);
 
-		expect(await pnpmCalls()).toEqual([`${await realRoot()}: install --frozen-lockfile`]);
+		expect(c.out()).toBe("Updated atelier v0.1.0 → v0.9.0\n");
+		expect(await pnpmCalls()).toEqual([
+			`${await realRoot()}: install --frozen-lockfile`,
+			`${await realRoot()}: -C atelier-desktop build`,
+		]);
+	});
+
+	it("does not build the desktop when it is not installed", async () => {
+		const c = cli(["update", "v0.9.0"]);
+		expect(await c.code()).toBe(0);
+
+		expect(await pnpmCalls()).toEqual([`${await realRoot()}: install --frozen-lockfile --prod`]);
+	});
+
+	it("reports a failed rebuild: the CLI is updated, the desktop is not, and how to retry", async () => {
+		await writeFile(join(install, marker), "desktop=1\n");
+		await writeFile(join(root, "pnpm-fails-on"), "build");
+
+		const c = cli(["update", "v0.9.0"]);
+		expect(await c.code()).toBe(1);
+
+		expect(c.err()).toBe(
+			`error: pnpm -C atelier-desktop build failed (exit 7): boom\natelier is updated to v0.9.0 but the desktop is not rebuilt; retry with: pnpm -C ${install}/atelier-desktop build\n`,
+		);
+		expect(c.out()).toBe("");
+		expect(git(install, "describe", "--tags", "--exact-match")).toBe("v0.9.0");
 	});
 
 	it("goes back to the previous version when pnpm fails, and says how to retry", async () => {
