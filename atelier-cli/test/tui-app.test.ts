@@ -133,7 +133,7 @@ const plain = (text: string) =>
 	text.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b[\]_][^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
 
 /** A terminal that keeps what the TUI wrote, without its styles, and types keys into it. */
-function fakeTerminal() {
+function fakeTerminal(columns = 100) {
 	let onInput: ((data: string) => void) | undefined;
 	let written = "";
 	let stopped = false;
@@ -150,7 +150,7 @@ function fakeTerminal() {
 		write: (data) => {
 			written += data;
 		},
-		columns: 100,
+		columns,
 		rows: 40,
 		kittyProtocolActive: false,
 		moveBy: () => {},
@@ -182,12 +182,12 @@ function fakeTerminal() {
 
 function harness(
 	turns: FakeStep[][],
-	options: { saveSessions?: boolean; children?: FakeBackend[]; backendId?: string } = {},
+	options: { saveSessions?: boolean; children?: FakeBackend[]; backendId?: string; columns?: number } = {},
 ) {
 	const backend = new FakeBackend(turns, options.backendId);
 	let terminate: ((signal: number) => void) | undefined;
 	const core = inProcessCore(backend, options.saveSessions ?? false, options.children ?? [], options.backendId);
-	const screen = fakeTerminal();
+	const screen = fakeTerminal(options.columns);
 	let stderr = "";
 	const io = {
 		stdin: new PassThrough(),
@@ -278,6 +278,32 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(h.screen.screen()).toContain("› hi");
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: the background's sequence is what is checked
 		expect(h.screen.raw()).toMatch(/\x1b\[48;(?:2;49;49;49|5;236)m› hi/);
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
+	it("shades the prompt and the editor a little darker on a light terminal, with color", async () => {
+		const h = harness([[{ event: started }, { event: finished }]]);
+		h.io.color = true;
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		// The terminal answers a light background: #f0f0f0, whose shade is #e0e0e0.
+		await until(() => h.screen.raw().includes("\x1b]11;?"));
+		h.screen.type("\x1b]11;rgb:f0f0/f0f0/f0f0\x1b\\");
+		h.screen.type("\x1b[?62c");
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: the background's sequence is what is checked
+		const light = /\x1b\[48;(?:2;224;224;224|5;254)m/.source;
+		h.screen.type("hi");
+		// The editor's band takes the shade as soon as the terminal says its colors.
+		await until(() => new RegExp(`${light}› hi`).test(h.screen.raw()));
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		const raw = h.screen.raw();
+		// The prompt sent is a full-width block on the shade.
+		expect(raw).toMatch(new RegExp(`${light}› hi {2,}\x1b\\[49m`));
+		// The empty editor after it is on the same shade.
+		expect(raw.slice(raw.lastIndexOf("› hi"))).toMatch(new RegExp(`${light}› .*Ask Atelier to do anything`));
 		h.screen.type("/exit");
 		h.screen.type("\r");
 		expect(await code).toBe(0);
@@ -507,6 +533,85 @@ describe("TUI", { timeout: 20_000 }, () => {
 			expect(h.screen.screen()).toContain("▾ bash echo one · exit 0 ✓");
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
+		});
+
+		describe("a click on the editor's band, with color", () => {
+			/**
+			 * The row the line that starts with `text` was last drawn on, from the cursor move before it; the line is read
+			 * without its styles, since the editor's cursor is one inside the text.
+			 */
+			const rowOf = (raw: string, text: string) => {
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: the cursor moves are what is read
+				const lines = [...raw.matchAll(/\x1b\[(\d+);1H\x1b\[2K(.*?)(?=\x1b\[\d+;\d+H|$)/gs)];
+				const drawn = lines.filter((line) => plain(line[2] ?? "").startsWith(text)).at(-1);
+				if (drawn?.[1] === undefined) throw new Error(`the line "${text}" was never drawn`);
+				return Number(drawn[1]);
+			};
+			/** A left click, pressed and released on the same cell; `column` and `row` start at 1. */
+			const click = (h: ReturnType<typeof harness>, column: number, row: number) => {
+				h.screen.type(`\x1b[<0;${column};${row}M`);
+				h.screen.type(`\x1b[<0;${column};${row}m`);
+			};
+			/** Types `text`, then waits until the editor shows it on the line that starts with `line`. */
+			const typeShown = async (h: ReturnType<typeof harness>, text: string, line: string) => {
+				h.screen.type(text);
+				await until(() => h.screen.screen().includes(line));
+			};
+
+			it("puts the cursor before the text when it lands on the › or the space after it", async () => {
+				const h = harness([[{ event: started }, { event: finished }]]);
+				h.io.color = true;
+				const code = run(["--no-session"], h.io, () => h.backend);
+				await until(h.screen.started);
+				await typeShown(h, "fix it", "› fix it");
+				click(h, 1, rowOf(h.screen.raw(), "› fix it"));
+				await typeShown(h, "A", "› Afix it");
+				click(h, 2, rowOf(h.screen.raw(), "› Afix it"));
+				await typeShown(h, "B", "› BAfix it");
+				h.screen.type("\r");
+				await until(() => h.screen.screen().includes("$0.50"));
+				expect(h.backend.prompts).toEqual(["BAfix it"]);
+				h.screen.type("\x04");
+				expect(await code).toBe(0);
+			});
+
+			it("puts the cursor at the end of the text when it lands on the right edge", async () => {
+				const h = harness([[{ event: started }, { event: finished }]]);
+				h.io.color = true;
+				const code = run(["--no-session"], h.io, () => h.backend);
+				await until(h.screen.started);
+				await typeShown(h, "fix it", "› fix it");
+				click(h, 1, rowOf(h.screen.raw(), "› fix it"));
+				click(h, h.screen.terminal.columns, rowOf(h.screen.raw(), "› fix it"));
+				await typeShown(h, "!", "› fix it!");
+				h.screen.type("\r");
+				await until(() => h.screen.screen().includes("$0.50"));
+				expect(h.backend.prompts).toEqual(["fix it!"]);
+				h.screen.type("\x04");
+				expect(await code).toBe(0);
+			});
+
+			it("finds the text after the mark on every wrapped line of a narrow terminal", async () => {
+				const h = harness([[{ event: started }, { event: finished }]], { columns: 12 });
+				h.io.color = true;
+				const code = run(["--no-session"], h.io, () => h.backend);
+				await until(h.screen.started);
+				// Ten columns are left after the mark, one of them for the cursor: the text wraps after nine.
+				await typeShown(h, "abcdefghijklmnop", "  jklmnop");
+				expect(h.screen.screen()).toContain("› abcdefghi");
+				// On the second line's fifth column, the third after its indent: before its third letter.
+				click(h, 5, rowOf(h.screen.raw(), "  jklmnop"));
+				await typeShown(h, "X", "  jkXlmnop");
+				// On the first line's mark: before the text.
+				click(h, 1, rowOf(h.screen.raw(), "› abcdefghi"));
+				await typeShown(h, "Y", "› Yabcdefgh");
+				h.screen.type("\r");
+				// The footer is too narrow for the cost: the turn's end is the program status it reports.
+				await until(() => h.screen.statuses.at(-1)?.state === "done");
+				expect(h.backend.prompts).toEqual(["YabcdefghijkXlmnop"]);
+				h.screen.type("\x04");
+				expect(await code).toBe(0);
+			});
 		});
 
 		it("copies the text selected with the mouse to the clipboard", async () => {
