@@ -335,6 +335,8 @@ export type AtelierEventBody =
 			since?: string;
 			/** Why the base is the current HEAD although the turn started earlier (a reset or rebase), or the empty tree (the turn started without commits). */
 			baseNote?: string;
+			/** `session`: the user allowed this session's reviews, so this one runs without asking. */
+			consent?: "session";
 	  }
 	/** The core waits for session.review_consent; the turn stays open until it is answered. */
 	| {

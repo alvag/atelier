@@ -19,6 +19,7 @@ import {
 	freezeProfile,
 	MissingApiKeyError,
 	type QueryFunction,
+	type ReviewConsentAnswer,
 	RpcServer,
 	type ServerMessage,
 	Session,
@@ -295,7 +296,7 @@ interface Setup {
 	turns?: FakeStep[][];
 	roles?: RoleBackend;
 	review?: false;
-	consent?: "granted" | "declined" | "none" | ((request: unknown) => Promise<"granted" | "declined">);
+	consent?: ReviewConsentAnswer | "none" | ((request: unknown) => Promise<ReviewConsentAnswer>);
 	cwd?: string;
 	extra?: Partial<SessionOptions>;
 	sandbox?: Sandbox;
@@ -714,6 +715,35 @@ describe("consent and the cycle", () => {
 		expect(s.asked).toHaveLength(1);
 	});
 
+	it("reviews the session's later high-risk changes without asking once the user allows them for the session", async () => {
+		const later = [DECLARED_NONE, change("src/auth.ts", "export const a = 3;\n"), text("done"), { event: finished }];
+		const s = await start({
+			turns: [HIGH_TURN, later],
+			roles: new RoleBackend(clean),
+			consent: "granted_for_session",
+		});
+		const first = await s.send("add auth");
+		expect(s.asked).toHaveLength(1);
+		expect(ofType(first, "review_assessed")[0]?.consent).toBeUndefined();
+		expect(ofType(first, "review_finished")[0]).toMatchObject({ verdict: "approved" });
+
+		const second = await s.send("change auth again");
+		expect(s.asked).toHaveLength(1);
+		expect(ofType(second, "review_consent_requested")).toEqual([]);
+		expect(ofType(second, "review_assessed")[0]).toMatchObject({ level: "high", consent: "session" });
+		expect(ofType(second, "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		expect(await receipts(s.cwd)).toHaveLength(2);
+
+		// The permission belongs to that session: another one on the same repository asks again.
+		const other = await start({
+			cwd: s.cwd,
+			turns: [[DECLARED_NONE, change("src/auth.ts", "export const a = 4;\n"), text("done"), { event: finished }]],
+			roles: new RoleBackend(clean),
+		});
+		await other.send("once more");
+		expect(other.asked).toHaveLength(1);
+	});
+
 	it("only assesses when nobody can be asked", async () => {
 		const s = await start({ turns: [HIGH_TURN], consent: "none" });
 		const events = await s.send("add auth");
@@ -970,6 +1000,34 @@ describe("RpcServer review", () => {
 			h.send({ command: "session.review_consent", sessionId, reviewId, answer: "granted" }),
 		);
 		expect(twice).toMatchObject({ ok: false, error: { code: "unknown_review" } });
+	});
+
+	it("takes granted_for_session as an answer and does not ask again in that session", async () => {
+		const later = [DECLARED_NONE, change("src/auth.ts", "export const a = 3;\n"), text("done"), { event: finished }];
+		// Each review finds one defect, so each is followed by its correction.
+		const fix = (value: number) => [change("src/auth.ts", `export const a = ${value};\n`), { event: finished }];
+		const h = await serve([HIGH_TURN, fix(2), later, fix(4)], { review: true });
+		const sessionId = await h.begin();
+		h.send({ command: "session.send", sessionId, prompt: "add auth" });
+		const { event } = await h.eventOf("review_consent_requested");
+		const reviewId = (event as { reviewId: string }).reviewId;
+		const answered = await h.answerOf(
+			h.send({ command: "session.review_consent", sessionId, reviewId, answer: "granted_for_session" }),
+		);
+		expect(answered).toMatchObject({ ok: true, result: {} });
+		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished" && m.event.agent === undefined);
+
+		h.send({ command: "session.send", sessionId, prompt: "again" });
+		await h.waitFor(
+			(m) =>
+				m.type === "event" &&
+				m.event.type === "turn_finished" &&
+				m.event.agent === undefined &&
+				ofType(h.events(sessionId), "review_finished").length === 2,
+		);
+		const events = h.events(sessionId);
+		expect(ofType(events, "review_consent_requested")).toHaveLength(1);
+		expect(ofType(events, "review_assessed")[1]).toMatchObject({ consent: "session" });
 	});
 
 	it("records a declined receipt when the user declines", async () => {

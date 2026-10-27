@@ -93,7 +93,7 @@ export * from "./profiles/index.ts";
 export { loadProjectInstructions, MAX_INSTRUCTIONS_BYTES, type ProjectInstructions } from "./project-instructions.ts";
 export { MEMORY_RULES, ODD_RULES, SYSTEM_PROMPT_APPEND } from "./prompt.ts";
 export * from "./protocol/index.ts";
-export type { ReviewConsentRequest, ReviewOptions } from "./review/session-review.ts";
+export type { ReviewConsentAnswer, ReviewConsentRequest, ReviewOptions } from "./review/session-review.ts";
 export { ALLOW_ROOT_VALUE, checkRoot, type RootCheck } from "./root.ts";
 export { EchoBackend } from "./server/echo-backend.ts";
 export { RpcServer, type RpcServerOptions, reviewEnabled } from "./server/rpc-server.ts";

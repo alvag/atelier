@@ -52,11 +52,14 @@ export interface ReviewConsentRequest {
 	lensesReason?: string;
 }
 
+/** `granted_for_session`: review this one, and the session's later high-risk changes without asking. */
+export type ReviewConsentAnswer = "granted" | "declined" | "granted_for_session";
+
 export interface ReviewOptions {
 	/** A fresh backend for each review role: the one `name` says, or the session's kind when the profile names none. */
 	createBackend: RoleBackendFactory;
 	/** Asks the user about a high-risk candidate; without it a high-risk change is assessed but never offered. */
-	consent?: (request: ReviewConsentRequest) => Promise<"granted" | "declined">;
+	consent?: (request: ReviewConsentRequest) => Promise<ReviewConsentAnswer>;
 	/** The sandbox the verifier's bash runs in; tests pass their own. */
 	sandbox?: Sandbox;
 }
@@ -108,6 +111,8 @@ export class SessionReview {
 	readonly #finished = new Map<string, { root: string; gitDir: string; receipt: Receipt }>();
 	/** The candidate trees whose correction this session undid. */
 	readonly #undone = new Set<string>();
+	/** The user allowed every high-risk review of this session: no more questions until it closes. */
+	#allowedForSession = false;
 
 	constructor(options: ReviewOptions) {
 		this.#options = options;
@@ -286,6 +291,8 @@ export class SessionReview {
 			if (candidate.files.length === 0 || (await findReceipt(candidate.gitDir, candidate.tree))) return paid(none);
 			assessment = assess();
 		}
+		const consent = this.#options.consent;
+		const allowed = !manual && assessment.reviewDue && consent !== undefined && this.#allowedForSession;
 		host.push({
 			type: "review_assessed",
 			tree: candidate.tree,
@@ -299,10 +306,10 @@ export class SessionReview {
 			...(assessment.declaration === undefined ? {} : { declaration: assessment.declaration }),
 			...(candidate.since === undefined ? {} : { since: candidate.since }),
 			...(candidate.baseNote === undefined ? {} : { baseNote: candidate.baseNote }),
+			...(allowed ? { consent: "session" as const } : {}),
 		});
 		const reviewId = host.createId();
-		if (!manual) {
-			const consent = this.#options.consent;
+		if (!manual && !allowed) {
 			if (!assessment.reviewDue || !consent) return paid(none);
 			const request: ReviewConsentRequest = {
 				reviewId,
@@ -320,6 +327,7 @@ export class SessionReview {
 			// An interrupted or failed question is not a refusal: the candidate is offered again.
 			if (answer === "aborted") return paid(none);
 			if (answer === "declined") return paid(await this.#declined(host, reviewId, candidate, assessment));
+			if (answer === "granted_for_session") this.#allowedForSession = true;
 		}
 		return paid(await this.#cycle(host, reviewId, candidate, assessment));
 	}

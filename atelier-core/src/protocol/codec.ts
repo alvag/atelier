@@ -73,7 +73,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		command: z.literal("session.review_consent"),
 		sessionId,
 		reviewId: z.string().min(1),
-		answer: z.enum(["granted", "declined"]),
+		answer: z.enum(["granted", "declined", "granted_for_session"]),
 	}),
 	z.object({ command: z.literal("session.undo_correction"), sessionId, reviewId: z.string().min(1).optional() }),
 	z.object({

@@ -1,4 +1,5 @@
 import type { AtelierEvent, JsonValue } from "../events.ts";
+import type { ReviewConsentAnswer } from "../review/session-review.ts";
 import type { PermissionMode } from "../session.ts";
 import type { ThinkingLevel } from "../thinking.ts";
 
@@ -48,7 +49,7 @@ export type ClientCommand =
 	| { command: "session.approve"; sessionId: string; callId: string; approved: boolean }
 	/** Reviews the current uncommitted change at any risk, against HEAD or the git ref `ref` names; answers like session.send. */
 	| { command: "session.review"; sessionId: string; ref?: string }
-	| { command: "session.review_consent"; sessionId: string; reviewId: string; answer: "granted" | "declined" }
+	| { command: "session.review_consent"; sessionId: string; reviewId: string; answer: ReviewConsentAnswer }
 	/** Undoes the correction an escalated review left in the worktree (that review of the session, or the repository's latest escalated one); answers like session.send. */
 	| { command: "session.undo_correction"; sessionId: string; reviewId?: string }
 	/** Summarizes the older history now; answers like session.send. `instructions`: at most 2000 bytes. */

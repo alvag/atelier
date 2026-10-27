@@ -101,6 +101,16 @@ describe("decodeClientMessage", () => {
 				answer: "declined",
 			},
 		],
+		[
+			{
+				type: "command",
+				id: "c12",
+				command: "session.review_consent",
+				sessionId: "s1",
+				reviewId: "r1",
+				answer: "granted_for_session",
+			},
+		],
 	])("accepts %j", (message) => {
 		expect(decodeClientMessage(JSON.stringify(message))).toEqual({ ok: true, message });
 	});

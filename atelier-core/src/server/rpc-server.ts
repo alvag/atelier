@@ -29,6 +29,7 @@ import {
 	PROTOCOL_VERSION,
 	type ServerMessage,
 } from "../protocol/types.ts";
+import type { ReviewConsentAnswer } from "../review/session-review.ts";
 import {
 	ConfigureError,
 	type MainChange,
@@ -95,7 +96,7 @@ interface ServerSession {
 	/** Approval questions waiting for session.approve, by callId. */
 	approvals: Map<string, (approved: boolean) => void>;
 	/** Review questions waiting for session.review_consent, by reviewId. */
-	consents: Map<string, (answer: "granted" | "declined") => void>;
+	consents: Map<string, (answer: ReviewConsentAnswer) => void>;
 }
 
 type Result = { [key: string]: JsonValue };
@@ -554,7 +555,7 @@ export class RpcServer {
 			}
 		}
 		const approvals = new Map<string, (approved: boolean) => void>();
-		const consents = new Map<string, (answer: "granted" | "declined") => void>();
+		const consents = new Map<string, (answer: ReviewConsentAnswer) => void>();
 		// Memory is optional: a session that cannot connect it starts anyway and says why.
 		let memory: MemoryPort | undefined;
 		let memoryUnavailable: string | undefined;
