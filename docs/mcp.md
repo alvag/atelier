@@ -32,6 +32,12 @@ Servers are configured only by the user, in `~/.atelier/mcp.json`, which the age
 - Server names may contain only letters, digits, `_` and `-`; names that differ only in `-` and `_` are the same server, and the second one is refused.
 - An invalid entry, or a file that cannot be read, is reported and skipped without preventing the other servers from connecting.
 
+## Connections
+
+When a session starts, Atelier connects every enabled server in the background; the session does not wait for them. A server is `connecting`, `connected`, `failed` (with its error and, for a stdio server, the end of its stderr), `disabled` or `invalid` (an entry that could not be taken, with what is wrong). A server whose connection drops is shown as failed and reconnects on its next call. When a server announces that its tool list changed, Atelier reads it again.
+
+Stdio servers start in their own process group, with Atelier's environment plus their `env`. Stopping one closes its stdin, sends SIGTERM to the group and, after two seconds at most, SIGKILL to the group, so servers launched through wrappers such as `npx` or `uvx` stop too. Every server is stopped when the session closes.
+
 ### Secrets
 
 Atelier never shows the values of `env` and `headers`, written literally or taken from `${NAME}`, nor the values of the URL's query (`?key=...`). Any of them that appears in an error, a server's stderr or a status, in a client, an event or a log, is replaced by `***`, and so is each word of them (the token of `Bearer <token>`). Values shorter than six characters are not hidden.
