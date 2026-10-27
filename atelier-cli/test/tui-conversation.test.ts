@@ -260,6 +260,27 @@ describe("Conversation", () => {
 		expect(status).not.toContain("\u001b");
 	});
 
+	it("gives /status a later loss of the sandbox or the memory instead of what was there before", () => {
+		const status = (bodies: Body[]) => {
+			const conversation = new Conversation(plain, "/repo");
+			for (const event of stamp(bodies)) conversation.event(event);
+			return conversation.status();
+		};
+		const sandboxed: Body = { type: "sandbox_status", sandboxed: true, mechanism: "macOS seatbelt" };
+		const remembering: Body = { type: "memory_status", available: true, project: "atelier" };
+		expect(
+			status([
+				sandboxed,
+				remembering,
+				{ type: "sandbox_status", sandboxed: false, reason: "seatbelt failed" },
+				{ type: "memory_status", available: false, reason: "offline" },
+			]),
+		).toEqual(["bash: not sandboxed (seatbelt failed)", "no memory: offline"]);
+		expect(status([sandboxed, { type: "sandbox_warning", reason: "no seatbelt" }])).toEqual([
+			"bash: not sandboxed (no seatbelt)",
+		]);
+	});
+
 	it("still shows the warnings and what runs with less protection", () => {
 		const { text } = shown([
 			{ type: "session_started", backend: "claude-code", model: "m", authSource: "api_key", permissionMode: "yolo" },

@@ -159,13 +159,24 @@ export class Conversation extends Container {
 				return;
 			}
 			// What runs as usual goes to `/status`; what runs with less protection, or failed to load, stays in sight.
+			// A later loss replaces what `/status` said before, so it never shows a protection gone.
 			case "sandbox_status":
 				if (event.sandboxed) this.#status.set("bash", `bash: sandboxed (${shown(event.mechanism ?? "sandbox")})`);
-				else this.#rendered(event);
+				else {
+					this.#status.set("bash", `bash: not sandboxed (${shown(event.reason ?? "unavailable")})`);
+					this.#rendered(event);
+				}
+				return;
+			case "sandbox_warning":
+				this.#status.set("bash", `bash: not sandboxed (${shown(event.reason)})`);
+				this.#rendered(event);
 				return;
 			case "memory_status":
 				if (event.available) this.#status.set("memory", `memory: ${shown(event.project ?? "on")}`);
-				else this.#rendered(event);
+				else {
+					this.#status.set("memory", `no memory: ${shown(event.reason ?? "unavailable")}`);
+					this.#rendered(event);
+				}
 				return;
 			case "project_instructions":
 				if (event.files.length > 0) this.#status.set("instructions", `instructions: ${shown(event.files.join(", "))}`);
