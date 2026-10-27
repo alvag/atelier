@@ -725,6 +725,17 @@ export interface SimpleCommand {
 	words: { value: string; raw: string }[];
 	/** It redirects output to a file (`> out`, `2>> log`, `&> f`); `/dev/null` and a copied descriptor (`2>&1`) are no file. */
 	writesFile: boolean;
+	/** It changes the environment the command runs with: an assignment (`PATH=./bin open`) or an `env` option (`env -P`). */
+	setsEnvironment: boolean;
+}
+
+/** Whether the words before a command assign a variable or give `env` an option, either of which can change what runs. */
+function setsEnvironment(prefix: readonly Token[], wrappers: readonly string[]): boolean {
+	return prefix.some(
+		({ value, raw }) =>
+			!REDIRECTION.test(raw) &&
+			(/^[A-Za-z_][A-Za-z_0-9]*=/.test(value) || (wrappers.includes("env") && value.startsWith("-"))),
+	);
 }
 
 /** Whether a segment's redirections write a file. */
@@ -759,7 +770,9 @@ export function simpleCommands(command: string): SimpleCommand[] | undefined {
 			queue.push(...extra);
 			const words = segment.slice(cursor).map(({ value, raw }) => ({ value, raw }));
 			const writes = writesFile(segment);
-			if (words.length > 0 || wrappers.length > 0 || writes) commands.push({ wrappers, words, writesFile: writes });
+			const environment = setsEnvironment(segment.slice(0, cursor), wrappers);
+			if (words.length > 0 || wrappers.length > 0 || writes || environment)
+				commands.push({ wrappers, words, writesFile: writes, setsEnvironment: environment });
 		}
 	}
 	return commands;

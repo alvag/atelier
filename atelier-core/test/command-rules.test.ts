@@ -8,8 +8,7 @@ describe("commandRules", () => {
 		["open file.png", ["open"], true],
 		["npm install foo", ["npm install"], true],
 		["node script.js", ["node"], false],
-		["env FOO=1 npm test", ["npm test"], true],
-		["FOO=1 npm test 2>&1 | tail -5", ["npm test", "tail"], true],
+		["npm test 2>&1 | tail -5", ["npm test", "tail"], true],
 		["(cd sub; open a.png)", ["cd sub", "open"], true],
 		["open a.png; open b.png", ["open"], true],
 		["/usr/bin/open a.png", ["/usr/bin/open"], true],
@@ -59,6 +58,24 @@ describe("commandRules", () => {
 		"for f in *.png; do open $f; done",
 		"cat x | xargs",
 		"op*n x",
+		"PATH=./bin:$PATH open x",
+		"BASH_ENV=./f open x",
+		"DYLD_INSERT_LIBRARIES=./l.dylib open x",
+		"env FOO=1 open x",
+		"env -P ./bin open x",
+		"env -S 'PATH=./bin open' x",
+		"PATH=./bin; open x",
+		"export PATH=./bin && open x",
+		"find . -exec sh -c 'x' \\;",
+		"find . -name x -exec cp {} /tmp \\;",
+		"caffeinate bash -c 'x'",
+		"stdbuf -o0 open x",
+		"arch -arm64 node x.js",
+		"git -c alias.x='!sh' x",
+		"git --config-env=core.pager=X log",
+		"git rebase --exec 'x' main",
+		"git submodule foreach 'x'",
+		"open -a Terminal bash",
 		"open x > ~/.zshrc",
 		"ego-browser nodejs 2>> log",
 		"open x &> out",
@@ -66,9 +83,28 @@ describe("commandRules", () => {
 	];
 	it.each(NEVER)("never covers %s", (command) => {
 		expect(commandRules(command).rules).toBeUndefined();
-		expect(coveredBy(command, ["open", "cp", "ego-browser nodejs", "eval", "sh", "bash", "diff", "cat", "ls"])).toBe(
-			false,
-		);
+		expect(
+			coveredBy(command, [
+				"open",
+				"cp",
+				"ego-browser nodejs",
+				"eval",
+				"sh",
+				"bash",
+				"diff",
+				"cat",
+				"ls",
+				"find",
+				"git",
+				"export",
+				"caffeinate",
+				"stdbuf",
+				"arch",
+				"node",
+				"git rebase",
+				"git submodule",
+			]),
+		).toBe(false);
 	});
 });
 
@@ -102,6 +138,9 @@ describe("coveredBy", () => {
 			expect(coveredBy(command, [rule]), command).toBe(false);
 		expect(coveredBy("pnpm -C . dlx foo", ["pnpm dlx"])).toBe(true);
 		expect(coveredBy("pnpm install", ["pnpm"])).toBe(true);
+		expect(coveredBy("ego-browser nodejs <<EOF\nx\nEOF", ["ego-browser"])).toBe(false);
+		expect(coveredBy("ego-browser nodejs <<EOF\nx\nEOF", ["ego-browser nodejs"])).toBe(true);
+		expect(coveredBy("runner sh -c x", ["runner", "runner sh"])).toBe(false);
 	});
 
 	it("compares the program as written", () => {

@@ -76,7 +76,54 @@ const NEVER = new Set([
 	"[[",
 	"((",
 	"coproc",
+	// Builtins that change what later commands run: their PATH, functions or aliases.
+	"export",
+	"declare",
+	"typeset",
+	"local",
+	"readonly",
+	"alias",
+	"set",
+	"unset",
+	"shopt",
+	"trap",
+	// Runners of another command the guard does not pass over as wrappers.
+	"caffeinate",
+	"stdbuf",
+	"arch",
+	"watch",
+	"script",
+	"parallel",
+	"flock",
+	"chroot",
+	"unbuffer",
+	"ionice",
+	"taskset",
+	"sandbox-exec",
 ]);
+
+/** Options and subcommands with which a program runs other code: a command with one is never covered. */
+const RUNS_CODE: Record<string, readonly string[]> = {
+	find: ["-exec", "-execdir", "-ok", "-okdir"],
+	git: [
+		"-c",
+		"--config-env",
+		"--exec",
+		"-x",
+		"--upload-pack",
+		"--receive-pack",
+		"--extcmd",
+		"foreach",
+		"run",
+		"filter-branch",
+		"difftool",
+		"mergetool",
+	],
+};
+
+/** Whether a word is a long option of `options` with its value attached (`--exec=x`) or one of them as it is. */
+const isOneOf = (value: string, options: readonly string[]) =>
+	options.some((option) => value === option || (option.startsWith("--") && value.startsWith(`${option}=`)));
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh"]);
 
 const PROGRAM = /^(?!-)(?!\.$)[A-Za-z0-9_./+@:-]+$/;
@@ -99,6 +146,12 @@ function isRunner(program: string, subcommand: string | undefined): boolean {
 	return INTERPRETERS.has(name) || PYTHON.test(name) || (subcommand !== undefined && isLauncher(name, subcommand));
 }
 
+/** Whether a word names an interpreter or a launcher program, by itself or as a path (`/bin/sh`). */
+function isInterpreter(word: string): boolean {
+	const name = word.split("/").at(-1) ?? word;
+	return INTERPRETERS.has(name) || PYTHON.test(name);
+}
+
 const isLauncher = (name: string, subcommand: string) => LAUNCHERS[name]?.includes(subcommand) === true;
 
 /** The first of the program's words that is one of its launchers, wherever options put it. */
@@ -107,14 +160,24 @@ function launcherOf(name: string, words: SimpleCommand["words"]): string | undef
 }
 
 /** The key of one command, or undefined when it can never be covered. */
-function keyOf({ wrappers, words, writesFile }: SimpleCommand): Key | undefined {
+function keyOf({ wrappers, words, writesFile, setsEnvironment }: SimpleCommand): Key | undefined {
 	const [first, second] = words;
-	if (writesFile || first === undefined || first.raw !== first.value || !PROGRAM.test(first.value)) return undefined;
+	if (writesFile || setsEnvironment || first === undefined || first.raw !== first.value || !PROGRAM.test(first.value))
+		return undefined;
 	const program = first.value;
 	const name = program.split("/").at(-1) ?? program;
 	if (NEVER.has(name)) return undefined;
 	// A shell given a string runs it: nothing in the words says what that is.
-	if (SHELLS.has(name) && words.some(({ value }) => /^-[a-z]*c[a-z]*$/.test(value))) return undefined;
+	const shellString = ({ value }: { value: string }) => /^-[a-z]*c[a-z]*$/.test(value);
+	if (SHELLS.has(name) && words.some(shellString)) return undefined;
+	// Code the program runs on its own: its options for that, or an interpreter named after its subcommand (`find . -exec sh`).
+	const runsCode = RUNS_CODE[name];
+	if (runsCode !== undefined && words.slice(1).some(({ value }) => isOneOf(value, runsCode))) return undefined;
+	if (words.slice(2).some(({ value }) => isInterpreter(value))) return undefined;
+	// A subcommand named like an interpreter (`ego-browser nodejs`) is the program running code: only its own rule covers it.
+	const runsInterpreter = second !== undefined && isInterpreter(second.value);
+	if (runsInterpreter && SHELLS.has(second.value.split("/").at(-1) ?? "") && words.slice(2).some(shellString))
+		return undefined;
 	const launcher = launcherOf(name, words);
 	const subcommand =
 		launcher ??
@@ -123,7 +186,7 @@ function keyOf({ wrappers, words, writesFile }: SimpleCommand): Key | undefined 
 		program,
 		...(subcommand === undefined ? {} : { subcommand }),
 		runsCode: wrappers.includes("sudo") || isRunner(program, subcommand),
-		launcher: launcher !== undefined,
+		launcher: launcher !== undefined || runsInterpreter,
 	};
 }
 
