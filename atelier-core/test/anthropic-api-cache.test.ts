@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildRequest, type RequestState, type StoredMessage } from "../src/backends/anthropic-api/backend.ts";
 import { BASE_SYSTEM_PROMPT, systemPrompt } from "../src/backends/anthropic-api/system-prompt.ts";
 import { toAnthropicTools } from "../src/backends/anthropic-api/tool-schema.ts";
+import { SYSTEM_PROMPT_APPEND } from "../src/prompt.ts";
 import { coreTools } from "../src/tools/index.ts";
 
 const EPHEMERAL = { type: "ephemeral" };
@@ -119,6 +120,11 @@ describe("buildRequest cache breakpoints", () => {
 describe("system prompt", () => {
 	it("stays small: it is sent, and cached, on every request", () => {
 		expect(Buffer.byteLength(BASE_SYSTEM_PROMPT, "utf8")).toBeLessThanOrEqual(1024);
+	});
+
+	it("does not claim the tools stay inside the working directory: read, grep and the web tools reach outside it", () => {
+		expect(BASE_SYSTEM_PROMPT).not.toContain("no tool can leave it");
+		expect(systemPrompt("/work", SYSTEM_PROMPT_APPEND)).toContain("Use web_fetch to read a web page and web_search");
 	});
 
 	it("contains nothing that changes between turns", () => {
