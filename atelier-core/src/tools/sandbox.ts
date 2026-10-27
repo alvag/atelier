@@ -523,8 +523,8 @@ export interface SandboxOptions {
 	/** Defaults to the Node installation that runs this process. */
 	nodePrefix?: string;
 	/**
-	 * Whether the profile for the commands the user's rules cover can run; defaults to trying it once on macOS. With a
-	 * manager (tests) that profile wraps nothing, like the manager.
+	 * Whether the profile for the commands the user's rules cover can run; defaults to trying it once on macOS, or to yes
+	 * with a manager (tests), where that profile wraps nothing, like the manager.
 	 */
 	outside?: () => boolean;
 }
@@ -685,7 +685,7 @@ export class Sandbox {
 
 	/** Whether a command the user's rules cover can run under its profile; asked once. */
 	outsideAvailable(): boolean {
-		this.#outside ??= (this.#options.outside ?? sandboxExecWorks)();
+		this.#outside ??= (this.#options.outside ?? (this.#options.manager ? () => true : sandboxExecWorks))();
 		return this.#outside;
 	}
 

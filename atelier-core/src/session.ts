@@ -1352,7 +1352,11 @@ export class Session {
 				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
 			} else if (approval) {
 				const { command, reason, tool: asking, confirm } = approval;
-				const remember = this.#options.permissionRules === undefined ? undefined : approval.remember;
+				const store = this.#options.permissionRules;
+				const remember =
+					store === undefined || approval.remember === undefined
+						? undefined
+						: { ...approval.remember, always: approval.remember.always && store.canSave };
 				const question = {
 					command,
 					...(reason === undefined ? {} : { reason }),

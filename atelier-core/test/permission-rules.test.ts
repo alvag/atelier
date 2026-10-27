@@ -117,6 +117,8 @@ describe("PermissionRules", () => {
 
 	it("without a home keeps session rules only", async () => {
 		const rules = new PermissionRules({});
+		expect(rules.canSave).toBe(false);
+		expect(new PermissionRules({ home }).canSave).toBe(true);
 		await rules.allow([{ kind: "bash", value: "open" }], "session");
 		expect(await rules.current()).toEqual({ bash: ["open"], paths: [] });
 		await expect(rules.allow([{ kind: "bash", value: "ls" }], "always")).rejects.toThrow(PermissionRulesError);

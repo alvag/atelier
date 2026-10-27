@@ -4,6 +4,8 @@ import { createInterface, type Interface } from "node:readline";
 import type { Readable } from "node:stream";
 import {
 	type AgentBackend,
+	type ApprovalAnswer,
+	type ApprovalRequest,
 	type AtelierEvent,
 	type BackendName,
 	BUILTIN_AGENTS,
@@ -19,6 +21,7 @@ import {
 	orchestratorBackend,
 	PERMISSION_MODES,
 	type PermissionMode,
+	PermissionRules,
 	type ReviewConsentAnswer,
 	readDefaultPermissionMode,
 	roleStartMessage,
@@ -319,6 +322,21 @@ export async function run(
 	/** Asks a yes/no question on the terminal; only "y" or "yes" is a yes, and Ctrl+C is a no. */
 	const askYesNo = async (question: string): Promise<boolean> =>
 		/^y(es)?$/i.test((await askLine(question, ANSWER_PROMPT)) ?? "");
+	/** Asks an approval that may also remember its rules: `s` for this session, `a` always when offered; anything else is a no. */
+	const askApproval = async (
+		question: string,
+		tool: string | undefined,
+		remember: ApprovalRequest["remember"],
+	): Promise<ApprovalAnswer> => {
+		if (remember === undefined) return askYesNo(question);
+		const what = visibleText(ruleText(tool, remember.rules)).text;
+		const choices = `  s: Allow ${what} in this session\n${remember.always ? `  a: Allow ${what} always\n` : ""}`;
+		const answer = (await askLine(`${question}${choices}`, remember.always ? "[y/N/s/a] " : "[y/N/s] ")) ?? "";
+		if (/^y(es)?$/i.test(answer)) return true;
+		if (/^s(ession)?$/i.test(answer)) return { remember: "session" };
+		if (remember.always && /^a(lways)?$/i.test(answer)) return { remember: "always" };
+		return false;
+	};
 	const consent = async (): Promise<ReviewConsentAnswer> => {
 		if (!io.isTTY) {
 			renderer.endLine();
@@ -388,7 +406,8 @@ export async function run(
 		tools: io.tools ?? coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
 		...(args.noSandbox ? { noSandbox: true } : {}),
-		approve: async ({ command, reason, tool, confirm }) => {
+		permissionRules: new PermissionRules(io.home === undefined ? {} : { home: io.home }),
+		approve: async ({ command, reason, tool, confirm, remember }) => {
 			// The command and the reason come from the model: show escape sequences and bidi controls instead of letting the terminal run them.
 			const shown = visibleText(command);
 			const why = reason === undefined ? undefined : visibleText(reason);
@@ -407,7 +426,7 @@ export async function run(
 					? "warning: the path contains invisible or control characters, shown as markers.\n"
 					: "";
 				const verb = tool === "edit" ? "Edit" : "Write";
-				return askYesNo(`${verb} a file outside the working directory?\n  ${path.text}\n${note}`);
+				return askApproval(`${verb} a file outside the working directory?\n  ${path.text}\n${note}`, tool, remember);
 			}
 			if (tool === "mcp_call") {
 				// Asked only in auto, when the classifier did not decide: `server › tool <arguments>`.
@@ -443,10 +462,12 @@ export async function run(
 					? "warning: the command contains invisible or control characters, shown as markers.\n"
 					: "";
 			const guard = confirm === undefined ? "" : ` (guard: ${confirm})`;
-			return askYesNo(
+			return askApproval(
 				why
 					? `Run this command OUTSIDE the sandbox?${guard}\n  ${shown.text}\n  reason: ${why.text}\n${warning}`
 					: `Run this command?${guard}\n  ${shown.text}\n${warning}`,
+				tool,
+				remember,
 			);
 		},
 	})
@@ -539,6 +560,11 @@ export async function run(
 			if (mcpWords[0] === "/mcp") {
 				renderer.endLine();
 				await runMcpCommand(io, session, mcpWords.slice(1));
+				continue;
+			}
+			if (mcpWords[0] === "/permissions") {
+				renderer.endLine();
+				await runPermissionsCommand(io, session, mcpWords.slice(1));
 				continue;
 			}
 			const modeCommand = parseModeCommand(line);
@@ -705,6 +731,47 @@ async function runMcpList(io: CliIO, cwd: string, connectMcp: McpConnector | und
 		return mcpFailed(servers, problems) ? EXIT_FAILED : EXIT_OK;
 	} finally {
 		await manager.close();
+	}
+}
+
+/** How a question names the rules an answer would remember: `"open", "npm install"`, or `edits in <folder>`. */
+export function ruleText(tool: string | undefined, rules: readonly string[]): string {
+	return tool === "edit" || tool === "write"
+		? `edits in ${rules.join(", ")}`
+		: rules.map((rule) => `"${rule}"`).join(", ");
+}
+
+/** `/permissions` lists the rules in force; `/permissions remove <n>` removes the n-th. Not a turn. */
+async function runPermissionsCommand(io: CliIO, session: Session, words: readonly string[]): Promise<void> {
+	const rules = await session.permissionRules();
+	const [action, number, ...extra] = words;
+	if (action === undefined) {
+		io.stdout(
+			rules.length === 0
+				? "No permission rules.\n"
+				: rules
+						.map(
+							({ scope, kind, value }, index) =>
+								`${index + 1}. ${scope.padEnd(7)} ${kind.padEnd(5)} ${visibleText(value).text}\n`,
+						)
+						.join(""),
+		);
+		return;
+	}
+	if (action !== "remove" || number === undefined || !/^\d+$/.test(number) || extra.length > 0) {
+		io.stderr("usage: /permissions | /permissions remove <number>\n");
+		return;
+	}
+	const rule = rules[Number(number) - 1];
+	if (rule === undefined) {
+		io.stderr(`error: no rule ${number}\n`);
+		return;
+	}
+	try {
+		await session.removePermissionRule(rule.id);
+		io.stdout(`removed: ${rule.scope} ${rule.kind} ${visibleText(rule.value).text}\n`);
+	} catch (error) {
+		io.stderr(`error: ${describeError(error)}\n`);
 	}
 }
 

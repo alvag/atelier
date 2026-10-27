@@ -115,7 +115,7 @@ function harness(
 			: {}),
 		stdout: (s: string) => {
 			stdout += s;
-			const answer = /\[y\/N(\/a)?\] $/.test(s) ? answers.shift() : undefined;
+			const answer = /\[y\/N(\/[sa])*\] $/.test(s) ? answers.shift() : undefined;
 			if (answer !== undefined) setImmediate(() => stdin.write(`${answer}\n`));
 		},
 		stderr: (s: string) => {
@@ -259,7 +259,7 @@ describe("run", () => {
 
 		const yes = harness([[step, { event: finished }]], { isTTY: true, answers: ["y"], sandbox: false });
 		await run(["x"], yes.io, yes.createBackend);
-		expect(yes.out()).toContain("Run this command?\n  echo hi\n[y/N] ");
+		expect(yes.out()).toContain('Run this command?\n  echo hi\n  s: Allow "echo hi" in this session\n[y/N/s] ');
 		expect(yes.backend.toolResults[0]?.ok).toBe(true);
 
 		const no = harness([[step, { event: finished }]], { isTTY: true, input: [""], sandbox: false });
@@ -277,7 +277,9 @@ describe("run", () => {
 			sandbox: false,
 		});
 		await run(["x"], h.io, h.createBackend);
-		expect(h.out()).toContain("ignored 1 line typed before this question\nRun this command?\n  echo hi\n[y/N] ");
+		expect(h.out()).toContain(
+			'ignored 1 line typed before this question\nRun this command?\n  echo hi\n  s: Allow "echo hi" in this session\n[y/N/s] ',
+		);
 		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
 	});
 
@@ -367,7 +369,7 @@ describe("run", () => {
 				sandbox: false,
 			});
 			const pending = run(["x"], h.io, h.createBackend);
-			await until(() => h.out().includes("[y/N] "));
+			await until(() => h.out().includes("[y/N"));
 			h.ctrlC();
 			expect(await pending).toBe(130);
 			expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
@@ -384,7 +386,7 @@ describe("run", () => {
 			const stdin = h.io.stdin as PassThrough;
 			const pending = run([], h.io, h.createBackend);
 			stdin.write("first\n");
-			await until(() => h.out().includes("[y/N] "));
+			await until(() => h.out().includes("[y/N"));
 			h.ctrlC();
 			await until(() => h.backend.interrupts === 1);
 			stdin.write("next prompt\n");
@@ -912,7 +914,7 @@ describe("bash outside the sandbox", () => {
 			env: { ATELIER_SANDBOX: "off" },
 		});
 		await run(["--yes", "x"], h.io, h.createBackend);
-		expect(h.out()).toContain("Run this command?\n  echo one\n[y/N] ");
+		expect(h.out()).toContain('Run this command?\n  echo one\n  s: Allow "echo one" in this session\n[y/N/s] ');
 		expect(h.err()).toContain(`bash: not sandboxed (${SANDBOX_OFF})`);
 	});
 
@@ -944,7 +946,7 @@ describe("bash outside the sandbox", () => {
 		const h = harness([[bash(leave), { event: finished }]], { isTTY: true, answers: ["y"] });
 		await run(["--yes", "x"], h.io, h.createBackend);
 		expect(h.out()).toContain(
-			"Run this command OUTSIDE the sandbox?\n  echo outside\n  reason: pnpm install needs the network\n[y/N] ",
+			'Run this command OUTSIDE the sandbox?\n  echo outside\n  reason: pnpm install needs the network\n  s: Allow "echo outside" in this session\n[y/N/s] ',
 		);
 		expect(h.backend.toolResults[0]?.ok).toBe(true);
 		expect(h.backend.toolResults[0]?.output).toContain("outside");
@@ -1047,7 +1049,9 @@ describe("bash outside the sandbox", () => {
 		it("asks with the absolute path, even with --yes, and edits on yes", async () => {
 			const h = harness([[edit(join(elsewhere, "note.txt")), { event: finished }]], { isTTY: true, answers: ["y"] });
 			await run(["--yes", "x"], h.io, h.createBackend);
-			expect(h.out()).toContain(`Edit a file outside the working directory?\n  ${join(elsewhere, "note.txt")}\n[y/N] `);
+			expect(h.out()).toContain(
+				`Edit a file outside the working directory?\n  ${join(elsewhere, "note.txt")}\n  s: Allow edits in ${elsewhere} in this session\n[y/N/s] `,
+			);
 			expect(h.out()).not.toContain("Run this command");
 			expect(h.backend.toolResults[0]?.ok).toBe(true);
 			expect(await readFile(join(elsewhere, "note.txt"), "utf8")).toBe("new\n");
@@ -1125,7 +1129,9 @@ describe("bash outside the sandbox", () => {
 			const target = join(elsewhere, "deep", "made.txt");
 			const h = harness([[write(target), { event: finished }]], { isTTY: true, answers: ["y"] });
 			await run(["--yes", "x"], h.io, h.createBackend);
-			expect(h.out()).toContain(`Write a file outside the working directory?\n  ${target}\n[y/N] `);
+			expect(h.out()).toContain(
+				`Write a file outside the working directory?\n  ${target}\n  s: Allow edits in ${join(elsewhere, "deep")} in this session\n[y/N/s] `,
+			);
 			expect(h.out()).not.toContain("Run this command");
 			expect(h.out()).toContain(`▸ write ${target} (5 bytes) ✓\n`);
 			expect(await readFile(target, "utf8")).toBe("made\n");
@@ -1945,5 +1951,66 @@ describe("saved sessions", () => {
 		const h = harness([], { backendId: "claude-code" });
 		expect(await run(["--continue"], h.io, h.createBackend)).toBe(1);
 		expect(h.err()).toBe("error: --continue and --resume need a home directory to read ~/.atelier/sessions from.\n");
+	});
+});
+
+describe("remembered answers", () => {
+	const bash = (input: Record<string, string | boolean>): FakeStep => ({ toolCall: { tool: "bash", input } });
+	const leave = (command: string) => bash({ command, unsandboxed: true, reason: "a GUI app" });
+	let home: string;
+	beforeEach(async () => {
+		home = await mkdtemp(join(tmpdir(), "atelier-cli-rules-"));
+	});
+	afterEach(async () => {
+		await rm(home, { recursive: true, force: true });
+	});
+	const rulesFile = () => join(home, ".atelier", "permissions.json");
+
+	it("offers the command's rule, and s keeps it for the rest of the session", async () => {
+		const turn = [leave("echo -n one"), bash({ command: "echo -n two" }), { event: finished }];
+		const h = harness([turn], { isTTY: true, answers: ["s"], home });
+		await run(["--no-review", "x"], h.io, h.createBackend);
+		expect(h.out()).toContain(
+			'Run this command OUTSIDE the sandbox?\n  echo -n one\n  reason: a GUI app\n  s: Allow "echo" in this session\n  a: Allow "echo" always\n[y/N/s/a] ',
+		);
+		expect(h.out().match(/\[y\/N/g)).toHaveLength(1);
+		expect(h.backend.toolResults[1]?.output).toContain("two");
+		expect(await exists(rulesFile())).toBe(false);
+	});
+
+	it("a saves the rule in ~/.atelier/permissions.json", async () => {
+		const h = harness([[leave("echo -n one"), { event: finished }]], { isTTY: true, answers: ["a"], home });
+		await run(["--no-review", "x"], h.io, h.createBackend);
+		expect(JSON.parse(await readFile(rulesFile(), "utf8")).allow).toEqual([{ bash: "echo" }]);
+	});
+
+	it("offers no Allow always for an interpreter", async () => {
+		const h = harness([[leave("node -e 1"), { event: finished }]], { isTTY: true, answers: ["a"], home });
+		await run(["--no-review", "x"], h.io, h.createBackend);
+		expect(h.out()).toContain('  s: Allow "node" in this session\n[y/N/s] ');
+		expect(h.out()).not.toContain("a: Allow");
+		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+	});
+
+	it("/permissions lists the rules and /permissions remove deletes one", async () => {
+		await mkdir(join(home, ".atelier"));
+		await writeFile(
+			rulesFile(),
+			JSON.stringify({ kind: "atelier.permissions", version: 1, allow: [{ bash: "open" }] }),
+			{
+				mode: 0o600,
+			},
+		);
+		const h = harness([], {
+			input: ["/permissions", "/permissions remove 2", "/permissions remove 1", "/permissions", "/permissions x"],
+			home,
+		});
+		await run(["--no-review"], h.io, h.createBackend);
+		expect(h.out()).toContain("1. always  bash  open\n");
+		expect(h.err()).toContain("error: no rule 2\n");
+		expect(h.out()).toContain("removed: always bash open\n");
+		expect(h.out()).toContain("No permission rules.\n");
+		expect(h.err()).toContain("usage: /permissions | /permissions remove <number>\n");
+		expect(JSON.parse(await readFile(rulesFile(), "utf8")).allow).toEqual([]);
 	});
 });

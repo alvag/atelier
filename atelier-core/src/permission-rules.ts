@@ -154,6 +154,11 @@ export class PermissionRules {
 		this.#home = home;
 	}
 
+	/** Whether rules can be allowed always: there is a home to save them in. */
+	get canSave(): boolean {
+		return this.#home !== undefined;
+	}
+
 	async #saved(): Promise<Saved> {
 		return this.#home === undefined ? { rules: [] } : readSaved(this.#home);
 	}
