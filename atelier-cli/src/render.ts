@@ -248,7 +248,7 @@ export class Renderer {
 				const tool = this.#tools.get(event.callId) ?? "tool";
 				this.#tools.delete(event.callId);
 				const mark = event.ok ? this.#style("green", "✓") : this.#style("red", "✗");
-				this.#line(`${CHILD}${this.#style("cyan", "▸")} ${tool} ${event.summary} ${mark}`);
+				this.#line(`${CHILD}${this.#style("cyan", "▸")} ${shownTool(tool, event.summary)} ${mark}`);
 				this.#blocked(event.blocked, `${CHILD}  `);
 				return;
 			}
@@ -452,7 +452,7 @@ export class Renderer {
 				this.#tools.delete(event.callId);
 				const mark = event.ok ? this.#style("green", "✓") : this.#style("red", "✗");
 				const note = event.truncated ? this.#style("dim", " (truncated)") : "";
-				this.#line(`${this.#style("cyan", "▸")} ${tool} ${event.summary} ${mark}${note}`);
+				this.#line(`${this.#style("cyan", "▸")} ${shownTool(tool, event.summary)} ${mark}${note}`);
 				this.#blocked(event.blocked, "  ");
 				return;
 			}
@@ -602,4 +602,9 @@ export function mcpStatusLines(event: Extract<AtelierEvent, { type: "mcp_status"
 		...event.problems.map((problem) => `mcp: ${firstLine(problem)}`),
 	];
 	return { ...(up.length === 0 ? {} : { ok: `mcp: ${up.join(", ")}` }), warnings };
+}
+
+/** A tool's name and summary as a line shows them: the model and MCP servers choose them, so control characters show as markers. */
+function shownTool(tool: string, summary: string): string {
+	return `${visibleText(tool).text} ${visibleText(summary).text}`;
 }

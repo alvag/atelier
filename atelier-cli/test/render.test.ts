@@ -1,4 +1,4 @@
-import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
+import { type AtelierEvent, type AtelierEventBody, visibleText } from "@atelier/core";
 import { describe, expect, it } from "vitest";
 import { Renderer } from "../src/render.ts";
 
@@ -393,6 +393,33 @@ describe("Renderer", () => {
 		]);
 		expect(off.stdout).toBe("");
 		expect(off.stderr).toBe("no memory: Engram is not installed (no engram command).\n");
+	});
+
+	it("shows a tool's name and summary with markers for control characters, also a subagent's", () => {
+		const { stdout } = render([
+			{ type: "tool_call_started", callId: "c1", tool: "mcp_\x1b[31mcall", input: {} },
+			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "docs › se\x1b[2Jarch", truncated: false },
+			{
+				type: "tool_call_started",
+				callId: "c2",
+				tool: "re\x1b[31mad",
+				input: {},
+				parentCallId: "p",
+				agent: "explorer",
+			},
+			{
+				type: "tool_call_finished",
+				callId: "c2",
+				ok: true,
+				summary: "f\x1b[2Jile",
+				truncated: false,
+				parentCallId: "p",
+				agent: "explorer",
+			},
+		]);
+		expect(stdout).not.toContain("\x1b");
+		expect(stdout).toContain(`▸ ${visibleText("mcp_\x1b[31mcall").text} ${visibleText("docs › se\x1b[2Jarch").text} ✓`);
+		expect(stdout).toContain(visibleText("re\x1b[31mad").text);
 	});
 
 	it("says which MCP servers are up, and warns about failed and invalid ones and the file's problems", () => {
