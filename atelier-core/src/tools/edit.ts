@@ -62,7 +62,14 @@ export async function locate(cwd: string, path: string, context: ToolContext, ho
 	}
 	const { allowWrite } = loadSandboxAdditions({ cwd, home });
 	if (allowWrite.some((directory) => isInside(directory, real))) return { real, allowed: true };
+	if (context.pathRules?.some((folder) => isInside(folder, real))) return { real, allowed: true };
 	return { real, allowed: context.approvedPaths?.has(real) === true };
+}
+
+/** What an answer about a file outside may remember: its folder, or the file alone when that folder is or holds the home. */
+export function folderOffer(real: string, home: string): { rules: string[]; always: boolean } {
+	const folder = dirname(real);
+	return { rules: [isInside(folder, home) ? real : folder], always: true };
 }
 
 const notApproved = (real: string) =>
@@ -82,7 +89,7 @@ export function createEditTool(options: EditOptions = {}): ToolDefinition {
 	return defineTool({
 		name: "edit",
 		description:
-			"Edit a file by exact text replacement. Each oldText must appear exactly once in the original file and edits must not overlap. If any edit fails, nothing is written. Paths inside the working directory are edited directly; a file anywhere else needs the user's approval, once per file for the session, and the user's secret files are never edited.",
+			"Edit a file by exact text replacement. Each oldText must appear exactly once in the original file and edits must not overlap. If any edit fails, nothing is written. Paths inside the working directory are edited directly; a file anywhere else needs the user's approval, once per file for the session or for a folder the user allows, and the user's secret files are never edited.",
 		inputShape: {
 			path: z.string().describe("File path, absolute or relative to the working directory"),
 			edits: z
@@ -123,6 +130,7 @@ export function createEditTool(options: EditOptions = {}): ToolDefinition {
 					tool: "edit",
 					grant: location.real,
 					denial: notApproved(location.real),
+					remember: folderOffer(location.real, home),
 				},
 			};
 		},

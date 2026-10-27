@@ -15,6 +15,8 @@ export interface ToolContext {
 	approvedPaths?: ReadonlySet<string>;
 	/** The `bash` rules the user allowed (`open`, `npm install`): a command they cover runs outside the sandbox without asking. */
 	bashRules?: readonly string[];
+	/** The folders the user allowed `edit` and `write` in, real paths: a file in one or below is written without asking. */
+	pathRules?: readonly string[];
 }
 
 /** What a tool says about a call before it runs. */

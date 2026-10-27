@@ -52,7 +52,12 @@ import {
 	parseDecision,
 	pauseReason,
 } from "./permission-classifier.ts";
-import { type PermissionRuleScope, type PermissionRules, PermissionRulesError } from "./permission-rules.ts";
+import {
+	type PermissionRuleKind,
+	type PermissionRuleScope,
+	type PermissionRules,
+	PermissionRulesError,
+} from "./permission-rules.ts";
 import { thinkingToSend } from "./pricing.ts";
 import {
 	compactionSettings,
@@ -1320,7 +1325,7 @@ export class Session {
 				callId,
 				...(this.#options.noSandbox ? { sandboxOff: true } : {}),
 				approvedPaths: this.#approvedPaths,
-				bashRules: await this.#currentRules(emit),
+				...(await this.#currentRules(emit)),
 			};
 			const gate = await this.#gate(tool, call.input, context);
 			if (gate.refusal) {
@@ -1362,9 +1367,14 @@ export class Session {
 				if (answer === false) return fail(approval.denial ?? "The user denied this command.");
 				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
 				if (answer !== true && remember !== undefined) {
-					await this.#remember(remember, answer.remember, emit);
+					await this.#remember(
+						asking === "edit" || asking === "write" ? "path" : "bash",
+						remember,
+						answer.remember,
+						emit,
+					);
 					// The call itself runs as the rule now says: outside the sandbox, with `~/.atelier` unwritable.
-					context.bashRules = await this.#currentRules(emit);
+					Object.assign(context, await this.#currentRules(emit));
 				}
 			}
 			const outcome = await tool.execute(call.input, context);
@@ -1516,27 +1526,28 @@ export class Session {
 		return addSpent(ended, { ...spent, phases: onePhase("handoff", spent) });
 	}
 
-	/** The `bash` rules in force now; a broken saved file is said once, as a recoverable error, and counts as none. */
-	async #currentRules(emit: (event: AtelierEventBody) => void): Promise<string[]> {
+	/** The rules in force now, as tools take them; a broken saved file is said once, as a recoverable error, and counts as none. */
+	async #currentRules(emit: (event: AtelierEventBody) => void): Promise<{ bashRules: string[]; pathRules: string[] }> {
 		const rules = this.#options.permissionRules;
-		if (rules === undefined) return [];
+		if (rules === undefined) return { bashRules: [], pathRules: [] };
 		const current = await rules.current();
 		if (current.problem !== undefined && !this.#rulesProblemSaid) {
 			this.#rulesProblemSaid = true;
 			emit(errorEvent("permission_rules_invalid", current.problem, true));
 		}
-		return current.bash;
+		return { bashRules: current.bash, pathRules: current.paths };
 	}
 
 	/** Keeps the answer's rules; what cannot be saved always (a launcher, a broken file) is kept for the session, and said. */
 	async #remember(
+		kind: PermissionRuleKind,
 		{ rules, always }: { rules: string[]; always: boolean },
 		scope: PermissionRuleScope,
 		emit: (event: AtelierEventBody) => void,
 	): Promise<void> {
 		const store = this.#options.permissionRules;
 		if (store === undefined) return;
-		const kept = rules.map((value) => ({ kind: "bash" as const, value }));
+		const kept = rules.map((value) => ({ kind, value }));
 		if (scope === "always") {
 			try {
 				if (!always)

@@ -2,7 +2,7 @@ import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { changedSinceAsked, type Location, locate, writeAtomic } from "./edit.ts";
+import { changedSinceAsked, folderOffer, type Location, locate, writeAtomic } from "./edit.ts";
 import { errorMessage, failure, MAX_WRITE_BYTES } from "./limits.ts";
 import { PathProtectedError } from "./paths.ts";
 import { approvalMismatch, projectRefusal, rememberApproval } from "./protection.ts";
@@ -33,7 +33,7 @@ export function createWriteTool(options: WriteOptions = {}): ToolDefinition {
 	return defineTool({
 		name: "write",
 		description:
-			"Create a file, or replace an existing one whole, with the given content; missing folders are created. Use edit to change part of a file that exists and write to create a file or replace it entirely. Paths inside the working directory are written directly; a file anywhere else needs the user's approval, once per file for the session, and the user's secret files are never written. Content over 1 MiB is refused.",
+			"Create a file, or replace an existing one whole, with the given content; missing folders are created. Use edit to change part of a file that exists and write to create a file or replace it entirely. Paths inside the working directory are written directly; a file anywhere else needs the user's approval, once per file for the session or for a folder the user allows, and the user's secret files are never written. Content over 1 MiB is refused.",
 		inputShape: {
 			path: z.string().describe("File path, absolute or relative to the working directory"),
 			content: z.string().describe("The whole content of the file"),
@@ -63,6 +63,7 @@ export function createWriteTool(options: WriteOptions = {}): ToolDefinition {
 					tool: "write",
 					grant: location.real,
 					denial: notApproved(location.real),
+					remember: folderOffer(location.real, home),
 				},
 			};
 		},
