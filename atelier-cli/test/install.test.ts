@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -54,20 +54,27 @@ interface Outcome {
 	stderr: string;
 }
 
+function installEnv(extraPath = ""): Record<string, string> {
+	return {
+		PATH: [fakes, tools, extraPath].filter(Boolean).join(":"),
+		HOME: home,
+		ATELIER_REPO: origin,
+		ATELIER_INSTALL_DIR: installDir,
+		ATELIER_BIN_DIR: binDir,
+		GIT_CONFIG_GLOBAL: join(home, ".gitconfig"),
+		GIT_CONFIG_NOSYSTEM: "1",
+	};
+}
+
 function install(args: string[] = [], extraPath = ""): Outcome {
-	const result = spawnSync("sh", [script, ...args], {
-		encoding: "utf8",
-		env: {
-			PATH: [fakes, tools, extraPath].filter(Boolean).join(":"),
-			HOME: home,
-			ATELIER_REPO: origin,
-			ATELIER_INSTALL_DIR: installDir,
-			ATELIER_BIN_DIR: binDir,
-			GIT_CONFIG_GLOBAL: join(home, ".gitconfig"),
-			GIT_CONFIG_NOSYSTEM: "1",
-		},
-	});
+	const result = spawnSync("sh", [script, ...args], { encoding: "utf8", env: installEnv(extraPath) });
 	return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+/** Waits for what the test needs, never a fixed delay: a loaded machine runs the installer slower. */
+async function until(condition: () => boolean): Promise<void> {
+	for (let i = 0; i < 2000 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+	expect(condition()).toBe(true);
 }
 
 beforeEach(async () => {
@@ -157,6 +164,27 @@ describe("install.sh", () => {
 
 		expect(out.status).toBe(0);
 		expect(out.stderr).toBe("");
+	});
+
+	it.each([
+		["SIGINT", 130],
+		["SIGTERM", 143],
+		["SIGHUP", 129],
+	] as const)("removes the clone and exits %s's code when interrupted after cloning", async (signal, code) => {
+		const started = join(root, "pnpm-started");
+		const release = join(root, "pnpm-release");
+		// pnpm blocks until the test lets it go, so the signal arrives in the middle of the install.
+		await fake("pnpm", `: > "${started}"\nwhile [ ! -e "${release}" ]; do ${which("sleep")} 0.05; done`);
+		const child = spawn("sh", [script], { env: installEnv(), stdio: "ignore" });
+		const exited = new Promise<number | null>((resolve) => child.once("exit", (status) => resolve(status)));
+
+		await until(() => existsSync(started));
+		child.kill(signal);
+		await writeFile(release, "");
+
+		expect(await exited).toBe(code);
+		expect(existsSync(installDir)).toBe(false);
+		expect(existsSync(join(binDir, "atelier"))).toBe(false);
 	});
 
 	it("refuses to touch an existing install", async () => {

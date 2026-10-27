@@ -36,7 +36,7 @@ usage_error() {
 	exit 2
 }
 
-# Removes the clone this run created, so a failed install leaves nothing behind.
+# Removes the clone this run created, so a failed or interrupted install leaves nothing behind.
 cleanup() {
 	status=$?
 	if [ "$status" -ne 0 ] && [ "$CLONED" -eq 1 ]; then
@@ -111,6 +111,10 @@ main() {
 	[ -e "$INSTALL_DIR" ] && fail "Atelier is already installed in $INSTALL_DIR. Run: atelier update"
 
 	trap cleanup EXIT
+	# An interrupt exits with the signal's code (128 + its number), and the EXIT trap cleans up.
+	trap 'exit 129' HUP
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
 	git clone --quiet "$REPO" "$INSTALL_DIR"
 	CLONED=1
 
