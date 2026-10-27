@@ -73,7 +73,12 @@ function report(stats: SessionStats, label: string, breakdowns: readonly Breakdo
 			`         ${plural(total.turns, "turn")} · ${plural(total.requests, "request")}`,
 			`Tokens   ${tokens(total.usage)}`,
 		);
-		for (const by of breakdowns) lines.push("", ...table(`By ${by}`, rowsOf(stats, by)));
+		for (const by of breakdowns) {
+			const rows = rowsOf(stats, by);
+			lines.push("", ...table(`By ${by}`, rows));
+			const mixed = MIXED_NOTES[by];
+			if (mixed !== undefined && rows.some((row) => row.key === "mixed")) lines.push(mixed);
+		}
 	}
 	if (stats.skipped.length > 0) lines.push("", skippedNotice(stats));
 	return `${lines.join("\n")}\n`;
@@ -92,7 +97,10 @@ function rowsOf(stats: SessionStats, by: Breakdown): StatsRow[] {
 
 /** `$1.50 billed · ≈$3.00 subscription (...) · 1 turn with no known cost`, each part only when there is one. */
 function totalCost(total: StatsSpend): string {
-	const parts = [`${usd(total.billedUsd)} billed`];
+	const parts: string[] = [];
+	// Billed is said when something was, or when nothing else would be.
+	if (total.billedUsd > 0 || (total.subscriptionUsd === 0 && total.unpriced === 0))
+		parts.push(`${usd(total.billedUsd)} billed`);
 	if (total.subscriptionUsd > 0) parts.push(`≈${usd(total.subscriptionUsd)} subscription (API-equivalent, not billed)`);
 	if (total.unpriced > 0) parts.push(`${plural(total.unpriced, "turn")} with no known cost`);
 	return parts.join(" · ");
@@ -106,6 +114,12 @@ function rowCost(row: StatsSpend): string {
 	if (row.unpriced > 0) parts.push(`${row.unpriced} unknown`);
 	return parts.join(" · ");
 }
+
+/** Why a `mixed` row has no single model or role. */
+const MIXED_NOTES: Partial<Record<Breakdown, string>> = {
+	model: "mixed: parts of a turn that ran on several models, whose saved turns do not say what each one spent.",
+	role: "mixed: parts of a turn that ran on several roles, whose saved turns do not say what each one spent.",
+};
 
 const COLUMNS = ["turns", "requests", "in", "out", "cache r", "cache w"];
 
