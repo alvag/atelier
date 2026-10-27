@@ -1554,10 +1554,15 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			params: Record<string, unknown>;
 		}
 
-		/** A Herdr socket that keeps every request; `hold` keeps the replies back until `answer` sends them. */
+		/**
+		 * A Herdr socket that keeps every request; `hold` keeps the replies back until `answer` sends them. As Herdr does, it
+		 * refuses a `resume_argv` from a source that does not hold the pane, that is, has not reported a state yet.
+		 */
 		async function fakeHerdr(options: { hold?: boolean } = {}) {
 			const path = join(cwd, "herdr.sock");
 			const calls: HerdrCall[] = [];
+			const refused: HerdrCall[] = [];
+			const holders = new Set<unknown>();
 			const held: (() => void)[] = [];
 			const sockets = new Set<Socket>();
 			const server = createServer((socket) => {
@@ -1571,7 +1576,21 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 					for (const line of lines) {
 						const call = JSON.parse(line) as HerdrCall;
 						calls.push(call);
-						const reply = () => socket.end(`${JSON.stringify({ id: call.id, result: {} })}\n`);
+						const { source } = call.params;
+						if (call.method === "pane.report_agent") holders.add(source);
+						if (call.method === "pane.release_agent") holders.delete(source);
+						const refuse = call.params.resume_argv !== undefined && !holders.has(source);
+						if (refuse) refused.push(call);
+						const answered = refuse
+							? {
+									id: call.id,
+									error: {
+										message:
+											"resume_argv requires the reporter to hold the pane; report its state with pane.report_agent first",
+									},
+								}
+							: { id: call.id, result: {} };
+						const reply = () => socket.end(`${JSON.stringify(answered)}\n`);
 						if (options.hold) held.push(reply);
 						else reply();
 					}
@@ -1586,7 +1605,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const answer = () => {
 				for (const reply of held.splice(0)) reply();
 			};
-			return { path, calls, close, answer };
+			return { path, calls, refused, close, answer };
 		}
 
 		const herdrEnv = (socket: string) => ({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_SOCKET_PATH: socket });
@@ -1625,8 +1644,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const states = herdr.calls.map((call) => call.params.state).filter((state) => state !== undefined);
 			expect(states.filter((state, at) => state === states[at - 1])).toEqual([]);
 			expect(reported).toEqual([
-				{ method: "pane.report_agent_session", agent_session_id: first },
 				{ method: "pane.report_agent", state: "idle" },
+				{ method: "pane.report_agent_session", agent_session_id: first },
 				{ method: "pane.report_agent", state: "blocked", message: "Approval awaiting input" },
 				{ method: "pane.report_agent", state: "idle" },
 				{ method: "pane.report_agent_session", agent_session_id: second },
@@ -1677,6 +1696,9 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
 			await herdr.close();
+			// The first request makes Atelier hold the pane, so Herdr takes the resume command at start too.
+			expect(herdr.calls[0]).toMatchObject({ method: "pane.report_agent", params: { state: "idle" } });
+			expect(herdr.refused).toEqual([]);
 		});
 
 		it("reports a review consent as blocked with a generic message", async () => {

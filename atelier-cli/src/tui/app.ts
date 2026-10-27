@@ -1011,8 +1011,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			.catch(() => {});
 	}
 	options.terminal.setTitle(`Atelier - ${basename(args.cwd)}`);
-	reportSession();
+	// The state first: Herdr takes a resume command only from a reporter that holds the pane.
 	reportState("idle");
+	reportSession();
 	try {
 		return await done;
 	} finally {
