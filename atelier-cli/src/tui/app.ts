@@ -6,6 +6,8 @@ import {
 	type JsonValue,
 	type McpServerStatus,
 	type PermissionMode,
+	type QueuedMessage,
+	type QueueKind,
 	type SavedEntry,
 	type SavedSessionInfo,
 	type SessionConfiguration,
@@ -45,6 +47,7 @@ import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
 import { ProgramStatusReporter, settledState } from "./program-status.ts";
 import { PromptEditor } from "./prompt.ts";
+import { QueuePanel } from "./queue-panel.ts";
 import {
 	choicesOf,
 	LIST_ROWS,
@@ -406,6 +409,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	let feature = new FeaturePanel(paint);
 	odd.addChild(feature);
 	const dialogs = new Container();
+	const queue = new QueuePanel(paint);
 	const editor = new PromptEditor(tui, editorTheme(paint), paint, shade);
 	editor.setAutocompleteProvider(new CombinedAutocompleteProvider(COMMANDS, args.cwd, null));
 	const loader = new Loader(
@@ -418,6 +422,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		{ component: status },
 		{ component: odd },
 		{ component: dialogs },
+		{ component: queue },
 		{ component: editor, editor: true },
 		{ component: footer },
 	]);
@@ -457,7 +462,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const setBusy = (on: boolean) => {
 		busy = on;
-		editor.disableSubmit = busy || commanding;
+		// Enter queues while a turn runs; only a running slash command holds it.
+		editor.disableSubmit = commanding;
 		status.clear();
 		if (on) {
 			reportRunning();
@@ -547,6 +553,15 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const onEvent = (id: string, event: AtelierEvent) => {
 		if (id !== sessionId) return;
+		// A queued message that starts a turn of its own is that turn's first event.
+		if (event.type === "queued_message" && event.seq === 1 && !busy) {
+			interrupted = false;
+			setBusy(true);
+		}
+		if (event.type === "queue_update") {
+			queue.messages = event.messages;
+			if (event.returned) giveBack(event.returned);
+		}
 		footer.state = footerAfter(footer.state, event);
 		conversation.event(event);
 		feature.event(event);
@@ -623,6 +638,32 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			setBusy(false);
 			reportState("idle");
 		}
+	};
+	/** Puts queued messages back in the editor, before what it holds, each apart from the next by a blank line. */
+	const giveBack = (messages: readonly QueuedMessage[]) => {
+		const texts = [...messages.map((message) => message.text), editor.getText()].filter((text) => text.trim() !== "");
+		if (texts.length > 0) editor.setText(texts.join("\n\n"));
+	};
+	/** Queues what was typed while a turn runs; a slash command waits in the editor for the turn to end. */
+	const enqueue = (line: string, kind: QueueKind) => {
+		const text = line.trim();
+		if (text === "") return;
+		if (text.startsWith("/")) {
+			editor.setText(line);
+			return conversation.note("commands run when the turn ends; it stays in the editor");
+		}
+		editor.addToHistory(line);
+		editor.setText("");
+		void request({ command: "session.queue", sessionId, kind, text: line });
+	};
+	const takeBackQueue = async () => {
+		const asked = sessionId;
+		const answer = (await request({ command: "session.unqueue", sessionId })) as
+			| { messages: QueuedMessage[] }
+			| undefined;
+		if (answer === undefined || asked !== sessionId) return;
+		giveBack(answer.messages);
+		tui.requestRender();
 	};
 	const interrupt = () => {
 		interrupted = true;
@@ -779,6 +820,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		sessionId = next.sessionId;
 		savedId = next.savedId;
 		conversation = shownIn;
+		queue.messages = [];
 		footer.state = next.configuration === undefined ? {} : footerWithConfiguration({}, next.configuration);
 		modeRequests = modeRequestsOf(sessionId, footer.state.mode);
 		// The session before's feature says nothing about the next one; the panel stays as open as it was.
@@ -890,6 +932,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const submit = async (line: string) => {
 		const text = line.trim();
+		if (busy && !commanding) return enqueue(line, "steer");
 		if (text === "" || busy || commanding) return;
 		editor.addToHistory(line);
 		editor.setText("");
@@ -901,7 +944,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			await dispatch(text, line);
 		} finally {
 			commanding = false;
-			editor.disableSubmit = busy;
+			editor.disableSubmit = false;
 		}
 		tui.requestRender();
 	};
@@ -964,6 +1007,18 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		) {
 			interrupt();
 			tui.requestRender();
+			return { consume: true };
+		}
+		// Alt+Enter queues a follow-up while a turn runs, and sends like Enter when none does.
+		if (matchesKey(data, "alt+enter") && questions.length === 0) {
+			const line = editor.getExpandedText();
+			if (busy && !commanding) enqueue(line, "follow_up");
+			else void submit(line);
+			tui.requestRender();
+			return { consume: true };
+		}
+		if (matchesKey(data, "alt+up") && questions.length === 0 && queue.messages.length > 0) {
+			void takeBackQueue();
 			return { consume: true };
 		}
 		if (matchesKey(data, "ctrl+d") && !busy && editor.getText() === "") {

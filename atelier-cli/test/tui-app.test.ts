@@ -642,6 +642,92 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(130);
 	});
 
+	it("queues a steer with Enter and a follow-up with Alt+Enter while a turn runs, shows them and sends them", async () => {
+		const gate: { release?: () => void } = {};
+		const h = harness([
+			[
+				{ event: { type: "text_delta", text: "working" } },
+				{ run: () => new Promise<void>((resolve) => (gate.release = resolve)) },
+				{ toolCall: { tool: "read", input: { path: "a.ts" } } },
+				{ event: finished },
+			],
+			[{ event: finished }],
+		]);
+		await writeFile(join(cwd, "a.ts"), "one\n");
+		const code = run(["--no-session", "--mode", "auto"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => gate.release !== undefined);
+		h.screen.type("use tabs");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("↳ steer: use tabs"));
+		h.screen.type("then docs");
+		h.screen.type("\x1b\r");
+		await until(() => h.screen.screen().includes("↳ follow-up: then docs"));
+		expect(h.screen.screen()).toContain("Alt+↑ edit");
+		// A command waits for the turn to end, in the editor.
+		h.screen.type("/status");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("commands run when the turn ends"));
+		expect(h.core.commands.filter((command) => command.command === "session.queue")).toEqual([
+			{ command: "session.queue", sessionId: expect.any(String), kind: "steer", text: "use tabs" },
+			{ command: "session.queue", sessionId: expect.any(String), kind: "follow_up", text: "then docs" },
+		]);
+		gate.release?.();
+		await until(() => h.backend.prompts.length === 2);
+		await until(() => h.screen.screen().includes("❯ then docs"));
+		expect(h.backend.prompts).toEqual(["go", "then docs"]);
+		expect(h.backend.toolResults[0]?.steering).toContain("use tabs");
+		expect(h.screen.screen()).toContain("❯ use tabs");
+		await until(() => h.screen.screen().includes("$1.00"));
+		h.screen.type("\x03");
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
+	it("takes the queue back to the editor with Alt+Up and when the turn is interrupted", async () => {
+		const h = harness([
+			[{ event: { type: "text_delta", text: "working" } }, { waitForInterrupt: true }],
+			[{ event: finished }],
+		]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("working"));
+		h.screen.type("one");
+		h.screen.type("\r");
+		h.screen.type("two");
+		h.screen.type("\x1b\r");
+		await until(() => h.screen.screen().includes("↳ follow-up: two"));
+		/** How many times the screen has drawn `text`: the editor draws what comes back to it once more. */
+		const drawn = (text: string) => h.screen.screen().split(text).length - 1;
+		const queued = () =>
+			h.core.commands.flatMap((command) => (command.command === "session.queue" ? [command.text] : []));
+		let before = drawn("two");
+		h.screen.type("\x1b[1;3A");
+		await until(() => h.core.commands.some((command) => command.command === "session.unqueue"));
+		await until(() => drawn("two") > before);
+		// What came back is in the editor: Enter queues it again, as one steer.
+		h.screen.type("\r");
+		await until(() => queued().at(-1) === "one\n\ntwo");
+		await until(() => h.screen.screen().includes("↳ steer: one"));
+		before = drawn("two");
+		h.screen.type("\x1b");
+		await until(() => h.screen.screen().includes("interrupted"));
+		// The interrupt gave it back again, and Enter now sends it as a prompt.
+		await until(() => drawn("two") > before);
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 2);
+		expect(h.backend.prompts[1]).toBe("one\n\ntwo");
+		h.screen.type("\x04");
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
 	it("changes the mode with /mode and reviews against a ref with /review", async () => {
 		const h = harness([]);
 		const code = run(["--no-session", "--mode", "yolo"], h.io, () => h.backend);

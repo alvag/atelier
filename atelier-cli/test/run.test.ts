@@ -1842,6 +1842,18 @@ describe("saved sessions", () => {
 		expect(h.out()).not.toContain("child words");
 	});
 
+	it("prints what the user steered during a turn after its prompt, as a prompt of its own", async () => {
+		const store = new SessionStore(home);
+		const record = store.create(cwd);
+		record.config({ backend: "claude-code", mode: "normal" });
+		record.prompt("t1", "fix it");
+		record.event({ type: "queued_message", id: "q1", kind: "steer", text: "use tabs", seq: 3, turnId: "t1" });
+		record.event({ type: "text_delta", text: "fixed", seq: 4, turnId: "t1" });
+		await record.flush();
+		const { h } = await resumeWith(["--resume", record.id, "go"]);
+		expect(h.out().startsWith(`resumed session ${record.id}: 1 turn\n> fix it\n> use tabs\nfixed\n`)).toBe(true);
+	});
+
 	it("restores the saved model and mode, and what is given on the command line wins", async () => {
 		await save("q", "a", 1_700_000_000, ["--model", "sonnet", "--mode", "yolo"]);
 		const restored = await resumeWith(["--continue"], [], ["/mode"]);

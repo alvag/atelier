@@ -136,6 +136,11 @@ export class Conversation extends Container {
 			case "thinking_delta":
 			case "approval_requested":
 			case "phase_changed":
+			// The queue shows over the editor.
+			case "queue_update":
+				return;
+			case "queued_message":
+				this.prompt(event.text);
 				return;
 			case "review_assessed": {
 				const block = new ReviewBlock(this.view, this.#paint, this.#cwd);
