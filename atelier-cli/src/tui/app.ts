@@ -133,6 +133,12 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 			lines: [path.text, ...warning],
 		};
 	}
+	if (event.tool === "mcp_call") {
+		const warning = command.hadHidden
+			? ["warning: the call contains invisible or control characters, shown as markers."]
+			: [];
+		return { title: `Call this MCP tool?${asker(event)}`, lines: [command.text, ...warning] };
+	}
 	const reason = event.reason === undefined ? undefined : shown(event.reason);
 	const guard = event.confirm === undefined ? "" : ` (guard: ${shown(event.confirm).text})`;
 	const warning =

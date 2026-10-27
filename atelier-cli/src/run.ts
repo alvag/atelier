@@ -403,6 +403,20 @@ export async function run(
 				const verb = tool === "edit" ? "Edit" : "Write";
 				return askYesNo(`${verb} a file outside the working directory?\n  ${path.text}\n${note}`);
 			}
+			if (tool === "mcp_call") {
+				// Asked only in auto, when the classifier did not decide: `server › tool <arguments>`.
+				if (!io.isTTY) {
+					renderer.endLine();
+					io.stderr(
+						`MCP call needs your approval because the permission classifier did not decide, but there is no terminal to ask: ${shown.text}\n`,
+					);
+					return false;
+				}
+				const note = shown.hadHidden
+					? "warning: the call contains invisible or control characters, shown as markers.\n"
+					: "";
+				return askYesNo(`Call this MCP tool?\n  ${shown.text}\n${note}`);
+			}
 			if (!io.isTTY) {
 				renderer.endLine();
 				// The rule is the guard's own text; yolo does not allow it, except a plain push or rebase, which never gets here.

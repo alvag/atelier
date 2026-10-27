@@ -36,7 +36,7 @@ Servers are configured only by the user, in `~/.atelier/mcp.json`, which the age
 
 The agent never sees the servers' tools declared one by one: that list would change as servers connect and break the prompt cache, and it would differ between backends. It has two fixed tools instead, with the same behavior on `claude-code` and `anthropic-api`:
 - `mcp_search` (`query`, optional `server`, optional `limit`, 1 to 20, 5 by default) finds tools by the words of their name, their description and their server's name, best match first; `*` lists them all. Each match comes as `server/tool — description` and `input: <JSON schema>`. It waits for servers that are still connecting, and names the ones that are not reachable with their state and error.
-- `mcp_call` (`server`, `tool`, optional `arguments`) runs a tool. The model reads the text of the result, or its structured content as JSON when it has no text; other content is shown as `[<type> content omitted]`. A result the server marks as an error, or a failed call (`MCP call failed: <reason>`), comes back as a failed tool call. Its line in a client is `server › tool`.
+- `mcp_call` (`server`, `tool`, optional `arguments`) runs a tool. The model reads the text of the result, or its structured content as JSON when it has no content. Images, audio and binary resources are saved to the session's scratch directory and the model reads `[image image/png, <n> bytes, saved to <path>]`; a resource link reads `[resource link: <uri>]`. A text over 20,000 characters reaches the model with its middle cut out around a `…<n> chars truncated…` marker, followed by `The full result is in <path>; read it with read.`: the whole text is in a file of the scratch directory, deleted when the session closes, and `tool_call_finished` says `truncated: true` with that `fullOutputPath`. A result the server marks as an error, or a failed call (`MCP call failed: <reason>`), comes back as a failed tool call. Its line in a client is `server › tool`.
 
 Both tools exist only when at least one server is enabled. The system prompt then lists the servers, from the configuration only, so it does not change during the session:
 
@@ -48,7 +48,7 @@ MCP servers the user configured. Their tools are not declared: find them with mc
 
 A server without `description` that sends instructions when it connects has the first line of them given once, before the next prompt, in a `<mcp_servers>` block.
 
-MCP calls do not ask for approval. Servers run outside the sandbox, with the user's permissions. Only the main agent has MCP: subagents and the review roles never get these tools, whatever their definition says. `ATELIER_MCP=off` runs sessions without MCP servers.
+MCP calls do not ask for approval in `normal` or `yolo`. In `auto` the permission classifier judges each `mcp_call`, as it does a `bash` command outside the sandbox: it reads `server › tool <arguments>` as the action, and the tool's server, description and input schema. A denial refuses the call; when the classifier does not decide, the user is asked `Call this MCP tool?` with the same line (`approval_requested` with `tool: "mcp_call"`). `mcp_search` never asks. Servers run outside the sandbox, with the user's permissions. Only the main agent has MCP: subagents and the review roles never get these tools, whatever their definition says. `ATELIER_MCP=off` runs sessions without MCP servers.
 
 ## Connections
 

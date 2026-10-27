@@ -67,7 +67,9 @@ function ApprovalCard({
 	const guard = item.confirm === undefined ? "" : ` (guard: ${item.confirm})`;
 	const title = fileTool
 		? `${item.tool === "edit" ? "Edit" : "Write"} a file outside the working directory?`
-		: `${reason ? "Run this command outside the sandbox?" : "Run this command?"}${guard}`;
+		: item.tool === "mcp_call"
+			? "Call this MCP tool?"
+			: `${reason ? "Run this command outside the sandbox?" : "Run this command?"}${guard}`;
 	return (
 		<fieldset className="approval">
 			<legend>{title}</legend>

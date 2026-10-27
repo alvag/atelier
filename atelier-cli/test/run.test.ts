@@ -8,6 +8,7 @@ import {
 	type BackendName,
 	coreTools,
 	createBashTool,
+	defineTool,
 	FakeBackend,
 	FakeMemory,
 	type FakeStep,
@@ -16,6 +17,7 @@ import {
 	Sandbox,
 	type SandboxManagerLike,
 	SessionStore,
+	type ToolDefinition,
 	VERSION,
 } from "@atelier/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -83,6 +85,8 @@ function harness(
 		sandbox?: boolean;
 		/** The name the backend answers to; a saved session needs a real one. */
 		backendId?: string;
+		/** Tools the session gets besides the usual ones. */
+		extraTools?: ToolDefinition[];
 	} = {},
 ) {
 	const backend = new FakeBackend(turns, options.backendId);
@@ -115,7 +119,7 @@ function harness(
 			stderr += s;
 		},
 		cwd,
-		tools: options.sandbox === false ? unsandboxedTools : tools,
+		tools: [...(options.sandbox === false ? unsandboxedTools : tools), ...(options.extraTools ?? [])],
 		...(options.uid === undefined ? {} : { uid: options.uid }),
 		...(options.home === undefined ? {} : { home: options.home }),
 		color: false,
@@ -1072,6 +1076,35 @@ describe("bash outside the sandbox", () => {
 			await run(["x"], h.io, h.createBackend);
 			expect(h.out()).not.toContain("[y/N]");
 			expect(await readFile(join(cwd, "in.txt"), "utf8")).toBe("new\n");
+		});
+	});
+
+	describe("an MCP call the classifier left to the user", () => {
+		// What mcp_call's gate gives the session in auto when the classifier does not decide.
+		const mcpCall = defineTool({
+			name: "mcp_call",
+			description: "call",
+			inputShape: {},
+			gate: async () => ({ approval: { command: 'docs › search {"q":"x"}', tool: "mcp_call" } }),
+			execute: async () => ({ ok: true, output: "found", summary: "docs › search", truncated: false }),
+		});
+		const step: FakeStep = { toolCall: { tool: "mcp_call", input: {} } };
+
+		it("asks to call the MCP tool, with its server, tool and arguments", async () => {
+			const h = harness([[step, { event: finished }]], { isTTY: true, answers: ["y"], extraTools: [mcpCall] });
+			await run(["x"], h.io, h.createBackend);
+			expect(h.out()).toContain('Call this MCP tool?\n  docs › search {"q":"x"}\n[y/N] ');
+			expect(h.out()).not.toContain("Run this command");
+			expect(h.backend.toolResults[0]).toEqual({ ok: true, output: "found" });
+		});
+
+		it("says why it is refused without a terminal", async () => {
+			const h = harness([[step, { event: finished }]], { extraTools: [mcpCall] });
+			await run(["x"], h.io, h.createBackend);
+			expect(h.err()).toContain(
+				'MCP call needs your approval because the permission classifier did not decide, but there is no terminal to ask: docs › search {"q":"x"}\n',
+			);
+			expect(h.backend.toolResults[0]?.ok).toBe(false);
 		});
 	});
 

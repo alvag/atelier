@@ -1180,7 +1180,9 @@ export class Session {
 			// A guard confirmation asks in every mode and is never the classifier's to decide; `yolo` waives only the
 			// reversible delivery (a plain push or rebase) the gate marks.
 			const confirmed = approval?.confirm !== undefined;
-			const skipped = mode === "yolo" && (!confirmed || approval?.yoloWaived === true);
+			const skipped =
+				(mode === "yolo" && (!confirmed || approval?.yoloWaived === true)) ||
+				(approval?.classifyOnly === true && mode !== "auto");
 			const verdict =
 				approval && mode === "auto" && !confirmed ? await this.#classify(callId, call.tool, approval, emit) : undefined;
 			if (verdict?.decision === "deny") return fail(denialMessage(verdict.reason));
@@ -1241,7 +1243,7 @@ export class Session {
 		if (request === undefined) return undecided("classifier unavailable: no request in this turn");
 		const answer = await this.#askClassifier(
 			options,
-			classifierPrompt(request, tool, approval.command, approval.reason, this.#previousTurn),
+			classifierPrompt(request, approval.classifierTool ?? tool, approval.command, approval.reason, this.#previousTurn),
 		);
 		if (!answer.ok) {
 			this.#classifier.failures++;

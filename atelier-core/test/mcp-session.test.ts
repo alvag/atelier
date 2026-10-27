@@ -1,9 +1,17 @@
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type AtelierEvent, type AtelierEventBody, FakeBackend, type FakeStep, Session } from "../src/index.ts";
+import {
+	type ApprovalRequest,
+	type AtelierEvent,
+	type AtelierEventBody,
+	FakeBackend,
+	type FakeStep,
+	type PermissionMode,
+	Session,
+} from "../src/index.ts";
 import type { McpServerConfig } from "../src/mcp/config.ts";
 import { McpManager } from "../src/mcp/manager.ts";
 import type { SubagentDefinition } from "../src/subagents/definitions.ts";
@@ -171,5 +179,118 @@ describe("MCP in a session", () => {
 		await manager.ready();
 		await session.close();
 		await expect(manager.call("fixture", "echo", { text: "x" })).rejects.toThrow("not connected");
+	});
+
+	it("cuts a large text result in the middle and keeps the whole text in the session's scratch directory", async () => {
+		const backend = new FakeBackend([[call("mcp_call", { server: "fixture", tool: "big" }), { event: finished }]]);
+		const session = await Session.start({
+			backend,
+			cwd: dir,
+			tools: [],
+			mcp: mcp([server("fixture", {}, { MCP_BIG_CHARS: "50000" })]),
+		});
+		try {
+			const events = await collect(session.send("big"));
+			const output = backend.toolResults[0]?.output ?? "";
+			expect(output.length).toBeLessThan(21_000);
+			expect(output.startsWith("start-x")).toBe(true);
+			expect(output).toContain("chars truncated…");
+			expect(output.trimEnd().endsWith("-end") || output.includes("x-end")).toBe(true);
+			const finishedCall = events.find((event) => event.type === "tool_call_finished");
+			expect(finishedCall).toMatchObject({
+				truncated: true,
+				fullOutputPath: expect.stringContaining("atelier-session-"),
+			});
+			const path = finishedCall?.type === "tool_call_finished" ? finishedCall.fullOutputPath : undefined;
+			expect(output).toContain(`The full result is in ${path}`);
+			expect(await readFile(path ?? "", "utf8")).toBe(`start-${"x".repeat(50_000)}-end`);
+		} finally {
+			await session.close();
+		}
+	});
+
+	it("saves an image to the scratch directory and tells the model where", async () => {
+		const backend = new FakeBackend([[call("mcp_call", { server: "fixture", tool: "image" }), { event: finished }]]);
+		const session = await Session.start({ backend, cwd: dir, tools: [], mcp: mcp([server("fixture")]) });
+		try {
+			await collect(session.send("image"));
+			const output = backend.toolResults[0]?.output ?? "";
+			const path = /saved to (\S+\.png)\]/.exec(output)?.[1];
+			expect(output).toMatch(/^\[image image\/png, 9 bytes, saved to .+\]$/);
+			expect(await readFile(path ?? "", "utf8")).toBe("png-bytes");
+		} finally {
+			await session.close();
+		}
+	});
+});
+
+describe("MCP approval", () => {
+	const usage2 = { input: 3, output: 2, cacheRead: 0, cacheWrite: 0 };
+	const reply = (decision: "allow" | "deny"): FakeStep[] => [
+		{ event: { type: "text_delta", text: JSON.stringify({ decision, reason: `because ${decision}` }) } },
+		{ event: { type: "turn_finished", stopReason: "end_turn", usage: usage2 } },
+	];
+
+	async function run(mode: PermissionMode, classifierScript?: FakeStep[] | Error) {
+		const questions: ApprovalRequest[] = [];
+		const classifierBackends: FakeBackend[] = [];
+		const backend = new FakeBackend([
+			[call("mcp_call", { server: "fixture", tool: "echo", arguments: { text: "hola" } }), { event: finished }],
+		]);
+		const session = await Session.start({
+			backend,
+			cwd: dir,
+			tools: [],
+			permissionMode: mode,
+			mcp: mcp([server("fixture")]),
+			approve: async (request) => {
+				questions.push(request);
+				return true;
+			},
+			permissionClassifier: {
+				createBackend: () => {
+					if (classifierScript instanceof Error) throw classifierScript;
+					const made = new FakeBackend([classifierScript ?? []]);
+					classifierBackends.push(made);
+					return made;
+				},
+			},
+		});
+		try {
+			const events = await collect(session.send("say hola with the fixture"));
+			return { events, questions, result: backend.toolResults[0], classifierBackends };
+		} finally {
+			await session.close();
+		}
+	}
+
+	it.each(["normal", "yolo"] as const)("runs MCP calls without asking in %s", async (mode) => {
+		const { questions, result, classifierBackends } = await run(mode);
+		expect(questions).toEqual([]);
+		expect(classifierBackends).toEqual([]);
+		expect(result).toEqual({ ok: true, output: "echo: hola" });
+	});
+
+	it("asks the classifier in auto, with the tool's description and schema", async () => {
+		const { questions, result, classifierBackends } = await run("auto", reply("allow"));
+		expect(questions).toEqual([]);
+		expect(result).toEqual({ ok: true, output: "echo: hola" });
+		const asked = classifierBackends[0]?.prompts[0] ?? "";
+		expect(asked).toContain("Echo the text back");
+		expect(asked).toContain('"text":{"type":"string"}');
+		expect(asked).toContain('fixture › echo {"text":"hola"}');
+	});
+
+	it("refuses the call when the classifier denies it in auto", async () => {
+		const { questions, result } = await run("auto", reply("deny"));
+		expect(questions).toEqual([]);
+		expect(result?.ok).toBe(false);
+		expect(result?.output).toContain("Denied by the permission classifier");
+	});
+
+	it("asks the user when the classifier cannot decide in auto", async () => {
+		const { questions, result } = await run("auto", new Error("no classifier"));
+		expect(questions).toEqual([{ callId: "c1", command: 'fixture › echo {"text":"hola"}', tool: "mcp_call" }]);
+		expect(result?.ok).toBe(true);
 	});
 });

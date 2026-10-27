@@ -37,6 +37,13 @@ export interface ToolGate {
 		 */
 		confirm?: string;
 		yoloWaived?: boolean;
+		/**
+		 * Only `auto` decides about the call, through the classifier, and asks the user when the classifier does not
+		 * decide; `normal` and `yolo` run it without asking (an MCP call).
+		 */
+		classifyOnly?: boolean;
+		/** What the classifier is told about the tool instead of its name: an MCP tool's server, description and schema. */
+		classifierTool?: string;
 		/** What the model is told when the user denies, or there is nobody to ask. */
 		denial?: string;
 	};

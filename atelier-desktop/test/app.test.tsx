@@ -756,6 +756,16 @@ describe("App", () => {
 		expect(await screen.findByText("Allowed")).toBeTruthy();
 	});
 
+	it("asks to call an MCP tool the classifier left to the user", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "x");
+		fake.emit({ type: "tool_call_started", callId: "c1", tool: "mcp_call", input: { server: "docs", tool: "search" } });
+		fake.emit({ type: "approval_requested", callId: "c1", command: 'docs › search {"q":"x"}', tool: "mcp_call" });
+		expect(await screen.findByText("Call this MCP tool?")).toBeTruthy();
+		expect(screen.getByText('docs › search {"q":"x"}')).toBeTruthy();
+		expect(screen.queryByText(/Run this command/)).toBeNull();
+	});
+
 	it("shows a write approval in the same card, with the path, and answers it", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "x");

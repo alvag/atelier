@@ -1,13 +1,19 @@
+import { randomBytes } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { describeError } from "../events.ts";
-import { defineTool, type ToolDefinition } from "../tools/types.ts";
+import { defineTool, type ToolDefinition, type ToolOutcome } from "../tools/types.ts";
 import type { McpManager } from "./manager.ts";
 
 export const MCP_SEARCH_TOOL = "mcp_search";
 export const MCP_CALL_TOOL = "mcp_call";
 
 const DEFAULT_LIMIT = 5;
+/** Text results longer than this reach the model with their middle cut out; the whole text goes to a file. */
+export const MAX_RESULT_CHARS = 20_000;
 
 /**
  * The two fixed tools that reach every MCP server: the declared tools never change while servers connect, so the
@@ -61,15 +67,31 @@ export function createMcpTools(manager: McpManager): ToolDefinition[] {
 			tool: z.string(),
 			arguments: z.record(z.string(), z.unknown()).optional(),
 		},
-		async execute({ server, tool, arguments: args }, context) {
+		// Only `auto` judges an MCP call, through the classifier; `normal` and `yolo` run it.
+		async gate({ server, tool, arguments: args }) {
+			if (!manager.status().some((status) => status.name === server)) return {};
+			await manager.ready(server);
+			const found = manager.tools(server).find((candidate) => candidate.name === tool);
+			return {
+				approval: {
+					command: `${server} › ${tool} ${JSON.stringify(args ?? {})}`,
+					tool: MCP_CALL_TOOL,
+					classifyOnly: true,
+					classifierTool: classifierText(server, tool, found),
+					denial: "The user denied this MCP call.",
+				},
+			};
+		},
+		async execute({ server, tool, arguments: args }, { signal, scratchDir }) {
 			const summary = `${server} › ${tool}`;
 			let result: CallToolResult;
 			try {
-				result = await manager.call(server, tool, args ?? {}, context.signal);
+				result = await manager.call(server, tool, args ?? {}, signal);
 			} catch (error) {
 				return { ok: false, output: `MCP call failed: ${describeError(error)}`, summary, truncated: false };
 			}
-			return { ok: result.isError !== true, output: resultText(result), summary, truncated: false };
+			const text = await resultText(result, scratchDir);
+			return { ok: result.isError !== true, summary, ...(await cut(text, scratchDir)) };
 		},
 	});
 	return [search, call];
@@ -106,11 +128,68 @@ function describeTool(server: string, tool: Tool): string {
 	].join("\n");
 }
 
-/** What the model reads of a result: its text, or its structured content when it has no text. */
-function resultText(result: CallToolResult): string {
-	const parts = result.content.map((block) => (block.type === "text" ? block.text : `[${block.type} content omitted]`));
+/** What the classifier reads about the tool: an MCP tool of a server, what it says it does and its input. */
+function classifierText(server: string, tool: string, found: Tool | undefined): string {
+	return [
+		`${MCP_CALL_TOOL}: the tool "${tool}" of the user's MCP server "${server}", which runs outside the sandbox`,
+		...(found?.description ? [`Description: ${found.description.trim()}`] : []),
+		...(found ? [`Input schema: ${JSON.stringify(found.inputSchema)}`] : ["The server did not list this tool."]),
+	].join("\n");
+}
+
+/**
+ * What the model reads of a result: its text blocks, or its structured content when it has no content. Images, audio
+ * and binary resources are saved to the scratch directory, and the model is told where.
+ */
+async function resultText(result: CallToolResult, scratchDir: string | undefined): Promise<string> {
+	const parts: string[] = [];
+	for (const block of result.content) {
+		if (block.type === "text") parts.push(block.text);
+		else if (block.type === "image" || block.type === "audio")
+			parts.push(await saved(block.type, block.mimeType, block.data, scratchDir));
+		else if (block.type === "resource_link") parts.push(`[resource link: ${block.uri}]`);
+		else if (block.type === "resource") {
+			const { resource } = block;
+			if ("text" in resource && typeof resource.text === "string") parts.push(resource.text);
+			else if ("blob" in resource && typeof resource.blob === "string")
+				parts.push(await saved("resource", resource.mimeType ?? "application/octet-stream", resource.blob, scratchDir));
+		}
+	}
 	if (parts.length === 0 && result.structuredContent !== undefined) return JSON.stringify(result.structuredContent);
 	return parts.join("\n");
+}
+
+const EXTENSIONS: Record<string, string> = {
+	"image/png": "png",
+	"image/jpeg": "jpg",
+	"image/gif": "gif",
+	"image/webp": "webp",
+	"audio/wav": "wav",
+	"audio/mpeg": "mp3",
+};
+
+async function saved(kind: string, mimeType: string, base64: string, scratchDir: string | undefined): Promise<string> {
+	const bytes = Buffer.from(base64, "base64");
+	const path = join(scratchDir ?? tmpdir(), `mcp-${randomBytes(6).toString("hex")}.${EXTENSIONS[mimeType] ?? "bin"}`);
+	await writeFile(path, bytes);
+	return `[${kind} ${mimeType}, ${bytes.length} bytes, saved to ${path}]`;
+}
+
+/** The text as the model gets it: whole when short, else its start and end around a marker, the whole text in a file. */
+async function cut(
+	text: string,
+	scratchDir: string | undefined,
+): Promise<Pick<ToolOutcome, "output" | "truncated" | "fullOutputPath">> {
+	if (text.length <= MAX_RESULT_CHARS) return { output: text, truncated: false };
+	const path = join(scratchDir ?? tmpdir(), `mcp-${randomBytes(6).toString("hex")}.txt`);
+	await writeFile(path, text);
+	const half = MAX_RESULT_CHARS / 2;
+	const removed = text.length - 2 * half;
+	return {
+		output: `${text.slice(0, half)}\n…${removed} chars truncated…\n${text.slice(-half)}\n\nThe full result is in ${path}; read it with read.`,
+		truncated: true,
+		fullOutputPath: path,
+	};
 }
 
 /** The servers in the system prompt: byte-stable, from the configuration only. Empty without servers. */
