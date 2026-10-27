@@ -60,6 +60,14 @@ interface Part {
 	subscription: boolean;
 }
 
+/** A turn the verifier or a review role ran inside a turn: already in its parts, it says which role and model spent what. */
+interface RoleTurn {
+	role: string;
+	model: string;
+	spent: PhaseSpent;
+	subscription: boolean;
+}
+
 /** What a turn or a subagent's turn spent, with its cost when its backend said it. */
 interface Spent {
 	usage: Usage;
@@ -135,6 +143,7 @@ async function readFile(path: string): Promise<FileRead> {
 	const auth = new Map<string, string>();
 	const turns: Turn[] = [];
 	let subagents: Part[] = [];
+	let roleTurns: RoleTurn[] = [];
 	// A line that is not JSON is a crash's torn end only when nothing follows it and the file does not end with a newline.
 	let unreadable: number | undefined;
 	for await (const line of lines) {
@@ -176,9 +185,18 @@ async function readFile(path: string): Promise<FileRead> {
 		}
 		if (event.type !== "turn_finished") continue;
 		const tag = typeof event.agent === "string" ? event.agent : undefined;
-		// The verifier's and the review's turns are already parts of the turn that ran them.
-		if (tag?.startsWith("verify:") || tag?.startsWith("review:")) continue;
 		const fallback = { backend, model: model ?? (backend === "" ? "unknown" : `${backend} default`), auth };
+		// The verifier's and the review's turns are already parts of the turn that ran them: they only split those parts.
+		if (tag?.startsWith("verify:") || tag?.startsWith("review:")) {
+			const [first] = partsOf(event, fallback);
+			roleTurns.push({
+				role: tag.startsWith("verify:") ? tag.slice("verify:".length) : `review-${tag.slice("review:".length)}`,
+				model: first?.model ?? fallback.model,
+				spent: phaseOf(event),
+				subscription: first?.subscription ?? false,
+			});
+			continue;
+		}
 		const spent = turnSpent(event, fallback);
 		if (tag !== undefined) {
 			// A subagent's turn is not in its parent's totals: it is counted apart, with the parent's turn.
@@ -194,8 +212,10 @@ async function readFile(path: string): Promise<FileRead> {
 		}
 		const ended =
 			typeof event.at === "string" && !Number.isNaN(Date.parse(event.at)) ? Date.parse(event.at) : createdAt;
-		turns.push({ ended, day: localDay(ended), own: spent, parts: [...partsOf(event, fallback), ...subagents] });
+		const parts = splitMixed(partsOf(event, fallback), roleTurns);
+		turns.push({ ended, day: localDay(ended), own: spent, parts: [...parts, ...subagents] });
 		subagents = [];
+		roleTurns = [];
 	}
 	if (number === 0) return { ok: false, code: "corrupt", message: "the file is empty" };
 	if (unreadable !== undefined && (unreadable < number || (await endsWithNewline(path))))
@@ -246,10 +266,6 @@ function partsOf(event: Record<string, unknown>, fallback: Fallback): Part[] {
 		const spent = phases[phase];
 		if (spent === undefined) return [];
 		const agents = spent.agents ?? [];
-		const one = <T>(values: T[], none: T): T | "mixed" => {
-			const distinct = [...new Set(values)];
-			return distinct.length === 0 ? none : distinct.length === 1 ? (distinct[0] as T) : "mixed";
-		};
 		const backend = agents[0]?.backend ?? fallback.backend;
 		return [
 			{
@@ -268,6 +284,82 @@ function partsOf(event: Record<string, unknown>, fallback: Fallback): Part[] {
 			},
 		];
 	});
+}
+
+/** The one value, `none` without any, or `mixed` when they differ. */
+function one(values: string[], none: string): string {
+	const distinct = [...new Set(values)];
+	return distinct.length === 0 ? none : distinct.length === 1 ? (distinct[0] ?? none) : "mixed";
+}
+
+/**
+ * A part where several models or roles ran, split by the turns its roles left in the file (the verifier, each lens);
+ * what they do not explain goes to the part's other agents, and stays `mixed` when those still differ.
+ */
+function splitMixed(parts: Part[], roleTurns: RoleTurn[]): Part[] {
+	const left = [...roleTurns];
+	return parts.flatMap((part) => {
+		if (part.model !== "mixed" && part.role !== "mixed") return [part];
+		const agents = part.spent.agents ?? [];
+		const own = left.filter((turn) => agents.some((agent) => agent.role === turn.role));
+		if (own.length === 0) return [part];
+		for (const turn of own) left.splice(left.indexOf(turn), 1);
+		const split: Part[] = own.map(({ role, model, spent, subscription }) => ({
+			phase: part.phase,
+			role,
+			model,
+			spent,
+			subscription,
+		}));
+		const rest = agents.filter((agent) => !own.some((turn) => turn.role === agent.role));
+		const remainder = subtract(
+			part.spent,
+			own.map((turn) => turn.spent),
+		);
+		if (remainder === undefined) return split;
+		return [
+			...split,
+			{
+				phase: part.phase,
+				role: one(
+					rest.map((agent) => agent.role),
+					"mixed",
+				),
+				model: one(
+					rest.map((agent) => agent.model),
+					"mixed",
+				),
+				spent: remainder,
+				subscription: part.subscription,
+			},
+		];
+	});
+}
+
+/** What `total` spent beyond `parts`, or undefined when that is nothing. */
+function subtract(total: PhaseSpent, parts: PhaseSpent[]): PhaseSpent | undefined {
+	const sum = (pick: (spent: PhaseSpent) => number) => parts.reduce((all, spent) => all + pick(spent), 0);
+	const usage: Usage = {
+		input: Math.max(0, total.usage.input - sum((spent) => spent.usage.input)),
+		output: Math.max(0, total.usage.output - sum((spent) => spent.usage.output)),
+		cacheRead: Math.max(0, total.usage.cacheRead - sum((spent) => spent.usage.cacheRead)),
+		cacheWrite: Math.max(0, total.usage.cacheWrite - sum((spent) => spent.usage.cacheWrite)),
+	};
+	const requests =
+		total.requests === undefined ? undefined : Math.max(0, total.requests - sum((spent) => spent.requests ?? 0));
+	const costKnown = total.costUsd !== undefined && parts.every((spent) => spent.costUsd !== undefined);
+	const costUsd = costKnown ? Math.max(0, (total.costUsd ?? 0) - sum((spent) => spent.costUsd ?? 0)) : undefined;
+	// Rounding leaves a few billionths of a dollar behind; that is not a cost.
+	const nothing =
+		usage.input + usage.output + usage.cacheRead + usage.cacheWrite === 0 &&
+		(requests ?? 0) === 0 &&
+		(costUsd ?? 0) < 1e-9;
+	if (nothing) return undefined;
+	return {
+		usage,
+		...(requests === undefined ? {} : { requests }),
+		...(costUsd === undefined ? {} : { costUsd }),
+	};
 }
 
 function phaseOf(event: Record<string, unknown>): PhaseSpent {

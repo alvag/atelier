@@ -6,6 +6,17 @@ import { folderKey } from "@atelier/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { run } from "../src/run.ts";
 
+/** Days are local: the tests run in UTC unless a test names its zone. */
+let zone: string | undefined;
+beforeEach(() => {
+	zone = process.env.TZ;
+	process.env.TZ = "UTC";
+});
+afterEach(() => {
+	if (zone === undefined) Reflect.deleteProperty(process.env, "TZ");
+	else process.env.TZ = zone;
+});
+
 let home: string;
 beforeEach(async () => {
 	home = await mkdtemp(join(tmpdir(), "atelier-cli-stats-"));
@@ -127,6 +138,38 @@ describe("atelier stats", () => {
 		expect(out).toContain("By model");
 		expect(out).not.toContain("By day");
 		expect(out).not.toContain("/work/b");
+	});
+
+	it("leaves billed out when nothing was billed, and explains a mixed row under its table", async () => {
+		await save("/work/c", "s3", [
+			{ kind: "atelier.session", version: 1, id: "s3", cwd: "/work/c", createdAt: "2026-10-22T10:00:00.000Z" },
+			{ type: "config", backend: "claude-code", model: "claude-opus-5-5", mode: "normal" },
+			started("claude-code", "subscription"),
+			finished("2026-10-22T12:00:00.000Z", {
+				usage: usage(10, 20),
+				costUsd: 2,
+				phases: {
+					lenses: {
+						usage: usage(10, 20),
+						costUsd: 2,
+						agents: [
+							{ role: "review-risk", backend: "claude-code", model: "claude-sonnet-5-5" },
+							{ role: "review-reliability", backend: "claude-code", model: "claude-haiku-5-5" },
+						],
+					},
+				},
+			}),
+		]);
+
+		const { out } = await stats("--since", "all", "--project", "/work/c");
+
+		expect(out).toContain("\nTotal    ≈$2.00 subscription (API-equivalent, not billed)\n");
+		expect(out).toMatch(
+			/\nmixed +≈\$2\.00 sub +1 .*\nmixed: parts of a turn that ran on several models, whose saved turns do not say what each one spent\.\n/,
+		);
+		expect(out).toContain(
+			"mixed: parts of a turn that ran on several roles, whose saved turns do not say what each one spent.\n",
+		);
 	});
 
 	it("answers JSON for scripts with --json", async () => {

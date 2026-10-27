@@ -4,6 +4,17 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { folderKey, readSessionStats } from "../src/index.ts";
 
+/** Days are local: the tests run in UTC unless a test names its zone. */
+let zone: string | undefined;
+beforeEach(() => {
+	zone = process.env.TZ;
+	process.env.TZ = "UTC";
+});
+afterEach(() => {
+	if (zone === undefined) Reflect.deleteProperty(process.env, "TZ");
+	else process.env.TZ = zone;
+});
+
 let home: string;
 beforeEach(async () => {
 	home = await mkdtemp(join(tmpdir(), "atelier-stats-home-"));
@@ -153,6 +164,67 @@ describe("readSessionStats", () => {
 		expect(stats.byModel.map((row) => row.key)).toEqual(["claude-sonnet-5-5", "haiku"]);
 	});
 
+	it("splits a part that ran on several models by the turns its roles left, and keeps mixed only for the rest", async () => {
+		const child = (tag: string, cost: number, input: number, model: string) =>
+			finished(
+				{
+					usage: usage(input),
+					costUsd: cost,
+					requests: 1,
+					phases: { main: { usage: usage(input), agents: [agent("orchestrator", model)] } },
+				},
+				{ agent: tag, parentCallId: "r1" },
+			);
+		await save("/work/a", "s1", [
+			header("s1", "/work/a", "2026-10-20T10:00:00.000Z"),
+			config(),
+			started("anthropic-api", "api_key"),
+			child("verify:verifier", 0.4, 40, "opus"),
+			child("review:risk", 0.1, 20, "sonnet"),
+			child("review:reliability", 0.2, 10, "haiku"),
+			finished({
+				usage: usage(80),
+				costUsd: 0.85,
+				requests: 4,
+				phases: {
+					verify: {
+						usage: usage(50),
+						costUsd: 0.55,
+						requests: 2,
+						agents: [agent("verifier", "opus"), agent("orchestrator", "sonnet")],
+					},
+					lenses: {
+						usage: usage(30),
+						costUsd: 0.3,
+						requests: 2,
+						agents: [agent("review-risk", "sonnet"), agent("review-reliability", "haiku")],
+					},
+				},
+			}),
+		]);
+
+		const stats = await readSessionStats(home);
+
+		const rows = (list: { key: string; turns: number; billedUsd: number; usage: { input: number } }[]) =>
+			list.map((row) => [row.key, row.turns, Math.round(row.billedUsd * 100) / 100, row.usage.input]);
+		expect(rows(stats.byModel)).toEqual([
+			["opus", 1, 0.4, 40],
+			["sonnet", 1, 0.25, 30],
+			["haiku", 1, 0.2, 10],
+		]);
+		expect(rows(stats.byRole)).toEqual([
+			["verifier", 1, 0.4, 40],
+			["review-reliability", 1, 0.2, 10],
+			["orchestrator", 1, 0.15, 10],
+			["review-risk", 1, 0.1, 20],
+		]);
+		expect(rows(stats.byPhase)).toEqual([
+			["verify", 1, 0.55, 50],
+			["lenses", 1, 0.3, 30],
+		]);
+		expect(stats.total).toMatchObject({ turns: 1, requests: 4, usage: usage(80) });
+	});
+
 	it("keeps a subscription's cost apart and counts parts without a cost as unpriced, never as zero", async () => {
 		await save("/work/a", "s1", [
 			header("s1", "/work/a", "2026-10-20T10:00:00.000Z"),
@@ -186,6 +258,21 @@ describe("readSessionStats", () => {
 
 		expect(all.byDay.map((row) => row.key)).toEqual(["2026-10-01", "2026-10-25"]);
 		expect(recent.total).toMatchObject({ turns: 1, billedUsd: 1 });
+	});
+
+	it("dates a turn by the day of the machine's time zone", async () => {
+		await save("/work/a", "s1", [
+			header("s1", "/work/a", "2026-10-20T10:00:00.000Z"),
+			finished({ usage: usage(1), at: "2026-10-20T11:00:00.000Z" }),
+		]);
+
+		process.env.TZ = "Pacific/Kiritimati";
+		const east = await readSessionStats(home);
+		process.env.TZ = "Pacific/Honolulu";
+		const west = await readSessionStats(home);
+
+		expect(east.byDay.map((row) => row.key)).toEqual(["2026-10-21"]);
+		expect(west.byDay.map((row) => row.key)).toEqual(["2026-10-20"]);
 	});
 
 	it("reads one project only, by its working directory", async () => {
