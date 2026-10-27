@@ -310,6 +310,8 @@ export class Session {
 	#queue: QueuedMessage[] = [];
 	/** The running turn answers a prompt, so a steer can go with its tool results. */
 	#steerable = false;
+	/** The running turn ended interrupted or failed and gave its queue back: nothing more is queued behind it. */
+	#givenBack = false;
 	#abort: AbortController | undefined;
 	#closed = false;
 	#closing: Promise<void> | undefined;
@@ -505,6 +507,9 @@ export class Session {
 	 * for `nextQueued`. Whatever no tool result took is left for `nextQueued`, steers first.
 	 */
 	queue(kind: QueueKind, text: string): QueuedMessage {
+		// Taken now, it would run after a turn that gave its queue back; refused, it stays with the client.
+		if (this.#givenBack)
+			throw new ConfigureError("turn_ended", "The turn was interrupted or failed; the message was not queued.");
 		const message = { id: this.#createId(), kind, text };
 		this.#queue.push(message);
 		this.#sayQueue();
@@ -534,6 +539,7 @@ export class Session {
 	 * when nothing is queued. The message leaves the queue now.
 	 */
 	nextQueued(turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> | undefined {
+		if (this.#givenBack) return undefined;
 		const next = this.#queue.find((message) => message.kind === "steer") ?? this.#queue[0];
 		if (!next) return undefined;
 		this.#queue = this.#queue.filter((message) => message !== next);
@@ -763,12 +769,6 @@ export class Session {
 				turn.push(errorEvent("turn_failed", describeError(error)));
 				finish = { type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE } };
 			}
-			// An interrupted or failed turn gives the queue back instead of running it after.
-			if (this.#queue.length > 0 && (abort.signal.aborted || UNCLEAN_ENDS.has(finish.stopReason))) {
-				const returned = this.#queue;
-				this.#queue = [];
-				this.#sayQueue(returned);
-			}
 			await Promise.all(this.#archiving);
 			// The state of the backend that ran the turn, before a change made at its end can replace the backend.
 			if (this.#options.record) this.#endState = this.#backendSession?.resumeState?.();
@@ -776,6 +776,14 @@ export class Session {
 			// A change asked during the turn lands now, between this turn and the next.
 			await this.#applyPending(turn);
 			finish = this.#withHandoff(this.#withClassifier(finish));
+			// An interrupted or failed turn gives the queue back instead of running it after, also what was queued while
+			// it was ending; from here until it is over, nothing more is queued.
+			if (abort.signal.aborted || UNCLEAN_ENDS.has(finish.stopReason)) {
+				this.#givenBack = true;
+				const returned = this.#queue;
+				this.#queue = [];
+				if (returned.length > 0) this.#sayQueue(returned);
+			}
 			turn.push({ ...finish, durationMs: Math.round(performance.now() - started) });
 			turn.close();
 		})();
@@ -798,6 +806,7 @@ export class Session {
 			await pump;
 			this.#turn = undefined;
 			this.#abort = undefined;
+			this.#givenBack = false;
 		}
 	}
 

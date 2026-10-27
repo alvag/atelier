@@ -49,6 +49,8 @@ export class FakeBackend implements AgentBackend {
 	startError: string | undefined;
 	/** Makes `close()` fail with this message, after the backend is closed. */
 	closeError: string | undefined;
+	/** Runs inside every `configure`, as a client acting while the session applies a change would. */
+	onConfigure: (() => void) | undefined;
 	interrupts = 0;
 	closed = false;
 	readonly #turns: FakeStep[][];
@@ -71,6 +73,7 @@ export class FakeBackend implements AgentBackend {
 						async configure(change: SessionChange) {
 							backend.configured.push(change);
 							backend.calls.push("configure");
+							backend.onConfigure?.();
 						},
 					}
 				: {}),

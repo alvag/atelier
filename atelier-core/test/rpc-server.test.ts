@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
 	type AtelierEventBody,
@@ -15,8 +15,10 @@ import {
 	type PinPlaces,
 	RpcServer,
 	type ServerMessage,
+	Session,
 	VERSION,
 } from "../src/index.ts";
+import { ConfigureError } from "../src/session.ts";
 import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 
 /** A sandbox library that is there and wraps nothing. */
@@ -448,6 +450,44 @@ describe("RpcServer", () => {
 			gate.release?.();
 			await until(() => h.events(sessionId).some((e) => e.type === "turn_finished"));
 			expect(h.backends[0]?.prompts).toEqual(["one"]);
+		});
+
+		it.each([
+			["interrupted", [{ waitForInterrupt: true }] as FakeStep[]],
+			["ended with an error", [{ event: { ...finished, stopReason: "error" } }] as FakeStep[]],
+			["whose backend threw", [{ throw: "boom" }] as FakeStep[]],
+		])("runs nothing queued after a turn %s, and gives it back", async (_name, end) => {
+			const gate: { release?: () => void } = {};
+			const h = harness([
+				[[{ run: () => new Promise<void>((resolve) => (gate.release = resolve)) }, ...end], [{ event: finished }]],
+			]);
+			const sessionId = await h.start();
+			await h.responseTo(h.send({ command: "session.send", sessionId, prompt: "one" }));
+			await until(() => gate.release !== undefined);
+			await h.responseTo(h.send({ command: "session.queue", sessionId, kind: "follow_up", text: "two" }));
+			gate.release?.();
+			if ("waitForInterrupt" in (end[0] ?? {})) await h.responseTo(h.send({ command: "session.interrupt", sessionId }));
+			await until(() => h.events(sessionId).some((e) => e.type === "turn_finished"));
+			// Room for a chained turn to start, if one wrongly did.
+			await h.responseTo(h.send({ command: "session.mcp", sessionId }));
+			expect(h.backends[0]?.prompts).toEqual(["one"]);
+			const back = h.events(sessionId).findLast((e) => e.type === "queue_update");
+			expect(back).toMatchObject({ messages: [], returned: [expect.objectContaining({ text: "two" })] });
+			expect(h.events(sessionId).filter((e) => e.type === "turn_finished")).toHaveLength(1);
+		});
+
+		it("answers turn_ended when the session refuses a message because its turn is ending", async () => {
+			const refuse = vi.spyOn(Session.prototype, "queue").mockImplementation(() => {
+				throw new ConfigureError("turn_ended", "The turn was interrupted or failed; the message was not queued.");
+			});
+			try {
+				const h = harness([]);
+				const sessionId = await h.start();
+				const answer = await h.responseTo(h.send({ command: "session.queue", sessionId, kind: "steer", text: "x" }));
+				expect(answer).toMatchObject({ ok: false, error: { code: "turn_ended" } });
+			} finally {
+				refuse.mockRestore();
+			}
 		});
 
 		it("refuses an unknown kind and an empty text", async () => {

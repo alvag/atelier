@@ -49,7 +49,8 @@ export type ClientCommand =
 	/**
 	 * Queues a message while a turn runs: a `steer` enters the running turn with its next tool result, a `follow_up`
 	 * runs as a turn of its own after it (see `queue_update` and `queued_message`). Answers `{ id }`; when no turn runs,
-	 * the message starts one at once and the answer adds its `turnId`.
+	 * the message starts one at once and the answer adds its `turnId`. Fails with `turn_ended` while a turn that was interrupted
+	 * or failed is ending: it gave its queue back, takes nothing more, and the client keeps the message.
 	 */
 	| { command: "session.queue"; sessionId: string; kind: QueueKind; text: string }
 	/** Changes a queued message's text; fails with `not_queued` once it entered the conversation or left the queue. Answers `{}`. */

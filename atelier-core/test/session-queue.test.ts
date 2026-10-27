@@ -120,6 +120,74 @@ describe("queued messages", () => {
 		expect(session.nextQueued()).toBeUndefined();
 	});
 
+	describe.each([
+		["interrupted", [{ waitForInterrupt: true }] as FakeStep[]],
+		["ended with an error", [{ event: { ...finished, stopReason: "error" } }] as FakeStep[]],
+		["whose backend threw", [{ throw: "boom" }] as FakeStep[]],
+	])("a turn %s", (_name, end) => {
+		/** Runs a turn that ends as `end` says, interrupting it when it waits for that. */
+		const run = async (session: Session, backend: FakeBackend) => {
+			const turn = collect(session.send("go"));
+			if ("waitForInterrupt" in (end[0] ?? {})) {
+				for (let i = 0; i < 400 && backend.prompts.length === 0; i++)
+					await new Promise((resolve) => setTimeout(resolve, 2));
+				await session.interrupt();
+			}
+			return turn;
+		};
+
+		it("gives back a message queued while it applies a held change, and runs none", async () => {
+			const { backend, session } = await started((session) => [
+				[{ run: async () => void (await session().configure({ model: "other" })) }, ...end],
+				[{ event: finished }],
+			]);
+			backend.onConfigure = () => void session.queue("follow_up", "late");
+			const events = await run(session, backend);
+			const returned = queueUpdates(events).at(-1)?.returned;
+			expect(returned?.map((message) => message.text)).toEqual(["late"]);
+			expect(session.queued).toEqual([]);
+			expect(session.nextQueued()).toBeUndefined();
+			expect(backend.prompts).toEqual(["go"]);
+		});
+
+		it("refuses a message queued after its end was decided, so the client keeps it", async () => {
+			const home = await realpath(await mkdtemp(join(tmpdir(), "atelier-queue-home-")));
+			try {
+				const { backend, session, record } = await started(() => [end, [{ event: finished }]], home);
+				const flush = record?.flush.bind(record);
+				let refused: unknown;
+				if (record)
+					record.flush = async () => {
+						try {
+							session.queue("follow_up", "too late");
+						} catch (error) {
+							refused ??= error;
+						}
+						await flush?.();
+					};
+				await run(session, backend);
+				expect(refused).toMatchObject({ code: "turn_ended" });
+				expect(session.queued).toEqual([]);
+				expect(session.nextQueued()).toBeUndefined();
+				expect(backend.prompts).toEqual(["go"]);
+			} finally {
+				await rm(home, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("takes a message queued once the turn is over, for a turn of its own", async () => {
+		const { backend, session } = await started(() => [[{ waitForInterrupt: true }], [{ event: finished }]]);
+		const turn = collect(session.send("go"));
+		for (let i = 0; i < 400 && backend.prompts.length === 0; i++)
+			await new Promise((resolve) => setTimeout(resolve, 2));
+		await session.interrupt();
+		await turn;
+		session.queue("follow_up", "next");
+		await collect(session.nextQueued() as AsyncIterable<AtelierEvent>);
+		expect(backend.prompts).toEqual(["go", "next"]);
+	});
+
 	it("edits and removes queued messages until they enter", async () => {
 		const { backend, session } = await started((session) => [
 			[

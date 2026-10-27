@@ -273,7 +273,14 @@ export class RpcServer {
 			}
 			case "session.queue": {
 				const entry = this.#session(message.sessionId);
-				const { id } = entry.session.queue(message.kind, message.text);
+				let id: string;
+				try {
+					({ id } = entry.session.queue(message.kind, message.text));
+				} catch (error) {
+					// A turn that is ending interrupted or failed takes nothing more: the client keeps the message.
+					if (error instanceof ConfigureError) throw new CommandError(error.code, error.message);
+					throw error;
+				}
 				if (entry.session.busy) return { id };
 				// Nothing runs to queue it behind: it starts its turn now.
 				const turnId = this.#createId();
