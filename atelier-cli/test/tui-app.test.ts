@@ -668,7 +668,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 	it("asks a review question with the question and three answers only, starting on Review", async () => {
 		const h = harness([]);
 		const stub = stubCore();
-		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 		const code = run(["--no-session"], h.io, () => h.backend);
 		await until(h.screen.started);
 		stub.emit({
@@ -1101,6 +1101,34 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		},
 	);
+
+	it("ignores the keys typed just as a review consent appears", async () => {
+		const h = harness([]);
+		const stub = listingCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 300 };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		await until(() => h.screen.screen().includes("profile cheap"));
+		const answers = () => stub.log.commands.filter((command) => command.command === "session.review_consent");
+		stub.emit({
+			type: "review_consent_requested",
+			reviewId: "r1",
+			level: "high",
+			reasons: ["shell_process: a.ts:1"],
+			lenses: ["risk"],
+		});
+		await until(() => h.screen.screen().includes("Review this high-risk change?"));
+		const shownAt = Date.now();
+		h.screen.type("\r");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(answers()).toEqual([]);
+		await new Promise((resolve) => setTimeout(resolve, Math.max(0, 300 - (Date.now() - shownAt))));
+		h.screen.type("\r");
+		await until(() => answers().length === 1);
+		expect(answers()[0]).toMatchObject({ reviewId: "r1", answer: "granted" });
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
 
 	it("counts every line of the reason among the lines a folded approval leaves out", async () => {
 		const { h, code, ask, dialog } = await approvalCore();

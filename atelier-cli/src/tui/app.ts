@@ -505,6 +505,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 					],
 					initial: "granted",
 					cancel: "declined",
+					guardMs: options.answerGuardMs ?? ANSWER_GUARD_MS,
 				},
 				(answer) => void request({ command: "session.review_consent", sessionId, reviewId: event.reviewId, answer }),
 				false,
