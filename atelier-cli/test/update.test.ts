@@ -154,7 +154,10 @@ describe("atelier update", () => {
 		expect(c.out()).toBe(`Updated atelier v${VERSION} (local ${local}) → v0.9.0\n`);
 	});
 
-	it("moves a local commit to the requested release even when the core's version matches it", async () => {
+	it("moves a local commit back to the release it was made on, even when the core's version names it", async () => {
+		await release(`v${VERSION}`);
+		git(install, "fetch", "--quiet", "--tags");
+		git(install, "checkout", "--quiet", "--detach", `v${VERSION}`);
 		const tagged = head();
 		await writeFile(join(install, "local.txt"), "x");
 		git(install, "add", ".");
