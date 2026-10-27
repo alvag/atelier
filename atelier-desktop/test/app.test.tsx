@@ -645,6 +645,17 @@ describe("App", () => {
 		await waitFor(() => expect(screen.queryByRole("list", { name: "Queued messages" })).toBeNull());
 	});
 
+	it("drops the queue with the session when the core goes away", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "go");
+		fake.emit({ type: "queue_update", messages: [{ id: "q1", kind: "follow_up", text: "later" }] });
+		await screen.findByRole("list", { name: "Queued messages" });
+		await fake.push({ type: "core_exited", message: "exit 1" });
+		await waitFor(() => expect(screen.queryByRole("list", { name: "Queued messages" })).toBeNull());
+		// What was queued is not lost: it is back in the composer.
+		expect((screen.getByLabelText("Prompt") as HTMLTextAreaElement).value).toBe("later");
+	});
+
 	it("shows a steer where it entered, a follow-up as a turn of its own, and gives an interrupted turn's queue back", async () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "go");
