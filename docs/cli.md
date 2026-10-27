@@ -82,7 +82,7 @@ rows = [
 
 ### Settings
 
-`~/.atelier/settings.json` sets how the TUI looks; every field is optional (`fullscreen` is `true` and `hideThinking` `false` unless set):
+`~/.atelier/settings.json` sets how the TUI looks and when it notifies; every field is optional (`fullscreen` is `true` and `hideThinking` `false` unless set):
 
 ```json
 {
@@ -103,12 +103,35 @@ rows = [
 			"cost",
 			"phase",
 			"task"
-		]
+		],
+		"notifications": {
+			"enabled": true,
+			"via": "auto",
+			"sound": false,
+			"minSeconds": 10
+		}
 	}
 }
 ```
 
 `hideThinking: true` starts the model's thinking folded to `✻ Thinking…`; Ctrl+R still opens it. `statusLine` lists the footer's items in order (the default is the list above). The items: `model` (the backend while the backend's default model runs), `effort`, `backend`, `cwd` (the working folder's name), `git-branch` (the short commit when `HEAD` is detached), `profile`, `mode`, `sandbox`, `context`, `cost`, `phase`, `task` and `version`. An `effort` right after `model` goes with it (`claude-opus-5-5 high`). The file is read when the TUI starts. A wrong file or field does not stop the session: the TUI starts with the default for it and says why in the transcript (`warning: …/settings.json: unknown status line item "weather"; skipped`).
+
+### Notifications
+
+The TUI notifies when a main turn ends (`Turn finished`, or `Turn failed` when it ends in an error) after running at least `minSeconds` (10 by default), and when the session waits for the user (`Waiting for approval`, `Waiting for review consent`), once for each question as it comes on screen. A turn the user interrupted is not told, and nothing is told while the terminal has the focus: the TUI asks the terminal for focus reports (`CSI ? 1004 h`) and, until one arrives, takes it as without the focus. The notice's title is `Atelier · <working directory name>`; it never holds the command or the prompt.
+
+`via` chooses how; `auto`, the default, picks by where the TUI runs:
+
+| Where                                               | `auto` sends                                          |
+| --------------------------------------------------- | ----------------------------------------------------- |
+| A Herdr pane (`HERDR_ENV=1`)                        | Nothing: Herdr notifies `blocked` and `done` itself   |
+| An Orca terminal (`ORCA_PANE_KEY`)                  | The bell, which Orca turns into its own notification  |
+| iTerm2, Ghostty, WezTerm or kitty, not through tmux | An OSC 9 notification, shown by the terminal          |
+| Elsewhere on macOS                                  | `osascript` (`display notification`)                  |
+| Elsewhere on Linux                                  | `notify-send` when it is on the `PATH`, else the bell |
+| Elsewhere                                           | The bell                                              |
+
+`terminal` always sends OSC 9, `system` always the system's notification (`osascript` on macOS, `notify-send` on Linux, the bell when neither is there) and `bell` always the bell, wherever the TUI runs. `sound: true` adds a sound: the notification's own with `osascript`, the system sound `Glass` (`afplay`) with OSC 9 on macOS, and the bell otherwise. A notification that fails is ignored. `osascript`'s notification shows as Script Editor's, and clicking it does not bring the terminal forward. `"enabled": false` turns the notices off; the OSC 7501 status is reported either way.
 
 `ATELIER_TUI=off` keeps the line-by-line session described above, and so does `ATELIER_RECORD_SDK` (the SDK messages are recorded in the CLI's own process).
 

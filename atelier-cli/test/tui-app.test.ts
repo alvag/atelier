@@ -1774,6 +1774,160 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		});
 	});
 
+	describe("notifications", () => {
+		const settle = async (notifications: Record<string, unknown>) => {
+			await mkdir(join(home, ".atelier"), { recursive: true });
+			await writeFile(
+				join(home, ".atelier", "settings.json"),
+				JSON.stringify({ kind: "atelier.settings", version: 1, tui: { notifications } }),
+			);
+		};
+		/** The OSC 9 notifications written, without OSC 9;4 progress. */
+		const notices = (raw: string) =>
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: the notification's sequence is what is read
+			[...raw.matchAll(/\x1b\]9;([^\x07]*)\x07/g)].map((match) => match[1]).filter((text) => !text?.startsWith("4;"));
+		/** Bells on their own, not the ones that end an OSC sequence. */
+		const bells = (raw: string) =>
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: the sequences are what is taken out
+			raw.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "").split("\x07").length - 1;
+		const inGhostty = (h: ReturnType<typeof harness>, env: Record<string, string> = {}) => {
+			h.io = { ...h.io, env: { TERM_PROGRAM: "ghostty", ...env } } as typeof h.io;
+		};
+		const title = () => `Atelier · ${basename(cwd)}`;
+
+		it("tells the terminal when the session waits for an approval and when the turn ends, once each", async () => {
+			await settle({ minSeconds: 0 });
+			const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo secret" } } }, { event: finished }]]);
+			inGhostty(h);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("one");
+			h.screen.type("\r");
+			await until(() => notices(h.screen.raw()).length === 1);
+			expect(notices(h.screen.raw())).toEqual([`${title()}: Waiting for approval`]);
+			h.screen.type("\r");
+			await until(() => notices(h.screen.raw()).length === 2);
+			expect(notices(h.screen.raw())).toEqual([`${title()}: Waiting for approval`, `${title()}: Turn finished`]);
+			expect(h.screen.raw()).not.toContain("secret:");
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+		});
+
+		it("says nothing of a turn shorter than ten seconds by default", async () => {
+			const h = harness([[{ event: finished }]]);
+			inGhostty(h);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("one");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("$0.50"));
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+			expect(notices(h.screen.raw())).toEqual([]);
+		});
+
+		it("says a failed turn, and nothing of an interrupted one", async () => {
+			await settle({ minSeconds: 0 });
+			const h = harness([
+				[{ event: { type: "text_delta", text: "working" } }, { waitForInterrupt: true }],
+				[{ throw: "boom" }],
+			]);
+			inGhostty(h);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("long job");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("working"));
+			h.screen.type("\x1b");
+			await until(() => h.screen.screen().includes("interrupted"));
+			h.screen.type("again");
+			h.screen.type("\r");
+			await until(() => notices(h.screen.raw()).length === 1);
+			expect(notices(h.screen.raw())).toEqual([`${title()}: Turn failed`]);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("says nothing while the terminal has the focus, and keeps its reports out of the editor", async () => {
+			await settle({ minSeconds: 0 });
+			const h = harness([[{ event: finished }], [{ event: finished }]]);
+			inGhostty(h);
+			const code = run(["--no-session", "--no-fullscreen"], h.io, () => h.backend);
+			await until(h.screen.started);
+			expect(h.screen.raw()).toContain("\x1b[?1004h");
+			h.screen.type("\x1b[I");
+			h.screen.type("one");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("$0.50"));
+			expect(notices(h.screen.raw())).toEqual([]);
+			h.screen.type("\x1b[O");
+			h.screen.type("two");
+			h.screen.type("\r");
+			await until(() => notices(h.screen.raw()).length === 1);
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+			expect(h.backend.prompts).toEqual(["one", "two"]);
+			expect(h.screen.raw()).toContain("\x1b[?1004l");
+		});
+
+		it("leaves the notices to Herdr, and rings the bell for Orca", async () => {
+			await settle({ minSeconds: 0 });
+			for (const [env, rung] of [
+				[{ HERDR_ENV: "1" }, 0],
+				[{ ORCA_PANE_KEY: "tab:1" }, 1],
+			] as const) {
+				const h = harness([[{ event: finished }]]);
+				inGhostty(h, env);
+				const code = run(["--no-session"], h.io, () => h.backend);
+				await until(h.screen.started);
+				h.screen.type("one");
+				h.screen.type("\r");
+				await until(() => h.screen.screen().includes("$0.50"));
+				await until(() => bells(h.screen.raw()) === rung);
+				h.screen.type("/exit");
+				h.screen.type("\r");
+				expect(await code).toBe(0);
+				expect(notices(h.screen.raw())).toEqual([]);
+				expect(bells(h.screen.raw())).toBe(rung);
+			}
+		});
+
+		it("starts the system's notification with a sound when asked, and nothing when off", async () => {
+			for (const [notifications, expected] of [
+				[{ minSeconds: 0, via: "system", sound: true }, 1],
+				[{ minSeconds: 0, enabled: false }, 0],
+			] as const) {
+				await settle(notifications);
+				const spawned: string[][] = [];
+				const h = harness([[{ event: finished }]]);
+				inGhostty(h);
+				const spawn = (command: string, args: string[]) => {
+					spawned.push([command, ...args]);
+				};
+				h.io.tui = { ...h.io.tui, ...({ platform: "darwin", spawn } as object) };
+				const code = run(["--no-session"], h.io, () => h.backend);
+				await until(h.screen.started);
+				h.screen.type("one");
+				h.screen.type("\r");
+				await until(() => h.screen.screen().includes("$0.50"));
+				await until(() => spawned.length === expected);
+				h.screen.type("/exit");
+				h.screen.type("\r");
+				expect(await code).toBe(0);
+				expect(notices(h.screen.raw())).toEqual([]);
+				if (expected === 0) expect(spawned).toEqual([]);
+				else {
+					expect(spawned[0]?.[0]).toBe("osascript");
+					expect(spawned[0]?.join(" ")).toContain('sound name "Glass"');
+					expect(spawned[0]?.slice(-2)).toEqual([title(), "Turn finished"]);
+				}
+			}
+		});
+	});
+
 	describe("herdr", () => {
 		interface HerdrCall {
 			id: string;

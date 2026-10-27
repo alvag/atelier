@@ -128,16 +128,16 @@ The first time it installs Electron (about 200 MB) and builds the app, unless `i
 
 Everything lives in `~/.atelier/`, which the agent cannot write:
 
-| File                   | What it holds                                                                                      |
-| ---------------------- | -------------------------------------------------------------------------------------------------- |
-| `profiles.json`        | Model, backend and thinking level per agent role ([profiles](docs/profiles.md)).                   |
-| `permission-mode.json` | Default permission mode, written by `/mode default <mode>`.                                        |
-| `permissions.json`     | Commands and folders you allowed always ([rules](docs/sandbox.md#rules-you-allowed)).              |
-| `settings.json`        | Full screen or not, thinking folded, and the status line items ([settings](docs/cli.md#settings)). |
-| `sandbox.json`         | Extra writable paths and hidden paths for `bash` ([sandbox](docs/sandbox.md#configuration-files)). |
-| `mcp.json`             | MCP servers the agent can use, in the `mcpServers` format of Claude Code ([MCP](docs/mcp.md)).     |
-| `mcp-auth.json`        | OAuth sign-ins of MCP servers (`0600`), written by `atelier mcp login`.                            |
-| `sessions/`            | Saved sessions ([saved sessions](docs/sessions.md)).                                               |
+| File                   | What it holds                                                                                                        |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `profiles.json`        | Model, backend and thinking level per agent role ([profiles](docs/profiles.md)).                                     |
+| `permission-mode.json` | Default permission mode, written by `/mode default <mode>`.                                                          |
+| `permissions.json`     | Commands and folders you allowed always ([rules](docs/sandbox.md#rules-you-allowed)).                                |
+| `settings.json`        | Full screen or not, thinking folded, the status line items and the notifications ([settings](docs/cli.md#settings)). |
+| `sandbox.json`         | Extra writable paths and hidden paths for `bash` ([sandbox](docs/sandbox.md#configuration-files)).                   |
+| `mcp.json`             | MCP servers the agent can use, in the `mcpServers` format of Claude Code ([MCP](docs/mcp.md)).                       |
+| `mcp-auth.json`        | OAuth sign-ins of MCP servers (`0600`), written by `atelier mcp login`.                                              |
+| `sessions/`            | Saved sessions ([saved sessions](docs/sessions.md)).                                                                 |
 
 A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent reads `AGENTS.md` (or `CLAUDE.md`) from the working directory and its parents, and `~/.agents/AGENTS.md`. It also lists the skills in `.agents/skills/` (from the working directory up to the repository root) and in `~/.agents/skills/`, each a folder with a `SKILL.md`, and reads one when a task matches it; the first turn says which skills were loaded.
 

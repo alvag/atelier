@@ -38,6 +38,7 @@ import {
 	type ShownRule,
 } from "../permission-text.ts";
 import { savedTranscript } from "../transcript.ts";
+import { Attention } from "./attention.ts";
 import { Conversation } from "./conversation.ts";
 import { type Choice, ChoiceDialog, type Folded, PasteFilter } from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
@@ -93,6 +94,9 @@ export interface TuiOptions {
 	closeTimeoutMs?: number;
 	/** How long an approval ignores keys after it appears, so one typed before it does not answer it (default 400 ms). */
 	answerGuardMs?: number;
+	/** The system the notices are sent for, and what starts their commands (default: this process's, detached). */
+	platform?: NodeJS.Platform;
+	spawn?: (command: string, args: string[]) => void;
 }
 
 const EXIT_OK = 0;
@@ -391,7 +395,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	}
 	let { sessionId, savedId } = opened;
 
-	const tui = createScreen(options.terminal, settings.fullscreen && !args.noFullscreen, paint);
+	const fullscreen = settings.fullscreen && !args.noFullscreen;
+	const attention = new Attention(settings.notifications, { ...options, cwd: args.cwd });
+	const tui = createScreen(attention.watch(options.terminal, fullscreen), fullscreen, paint);
 	const footer = new Footer(paint, settings.statusLine);
 	const version = options.version === undefined ? {} : { version: options.version };
 	footer.place = { cwd: args.cwd, ...version };
@@ -466,6 +472,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		cancel: () => void;
 		local: boolean;
 		blocked?: Blocked | undefined;
+		told?: boolean;
 	}[] = [];
 	const programStatus = new ProgramStatusReporter(options.terminal);
 	/** Tells the terminal, and Herdr when the TUI runs in one of its panes, what the TUI is doing. */
@@ -488,6 +495,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		editor.disableSubmit = commanding;
 		status.clear();
 		if (on) {
+			attention.turnStarted();
 			reportRunning();
 			status.addChild(loader);
 			loader.start();
@@ -496,6 +504,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const showQuestion = () => {
 		dialogs.clear();
 		const first = questions[0];
+		// The core's own question is told once, when it comes on screen.
+		if (first?.blocked && !first.told) {
+			first.told = true;
+			attention.waiting(first.blocked.kind);
+		}
 		if (first) {
 			dialogs.addChild(first.dialog);
 			first.dialog.reveal();
@@ -638,6 +651,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			dropQuestions();
 			setBusy(false);
 			reportState(settledState(event.stopReason));
+			attention.turnFinished(event.stopReason);
 		}
 		tui.requestRender();
 	};
