@@ -44,7 +44,7 @@ for (const words of [
 	["env", "-S", quote(join(["2>&1", "rm", "-rf", "/"]))],
 	["env", "-S", JSON.stringify(join(["2>&1", "rm", "-rf", "/"]))],
 	["env", "-iS", quote(join(["2>&1", "rm", "-rf", "/"]))],
-	["env", "--split-string=" + quote(join(["2>&1", "rm", "-rf", "/"]))],
+	["env", `--split-string=${quote(join(["2>&1", "rm", "-rf", "/"]))}`],
 ]) {
 	it(`refuses ${join(words)}`, () => {
 		expect(findDestructiveCommand(join(words), context)).toBe(root);

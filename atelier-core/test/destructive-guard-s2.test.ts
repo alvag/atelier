@@ -23,8 +23,9 @@ for (const [path, rule] of [
 	["$HOME", home],
 	[".", project],
 ]) {
+	if (path === undefined) throw new Error(`no path for the rule ${rule}`);
 	for (const expression of expressions) {
-		const command = join(["find", path!, ...expression]);
+		const command = join(["find", path, ...expression]);
 		it(`S2 refuses ${command}`, () => {
 			expect(findDestructiveCommand(command, context)).toBe(rule);
 		});
@@ -54,7 +55,8 @@ for (const [path, rule] of [
 	['"$HOME"', home],
 	["/work/project", project],
 ]) {
-	const command = join(["env", "-S", "rm", "-rf", path!]);
+	if (path === undefined) throw new Error(`no path for the rule ${rule}`);
+	const command = join(["env", "-S", "rm", "-rf", path]);
 	it(`S2 preserves the existing refusal for ${command}`, () => {
 		expect(findDestructiveCommand(command, context)).toBe(rule);
 	});
