@@ -239,23 +239,10 @@ export function createWebFetchTool(options: WebFetchOptions = {}): ToolDefinitio
 
 	return defineTool({
 		name: "web_fetch",
-		description: `Fetch a web page over http or https and return its text: HTML becomes Markdown, text and JSON are returned as they are, other types (PDF, images) are refused. Addresses on this machine or its private networks are refused. A response carries at most ${MAX_PAGE_CHARS} characters; when there is more, it says which offset to pass to read on. Needs the user's approval in normal mode.`,
+		description: `Fetch a web page over http or https and return its text: HTML becomes Markdown, text and JSON are returned as they are, other types (PDF, images) are refused. Addresses on this machine or its private networks are refused. A response carries at most ${MAX_PAGE_CHARS} characters; when there is more, it says which offset to pass to read on.`,
 		inputShape: {
 			url: z.string().min(1).describe("The http or https URL to fetch"),
 			offset: z.number().int().min(0).optional().describe("Character offset to continue a long page from"),
-		},
-		approvalCommand: ({ url }) => `web_fetch ${url}`,
-		async gate({ url }) {
-			try {
-				parseUrl(url);
-			} catch (error) {
-				const message = errorMessage(error);
-				return { refusal: { output: message, summary: message } };
-			}
-			// Going out to the network is not something the sandbox contains, like a bash command outside it.
-			return {
-				approval: { command: `web_fetch ${url}`, tool: "web_fetch", denial: `Not fetched: the user denied ${url}.` },
-			};
 		},
 		async execute({ url, offset }, context) {
 			const cache = cacheFor(context);

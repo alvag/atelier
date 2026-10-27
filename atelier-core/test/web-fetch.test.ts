@@ -321,27 +321,18 @@ describe("web_fetch permissions (S4)", () => {
 	it.each([
 		["the default mode", {}],
 		["normal", { permissionMode: "normal" }],
-	] as const)("asks in %s with the tool and the command, then fetches", async (_name, options) => {
-		const { questions, events, results } = await ask(`${base}/ok`, options);
-		const command = `web_fetch ${base}/ok`;
-		expect(questions).toEqual([{ callId: "w1", command, tool: "web_fetch" }]);
-		expect(events.filter((event) => event.type === "approval_requested")).toEqual([
-			expect.objectContaining({ callId: "w1", command, tool: "web_fetch" }),
-		]);
+		["yolo", { permissionMode: "yolo" }],
+	] as const)("never asks in %s and fetches", async (_name, options) => {
+		const { questions, events, results } = await ask(`${base}/ok`, { ...options, answer: false });
+		expect(questions).toEqual([]);
+		expect(events.filter((event) => event.type === "approval_requested")).toEqual([]);
 		expect(results[0]).toEqual({ ok: true, output: "page body" });
 		expect(seen).toEqual(["/ok"]);
 	});
 
-	it("does not ask in yolo", async () => {
-		const { questions, events, results } = await ask(`${base}/ok`, { permissionMode: "yolo" });
-		expect(questions).toEqual([]);
-		expect(events.filter((event) => event.type === "approval_requested")).toEqual([]);
-		expect(results[0]).toEqual({ ok: true, output: "page body" });
-	});
-
-	it("leaves the decision to the classifier in auto, which sees the tool and the command", async () => {
+	it("does not call the classifier in auto, and fetches", async () => {
 		const answer: FakeStep[] = [
-			{ event: { type: "text_delta", text: JSON.stringify({ decision: "allow", reason: "the user asked for it" }) } },
+			{ event: { type: "text_delta", text: JSON.stringify({ decision: "deny", reason: "not asked for" }) } },
 			finished,
 		];
 		const classifier = new FakeBackend([answer]);
@@ -350,32 +341,16 @@ describe("web_fetch permissions (S4)", () => {
 			permissionClassifier: { createBackend: () => classifier },
 		});
 		expect(questions).toEqual([]);
-		expect(events.filter((event) => event.type === "permission_classified")).toEqual([
-			expect.objectContaining({ callId: "w1", decision: "allow" }),
-		]);
-		expect(classifier.prompts.join("\n")).toContain("web_fetch");
-		expect(classifier.prompts.join("\n")).toContain(`web_fetch ${base}/ok`);
+		expect(events.filter((event) => event.type === "permission_classified")).toEqual([]);
+		expect(events.filter((event) => event.type === "approval_requested")).toEqual([]);
+		expect(classifier.prompts).toEqual([]);
 		expect(results[0]).toEqual({ ok: true, output: "page body" });
+		expect(seen).toEqual(["/ok"]);
 	});
 
-	it("answers a denial without any request to the server", async () => {
-		const { questions, results, events } = await ask(`${base}/never`, { answer: false });
-		expect(questions).toHaveLength(1);
-		expect(results[0]?.ok).toBe(false);
-		expect(results[0]?.output).toContain("denied");
-		expect(seen).toEqual([]);
-		expect(events.find((event) => event.type === "tool_call_finished")).toMatchObject({ ok: false });
-	});
-
-	it("answers a classifier denial without any request to the server", async () => {
-		const answer: FakeStep[] = [
-			{ event: { type: "text_delta", text: JSON.stringify({ decision: "deny", reason: "not asked for" }) } },
-			finished,
-		];
-		const { results } = await ask(`${base}/never`, {
-			permissionMode: "auto",
-			permissionClassifier: { createBackend: () => new FakeBackend([answer]) },
-		});
+	it.each(["not a url", "ftp://example.com/file"])("refuses %s without asking or any request", async (url) => {
+		const { questions, results } = await ask(url);
+		expect(questions).toEqual([]);
 		expect(results[0]?.ok).toBe(false);
 		expect(seen).toEqual([]);
 	});
@@ -501,34 +476,6 @@ describe("independent web_fetch regressions", () => {
 		expect(seen).toHaveLength(21);
 		await fetchPage(tool, `${base}/0`, 1);
 		expect(seen).toHaveLength(22);
-	});
-
-	it.each(["worker", "explorer"])("S4/S5: %s cannot inherit a yolo approval bypass", async (agent) => {
-		handler = reply("text/plain", "never");
-		const child = new FakeBackend([[call(`${base}/never`), finished]]);
-		const questions: ApprovalRequest[] = [];
-		const session = await Session.start({
-			backend: new FakeBackend([
-				[{ toolCall: { tool: "task", input: { agent, prompt: "fetch" }, callId: "task" } }, finished],
-			]),
-			cwd,
-			tools: [local()],
-			permissionMode: "yolo",
-			approve: async (request) => {
-				expect(seen).toEqual([]);
-				questions.push(request);
-				return false;
-			},
-			subagents: { agents: BUILTIN_AGENTS, createBackend: () => child },
-		});
-		try {
-			await collect(session.send("fetch"));
-		} finally {
-			await session.close();
-		}
-		expect(questions).toEqual([{ callId: "w1", command: `web_fetch ${base}/never`, tool: "web_fetch" }]);
-		expect(child.toolResults[0]?.ok).toBe(false);
-		expect(seen).toEqual([]);
 	});
 });
 

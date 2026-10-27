@@ -160,7 +160,7 @@ export function createWebSearchTool(options: WebSearchOptions = {}): ToolDefinit
 
 	return defineTool({
 		name: "web_search",
-		description: `Search the web with Exa's public MCP, without an API key, and return the title, URL and a snippet of each result. The query goes to Exa from the user's IP address, and the anonymous service allows about 50 searches a day, so search with a specific query instead of many small ones. Use web_fetch to read a result. Needs the user's approval in normal mode.`,
+		description: `Search the web with Exa's public MCP, without an API key, and return the title, URL and a snippet of each result. The query goes to Exa from the user's IP address, and the anonymous service allows about 50 searches a day, so search with a specific query instead of many small ones. Use web_fetch to read a result.`,
 		inputShape: {
 			query: z.string().min(1).describe("What to search for"),
 			numResults: z
@@ -170,17 +170,6 @@ export function createWebSearchTool(options: WebSearchOptions = {}): ToolDefinit
 				.max(MAX_RESULTS)
 				.optional()
 				.describe(`How many results to return, 1 to ${MAX_RESULTS} (default ${DEFAULT_RESULTS})`),
-		},
-		approvalCommand: ({ query }) => `web_search ${query}`,
-		async gate({ query }) {
-			// Going out to the network is not something the sandbox contains, like a bash command outside it.
-			return {
-				approval: {
-					command: `web_search ${query}`,
-					tool: "web_search",
-					denial: `Not searched: the user denied the search for ${query}.`,
-				},
-			};
 		},
 		async execute({ query, numResults }, context) {
 			const wanted = numResults ?? DEFAULT_RESULTS;

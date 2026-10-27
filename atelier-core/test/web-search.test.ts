@@ -320,19 +320,9 @@ describe("web_search permissions (S4)", () => {
 	it.each([
 		["the default mode", {}],
 		["normal", { permissionMode: "normal" }],
-	] as const)("asks in %s with the tool and the command, then searches", async (_name, options) => {
-		const { questions, events, results } = await ask("why tides", options);
-		expect(questions).toEqual([{ callId: "s1", command: "web_search why tides", tool: "web_search" }]);
-		expect(events.filter((event) => event.type === "approval_requested")).toEqual([
-			expect.objectContaining({ callId: "s1", command: "web_search why tides", tool: "web_search" }),
-		]);
-		expect(results[0]?.ok).toBe(true);
-		expect(results[0]?.output).toContain("1. Tides");
-		expect(seen).toHaveLength(1);
-	});
-
-	it("does not ask in yolo", async () => {
-		const { questions, events, results } = await ask("why tides", { permissionMode: "yolo" });
+		["yolo", { permissionMode: "yolo" }],
+	] as const)("never asks in %s and searches", async (_name, options) => {
+		const { questions, events, results } = await ask("why tides", { ...options, answer: false });
 		expect(questions).toEqual([]);
 		expect(events.filter((event) => event.type === "approval_requested")).toEqual([]);
 		expect(results[0]?.ok).toBe(true);
@@ -340,9 +330,9 @@ describe("web_search permissions (S4)", () => {
 		expect(seen).toHaveLength(1);
 	});
 
-	it("leaves the decision to the classifier in auto, which sees the tool and the command", async () => {
+	it("does not call the classifier in auto, and searches", async () => {
 		const answer: FakeStep[] = [
-			{ event: { type: "text_delta", text: JSON.stringify({ decision: "allow", reason: "the user asked for it" }) } },
+			{ event: { type: "text_delta", text: JSON.stringify({ decision: "deny", reason: "not asked for" }) } },
 			finished,
 		];
 		const classifier = new FakeBackend([answer]);
@@ -351,33 +341,12 @@ describe("web_search permissions (S4)", () => {
 			permissionClassifier: { createBackend: () => classifier },
 		});
 		expect(questions).toEqual([]);
-		expect(events.filter((event) => event.type === "permission_classified")).toEqual([
-			expect.objectContaining({ callId: "s1", decision: "allow" }),
-		]);
-		expect(classifier.prompts.join("\n")).toContain("web_search why tides");
+		expect(events.filter((event) => event.type === "permission_classified")).toEqual([]);
+		expect(events.filter((event) => event.type === "approval_requested")).toEqual([]);
+		expect(classifier.prompts).toEqual([]);
 		expect(results[0]?.ok).toBe(true);
-	});
-
-	it("answers a denial without any request to the server", async () => {
-		const { questions, results, events } = await ask("secret", { answer: false });
-		expect(questions).toHaveLength(1);
-		expect(results[0]?.ok).toBe(false);
-		expect(results[0]?.output).toContain("denied");
-		expect(seen).toEqual([]);
-		expect(events.find((event) => event.type === "tool_call_finished")).toMatchObject({ ok: false });
-	});
-
-	it("answers a classifier denial without any request to the server", async () => {
-		const answer: FakeStep[] = [
-			{ event: { type: "text_delta", text: JSON.stringify({ decision: "deny", reason: "not asked for" }) } },
-			finished,
-		];
-		const { results } = await ask("secret", {
-			permissionMode: "auto",
-			permissionClassifier: { createBackend: () => new FakeBackend([answer]) },
-		});
-		expect(results[0]?.ok).toBe(false);
-		expect(seen).toEqual([]);
+		expect(results[0]?.output).toContain("1. Tides");
+		expect(seen).toHaveLength(1);
 	});
 });
 
