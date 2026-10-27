@@ -1,20 +1,8 @@
 import { spawn } from "node:child_process";
-import {
-	chmod,
-	copyFile,
-	lstat,
-	mkdir,
-	mkdtemp,
-	readdir,
-	readlink,
-	realpath,
-	rm,
-	symlink,
-	writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, copyFile, lstat, mkdir, readdir, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { describeError } from "../events.ts";
+import { createScratchDir } from "../scratch.ts";
 import { gitEnv, gitText } from "./git.ts";
 
 /** Directories visited while looking for node_modules; a bigger tree is searched no further and the verifier is told. */
@@ -53,8 +41,7 @@ export interface WorkspaceInput {
  * writes in its own files and never in the user's.
  */
 export async function createWorkspace(input: WorkspaceInput): Promise<Workspace> {
-	const dir = await mkdtemp(join(tmpdir(), "atelier-verify-"));
-	const remove = () => rm(dir, { recursive: true, force: true });
+	const { path: dir, remove } = await createScratchDir("verify");
 	try {
 		await Promise.all([
 			materializeTree(input.root, input.tree, join(dir, "candidate")),

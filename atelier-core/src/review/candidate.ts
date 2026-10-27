@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { describeError } from "../events.ts";
+import { createScratchDir, type ScratchDir } from "../scratch.ts";
 import { gitText, runGit, streamGitLines } from "./git.ts";
 import {
 	contentSignals,
@@ -139,7 +139,7 @@ export function holdsCommits(candidate: Candidate): boolean {
  * added to the repository, which `git gc` cleans up like any other.
  */
 export async function freezeCandidate(cwd: string, options: FreezeOptions = {}): Promise<FreezeResult> {
-	let scratch: string | undefined;
+	let scratch: ScratchDir | undefined;
 	try {
 		const top = await runGit(["rev-parse", "--show-toplevel"], { cwd });
 		if (top.code !== 0) return { ok: false, reason: "The folder is not inside a git repository." };
@@ -157,8 +157,8 @@ export async function freezeCandidate(cwd: string, options: FreezeOptions = {}):
 		const gitDir = withoutNewline(
 			await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root }),
 		);
-		scratch = await mkdtemp(join(tmpdir(), "atelier-freeze-"));
-		const env = { GIT_INDEX_FILE: join(scratch, "index") };
+		scratch = await createScratchDir("freeze");
+		const env = { GIT_INDEX_FILE: join(scratch.path, "index") };
 		// write-tree re-hashes racily clean entries through the filters too, so every step gets the overrides.
 		const safe = await withoutUserCommands(root);
 		await gitText([...safe, "read-tree", base], { cwd: root, env });
@@ -176,7 +176,7 @@ export async function freezeCandidate(cwd: string, options: FreezeOptions = {}):
 	} catch (error) {
 		return { ok: false, reason: `Could not freeze the changes: ${describeError(error)}` };
 	} finally {
-		if (scratch !== undefined) await rm(scratch, { recursive: true, force: true });
+		await scratch?.remove();
 	}
 }
 

@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import type {
 	AgentBackend,
 	BackendSession,
@@ -75,6 +73,7 @@ import { loadProjectInstructions, type ProjectInstructions } from "./project-ins
 import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
+import { createScratchDir, type ScratchDir } from "./scratch.ts";
 import type { SavedConfig } from "./sessions/format.ts";
 import type { SessionRecorder } from "./sessions/recorder.ts";
 import { loadSkills, type Skills, skillsPrompt } from "./skills.ts";
@@ -344,7 +343,7 @@ export class Session {
 	#abort: AbortController | undefined;
 	#closed = false;
 	#closing: Promise<void> | undefined;
-	#scratchDir: string | undefined;
+	#scratch: ScratchDir | undefined;
 	/** Every compaction summary of this session updates the same memory. */
 	readonly #summaryKey = `session/${randomUUID()}/summary`;
 	/** Summaries being saved; the turn that compacted waits for them before it finishes. */
@@ -424,8 +423,8 @@ export class Session {
 			const skills = await loadSkills(options.cwd, options.skills.home);
 			if (skills.skills.length > 0 || skills.warnings.length > 0) session.#skills = skills;
 		}
-		const scratchDir = await mkdtemp(join(tmpdir(), "atelier-session-"));
-		session.#scratchDir = scratchDir;
+		const scratch = await createScratchDir("session");
+		session.#scratch = scratch;
 		session.#systemPrompt = [
 			options.systemPromptAppend ?? "",
 			options.odd ? ODD_RULES : "",
@@ -445,7 +444,7 @@ export class Session {
 			});
 			session.#backendSessionId = options.backend.id;
 		} catch (error) {
-			await rm(scratchDir, { recursive: true, force: true });
+			await scratch.remove();
 			throw error;
 		}
 		return session;
@@ -1270,7 +1269,7 @@ export class Session {
 	close(): Promise<void> {
 		if (!this.#closing) {
 			this.#closed = true;
-			const scratchDir = this.#scratchDir;
+			const scratch = this.#scratch;
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
 			this.#closing = Promise.resolve()
 				.then(() => this.#child?.close())
@@ -1284,7 +1283,7 @@ export class Session {
 				.finally(async () => {
 					// Whatever failed above, the saved session is let go once its entries are written.
 					await this.#options.record?.release();
-					if (scratchDir !== undefined) await rm(scratchDir, { recursive: true, force: true });
+					await scratch?.remove();
 				});
 		}
 		return this.#closing;
@@ -1322,7 +1321,7 @@ export class Session {
 			const context: ToolContext = {
 				cwd: this.#options.cwd,
 				...(signal ? { signal } : {}),
-				...(this.#scratchDir === undefined ? {} : { scratchDir: this.#scratchDir }),
+				...(this.#scratch === undefined ? {} : { scratchDir: this.#scratch.path }),
 				callId,
 				...(this.#options.noSandbox ? { sandboxOff: true } : {}),
 				approvedPaths: this.#approvedPaths,

@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { closeSync, openSync, writeFileSync, writeSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { createScratchDirSync } from "../scratch.ts";
 import { commandRules, coveredBy } from "./command-rules.ts";
 import { findConfirmCommands, findDestructiveCommand } from "./destructive-guard.ts";
 import { MAX_BYTES, takeTail } from "./limits.ts";
@@ -23,10 +24,10 @@ const KILL_GRACE_MS = 2000;
 /** The full-output file stops growing here; the tail is still kept. */
 export const MAX_SPILL_BYTES = 50 * 1024 * 1024;
 
-/** A new file path for full output: in the session scratch directory, or a fresh temporary directory. */
+/** A new file path for full output: in the session scratch directory, or a fresh one that outlives this process until a sweep. */
 function spillPath(scratchDir: string | undefined): string {
 	if (scratchDir !== undefined) return join(scratchDir, `bash-${randomBytes(6).toString("hex")}.log`);
-	return join(mkdtempSync(join(tmpdir(), "atelier-bash-")), "output.log");
+	return join(createScratchDirSync("bash").path, "output.log");
 }
 
 /**
