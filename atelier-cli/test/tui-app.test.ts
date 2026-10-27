@@ -1041,6 +1041,55 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(0);
 	});
 
+	/** A TUI on a stub core that emits the approvals a test asks for, with no key guard. */
+	async function approvalCore() {
+		const h = harness([]);
+		const stub = listingCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		await until(() => h.screen.screen().includes("profile cheap"));
+		const approvals = () => stub.log.commands.filter((command) => command.command === "session.approve");
+		const ask = (command: string, reason?: string) =>
+			stub.emit({ type: "approval_requested", tool: "bash", callId: "a1", command, ...(reason ? { reason } : {}) });
+		const dialog = () => h.screen.screen().slice(h.screen.screen().lastIndexOf("Run this command"));
+		return { h, code, approvals, ask, dialog };
+	}
+
+	it("never answers an approval with a paste begun in the editor before it appeared", async () => {
+		const { h, code, approvals, ask, dialog } = await approvalCore();
+		h.screen.type("\x1b[200~text pasted while the agent works");
+		ask("rm -r build");
+		await until(() => dialog().includes("rm -r build"));
+		h.screen.type("\r");
+		h.screen.type("\x1b[201~");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(approvals()).toEqual([]);
+		h.screen.type("\r");
+		await until(() => approvals().length === 1);
+		expect(approvals()[0]).toMatchObject({ callId: "a1", approved: true });
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("counts every line of the reason among the lines a folded approval leaves out", async () => {
+		const { h, code, ask, dialog } = await approvalCore();
+		ask("echo safe", "first\nsecond\nthird");
+		await until(() => dialog().includes("OUTSIDE the sandbox"));
+		expect(dialog()).toContain("echo safe … 3 more lines (Ctrl+O)");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("shows a command's first line with text when it starts with blank lines", async () => {
+		const { h, code, ask, dialog } = await approvalCore();
+		ask("\n\necho concealed");
+		await until(() => dialog().includes("Run this command?"));
+		expect(dialog()).toContain("echo concealed … 2 more lines (Ctrl+O)");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
 	it("quits and gives the terminal back when the core never answers session.close", async () => {
 		const h = harness([]);
 		const stub = stubCore({ closeHangs: true });

@@ -18,6 +18,49 @@ function partialMarker(text: string, marker: string, least: number): number {
 	return 0;
 }
 
+/**
+ * Drops what is pasted from the terminal's input: what lies between a paste's start marker and its end marker, which
+ * may arrive in different chunks of input. Feeding it every chunk also tells whether a paste is open.
+ */
+export class PasteFilter {
+	/** Between a paste's start marker and its end marker. */
+	pasting = false;
+	/** The end of a chunk that may be the start of a marker, kept until the next chunk says. */
+	#pending = "";
+
+	/** The keys in `data`, without what was pasted. */
+	feed(data: string): string {
+		let rest = this.#pending + data;
+		this.#pending = "";
+		let keys = "";
+		while (rest !== "") {
+			if (this.pasting) {
+				const end = rest.indexOf(PASTE_END);
+				if (end === -1) {
+					// Everything in a paste is dropped; only a cut end marker is kept.
+					this.#pending = rest.slice(rest.length - partialMarker(rest, PASTE_END, 1));
+					break;
+				}
+				rest = rest.slice(end + PASTE_END.length);
+				this.pasting = false;
+				continue;
+			}
+			const start = rest.indexOf(PASTE_START);
+			if (start === -1) {
+				// A lone Esc is the key, not a cut marker: only "ESC [" and longer wait for the rest.
+				const cut = partialMarker(rest, PASTE_START, 2);
+				keys += rest.slice(0, rest.length - cut);
+				this.#pending = rest.slice(rest.length - cut);
+				break;
+			}
+			keys += rest.slice(0, start);
+			rest = rest.slice(start + PASTE_START.length);
+			this.pasting = true;
+		}
+		return keys;
+	}
+}
+
 export interface Choice<T extends string> {
 	value: T;
 	label: string;
@@ -47,10 +90,7 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 	#open = false;
 	readonly #guardMs: number;
 	#revealedAt: number | undefined;
-	/** Between a paste's start marker and its end marker, which may arrive in different chunks of input. */
-	#pasting = false;
-	/** The end of a chunk that may be the start of a marker, kept until the next chunk says. */
-	#pending = "";
+	readonly #paste = new PasteFilter();
 
 	constructor(
 		options: {
@@ -89,9 +129,14 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 		this.#list.onCancel = () => answer(options.cancel);
 	}
 
-	/** Starts the guard: called when the question is put on screen. */
-	reveal(now = Date.now()): void {
-		this.#revealedAt ??= now;
+	/**
+	 * Starts the guard: called when the question is put on screen. `pasting` says a paste begun before it is still open
+	 * (in the editor, say), so the rest of that paste answers nothing either.
+	 */
+	reveal(pasting: boolean, now = Date.now()): void {
+		if (this.#revealedAt !== undefined) return;
+		this.#revealedAt = now;
+		if (pasting) this.#paste.pasting = true;
 	}
 
 	/** Opens the whole question, or folds it again; false when there is nothing folded. */
@@ -106,33 +151,7 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
-		let rest = this.#pending + data;
-		this.#pending = "";
-		let keys = "";
-		while (rest !== "") {
-			if (this.#pasting) {
-				const end = rest.indexOf(PASTE_END);
-				if (end === -1) {
-					// Everything in a paste is dropped; only a cut end marker is kept.
-					this.#pending = rest.slice(rest.length - partialMarker(rest, PASTE_END, 1));
-					break;
-				}
-				rest = rest.slice(end + PASTE_END.length);
-				this.#pasting = false;
-				continue;
-			}
-			const start = rest.indexOf(PASTE_START);
-			if (start === -1) {
-				// A lone Esc is the key, not a cut marker: only "ESC [" and longer wait for the rest.
-				const cut = partialMarker(rest, PASTE_START, 2);
-				keys += rest.slice(0, rest.length - cut);
-				this.#pending = rest.slice(rest.length - cut);
-				break;
-			}
-			keys += rest.slice(0, start);
-			rest = rest.slice(start + PASTE_START.length);
-			this.#pasting = true;
-		}
+		const keys = this.#paste.feed(data);
 		if (keys !== "" && !this.#guarded()) this.#list.handleInput(keys);
 	}
 

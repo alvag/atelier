@@ -27,7 +27,7 @@ import {
 import type { CliArgs } from "../args.ts";
 import { savedTranscript } from "../transcript.ts";
 import { Conversation } from "./conversation.ts";
-import { type Choice, ChoiceDialog, type Folded } from "./dialog.ts";
+import { type Choice, ChoiceDialog, type Folded, PasteFilter } from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
 import { type FooterState, footerAfter, footerLine, footerWithConfiguration, footerWithMode } from "./footer.ts";
 import { ProgramStatusReporter, settledState } from "./program-status.ts";
@@ -128,12 +128,14 @@ function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_request
 			? ["warning: the command contains invisible or control characters, shown as markers."]
 			: [];
 	const lines = [command.text, ...(reason ? [`reason: ${reason.text}`] : []), ...warning];
-	// Folded, the command's first line; the rest, the reason included, opens with Ctrl+O. A warning always shows.
-	const [first = "", ...rest] = command.text.split("\n");
+	// Folded, the command's first line with text; the rest, the reason included, opens with Ctrl+O. A warning always shows.
+	const commandLines = command.text.split("\n");
+	const first = commandLines.find((line) => line.trim() !== "") ?? "";
+	const reasonLines = reason ? reason.text.split("\n").length : 0;
 	return {
 		title: `${reason ? "Run this command OUTSIDE the sandbox?" : "Run this command?"}${guard}${asker(event)}`,
 		lines,
-		folded: { lines: [first, ...warning], hidden: rest.length + (reason ? 1 : 0) },
+		folded: { lines: [first, ...warning], hidden: commandLines.length - 1 + reasonLines },
 	};
 }
 
@@ -364,6 +366,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		finish = resolve;
 	});
 	/** Questions waiting for an answer, the first one on screen. */
+	/** Follows every chunk of input, so a question put on screen knows whether a paste is still open. */
+	const input = new PasteFilter();
 	const questions: {
 		dialog: ChoiceDialog<string>;
 		cancel: () => void;
@@ -393,7 +397,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const first = questions[0];
 		if (first) {
 			dialogs.addChild(first.dialog);
-			first.dialog.reveal();
+			first.dialog.reveal(input.pasting);
 			tui.setFocus(first.dialog);
 		} else tui.setFocus(editor);
 		tui.requestRender();
@@ -812,6 +816,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	// Ctrl+C interrupts a turn, then quits; with no turn it clears the editor, then quits. Esc interrupts a turn.
 	const removeKeys = tui.addInputListener((data) => {
+		input.feed(data);
 		if (matchesKey(data, "ctrl+c")) {
 			if (busy && !interrupted) interrupt();
 			else if (!busy && editor.getText() !== "") editor.setText("");
