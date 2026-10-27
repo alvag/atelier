@@ -72,6 +72,31 @@ export const THINKING_OFF: Readonly<Record<string, ThinkingOff>> = Object.freeze
 	"claude-sonnet-5-5": "between_tools",
 });
 
+/**
+ * The models whose thinking is on with no `thinking` field and whose `display` defaults to `omitted`, from the
+ * thinking docs (2026-10-27). Elsewhere `adaptive` would turn thinking on (Opus 4.6 to 4.8) or answer 400 (Opus 4.5).
+ */
+const THINKING_ON_BY_DEFAULT: ReadonlySet<string> = new Set([
+	"claude-fable-5-1",
+	"claude-mythos-5-1",
+	"claude-fable-5",
+	"claude-mythos-5",
+	"claude-mythos-preview",
+	"claude-opus-5-5",
+	"claude-opus-5",
+	"claude-sonnet-5-5",
+	"claude-sonnet-5",
+	"claude-haiku-5-5",
+]);
+
+/**
+ * Whether to ask `model` for its thinking summarized, so clients can show it: where thinking is on by default and
+ * `sent` did not turn it off, since `display` is invalid with `disabled` and `between_tools`. It costs the same.
+ */
+export function summarizesThinking(model: string, sent: ThinkingSend | undefined): boolean {
+	return sent?.thinking === undefined && THINKING_ON_BY_DEFAULT.has(ALIASES[model] ?? model);
+}
+
 export type ThinkingBackend = "anthropic-api" | "claude-code";
 
 /** What a backend sends for a thinking level, and what `session_started.effort` says about it. */

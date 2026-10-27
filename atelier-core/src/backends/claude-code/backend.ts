@@ -162,7 +162,8 @@ export class ClaudeCodeBackend implements AgentBackend {
 				strictMcpConfig: true,
 				settingSources: [],
 				skills: [],
-				settings: { includeGitInstructions: false, autoMemoryEnabled: false },
+				// Thinking summaries, which the API omits by default on recent models, so clients can show the thinking.
+				settings: { includeGitInstructions: false, autoMemoryEnabled: false, showThinkingSummaries: true },
 				permissionMode: "bypassPermissions",
 				allowDangerouslySkipPermissions: true,
 				systemPrompt: { type: "preset", preset: "claude_code", append: start.systemPromptAppend },

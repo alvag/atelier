@@ -191,7 +191,11 @@ describe("ClaudeCodeBackend options", () => {
 		expect(o.settingSources).toEqual([]);
 		expect(o.skills).toEqual([]);
 		expect(o.strictMcpConfig).toBe(true);
-		expect(o.settings).toEqual({ includeGitInstructions: false, autoMemoryEnabled: false });
+		expect(o.settings).toEqual({
+			includeGitInstructions: false,
+			autoMemoryEnabled: false,
+			showThinkingSummaries: true,
+		});
 		expect(o.permissionMode).toBe("bypassPermissions");
 		expect(o.allowDangerouslySkipPermissions).toBe(true);
 		expect(o.includePartialMessages).toBe(true);
@@ -283,6 +287,12 @@ describe("ClaudeCodeBackend options", () => {
 		expect(calls.options).not.toHaveProperty("thinking");
 		const [started] = await collectBodies(session.send("hi"));
 		expect(started).not.toHaveProperty("effort");
+	});
+
+	it("asks Claude Code for the thinking summarized, which the API omits by default", async () => {
+		const { query, calls } = fakeQuery([], []);
+		await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		expect(calls.options.settings).toMatchObject({ showThinkingSummaries: true });
 	});
 
 	it("caps a turn's model requests with maxTurns when asked", async () => {
