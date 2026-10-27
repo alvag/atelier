@@ -1,6 +1,6 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { PassThrough } from "node:stream";
 import {
 	type AtelierEvent,
@@ -15,7 +15,7 @@ import {
 } from "@atelier/core";
 import type { CoreExit } from "@atelier/core/client";
 import { decodeServerMessage, encodeMessage, LineSplitter } from "@atelier/core/protocol";
-import type { Terminal } from "@earendil-works/pi-tui";
+import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
@@ -120,6 +120,8 @@ function fakeTerminal() {
 	let onInput: ((data: string) => void) | undefined;
 	let written = "";
 	let stopped = false;
+	const statuses: ProgramStatus[] = [];
+	const titles: string[] = [];
 	const terminal: Terminal = {
 		start: (input) => {
 			onInput = input;
@@ -140,9 +142,13 @@ function fakeTerminal() {
 		clearLine: () => {},
 		clearFromCursor: () => {},
 		clearScreen: () => {},
-		setTitle: () => {},
+		setTitle: (title) => {
+			titles.push(title);
+		},
 		setProgress: () => {},
-		setProgramStatus: () => {},
+		setProgramStatus: (status) => {
+			statuses.push(status);
+		},
 	};
 	return {
 		terminal,
@@ -151,6 +157,8 @@ function fakeTerminal() {
 		type: (data: string) => onInput?.(data),
 		started: () => onInput !== undefined,
 		stopped: () => stopped,
+		statuses,
+		titles,
 	};
 }
 
@@ -996,5 +1004,86 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 		expect(h.screen.stopped()).toBe(true);
 		expect(stub.log.closed).toBe(true);
+	});
+
+	describe("program status", () => {
+		const atelier = (state: ProgramStatus["state"], rest: Partial<ProgramStatus> = {}) => ({
+			state,
+			app: "atelier",
+			...rest,
+		});
+
+		it("reports idle, working, blocked on an approval, working and done, and clears on exit", async () => {
+			const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo first" } } }, { event: finished }]]);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("one");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("Run this command?"));
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("$0.50"));
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+			expect(h.screen.statuses).toEqual([
+				atelier("idle"),
+				atelier("working"),
+				atelier("blocked", { kind: "permission", message: "Run this command?" }),
+				atelier("working"),
+				atelier("done"),
+				atelier("clear"),
+			]);
+			expect(h.screen.titles).toEqual([`Atelier - ${basename(cwd)}`]);
+		});
+
+		it("reports idle for an interrupted turn and error for a failed one", async () => {
+			const h = harness([
+				[{ event: { type: "text_delta", text: "working" } }, { waitForInterrupt: true }],
+				[{ throw: "boom" }],
+			]);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("long job");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("working"));
+			h.screen.type("\x1b");
+			await until(() => h.screen.screen().includes("interrupted"));
+			expect(h.screen.statuses).toEqual([atelier("idle"), atelier("working"), atelier("idle")]);
+			h.screen.type("again");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.length === 5);
+			expect(h.screen.statuses.slice(3)).toEqual([atelier("working"), atelier("error")]);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("reports a review consent as a question", async () => {
+			const h = harness([]);
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			stub.emit({ type: "review_consent_requested", reviewId: "r1", level: "high", reasons: [], lenses: [] });
+			await until(() => h.screen.screen().includes("Review this change?"));
+			expect(h.screen.statuses.at(-1)).toEqual(
+				atelier("blocked", { kind: "question", message: "Review this change?" }),
+			);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("does not report a list of the TUI's own as blocked", async () => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("/mode");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("yolo"));
+			expect(h.screen.statuses).toEqual([atelier("idle")]);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
 	});
 });

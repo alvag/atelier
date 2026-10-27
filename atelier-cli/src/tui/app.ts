@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import {
 	type AtelierEvent,
 	type ClientCommand,
@@ -29,6 +30,7 @@ import { Conversation } from "./conversation.ts";
 import { type Choice, ChoiceDialog } from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
 import { type FooterState, footerAfter, footerLine, footerWithConfiguration, footerWithMode } from "./footer.ts";
+import { ProgramStatusReporter, settledState } from "./program-status.ts";
 import {
 	choicesOf,
 	LIST_ROWS,
@@ -95,6 +97,9 @@ const asker = (event: AtelierEvent) =>
 	event.parentCallId === undefined
 		? ""
 		: ` (asked by ${event.agent === undefined ? "a subagent" : shown(event.agent).text})`;
+
+/** What a question of the core says to the terminal while it waits. */
+type Blocked = { kind: "permission" | "question"; message: string };
 
 /** The question an approval asks, worded as the CLI's yes/no question. */
 function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_requested" }>): {
@@ -351,13 +356,21 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		finish = resolve;
 	});
 	/** Questions waiting for an answer, the first one on screen. */
-	const questions: { dialog: Component; cancel: () => void; local: boolean }[] = [];
+	const questions: { dialog: Component; cancel: () => void; local: boolean; blocked?: Blocked | undefined }[] = [];
+	const programStatus = new ProgramStatusReporter(options.terminal);
+	/** What the terminal is told while a turn runs: blocked when the core's own question is on screen. */
+	const reportRunning = () => {
+		const blocked = questions[0]?.blocked;
+		if (blocked) programStatus.report("blocked", blocked);
+		else if (busy) programStatus.report("working");
+	};
 
 	const setBusy = (on: boolean) => {
 		busy = on;
 		editor.disableSubmit = busy || commanding;
 		status.clear();
 		if (on) {
+			reportRunning();
 			status.addChild(loader);
 			loader.start();
 		} else loader.stop();
@@ -375,12 +388,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		question: { title: string; lines: string[]; choices: Choice<T>[]; initial: T; cancel: T; rows?: number },
 		answer: (value: T) => void,
 		local = false,
+		blocked?: Blocked,
 	) => {
 		let answered = false;
 		const entry = {
 			dialog: new ChoiceDialog(question, paint, (value: T) => settle(value)),
 			cancel: () => settle(question.cancel),
 			local,
+			blocked,
 		};
 		const settle = (value: T) => {
 			if (answered) return;
@@ -389,14 +404,17 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			if (at !== -1) questions.splice(at, 1);
 			answer(value);
 			showQuestion();
+			reportRunning();
 		};
 		questions.push(entry);
 		if (questions.length === 1) showQuestion();
+		reportRunning();
 	};
 	/** Drops the questions on screen: the core denied or dropped its own; the TUI's own lists close as with Esc. */
 	const dropQuestions = () => {
 		for (const dropped of questions.splice(0)) if (dropped.local) dropped.cancel();
 		showQuestion();
+		reportRunning();
 	};
 	const request = (command: ClientCommand) =>
 		link.request(command).catch((error: unknown) => {
@@ -446,6 +464,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				},
 				(value) =>
 					void request({ command: "session.approve", sessionId, callId: event.callId, approved: value === "allow" }),
+				false,
+				{ kind: "permission", message: approvalQuestion(event).title },
 			);
 		else if (event.type === "review_consent_requested")
 			ask(
@@ -460,10 +480,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 					cancel: "declined",
 				},
 				(answer) => void request({ command: "session.review_consent", sessionId, reviewId: event.reviewId, answer }),
+				false,
+				{ kind: "question", message: "Review this change?" },
 			);
 		else if (event.type === "turn_finished" && event.parentCallId === undefined) {
 			dropQuestions();
 			setBusy(false);
+			programStatus.report(settledState(event.stopReason));
 		}
 		tui.requestRender();
 	};
@@ -485,7 +508,10 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		interrupted = false;
 		setBusy(true);
 		const answer = await request(command);
-		if (answer === undefined) setBusy(false);
+		if (answer === undefined) {
+			setBusy(false);
+			programStatus.report("idle");
+		}
 	};
 	const interrupt = () => {
 		interrupted = true;
@@ -806,6 +832,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const removeExit = link.onExit(coreExited);
 	const removeTerminate = options.onTerminate?.((signal) => quit(SIGNAL_EXIT + signal));
 	tui.start();
+	options.terminal.setTitle(`Atelier - ${basename(args.cwd)}`);
+	programStatus.report("idle");
 	try {
 		return await done;
 	} finally {
@@ -814,6 +842,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		removeExit();
 		removeTerminate?.();
 		loader.stop();
+		programStatus.clear();
 		tui.stop();
 		// A core that does not answer must not keep the terminal's owner waiting: close the link anyway.
 		let timer: NodeJS.Timeout | undefined;
