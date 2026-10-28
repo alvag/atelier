@@ -161,9 +161,19 @@ it("keeps the cached models when the answer fails, is broken or never comes", as
 		handler = failing;
 		expect(await refreshSource(file, source(), { now: 2_000, force: true, timeoutMs: 100 })).toBe("failed");
 		const catalog = await readCatalog(file);
-		expect(catalog.sources["models.dev"]).toMatchObject({ etag: '"v1"', checkedAt: 2_000 });
+		expect(catalog.sources["models.dev"]).toMatchObject({ etag: '"v1"', checkedAt: 1_000 });
 		expect(modelDataOf(catalog).model("anthropic-api", "claude-new-6")?.contextWindow).toBe(1_000_000);
 	}
+});
+
+it("asks again at the next refresh after a failure, not only after the interval", async () => {
+	handler = json(MODELS_DEV, { etag: '"v1"' });
+	await refreshSource(file, source(), { now: 1_000, intervalMs: 500 });
+	handler = json({ error: "down" }, {}, 500);
+	expect(await refreshSource(file, source(), { now: 1_600, intervalMs: 500 })).toBe("failed");
+	handler = json(MODELS_DEV, { etag: '"v2"' });
+	expect(await refreshSource(file, source(), { now: 1_700, intervalMs: 500 })).toBe("changed");
+	expect((await readCatalog(file)).sources["models.dev"]).toMatchObject({ etag: '"v2"', checkedAt: 1_700 });
 });
 
 it("fails without a server and writes the file whole, leaving no temporary behind", async () => {

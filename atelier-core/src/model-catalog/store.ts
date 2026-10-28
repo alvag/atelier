@@ -106,7 +106,7 @@ export interface RefreshOptions {
 
 /**
  * `fresh`: asked within the interval, not asked again. `changed` and `unchanged`: what the source answered.
- * `failed`: no answer; the cached one stays, and it is asked again after the interval.
+ * `failed`: no answer; the cached one stays as it was, and the source is asked again at the next refresh.
  */
 export type RefreshOutcome = "fresh" | "changed" | "unchanged" | "failed";
 
@@ -126,10 +126,10 @@ export async function refreshSource(
 	} catch {
 		result = undefined;
 	}
-	// A first request that failed leaves nothing behind, so the next start asks again.
-	if (result === undefined && previous === undefined) return "failed";
+	// A failure leaves the file as it was, so the next refresh asks again instead of waiting out the interval.
+	if (result === undefined) return "failed";
 	try {
-		if (result?.kind === "changed")
+		if (result.kind === "changed")
 			await saveSource(file, source.name, {
 				checkedAt: now,
 				...(result.etag === undefined ? {} : { etag: result.etag }),
@@ -139,7 +139,7 @@ export async function refreshSource(
 	} catch {
 		return "failed";
 	}
-	return result === undefined ? "failed" : result.kind;
+	return result.kind;
 }
 
 /**
