@@ -3067,3 +3067,23 @@ describe("the notice of the last verification", () => {
 		expect(s.main.prompts[1]).not.toContain("verification");
 	});
 });
+
+describe("the length of the notice", () => {
+	it("cuts a long verification reason to one short line", async () => {
+		const unverified = { ...vrequirement, id: "R2", verdict: "unverified", evidence: "e".repeat(5000) };
+		const roles = new RoleBackend(verifying(vreport([], [vrequirement, unverified])));
+		const turn: FakeStep[] = [
+			call("risk", { items: [2], reason: "guards the bash approval" }),
+			change("a.ts", "base\ncandidate\n"),
+			{ event: finished },
+		];
+		const s = await start({ turns: [turn, [{ event: finished }]], roles, consent: "declined" });
+		await s.send("edit");
+		await s.send("next");
+		const prompt = s.main.prompts[1] ?? "";
+		const reason = prompt.split("\n").find((line) => line.startsWith("Atelier's verification")) ?? "";
+		expect(reason.endsWith("…")).toBe(true);
+		for (const line of prompt.split("\n")) expect(line.length).toBeLessThanOrEqual(300);
+		expect(prompt.length).toBeLessThan(2000);
+	});
+});
