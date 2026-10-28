@@ -1,7 +1,8 @@
+import { styleText } from "node:util";
 import type { AtelierEvent, JsonValue } from "@atelier/core";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import { type Paint, painter } from "../src/tui/style.ts";
+import { type Paint, painter, Tones } from "../src/tui/style.ts";
 import { ToolCard } from "../src/tui/tool-card.ts";
 
 const plain = painter(false);
@@ -21,11 +22,11 @@ function card(
 	tool: string,
 	input: JsonValue,
 	finished?: Partial<Finished>,
-	{ took = 0, width = 80, paint = plain }: { took?: number; width?: number; paint?: Paint } = {},
+	{ took = 0, width = 80, paint = plain, tones }: { took?: number; width?: number; paint?: Paint; tones?: Tones } = {},
 ) {
 	const time = clock();
 	const view = { expanded: true };
-	const tc = new ToolCard(tool, input, view, paint, "c1", time.now);
+	const tc = new ToolCard(tool, input, view, paint, "c1", time.now, tones);
 	time.advance(took);
 	if (finished)
 		tc.finish({
@@ -247,5 +248,87 @@ describe("ToolCard", () => {
 	it("highlights a command as bash", () => {
 		const { lines } = card("bash", { command: 'echo "hi" # greet' }, { summary: "echo (exit 0)" }, { paint: tagged });
 		expect(lines[1]).toContain("<dim># greet</>");
+	});
+});
+
+describe("ToolCard backgrounds", () => {
+	/** Colors as a terminal would get them, which `styleText` leaves out when the tests' output is not one. */
+	const colored: Paint = (style, text) => styleText(style, text, { validateStream: false });
+	const DARK = { r: 30, g: 30, b: 30 };
+	const LIGHT = { r: 255, g: 255, b: 255 };
+	const edit = {
+		path: "a.ts",
+		edits: [{ oldText: "const a = 1;\nkeep();", newText: "const a = 2;\nkeep();" }],
+	};
+	const done = { summary: "a.ts (1 edit)", startLines: [1] };
+
+	function tones(background: typeof DARK | undefined, mode: "truecolor" | "256color" = "truecolor") {
+		const t = new Tones(true);
+		t.match(background, mode);
+		return t;
+	}
+
+	/** Each 24-bit background a line sets, as `r,g,b`. */
+	const backgrounds = (line: string) =>
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: the background's sequence is what is matched
+		[...line.matchAll(/\x1b\[48;2;(\d+);(\d+);(\d+)m/g)].map((m) => m.slice(1).map(Number));
+
+	it("puts every line of the card on its own background, the terminal's a little lighter, full width", () => {
+		const { lines } = card("edit", edit, done, { paint: colored, tones: tones(DARK), width: 60 });
+		for (const line of lines) {
+			expect(line.startsWith("\x1b[48;2;")).toBe(true);
+			expect(line.endsWith("\x1b[49m")).toBe(true);
+			expect(visibleWidth(line)).toBe(60);
+		}
+		const [card0] = backgrounds(lines[0] ?? "");
+		for (const channel of card0 ?? []) expect(channel).toBeGreaterThan(30);
+	});
+
+	it("darkens the card's background on a light terminal", () => {
+		const { lines } = card(
+			"bash",
+			{ command: "ls" },
+			{ summary: "ls (exit 0)" },
+			{ paint: colored, tones: tones(LIGHT) },
+		);
+		const [card0] = backgrounds(lines[0] ?? "");
+		for (const channel of card0 ?? []) expect(channel).toBeLessThan(255);
+	});
+
+	it("bands a diff's removed lines in red and added lines in green, highlighting their code over the band", () => {
+		const { lines } = card("edit", edit, done, { paint: colored, tones: tones(DARK) });
+		const find = (text: string) => lines.find((line) => stripTerminalSequences(line).includes(text)) ?? "";
+		const removed = find("1 - const");
+		const added = find("1 + const");
+		const kept = find("keep");
+		const [, removedBand] = backgrounds(removed);
+		const [, addedBand] = backgrounds(added);
+		expect(removedBand?.[0]).toBeGreaterThan(removedBand?.[1] ?? 0);
+		expect(addedBand?.[1]).toBeGreaterThan(addedBand?.[0] ?? 0);
+		expect(new Set(backgrounds(kept).map(String)).size).toBe(1);
+		expect(removed).toContain("\x1b[35mconst\x1b[39m");
+		expect(added).toContain("\x1b[35mconst\x1b[39m");
+		for (const line of [removed, added]) expect(visibleWidth(line)).toBe(80);
+	});
+
+	it("uses the terminal's 256 colors when it has no more", () => {
+		const { lines } = card("edit", edit, done, { paint: colored, tones: tones(DARK, "256color") });
+		expect(lines.join("\n")).toContain("\x1b[48;5;");
+		expect(lines.join("\n")).not.toContain("\x1b[48;2;");
+	});
+
+	it("adds no background until the terminal says its own, and colors a diff's text instead", () => {
+		const { lines } = card("edit", edit, done, { paint: colored, tones: tones(undefined) });
+		const text = lines.join("\n");
+		expect(text).not.toContain("\x1b[48");
+		expect(text).not.toContain("\x1b[10");
+		expect(text).toContain(colored("red", "const a = 1;"));
+	});
+
+	it("adds no escape without color", () => {
+		const off = new Tones(false);
+		off.match(DARK, "truecolor");
+		const { lines } = card("edit", edit, done, { tones: off });
+		expect(lines.join("\n")).not.toContain("\x1b[");
 	});
 });

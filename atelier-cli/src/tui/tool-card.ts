@@ -2,7 +2,7 @@ import { type AtelierEvent, type JsonValue, visibleText } from "@atelier/core";
 import { type Component, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { editView, writeView } from "./code-view.ts";
 import { highlightCode } from "./highlight.ts";
-import { hasColor, type Paint, type Style } from "./style.ts";
+import { hasColor, type Paint, type Style, Tones } from "./style.ts";
 
 /** Whether tool cards show their details, and whether the model's thinking shows; one switch each for the conversation. */
 export interface CardView {
@@ -101,7 +101,7 @@ function fieldLines(input: JsonValue, paint: Paint): string[] {
 
 /**
  * The call's input as the expanded card shows it, in `room` columns: the whole command, the edits as a diff, the
- * start of a written file, the subagent's prompt. `startLines` numbers the diff.
+ * start of a written file, the subagent's prompt. `startLines` numbers the diff, and `tones` bands it.
  */
 function inputLines(
 	tool: string,
@@ -109,6 +109,7 @@ function inputLines(
 	paint: Paint,
 	room: number,
 	startLines: readonly number[] | undefined,
+	tones: Tones,
 ): string[] {
 	const text = (name: string) => field(input, name);
 	switch (tool) {
@@ -121,7 +122,7 @@ function inputLines(
 				oldText: shown(field(edit, "oldText") ?? ""),
 				newText: shown(field(edit, "newText") ?? ""),
 			}));
-			return editView(texts, startLines, paint, room, 2 * MAX_DETAIL_LINES);
+			return editView(shown(text("path") ?? ""), texts, startLines, paint, room, 2 * MAX_DETAIL_LINES, tones);
 		}
 		case "write":
 			return writeView(shown(text("path") ?? ""), shown(text("content") ?? ""), paint, room, MAX_DETAIL_LINES);
@@ -229,19 +230,29 @@ export class ToolCard implements Component {
 	readonly #view: CardView;
 	readonly #paint: Paint;
 	readonly #now: () => Date;
+	readonly #tones: Tones;
 	readonly #startedAt: number;
 	#finished: Extract<AtelierEvent, { type: "tool_call_finished" }> | undefined;
 	#tookMs: number | undefined;
 	#activity: AgentActivity | undefined;
 
-	/** `now` times the call, from the card's start to its finish. */
-	constructor(tool: string, input: JsonValue, view: CardView, paint: Paint, callId = "", now = () => new Date()) {
+	/** `now` times the call, from the card's start to its finish; `tones` are the card's backgrounds. */
+	constructor(
+		tool: string,
+		input: JsonValue,
+		view: CardView,
+		paint: Paint,
+		callId = "",
+		now = () => new Date(),
+		tones = new Tones(false),
+	) {
 		this.tool = tool;
 		this.callId = callId;
 		this.#input = input;
 		this.#view = view;
 		this.#paint = paint;
 		this.#now = now;
+		this.#tones = tones;
 		this.#startedAt = now().getTime();
 	}
 
@@ -307,7 +318,14 @@ export class ToolCard implements Component {
 		return truncateToWidth(`${lead}${cut(subject, room)}${tail}`, width);
 	}
 
+	/** Every line on the card's background to the last column, when there is one. */
 	render(width: number, open = this.#view.expanded): string[] {
+		const lines = this.#lines(width, open);
+		if (!this.#tones.on) return lines;
+		return lines.map((line) => this.#tones.card(`${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`));
+	}
+
+	#lines(width: number, open: boolean): string[] {
 		const paint = this.#paint;
 		const done = this.#finished;
 		const lines = [this.#header(width)];
@@ -316,7 +334,7 @@ export class ToolCard implements Component {
 			lines.push(...indented([paint("yellow", `sandbox blocked: ${shown(cause)}`)], width, "   "));
 		if (!open) return lines;
 		const bar = paint(stateOf(done?.ok).style, hasColor(paint) ? "▎" : "│");
-		const details = inputLines(this.tool, this.#input, paint, Math.max(1, width - 3), done?.startLines);
+		const details = inputLines(this.tool, this.#input, paint, Math.max(1, width - 3), done?.startLines, this.#tones);
 		if (done?.truncated)
 			details.push(
 				paint("dim", done.fullOutputPath ? `full output: ${shown(done.fullOutputPath)}` : "output truncated"),

@@ -1260,6 +1260,29 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(0);
 	});
 
+	it("puts an open tool card on a background of its own once the terminal says its colors", async () => {
+		const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo one" } } }, { event: finished }]]);
+		h.io.color = true;
+		const code = run(["--no-session", "--mode", "yolo"], h.io, () => h.backend);
+		await until(h.screen.started);
+		await until(() => h.screen.raw().includes("\x1b]11;?"));
+		h.screen.type("\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\");
+		h.screen.type("\x1b[?62c");
+		h.screen.type("run");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("\x0f");
+		await until(() => h.screen.screen().includes("$ echo one"));
+		// The card's background is lighter than the terminal's #1e1e1e, and not the prompt's shade.
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: the background's sequence is what is checked
+		const card = /\x1b\[48;(?:2;(\d+);\d+;\d+|5;\d+)m ✓ bash echo one/.exec(h.screen.raw());
+		expect(card).not.toBeNull();
+		if (card?.[1] !== undefined) expect(Number(card[1])).toBeGreaterThan(30);
+		expect(card?.[0]).not.toContain("49;49;49");
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
 	it("expands and folds the tool cards with Ctrl+O", async () => {
 		const h = harness([
 			[{ toolCall: { tool: "bash", input: { command: "echo one\necho two" } } }, { event: finished }],

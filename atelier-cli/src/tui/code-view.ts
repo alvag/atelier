@@ -1,6 +1,6 @@
 import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { highlightCode } from "./highlight.ts";
-import type { Paint } from "./style.ts";
+import type { Band, Paint, Tones } from "./style.ts";
 
 /** Lines of a diff past which a pair of texts that long is shown removed and added whole instead of compared. */
 const MAX_COMPARED = 250_000;
@@ -44,11 +44,12 @@ export function lineDiff(before: readonly string[], after: readonly string[]): C
 	return changes;
 }
 
-/** A line of the view: its number when it has one, its mark, and its text already painted. */
+/** A line of the view: its number when it has one, its mark, its text already painted, and its band. */
 interface Row {
 	number?: number;
 	mark?: Kind;
 	text: string;
+	band?: Band;
 }
 
 const MARKS = { same: " ", removed: "-", added: "+" } as const;
@@ -65,13 +66,13 @@ function capRows(rows: Row[], max: number): Row[] {
 }
 
 /**
- * The rows laid out to `room` columns: the numbers dimmed and lined up, the marks in red and green, and a line too
- * long wrapped under its text, not under its number.
+ * The rows laid out to `room` columns: the numbers dimmed and lined up, the marks in red and green, a line too long
+ * wrapped under its text, not under its number, and a banded row on its band to the last column.
  */
-function layout(rows: Row[], room: number, paint: Paint): string[] {
+function layout(rows: Row[], room: number, paint: Paint, tones?: Tones): string[] {
 	const digits = Math.max(0, ...rows.map(({ number }) => (number === undefined ? 0 : String(number).length)));
 	const marked = rows.some(({ mark }) => mark !== undefined);
-	return rows.flatMap(({ number, mark, text }) => {
+	return rows.flatMap(({ number, mark, text, band }) => {
 		const columns = [
 			...(digits > 0
 				? [number === undefined ? " ".repeat(digits) : paint("dim", String(number).padStart(digits))]
@@ -81,7 +82,11 @@ function layout(rows: Row[], room: number, paint: Paint): string[] {
 		const prefix = columns.length === 0 ? "" : `${columns.join(" ")} `;
 		const indent = " ".repeat(visibleWidth(prefix));
 		const parts = wrapTextWithAnsi(text, Math.max(1, room - indent.length));
-		return (parts.length === 0 ? [""] : parts).map((part, i) => `${i === 0 ? prefix : indent}${part}`);
+		return (parts.length === 0 ? [""] : parts).map((part, i) => {
+			const line = `${i === 0 ? prefix : indent}${part}`;
+			if (band === undefined || tones === undefined) return line;
+			return tones.band(band, `${line}${" ".repeat(Math.max(0, room - visibleWidth(line)))}`);
+		});
 	});
 }
 
@@ -98,16 +103,21 @@ interface Edit {
 
 /**
  * An edit as a diff, each of its edits up to `max` rows: removed lines in red, added in green, the lines both sides
- * share dimmed. With `startLines`, the edits go in the file's order with each line's number, before the edit for
- * what it removes and keeps, after it for what it adds; without them, in the call's order, unnumbered.
+ * share dimmed. On `tones`' bands, the removed and added lines are highlighted by the file's extension instead. With
+ * `startLines`, the edits go in the file's order with each line's number, before the edit for what it removes and
+ * keeps, after it for what it adds; without them, in the call's order, unnumbered.
  */
 export function editView(
+	path: string,
 	edits: readonly Edit[],
 	startLines: readonly number[] | undefined,
 	paint: Paint,
 	room: number,
 	max: number,
+	tones?: Tones,
 ): string[] {
+	const banded = tones?.on === true;
+	const lang = languageOf(path);
 	const numbered = startLines !== undefined && startLines.length === edits.length;
 	const lineCount = (text: string) => text.split("\n").length;
 	const placed = edits.map((edit, index) => {
@@ -127,14 +137,20 @@ export function editView(
 	const rows = placed.flatMap(({ edit, start, shift }, index) => {
 		const before = edit.oldText.split("\n");
 		const after = edit.newText.split("\n");
+		const highlighted = banded
+			? { before: highlightCode(paint, edit.oldText, lang), after: highlightCode(paint, edit.newText, lang) }
+			: undefined;
 		const diff = lineDiff(before, after).map(({ kind, before: b, after: a }): Row => {
 			const line = kind === "added" ? (a as number) : (b as number);
-			const text = kind === "added" ? after[line] : before[line];
+			const text = (kind === "added" ? after[line] : before[line]) ?? "";
 			const number = start === undefined ? undefined : start + line + (kind === "added" ? shift : 0);
-			const painted = kind === "same" ? paint("dim", text ?? "") : paint(MARK_STYLES[kind], text ?? "");
-			return { ...(number === undefined ? {} : { number }), mark: kind, text: painted };
+			const row = { ...(number === undefined ? {} : { number }), mark: kind };
+			if (kind === "same") return { ...row, text: paint("dim", text) };
+			if (highlighted === undefined) return { ...row, text: paint(MARK_STYLES[kind], text) };
+			const code = (kind === "added" ? highlighted.after : highlighted.before)[line] ?? text;
+			return { ...row, text: code, band: kind };
 		});
 		return [...(index > 0 ? [{ text: paint("dim", "⋮") }] : []), ...capRows(diff, max)];
 	});
-	return layout(rows, room, paint);
+	return layout(rows, room, paint, tones);
 }

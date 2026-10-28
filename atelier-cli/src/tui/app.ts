@@ -71,7 +71,7 @@ import {
 } from "./selectors.ts";
 import { readTuiSettings } from "./settings.ts";
 import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
-import { editorTheme, type Paint, painter, Shade } from "./style.ts";
+import { editorTheme, type Paint, painter, Shade, Tones } from "./style.ts";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
 export interface CoreLink {
@@ -388,7 +388,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	}
 	const settings = await readTuiSettings(options.home);
 	const shade = new Shade(options.color);
-	let conversation = new Conversation(paint, args.cwd, shade);
+	const tones = new Tones(options.color);
+	let conversation = new Conversation(paint, args.cwd, shade, undefined, tones);
 	conversation.view.liveThinking = !settings.hideThinking;
 	// A wrong setting does not stop the session: it says what it used instead.
 	for (const warning of settings.warnings) conversation.note(`warning: ${warning}`, true);
@@ -899,7 +900,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 	/** A conversation for the next session, after a rule that ends the one before. */
 	const nextConversation = (title: string) => {
-		const next = new Conversation(paint, args.cwd, shade);
+		const next = new Conversation(paint, args.cwd, shade, undefined, tones);
 		next.view.thinking = conversation.view.thinking === true;
 		next.view.liveThinking = conversation.view.liveThinking !== false;
 		next.addChild(new Text(paint("dim", `── ${title} ──`), 1, 1));
@@ -1261,12 +1262,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const removeTerminate = options.onTerminate?.((signal) => quit(SIGNAL_EXIT + signal));
 	tui.start();
 	void readBranch();
-	// The terminal's colors only refine the shade: a question or an answer that fails leaves the palette's.
+	// The terminal's colors only refine the shade and make the cards' backgrounds: a question or an answer that fails
+	// leaves the palette's shade and no backgrounds.
 	if (shade.on) {
 		const shadeAs = (colors: TerminalColors) => {
 			if (quitting) return;
 			try {
 				shade.match(colors.background, getTerminalColorMode());
+				tones.match(colors.background, getTerminalColorMode());
 			} catch {
 				return;
 			}
