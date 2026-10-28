@@ -175,3 +175,28 @@ it("fails as the endpoint's headers fail, without sending or retrying the reques
 	expect(asked).toBe(1);
 	expect(api.requests).toHaveLength(0);
 });
+
+it("reads a stream whose lines end in CRLF, even split between chunks", async () => {
+	const events = completed([textItem("done")]);
+	const text = events.map((event) => `event: ${event.type}\r\ndata: ${JSON.stringify(event)}\r\n\r\n`).join("");
+	// Every chunk boundary falls between a \r and its \n.
+	const chunks = text.split(/(?<=\r)(?=\n)/);
+	const crlf: ResponsesEndpoint = {
+		url: "https://example.invalid/responses",
+		headers: async () => ({}),
+		fetch: async () =>
+			new Response(
+				new ReadableStream({
+					start(controller) {
+						for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+						controller.close();
+					},
+				}),
+				{ headers: { "content-type": "text/event-stream" } },
+			),
+	};
+	expect(chunks.length).toBeGreaterThan(2);
+	expect(await collect(streamResponse(crlf, body))).toEqual([
+		expect.objectContaining({ type: "done", status: "completed", output: [textItem("done")] }),
+	]);
+});
