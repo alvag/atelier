@@ -40,6 +40,19 @@ export function secretDirectories(home: string): string[] {
 }
 
 /**
+ * Atelier's own credentials: the sign-ins and API keys of `atelier login` and the MCP servers' OAuth tokens. The rest
+ * of `~/.atelier` stays readable; none of it is writable (see `protectedWritePaths`).
+ */
+export function secretFiles(home: string): string[] {
+	return [".atelier/auth.json", ".atelier/mcp-auth.json"].map((path) => join(home, path));
+}
+
+/** Everything no tool or command of the main agent may read: the secret directories and Atelier's credentials. */
+export function secretReadPaths(home: string): string[] {
+	return [...secretDirectories(home), ...secretFiles(home)];
+}
+
+/**
  * The per-user caches and stores of the package managers and build tools, which
  * the agent's commands write so that installing and building keep working:
  * npm, pnpm (its store and cache, on macOS and by XDG), yarn, `~/.cache` and

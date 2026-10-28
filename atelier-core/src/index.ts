@@ -1,3 +1,11 @@
+export {
+	type ApiKeyCredential,
+	AuthStore,
+	AuthStoreError,
+	authFile,
+	type Credential,
+	type OAuthCredential,
+} from "./auth-store.ts";
 export type {
 	AgentBackend,
 	BackendSession,

@@ -2,7 +2,7 @@ import { lstat, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { loadSandboxAdditions, protectedWritePaths } from "./sandbox-config.ts";
-import { secretDirectories } from "./sandbox-paths.ts";
+import { secretReadPaths } from "./sandbox-paths.ts";
 
 export class PathOutsideError extends Error {
 	override name = "PathOutsideError";
@@ -122,12 +122,12 @@ export async function resolveInside(cwd: string, path: string): Promise<string> 
 
 /**
  * The places `read` and `grep` never open when they may leave the working
- * directory: the same secret directories the sandbox hides from `bash`, plus
+ * directory: the same secret directories and credential files the sandbox hides from `bash`, plus
  * the `denyRead` entries of the configuration. Real paths, read at each call
  * like the sandbox does. Throws `SandboxConfigError` for an invalid file.
  */
 export async function protectedReadPaths(cwd: string, home: string = homedir()): Promise<string[]> {
-	const entries = [...secretDirectories(home), ...loadSandboxAdditions({ cwd, home }).denyRead];
+	const entries = [...secretReadPaths(home), ...loadSandboxAdditions({ cwd, home }).denyRead];
 	return Promise.all(entries.map((entry) => realpathAllowMissing(entry)));
 }
 

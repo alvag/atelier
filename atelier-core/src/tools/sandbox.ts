@@ -12,8 +12,8 @@ import {
 	includedConfigFiles,
 	libraryProtectedPaths,
 	packageCacheDirectories,
-	secretDirectories,
 	secretFilePatterns,
+	secretReadPaths,
 } from "./sandbox-paths.ts";
 
 /**
@@ -356,7 +356,7 @@ export function agentPolicy({
 	const worktree = worktreeGitPaths(worktreeGit);
 	return {
 		filesystem: {
-			denyRead: [...secretDirectories(home), ...(additions?.denyRead ?? [])],
+			denyRead: [...secretReadPaths(home), ...(additions?.denyRead ?? [])],
 			allowWrite: [
 				cwd,
 				tempDir,
