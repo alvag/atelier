@@ -5,8 +5,10 @@ import type { Paint } from "./style.ts";
 /** Whether tool cards show their details, and whether the model's thinking shows; one switch each for the conversation. */
 export interface CardView {
 	expanded: boolean;
-	/** Absent counts as shown. */
+	/** Whether all of the model's thinking is open, as Ctrl+R leaves it; absent counts as folded. */
 	thinking?: boolean;
+	/** Whether the thinking shows while it arrives, before it folds; absent counts as shown. */
+	liveThinking?: boolean;
 	/** Counts the switches: what a click opened or folded holds until the next one. */
 	epoch?: number;
 }

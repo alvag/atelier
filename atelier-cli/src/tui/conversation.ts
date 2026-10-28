@@ -76,7 +76,7 @@ class AgentText implements Component {
  * phase is left to the footer.
  */
 export class Conversation extends Container {
-	readonly view: CardView = { expanded: false, thinking: true };
+	readonly view: CardView = { expanded: false };
 	readonly #paint: Paint;
 	readonly #shade: Shade;
 	readonly #now: () => Date;
@@ -134,9 +134,9 @@ export class Conversation extends Container {
 		this.view.epoch = (this.view.epoch ?? 0) + 1;
 	}
 
-	/** Opens or folds the model's thinking. */
+	/** Opens or folds all of the model's thinking. */
 	toggleThinking(): void {
-		this.view.thinking = this.view.thinking === false;
+		this.view.thinking = this.view.thinking !== true;
 		this.view.epoch = (this.view.epoch ?? 0) + 1;
 	}
 
@@ -373,6 +373,7 @@ export class Conversation extends Container {
 	#appendText(delta: string): void {
 		if (this.#text === undefined) {
 			const block = new Markdown("", 0, 0, markdownTheme(this.#paint));
+			this.#activity?.end();
 			this.#activity = undefined;
 			this.#text = { block, source: "" };
 			this.addChild(new AgentText(block, this.#paint));
@@ -395,6 +396,7 @@ export class Conversation extends Container {
 	/** Shows a block after everything so far; the agent's next text starts a block of its own. */
 	#add(block: Component): void {
 		this.#text = undefined;
+		this.#activity?.end();
 		this.#activity = undefined;
 		this.addChild(block);
 	}
