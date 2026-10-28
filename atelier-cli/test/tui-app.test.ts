@@ -998,7 +998,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("then docs");
 		h.screen.type("\x1b\r");
 		await until(() => h.screen.screen().includes("↳ follow-up: then docs"));
-		expect(h.screen.screen()).toContain("Alt+↑ edit");
+		expect(h.screen.screen()).toContain("Shift+↑ edit");
 		// A command waits for the turn to end, in the editor.
 		h.screen.type("/status");
 		h.screen.type("\r");
@@ -1045,7 +1045,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(0);
 	});
 
-	it("takes the queue back to the editor with Alt+Up and when the turn is interrupted", async () => {
+	it("takes the queue back to the editor with Shift+Up or Alt+Up and when the turn is interrupted", async () => {
 		const h = harness([
 			[{ event: { type: "text_delta", text: "working" } }, { waitForInterrupt: true }],
 			[{ event: finished }],
@@ -1064,14 +1064,23 @@ describe("TUI", { timeout: 20_000 }, () => {
 		const drawn = (text: string) => h.screen.screen().split(text).length - 1;
 		const queued = () =>
 			h.core.commands.flatMap((command) => (command.command === "session.queue" ? [command.text] : []));
+		const unqueued = () => h.core.commands.filter((command) => command.command === "session.unqueue").length;
 		let before = drawn("two");
-		h.screen.type("\x1b[1;3A");
-		await until(() => h.core.commands.some((command) => command.command === "session.unqueue"));
+		h.screen.type("\x1b[1;2A");
+		await until(() => unqueued() === 1);
 		await until(() => drawn("two") > before);
 		// What came back is in the editor: Enter queues it again, as one steer.
 		h.screen.type("\r");
 		await until(() => queued().at(-1) === "one\n\ntwo");
-		await until(() => h.screen.screen().includes("↳ steer: one"));
+		await until(() => h.screen.screen().includes("↳ steer: one two"));
+		// Alt+Up takes it back too, where the terminal sends Option as Alt.
+		before = drawn("two");
+		h.screen.type("\x1b[1;3A");
+		await until(() => unqueued() === 2);
+		await until(() => drawn("two") > before);
+		h.screen.type("\r");
+		await until(() => queued().length === 4);
+		expect(queued().at(-1)).toBe("one\n\ntwo");
 		before = drawn("two");
 		h.screen.type("\x1b");
 		await until(() => h.screen.screen().includes("interrupted"));

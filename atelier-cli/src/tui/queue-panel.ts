@@ -30,7 +30,8 @@ export class QueuePanel implements Component {
 		});
 		const more = this.messages.length - SHOWN;
 		if (more > 0) lines.push(`… ${more} more`);
-		if (!this.asking) lines.push("Alt+↑ edit");
+		// Shift+Up works without setting up the terminal; Alt+Up too where Option is sent as Alt.
+		if (!this.asking) lines.push("Shift+↑ edit");
 		return lines.map((line) => this.#paint("dim", truncateToWidth(` ${line}`, width)));
 	}
 }
