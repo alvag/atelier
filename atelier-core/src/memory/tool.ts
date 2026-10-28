@@ -124,10 +124,13 @@ const VALUE_MASKS: RegExp[] = [
 const COMMAND_TOKEN =
 	/(?<!\\)([;&|()`\n])|(['"])|(?<![\w.-])(curl|wget)(?:\.exe)?(?![\w.-])|(?<!\S)(-[uU]|--(?:user|proxy-user|(?:(?:http|ftp|proxy)-)?passw(?:or)?d)(?=[=\s]|$))/g;
 
-/** Just past the first `quote` from `from` (a backslash escapes inside double quotes), or -1 when none closes it. */
-function pastQuote(text: string, quote: string, from: number): number {
+/**
+ * Just past the first `quote` from `from`, or -1 when none closes it. A backslash escapes inside double quotes and,
+ * with `escapes`, inside `$'...'`.
+ */
+function pastQuote(text: string, quote: string, from: number, escapes = quote === '"'): number {
 	for (let i = from; i < text.length; i++) {
-		if (quote === '"' && text[i] === "\\") i++;
+		if (escapes && text[i] === "\\") i++;
 		else if (text[i] === quote) return i + 1;
 	}
 	return -1;
@@ -135,20 +138,27 @@ function pastQuote(text: string, quote: string, from: number): number {
 
 /**
  * Where the password of a `user:password` word between `start` and `end` lies: after the first ':', to the word's
- * end, or to the quote that closes the word when the ':' is inside quotes that close it (`'ana:p w'`).
+ * end, or to the quote that closes the word when the ':' is inside quotes that close it (`'ana:p w'`). A backslash
+ * escapes the next character, except inside plain single quotes; an escaped ':' (`ana\:pw`) is still the shell's ':'.
  */
 function passwordAfterColon(text: string, start: number, end: number): [number, number] | undefined {
 	let quote = "";
+	let escapes = false;
 	for (let i = start; i < end; i++) {
-		const c = text[i];
-		if (c === "\\" && quote !== "'") i++;
-		else if (quote === "" && (c === "'" || c === '"')) quote = c;
-		else if (c === quote) quote = "";
-		else if (c === ":") {
-			const closed = quote !== "" && text[end - 1] === quote && pastQuote(text, quote, i + 1) === end;
-			const last = closed ? end - 1 : end;
-			return i + 1 < last ? [i + 1, last] : undefined;
+		let c = text[i];
+		if (c === "\\" && (quote !== "'" || escapes)) c = text[++i] === ":" ? ":" : "";
+		else if (quote === "" && (c === "'" || c === '"')) {
+			quote = c;
+			escapes = c === '"' || text[i - 1] === "$";
+			continue;
+		} else if (c === quote) {
+			quote = "";
+			continue;
 		}
+		if (c !== ":") continue;
+		const closed = quote !== "" && text[end - 1] === quote && pastQuote(text, quote, i + 1, escapes) === end;
+		const last = closed ? end - 1 : end;
+		return i + 1 < last ? [i + 1, last] : undefined;
 	}
 	return undefined;
 }
@@ -164,7 +174,7 @@ function valueEnd(text: string, from: number): number {
 		if (c === " " || c === "\t" || c === "\n") break;
 		if (c === "\\") i += 2;
 		else if (c === "'" || c === '"') {
-			const closed = pastQuote(text, c, i + 1);
+			const closed = pastQuote(text, c, i + 1, c === '"' || text[i - 1] === "$");
 			i = closed === -1 ? i + 1 : closed;
 		} else i++;
 	}
