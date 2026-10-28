@@ -79,6 +79,11 @@ describe("edit where the agent could always write", () => {
 		expect(await text(join(cwd, "inside.txt"))).toBe("beta\n");
 	});
 
+	it("tells the client the line each edit starts at", async () => {
+		const { events } = await run(["inside.txt"]);
+		expect(events.find((event) => event.type === "tool_call_finished")).toMatchObject({ ok: true, startLines: [1] });
+	});
+
 	it("does not ask inside a directory the configuration allows writing", async () => {
 		await writeFile(join(home, ".atelier", "sandbox.json"), JSON.stringify({ allowWrite: [outside] }));
 		const { questions, results } = await run([join(outside, "x.txt")]);
