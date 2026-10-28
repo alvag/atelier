@@ -843,6 +843,10 @@ describe("user prompts", () => {
 			'curl -H \'Authorization: Digest username="x", response="abc"\' https://api.test',
 			'curl -H "Authorization: Digest username=\\"x\\", response=\\"abc\\"" https://api.test',
 			"curl -H 'Proxy-Authorization: NTLM TlRMTVNT' https://api.test",
+			"X-Authorization: abc123secret",
+			"curl -H 'X-Forwarded-Authorization: Basic dXNlcjpwYXNz' https://api.test",
+			'headers:\n  "Authorization": Basic dXNlcjpwYXNz\n  x: 1',
+			"{'Authorization': Basic dXNlcjpwYXNz}",
 		];
 		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
 		for (const prompt of prompts) await send(prompt);
@@ -853,6 +857,10 @@ describe("user prompts", () => {
 			"curl -H 'Authorization: [REDACTED]' https://api.test",
 			'curl -H "Authorization: [REDACTED]" https://api.test',
 			"curl -H 'Proxy-Authorization: [REDACTED]' https://api.test",
+			"X-Authorization: [REDACTED]",
+			"curl -H 'X-Forwarded-Authorization: [REDACTED]' https://api.test",
+			'headers:\n  "Authorization": [REDACTED]\n  x: 1',
+			"{'Authorization': [REDACTED]",
 		]);
 	});
 

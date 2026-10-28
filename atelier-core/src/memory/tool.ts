@@ -96,14 +96,14 @@ function maskUrlPasswords(text: string): string {
 
 /** Credentials told by where they stand, not by their shape: group 1 (the name) stays, the value is replaced. */
 const VALUE_MASKS: RegExp[] = [
-	// The whole value of an Authorization or Proxy-Authorization header, whatever its scheme. A quoted value ends at
+	// The whole value of a header named *Authorization (Proxy-, X-...), whatever its scheme. A quoted value ends at
 	// its closing quote; a header inside quotes (curl's -H '...' or -H "..."), at the quote that closes the header;
 	// any other value, at the end of the line, quotes inside it included. Backslash escapes stay inside.
 	/\b((?:Proxy-)?Authorization["']?[ \t]*[:=][ \t]*")(?:\\.|[^"\\\n])*/gi,
 	/\b((?:Proxy-)?Authorization["']?[ \t]*[:=][ \t]*')(?:\\.|[^'\\\n])*/gi,
-	/(?<=')((?:Proxy-)?Authorization[ \t]*[:=][ \t]*)(?![ \t'])(?:\\.|[^'\\\n])*/gi,
-	/(?<=")((?:Proxy-)?Authorization[ \t]*[:=][ \t]*)(?![ \t"])(?:\\.|[^"\\\n])*/gi,
-	/(?<![-'"A-Za-z0-9_])((?:Proxy-)?Authorization["']?[ \t]*[:=][ \t]*)(?![ \t"'])[^\n]*/gi,
+	/(?<=')([A-Za-z0-9_-]*Authorization'?[ \t]*[:=][ \t]*)(?![ \t'])(?:\\.|[^'\\\n])*/gi,
+	/(?<=")([A-Za-z0-9_-]*Authorization"?[ \t]*[:=][ \t]*)(?![ \t"])(?:\\.|[^"\\\n])*/gi,
+	/(?<![-'"A-Za-z0-9_])([A-Za-z0-9_-]*Authorization["']?[ \t]*[:=][ \t]*)(?![ \t"'])[^\n]*/gi,
 	/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi,
 ];
 
