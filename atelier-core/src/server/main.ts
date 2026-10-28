@@ -40,7 +40,8 @@ Environment:
   ATELIER_SANDBOX=off    Run every session's bash without the macOS sandbox: each command asks,
                          and the verifier gets no bash (session.start can also ask for it)
   ATELIER_LOGIN_CHECK=off
-                         Offer every backend's models in options.list; unset, it asks Claude
+                         Offer every backend's models in options.list, and keep the model
+                         catalog to models.dev, reading no credential; unset, it asks Claude
                          Code, auth.json and the Keychain which backends are signed in
   ATELIER_MODEL_REFRESH=off
                          Offer the models of the code and of ~/.atelier/models.json

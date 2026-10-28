@@ -128,8 +128,8 @@ it("does not ask Anthropic without a key, and lists nothing for it", async () =>
 
 it("does not ask OpenCode Go when it has no key", async () => {
 	routes["/go/v1/models"] = json({ data: [{ id: "grok-4.7" }] });
-	const source = openCodeGoModelsSource({ baseUrl: `${base}/go`, signedIn: async () => false });
-	expect(await refreshCatalog(file, [source])).toEqual({ "opencode-go": "failed" });
+	const source = { ...openCodeGoModelsSource({ baseUrl: `${base}/go` }), available: async () => false };
+	expect(await refreshCatalog(file, [source])).toEqual({ "opencode-go": "skipped" });
 	expect(seen).toHaveLength(0);
 });
 
