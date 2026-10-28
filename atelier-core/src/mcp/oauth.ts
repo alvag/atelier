@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { type OAuthClientProvider, UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -13,6 +13,7 @@ import type {
 	OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { writeSecretFile } from "../secret-file.ts";
 import { VERSION } from "../version.ts";
 import type { HttpServerConfig } from "./config.ts";
 
@@ -67,11 +68,8 @@ export class McpAuthStore {
 			all[authKey(server)] = next;
 			this.#remember(next);
 		}
-		mkdirSync(dirname(this.#file), { recursive: true, mode: 0o700 });
-		const temporary = `${this.#file}.${randomBytes(4).toString("hex")}.tmp`;
-		writeFileSync(temporary, `${JSON.stringify({ servers: all }, null, "\t")}\n`, { mode: 0o600 });
-		chmodSync(temporary, 0o600);
-		renameSync(temporary, this.#file);
+		// Written 0600 in the hidden temporary folder and renamed over the file, never through a link.
+		writeSecretFile(this.#file, `${JSON.stringify({ servers: all }, null, "\t")}\n`);
 	}
 
 	/** Why the file is not `0600`, when it could not be set to it (another user's file, a read-only mount). */

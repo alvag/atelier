@@ -1,8 +1,7 @@
-import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { open, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { ensureSecretFolder, readSecretFile, writeSecretFile } from "./secret-file.ts";
 
 /** A key the provider's API takes as it is. */
 export interface ApiKeyCredential {
@@ -51,8 +50,9 @@ function isCredential(value: unknown): value is Credential {
 
 /**
  * The providers' credentials in `~/.atelier/auth.json`, one entry per provider id (`anthropic`, ...), which only the
- * user can read or write (`0600`, in a `0700` folder). A change locks the file against other processes, reads it
- * again, and replaces it whole with a rename, so a reader never sees half of it and no change is lost.
+ * user can read or write (`0600`, in a `0700` folder; see `secret-file.ts`, which never follows a link). A change locks
+ * the file against other processes, reads it again, and replaces it whole with a rename, so a reader never sees half
+ * of it and no change is lost.
  */
 export class AuthStore {
 	readonly #file: string;
@@ -97,10 +97,9 @@ export class AuthStore {
 
 	/** Every entry as written, those of a shape this version does not know included, so a change keeps them. */
 	#read(): Record<string, unknown> {
-		this.#secure();
 		let parsed: unknown;
 		try {
-			parsed = JSON.parse(readFileSync(this.#file, "utf8"));
+			parsed = JSON.parse(readSecretFile(this.#file) ?? "");
 		} catch {
 			return {};
 		}
@@ -109,25 +108,13 @@ export class AuthStore {
 			: {};
 	}
 
-	/** A file another tool left readable by others is made the user's own again; when that fails, it is still used. */
-	#secure(): void {
-		try {
-			if ((statSync(this.#file).mode & 0o777) !== 0o600) chmodSync(this.#file, 0o600);
-		} catch {
-			// No file, or not ours to change.
-		}
-	}
-
 	async #change(apply: (all: Record<string, unknown>) => void): Promise<void> {
-		mkdirSync(dirname(this.#file), { recursive: true, mode: 0o700 });
+		ensureSecretFolder(dirname(this.#file));
 		const release = await this.#lock();
 		try {
 			const all = this.#read();
 			apply(all);
-			const temporary = `${this.#file}.${randomBytes(4).toString("hex")}.tmp`;
-			writeFileSync(temporary, `${JSON.stringify(all, null, "\t")}\n`, { mode: 0o600 });
-			chmodSync(temporary, 0o600);
-			renameSync(temporary, this.#file);
+			writeSecretFile(this.#file, `${JSON.stringify(all, null, "\t")}\n`);
 		} finally {
 			await release();
 		}
