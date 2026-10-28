@@ -43,6 +43,8 @@ export interface ResponsesRequest {
 	/** Sent only when given; the encrypted reasoning comes back with it, to send again with the history. */
 	reasoning?: { effort?: string; summary?: "auto" | "concise" | "detailed" };
 	promptCacheKey?: string;
+	/** `none` keeps the tools in the request (and the cached prefix) but lets the model call none. */
+	toolChoice?: "auto" | "none";
 	/** Fields an endpoint adds to every request. */
 	extra?: Record<string, unknown>;
 }
@@ -53,7 +55,7 @@ export function buildResponsesBody(request: ResponsesRequest): Record<string, un
 		instructions: request.instructions,
 		input: request.input,
 		...(request.tools?.length ? { tools: request.tools.map((tool) => ({ ...tool, strict: false })) } : {}),
-		tool_choice: "auto",
+		tool_choice: request.toolChoice ?? "auto",
 		parallel_tool_calls: true,
 		...(request.reasoning ? { reasoning: request.reasoning, include: ["reasoning.encrypted_content"] } : {}),
 		...(request.promptCacheKey ? { prompt_cache_key: request.promptCacheKey } : {}),
