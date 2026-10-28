@@ -197,6 +197,9 @@ async function removeChecked(root: string, dir: string, checked: Checked): Promi
 		await rmdir(trash);
 		return true;
 	} catch {
+		// A process left inside can write again between the owner file and rmdir: the owner file comes back first.
+		if (checked.owner !== undefined)
+			await writeFile(join(trash, OWNER_FILE), checked.owner, { flag: "wx" }).catch(() => {});
 		await putBack(trash, dir);
 		return false;
 	}
