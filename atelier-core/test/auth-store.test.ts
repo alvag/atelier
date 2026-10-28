@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { AuthStore, AuthStoreError, authFile } from "../src/auth-store.ts";
+import { requireIsolatedHome } from "./support/login-isolation.ts";
+
+requireIsolatedHome();
 
 let home: string;
 let file: string;
@@ -29,7 +32,8 @@ it("keeps each provider's credential in ~/.atelier/auth.json, 0600 in a 0700 fol
 	expect((await stat(file)).mode & 0o777).toBe(0o600);
 	expect((await stat(join(home, ".atelier"))).mode & 0o777).toBe(0o700);
 	expect(new AuthStore(file).get("anthropic")).toEqual({ type: "api_key", key: "sk-ant-test-1" });
-	expect(await readdir(join(home, ".atelier"))).toEqual(["auth.json"]);
+	expect((await readdir(join(home, ".atelier"))).sort()).toEqual([".credentials-tmp", "auth.json"]);
+	expect(await readdir(join(home, ".atelier", ".credentials-tmp"))).toEqual([]);
 });
 
 it("removes a provider and says whether it had one", async () => {
@@ -80,7 +84,8 @@ it("takes over a lock left behind by a process that died", async () => {
 	await utimes(`${file}.lock`, old, old);
 	await store.set("anthropic", { type: "api_key", key: "k" });
 	expect(store.get("anthropic")).toEqual({ type: "api_key", key: "k" });
-	expect(await readdir(join(home, ".atelier"))).toEqual(["auth.json"]);
+	expect((await readdir(join(home, ".atelier"))).sort()).toEqual([".credentials-tmp", "auth.json"]);
+	expect(await readdir(join(home, ".atelier", ".credentials-tmp"))).toEqual([]);
 });
 
 it("loses no change when several processes write at once", async () => {

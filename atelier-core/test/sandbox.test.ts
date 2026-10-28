@@ -119,6 +119,7 @@ describe("agentPolicy", () => {
 			"/home/ana/.claude",
 			"/home/ana/.atelier/auth.json",
 			"/home/ana/.atelier/mcp-auth.json",
+			"/home/ana/.atelier/.credentials-tmp",
 			"/home/ana/Documents",
 		]);
 		expect(policy.filesystem.denyWrite).toEqual(
@@ -206,6 +207,7 @@ describe("agentPolicy", () => {
 			"/home/ana/.claude",
 			"/home/ana/.atelier/auth.json",
 			"/home/ana/.atelier/mcp-auth.json",
+			"/home/ana/.atelier/.credentials-tmp",
 		]);
 	});
 

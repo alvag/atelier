@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { SECRET_TEMP_FOLDER } from "../secret-file.ts";
 
 /** Files that hold secrets in a project: no command may write them, wherever they sit under `dir`. */
 export function secretFilePatterns(dir: string): string[] {
@@ -40,11 +41,14 @@ export function secretDirectories(home: string): string[] {
 }
 
 /**
- * Atelier's own credentials: the sign-ins and API keys of `atelier login` and the MCP servers' OAuth tokens. The rest
+ * Atelier's own credentials: the sign-ins and API keys of `atelier login`, the MCP servers' OAuth tokens, and the
+ * folder where they are written before replacing the files, so what a crash leaves there stays hidden. The rest
  * of `~/.atelier` stays readable; none of it is writable (see `protectedWritePaths`).
  */
 export function secretFiles(home: string): string[] {
-	return [".atelier/auth.json", ".atelier/mcp-auth.json"].map((path) => join(home, path));
+	return [".atelier/auth.json", ".atelier/mcp-auth.json", `.atelier/${SECRET_TEMP_FOLDER}`].map((path) =>
+		join(home, path),
+	);
 }
 
 /** Everything no tool or command of the main agent may read: the secret directories and Atelier's credentials. */
