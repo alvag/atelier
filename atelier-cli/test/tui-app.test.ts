@@ -23,6 +23,19 @@ import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
 import { HerdrStatusReporter } from "../src/tui/herdr-status.ts";
 
+/** `/stats` reads as it does, after `held` when a test sets it. */
+const statsRead = vi.hoisted(() => ({ held: undefined as Promise<void> | undefined }));
+vi.mock("../src/tui/stats-command.ts", async (original) => {
+	const command = await original<typeof import("../src/tui/stats-command.ts")>();
+	return {
+		...command,
+		statsNote: async (...args: Parameters<typeof command.statsNote>) => {
+			await statsRead.held;
+			return command.statsNote(...args);
+		},
+	};
+});
+
 const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 };
 const started: AtelierEventBody = { type: "session_started", backend: "fake", model: "m", authSource: "subscription" };
 const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage, costUsd: 0.5 };
@@ -352,6 +365,45 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("/exit");
 		h.screen.type("\r");
 		expect(await code).toBe(0);
+	});
+
+	it("prints a /stats read in the session it was asked in, and reads again in the next one at once", async () => {
+		const h = harness([[{ event: started }, { event: finished }]], { saveSessions: true, columns: 160 });
+		const code = run(["--mode", "auto"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("hi");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		const release: { read?: () => void } = {};
+		statsRead.held = new Promise<void>((resolve) => (release.read = resolve));
+		try {
+			h.screen.type("/stats");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("reading saved sessions…"));
+			h.screen.type("/new");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("── new session ──"));
+			// The session moved on once the one before is closed.
+			await until(() => h.core.commands.some((command) => command.command === "session.close"));
+			h.screen.type("/stats");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().split("reading saved sessions…").length > 2);
+			expect(h.screen.screen()).not.toContain("still reading");
+			release.read?.();
+			await until(() => h.screen.screen().includes("No finished turns yet."));
+			await until(() => h.screen.screen().includes("≈$0.50 subscription"));
+		} finally {
+			statsRead.held = undefined;
+		}
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+		const after = plain(h.screen.raw().slice(h.screen.raw().lastIndexOf("\x1b[?1049l")));
+		const at = (text: string) => after.indexOf(text);
+		// The first session's report stays above the rule, the new session's empty one under it.
+		expect(at("≈$0.50 subscription")).toBeGreaterThan(-1);
+		expect(at("≈$0.50 subscription")).toBeLessThan(at("── new session ──"));
+		expect(at("── new session ──")).toBeLessThan(at("No finished turns yet."));
 	});
 
 	it("says a session that is not saved has no stats of its own", async () => {
