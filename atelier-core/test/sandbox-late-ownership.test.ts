@@ -1,16 +1,19 @@
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
+import { removeShortRoots, shortRoot } from "./short-root.ts";
 
-/** A root short enough for a Unix socket path: the system's temporary folder when it is short (/tmp/claude inside a sandbox), /tmp otherwise. */
-const shortBase = () => (tmpdir().length <= 20 ? tmpdir() : "/tmp");
+// Registered first, so it runs after the file's own clean-up: nothing a test made is left behind, even when it failed.
+afterEach(async () => {
+	expect(await removeShortRoots()).toEqual([]);
+});
 
 it("retains cleanup ownership of an initializer that finishes late", async () => {
 	const previous = process.env.TMPDIR;
-	const root = await mkdtemp(join(shortBase(), "ownership-"));
+	const root = await shortRoot("ownership-");
 	const long = join(root, "x".repeat(80));
 	await mkdir(long);
 	process.env.TMPDIR = long;

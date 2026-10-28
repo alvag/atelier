@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import os, { tmpdir } from "node:os";
@@ -11,9 +11,12 @@ import { createScratchDir, createScratchDirSync, systemTmpdir } from "../src/scr
 import { createBashTool } from "../src/tools/bash.ts";
 import { isInsideSandbox, Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 import { createWebFetchTool } from "../src/tools/web-fetch.ts";
+import { removeShortRoots, shortRoot } from "./short-root.ts";
 
-/** A root short enough for a Unix socket path: the system's temporary folder when it is short (/tmp/claude inside a sandbox), /tmp otherwise. */
-const shortBase = () => (tmpdir().length <= 20 ? tmpdir() : "/tmp");
+// Registered first, so it runs after the file's own clean-up: nothing a test made is left behind, even when it failed.
+afterEach(async () => {
+	expect(await removeShortRoots()).toEqual([]);
+});
 
 const deferred = () => {
 	let resolve!: () => void;
@@ -30,16 +33,16 @@ const drain = async () => {
 let root: string;
 let original: string | undefined;
 let long: string;
-let shortRoot: string;
+let socketRootDir: string;
 let realTmpdir: typeof tmpdir;
 beforeEach(async () => {
 	original = process.env.TMPDIR;
 	realTmpdir = tmpdir;
-	root = await mkdtemp(join(shortBase(), "atelier-deadline-"));
+	root = await shortRoot("atelier-deadline-");
 	long = join(root, "x".repeat(90));
-	shortRoot = join(root, "s");
+	socketRootDir = join(root, "s");
 	await mkdir(long);
-	await mkdir(shortRoot);
+	await mkdir(socketRootDir);
 	process.env.TMPDIR = long;
 });
 afterEach(() => {
@@ -65,7 +68,7 @@ function held(timeout = 1000) {
 		cleanupAfterCommand: () => {},
 		reset: async () => {},
 	};
-	const sandbox = new Sandbox({ platform: "darwin", manager, socketRoot: shortRoot, startTimeoutMs: timeout });
+	const sandbox = new Sandbox({ platform: "darwin", manager, socketRoot: socketRootDir, startTimeoutMs: timeout });
 	return { sandbox, began, end, settled };
 }
 it("updates a pre-existing ESM named import but keeps scratch and bash spills in the original folder", async () => {
@@ -78,7 +81,7 @@ it("updates a pre-existing ESM named import but keeps scratch and bash spills in
 		return value;
 	});
 	try {
-		expect(tmpdir()).toBe(join(shortRoot, `atelier-${process.getuid?.() ?? 0}`));
+		expect(tmpdir()).toBe(join(socketRootDir, `atelier-${process.getuid?.() ?? 0}`));
 		expect(os.tmpdir()).toBe(tmpdir());
 		expect(process.env.TMPDIR).toBe(long);
 		expect(systemTmpdir()).toBe(long);
@@ -212,11 +215,11 @@ it.skipIf(process.platform !== "darwin" || isInsideSandbox())(
 				await runtime.reset();
 			},
 		};
-		const sandbox = new Sandbox({ platform: "darwin", manager, socketRoot: shortRoot, startTimeoutMs: 1000 });
+		const sandbox = new Sandbox({ platform: "darwin", manager, socketRoot: socketRootDir, startTimeoutMs: 1000 });
 		const ready = sandbox.status();
 		try {
 			await realReady.promise;
-			const short = join(shortRoot, `atelier-${process.getuid?.() ?? 0}`);
+			const short = join(socketRootDir, `atelier-${process.getuid?.() ?? 0}`);
 			const before = await readdir(short);
 			expect(before.some((name) => name.startsWith("srt-mux-"))).toBe(true);
 			expect(await ready).toEqual({ available: false, failed: true, reason: "the sandbox did not start within 1 s" });

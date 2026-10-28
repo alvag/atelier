@@ -1,17 +1,19 @@
-import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
+import { removeShortRoots, shortRoot } from "./short-root.ts";
 
-/** A root short enough for a Unix socket path: the system's temporary folder when it is short (/tmp/claude inside a sandbox), /tmp otherwise. */
-const shortBase = () => (tmpdir().length <= 20 ? tmpdir() : "/tmp");
+// Registered first, so it runs after the file's own clean-up: nothing a test made is left behind, even when it failed.
+afterEach(async () => {
+	expect(await removeShortRoots()).toEqual([]);
+});
 
 it.skipIf(process.platform !== "darwin" || isInsideSandbox()).each([101, 102, 103])(
 	"starts in TMPDIR itself when its socket path is %i bytes, without touching an invalid short folder",
 	async (bytes) => {
 		const previous = process.env.TMPDIR;
-		const root = await mkdtemp(join(shortBase(), "atelier-boundary-"));
+		const root = await shortRoot("atelier-boundary-");
 		const suffix = `/srt-mux-${process.pid}-0.sock`;
 		const targetLength = bytes - Buffer.byteLength(suffix);
 		const dir = join(root, "x".repeat(targetLength - Buffer.byteLength(root) - 1));
