@@ -95,7 +95,7 @@ function fieldLines(input: JsonValue, paint: Paint): string[] {
 			const [first = "", ...rest] = shown(value).split("\n").map(clipLine);
 			return [`${name} ${first}`, ...rest.map((line) => `${" ".repeat(pad + 1)}${line}`)];
 		}
-		const text = shown(JSON.stringify(value));
+		const text = clipLine(shown(JSON.stringify(value)));
 		return [`${name} ${typeof value === "object" && value !== null ? text : paint("yellow", text)}`];
 	});
 	return cappedLines(lines, MAX_DETAIL_LINES);

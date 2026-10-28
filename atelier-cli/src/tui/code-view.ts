@@ -142,20 +142,26 @@ export function editView(
 	const lang = languageOf(path);
 	const numbered = startLines !== undefined && startLines.length === edits.length;
 	const lineCount = (text: string) => text.split("\n").length;
-	const placed = edits.map((edit, index) => {
-		const start = numbered ? (startLines[index] as number) : undefined;
-		// What the edits before it in the file added or removed moves its new lines.
-		const shift =
-			start === undefined
-				? 0
-				: edits.reduce(
-						(sum, other, k) =>
-							(startLines?.[k] ?? start) < start ? sum + lineCount(other.newText) - lineCount(other.oldText) : sum,
-						0,
-					);
-		return { edit, start, shift };
-	});
-	if (numbered) placed.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+	const placed = edits.map((edit, index) => ({
+		edit,
+		start: numbered ? (startLines[index] as number) : undefined,
+		shift: 0,
+	}));
+	if (numbered) {
+		placed.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+		// What the edits before it in the file added or removed moves its new lines; one starting on the same line moves none.
+		let moved = 0;
+		for (let i = 0; i < placed.length; ) {
+			let next = i;
+			while (next < placed.length && placed[next]?.start === placed[i]?.start) next++;
+			const shift = moved;
+			for (const one of placed.slice(i, next)) {
+				one.shift = shift;
+				moved += lineCount(one.edit.newText) - lineCount(one.edit.oldText);
+			}
+			i = next;
+		}
+	}
 	const rows = placed.flatMap(({ edit, start, shift }, index) => {
 		const before = edit.oldText.split("\n").map(clipLine);
 		const after = edit.newText.split("\n").map(clipLine);
