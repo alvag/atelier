@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ZERO_USAGE } from "../src/events.ts";
 import { freezeCandidate } from "../src/review/candidate.ts";
 import type { Finding } from "../src/review/findings.ts";
@@ -16,6 +16,10 @@ import {
 } from "../src/review/reviewer.ts";
 import { assessRisk, type Lens } from "../src/review/risk.ts";
 import { parseResults, parseVerdicts } from "../src/review/roles.ts";
+
+// Slow by nature, not by waiting: a review test builds a repository and freezes its candidate up to three times,
+// about 40 to 55 git processes; under heavy load 5 s is not enough.
+vi.setConfig({ testTimeout: 30_000 });
 
 const dirs: string[] = [];
 afterEach(async () => {

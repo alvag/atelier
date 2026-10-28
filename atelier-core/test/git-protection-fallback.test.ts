@@ -2,11 +2,15 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { FakeBackend, type FakeStep, Session } from "../src/index.ts";
 import { createBashTool } from "../src/tools/bash.ts";
 import { createEditTool, createWriteTool } from "../src/tools/index.ts";
 import { isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
+
+// Slow by nature, not by waiting: each edit or write test runs about 80 git processes to work out the protected
+// places, and the bash test starts the real sandbox; under heavy load 5 s is not enough.
+vi.setConfig({ testTimeout: 30_000 });
 
 const finished: FakeStep = {
 	event: { type: "turn_finished", stopReason: "end_turn", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } },
