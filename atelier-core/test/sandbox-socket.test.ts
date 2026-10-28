@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +33,12 @@ afterEach(async () => {
 });
 
 /** A library whose initialize records the temporary folder it sees and waits until `release` is called. */
-function heldManager(): { manager: SandboxManagerLike; seen: string[]; started: Promise<void>; release: () => void } {
+function heldManager(onInitialize?: () => void): {
+	manager: SandboxManagerLike;
+	seen: string[];
+	started: Promise<void>;
+	release: () => void;
+} {
 	const seen: string[] = [];
 	let release!: () => void;
 	const released = new Promise<void>((resolve) => {
@@ -47,6 +53,7 @@ function heldManager(): { manager: SandboxManagerLike; seen: string[]; started: 
 		checkDependencies: () => ({ errors: [], warnings: [] }),
 		async initialize() {
 			seen.push(tmpdir());
+			onInitialize?.();
 			started();
 			await released;
 		},
@@ -163,13 +170,56 @@ describe("Atelier's temporary directories while the library starts in the short 
 
 	it("the library waits for a scratch directory already being made", async () => {
 		process.env.TMPDIR = longTemp;
-		const { manager, seen, release } = heldManager();
+		// What of the scratch directory exists when the library starts: all of it, work/ included, or it did not wait.
+		const atStart: string[] = [];
+		const { manager, seen, release } = heldManager(() => {
+			for (const name of readdirSync(longTemp))
+				if (name.startsWith("atelier-verify-")) atStart.push(...readdirSync(join(longTemp, name)));
+		});
 		release();
 		const scratch = createScratchDir("verify");
 		const status = new Sandbox({ platform: "darwin", manager, socketRoot }).status();
 		const { path } = await scratch;
-		// The library started only after the directory existed, in the real TMPDIR.
+		expect(await status).toEqual({ available: true });
 		expect(path.startsWith(`${longTemp}/atelier-verify-`)).toBe(true);
+		expect(atStart.sort()).toEqual([".atelier-owner", "work"]);
+		expect(seen).toEqual([join(socketRoot, `atelier-${uid}`)]);
+	});
+
+	it("the library waits for a sweep already running", async () => {
+		process.env.TMPDIR = longTemp;
+		const live = join(longTemp, "atelier-bash-BBBBBB");
+		await mkdir(join(live, "work"), { recursive: true });
+		await writeFile(join(live, ".atelier-owner"), JSON.stringify({ pid: 999_999_999, startedAt: 0 }));
+		// The sweep holds on asking when the owner started, until `answer` is called.
+		let answer!: () => void;
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		let asked!: () => void;
+		const asking = new Promise<void>((resolve) => {
+			asked = resolve;
+		});
+		const sweep = sweepStaleScratch({
+			processes: {
+				isAlive: () => true,
+				startedAt: async () => {
+					asked();
+					await answered;
+					return 0;
+				},
+			},
+		});
+		await asking;
+		const { manager, seen, release } = heldManager();
+		release();
+		const status = new Sandbox({ platform: "darwin", manager, socketRoot }).status();
+		const done = settled(status);
+		await drain();
+		expect(seen).toEqual([]);
+		expect(done()).toBe(false);
+		answer();
+		expect(await sweep).toEqual([]);
 		expect(await status).toEqual({ available: true });
 		expect(seen).toEqual([join(socketRoot, `atelier-${uid}`)]);
 	});
