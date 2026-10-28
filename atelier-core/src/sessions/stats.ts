@@ -137,7 +137,11 @@ type FileRead = { ok: true; cwd: string; turns: Turn[] } | { ok: false; code: Sk
 const WANTED = /^\{"type":"config"|"type":"turn_finished"|"type":"session_started"/;
 
 async function readFile(path: string): Promise<FileRead> {
-	const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
+	// What the file holds now, and nothing written after: a running session's recorder keeps appending to it.
+	const size = (await stat(path)).size;
+	if (size === 0) return { ok: false, code: "corrupt", message: "the file is empty" };
+	const input = createReadStream(path, { encoding: "utf8", start: 0, end: size - 1 });
+	const lines = createInterface({ input, crlfDelay: Infinity });
 	let number = 0;
 	let cwd = "";
 	let createdAt = 0;
@@ -221,17 +225,17 @@ async function readFile(path: string): Promise<FileRead> {
 		roleTurns = [];
 	}
 	if (number === 0) return { ok: false, code: "corrupt", message: "the file is empty" };
-	if (unreadable !== undefined && (unreadable < number || (await endsWithNewline(path))))
+	if (unreadable !== undefined && (unreadable < number || (await endsWithNewline(path, size))))
 		return { ok: false, code: "corrupt", message: `line ${unreadable} is not valid JSON` };
 	if (unreadable === 1)
 		return { ok: false, code: "corrupt", message: `the first line is not an ${SESSION_KIND} header` };
 	return { ok: true, cwd, turns };
 }
 
-async function endsWithNewline(path: string): Promise<boolean> {
+/** Whether the first `size` bytes of the file end with a newline: what was read, not what was appended since. */
+async function endsWithNewline(path: string, size: number): Promise<boolean> {
 	const file = await open(path, "r");
 	try {
-		const { size } = await file.stat();
 		const last = Buffer.alloc(1);
 		await file.read(last, 0, 1, size - 1);
 		return last.toString() === "\n";
