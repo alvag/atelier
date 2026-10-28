@@ -336,12 +336,13 @@ export class ToolCard implements Component {
 			lines.push(...indented([paint("yellow", `sandbox blocked: ${shown(cause)}`)], width, "   "));
 		if (!open) return lines;
 		const bar = paint(stateOf(done?.ok).style, hasColor(paint) ? "▎" : "│");
-		const details = inputLines(this.tool, this.#input, paint, Math.max(1, width - 3), done?.startLines, this.#tones);
+		const details = inputLines(this.tool, this.#input, paint, Math.max(1, width - 5), done?.startLines, this.#tones);
 		if (done?.truncated)
 			details.push(
 				paint("dim", done.fullOutputPath ? `full output: ${shown(done.fullOutputPath)}` : "output truncated"),
 			);
-		lines.push(...indented(details, width, ` ${bar} `));
+		// The bar under the header's name and the details two columns right of it, so they never read as another call.
+		lines.push(...indented(details, width, `   ${bar} `));
 		if (this.#activity) lines.push(...indented(this.#activity.details(paint), width, "     "));
 		return lines;
 	}

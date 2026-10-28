@@ -271,9 +271,9 @@ describe("Conversation", () => {
 		);
 		expect(text).toContain("⎿ ▾ Ran 1 command · edited 1 file");
 		expect(text).toContain("✓ bash pnpm test · exit 0");
-		expect(text).toContain("│ $ pnpm test\n   │   --run");
+		expect(text).toContain("│ $ pnpm test\n     │   --run");
 		expect(text).toContain("│ full output: /tmp/out.txt");
-		expect(text).toContain("│ - old\n   │ + new");
+		expect(text).toContain("│ - old\n     │ + new");
 	});
 
 	it("groups a subagent's work under its task call, with its tools and cost", () => {
