@@ -957,22 +957,26 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		conversation.note([...setup, cost].join("\n"));
 	};
 
-	/** Whether a `/stats` is reading the saved sessions; one reads at a time. */
-	let readingStats = false;
-	/** Reads the saved sessions in the background, so the editor and a running turn go on; it says when it is done. */
+	/** The conversations whose `/stats` is reading the saved sessions; each session reads one at a time. */
+	const readingStats = new Set<Conversation>();
+	/**
+	 * Reads the saved sessions in the background, so the editor and a running turn go on; it says when it is done, in
+	 * the conversation of the session it was asked in, even once `/new` or `/resume` moved on to another.
+	 */
 	const runStats = (words: readonly string[]) => {
+		const shownIn = conversation;
 		const asked = parseStatsCommand(words);
-		if (asked === undefined) return conversation.note(`usage: ${STATS_USAGE}`, true);
-		if (readingStats) return conversation.note("stats: still reading the saved sessions");
-		readingStats = true;
-		conversation.note("reading saved sessions…");
+		if (asked === undefined) return shownIn.note(`usage: ${STATS_USAGE}`, true);
+		if (readingStats.has(shownIn)) return shownIn.note("stats: still reading the saved sessions");
+		readingStats.add(shownIn);
+		shownIn.note("reading saved sessions…");
 		void statsNote(asked, { home: options.home, cwd: args.cwd, savedId }, Date.now())
 			.then(
-				({ text, warn }) => conversation.note(text, warn),
-				(error: unknown) => conversation.note(`error: ${describeError(error)}`, true),
+				({ text, warn }) => shownIn.note(text, warn),
+				(error: unknown) => shownIn.note(`error: ${describeError(error)}`, true),
 			)
 			.finally(() => {
-				readingStats = false;
+				readingStats.delete(shownIn);
 				tui.requestRender();
 			});
 	};
