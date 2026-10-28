@@ -10,6 +10,10 @@ import { requireIsolatedHome } from "./support/login-isolation.ts";
 requireIsolatedHome();
 
 let home: string;
+
+/** A lock as Atelier writes it, its fields in any order; this machine's when no host is given. */
+const lockOf = (fields: { pid: number | undefined; host?: string }) =>
+	JSON.stringify({ id: randomUUID(), host: fields.host ?? hostname(), pid: fields.pid });
 let file: string;
 
 beforeEach(async () => {
@@ -241,7 +245,7 @@ it("lets one waiter at a time take over a dead holder's lock, so each stale cred
 	for (let round = 1; round <= rounds; round++) {
 		await store.set("openai-codex", { type: "oauth", access: `a-${round}`, refresh: `r-${round}`, expires: 0 });
 		// Left by the process that died, in one round named and in the next from an older Atelier, empty and old.
-		await writeFile(`${file}.lock`, round % 2 === 0 ? `${dead.pid} ${hostname()} gone` : "");
+		await writeFile(`${file}.lock`, round % 2 === 0 ? lockOf({ pid: dead.pid }) : "");
 		const old = new Date(Date.now() - 60_000);
 		await utimes(`${file}.lock`, old, old);
 		await Promise.all(
@@ -270,7 +274,7 @@ it("judges another machine's lock by its age alone, which its holder keeps young
 	// A process id that does not run here may run on the other machine that shares this home.
 	const dead = spawn(process.execPath, ["-e", ""]);
 	await new Promise((resolve) => dead.once("exit", resolve));
-	await writeFile(`${file}.lock`, `${dead.pid} another-host.example ${randomUUID()}`);
+	await writeFile(`${file}.lock`, lockOf({ pid: dead.pid, host: "another-host.example" }));
 	const failed = await new AuthStore(file, { lockTimeoutMs: 200, staleLockMs: 60_000 })
 		.set("anthropic", { type: "api_key", key: "k" })
 		.catch((error: unknown) => error);
@@ -298,7 +302,7 @@ it.skipIf(upTime === undefined)(
 	async () => {
 		await mkdir(join(home, ".atelier"), { recursive: true });
 		// This process runs: as a pid reused after a reboot would.
-		await writeFile(`${file}.lock`, `${process.pid} ${hostname()} ${randomUUID()}`);
+		await writeFile(`${file}.lock`, lockOf({ pid: process.pid }));
 		const beforeBoot = new Date(Date.now() - (upTime ?? 0) - 60_000);
 		await utimes(`${file}.lock`, beforeBoot, beforeBoot);
 		await new AuthStore(file, { lockTimeoutMs: 1_000 }).set("anthropic", { type: "api_key", key: "k" });
@@ -310,7 +314,7 @@ it("waits for the lock as long as the longer of its two timeouts when it refresh
 	const store = new AuthStore(file, { lockTimeoutMs: 2_000, refreshLockTimeoutMs: 50 });
 	await store.set("openai-codex", { type: "oauth", access: "a-0", refresh: "r-0", expires: 0 });
 	// Held by this process, which runs, and let go a little later.
-	await writeFile(`${file}.lock`, `${process.pid} ${hostname()} ${randomUUID()}`);
+	await writeFile(`${file}.lock`, lockOf({ pid: process.pid }));
 	const release = setTimeout(() => void rm(`${file}.lock`, { force: true }), 300);
 	try {
 		await expect(
@@ -323,4 +327,23 @@ it("waits for the lock as long as the longer of its two timeouts when it refresh
 	} finally {
 		clearTimeout(release);
 	}
+});
+
+it("reads the lock's fields by name, and judges a lock it cannot read by its age", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	const dead = spawn(process.execPath, ["-e", ""]);
+	await new Promise((resolve) => dead.once("exit", resolve));
+	// This machine's lock of a process that ended, its fields in another order: taken at once.
+	await writeFile(`${file}.lock`, JSON.stringify({ host: hostname(), id: "x", pid: dead.pid }));
+	await new AuthStore(file, { lockTimeoutMs: 1_000, staleLockMs: 60_000 }).set("a", { type: "api_key", key: "1" });
+	// A lock of an older format names a process this version does not read as one: only its age counts.
+	await writeFile(`${file}.lock`, `${dead.pid} ${randomUUID()}`);
+	const young = await new AuthStore(file, { lockTimeoutMs: 200, staleLockMs: 60_000 })
+		.set("b", { type: "api_key", key: "2" })
+		.catch((error: unknown) => error);
+	expect(young).toBeInstanceOf(AuthStoreError);
+	const old = new Date(Date.now() - 120_000);
+	await utimes(`${file}.lock`, old, old);
+	await new AuthStore(file, { lockTimeoutMs: 1_000, staleLockMs: 60_000 }).set("b", { type: "api_key", key: "2" });
+	expect(new AuthStore(file).providers()).toEqual(["a", "b"]);
 });

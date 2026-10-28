@@ -185,7 +185,7 @@ export class AuthStore {
 		const lock = `${this.#file}.lock`;
 		const deadline = Date.now() + timeoutMs;
 		// The machine too: a home shared between machines (NFS) holds locks of processes this one cannot see.
-		const owner = `${process.pid} ${hostname()} ${randomUUID()}`;
+		const owner = JSON.stringify({ pid: process.pid, host: hostname(), id: randomUUID() });
 		for (;;) {
 			try {
 				const handle = await open(lock, "wx", 0o600);
@@ -232,11 +232,11 @@ export class AuthStore {
 		]);
 		// Gone meanwhile: the next try creates it.
 		if (content === undefined) return undefined;
-		const [id, host] = content.split(" ");
-		const pid = Number.parseInt(id ?? "", 10);
-		// Empty, from an older Atelier, or another machine's, whose processes cannot be asked: its holder renews its time,
-		// so only its age tells. An empty one may also be a lock created a moment ago, which is not old.
-		if (!Number.isInteger(pid) || pid <= 0 || host !== hostname()) return age > this.#staleLockMs ? content : undefined;
+		const holder = holderOf(content);
+		// Empty, of a format this version does not read, or another machine's, whose processes cannot be asked: its holder
+		// renews its time, so only its age tells. An empty one may also be a lock created a moment ago, which is not old.
+		if (holder === undefined || holder.host !== hostname()) return age > this.#staleLockMs ? content : undefined;
+		const { pid } = holder;
 		// Older than this machine's start, its holder ended with it, whatever process has its id now.
 		const up = upTimeMs();
 		if (up !== undefined && age > up + BOOT_MARGIN_MS) return content;
@@ -271,6 +271,20 @@ export class AuthStore {
 			await unlink(breaker).catch(() => {});
 		}
 	}
+}
+
+/** The process and machine a lock names, read by field name; undefined for any other content. */
+function holderOf(content: string): { pid: number; host: string } | undefined {
+	let fields: unknown;
+	try {
+		fields = JSON.parse(content);
+	} catch {
+		return undefined;
+	}
+	const { pid, host } = (typeof fields === "object" && fields !== null ? fields : {}) as Record<string, unknown>;
+	return typeof pid === "number" && Number.isInteger(pid) && pid > 0 && typeof host === "string"
+		? { pid, host }
+		: undefined;
 }
 
 /** How long this machine has run; undefined where it cannot be asked (a sandbox may refuse it). */
