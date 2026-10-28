@@ -255,6 +255,27 @@ describe("options.list", () => {
 		await h.close();
 	});
 
+	it("offers, from the dynamic catalog's cache, the code's models and then the ones a provider listed", async () => {
+		const { catalogFile, DynamicModelCatalog, ModelData, useModelData } = await import("../src/model-catalog/index.ts");
+		const file = catalogFile(home);
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		const listed = {
+			checkedAt: Date.now(),
+			models: { "openai-codex": [{ id: "gpt-6.1-terra" }, { id: "gpt-6-sol" }] },
+		};
+		await writeFile(file, JSON.stringify({ version: 1, sources: { "openai-codex": listed } }));
+		const h = serve(undefined, true, {
+			signedIn: async () => ["openai-codex"],
+			catalog: new DynamicModelCatalog({ file, sources: [], network: false }),
+		});
+		const response = await h.ask({ command: "options.list" });
+		const models = response.ok ? (response.result.models as { model: string }[]).map(({ model }) => model) : [];
+		expect(models.at(-1)).toBe("gpt-6.1-terra");
+		expect(models.filter((model) => model === "gpt-6-sol")).toHaveLength(1);
+		useModelData(new ModelData());
+		await h.close();
+	});
+
 	it("lists no models, and the rest as always, when the sign-ins cannot be read", async () => {
 		const h = serve(undefined, true, { signedIn: () => Promise.reject(new Error("auth.json is not JSON")) });
 		const response = await h.ask({ command: "options.list" });

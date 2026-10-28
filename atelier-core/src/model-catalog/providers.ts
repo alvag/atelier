@@ -87,6 +87,8 @@ export function anthropicModelsSource(options: AnthropicModelsOptions): CatalogS
 }
 
 export interface OpenCodeGoModelsOptions {
+	/** Whether OpenCode Go has a key: without one the source is not asked, though its list needs none. */
+	signedIn?: () => Promise<boolean>;
 	baseUrl?: string;
 	fetch?: typeof globalThis.fetch;
 }
@@ -97,6 +99,7 @@ export function openCodeGoModelsSource(options: OpenCodeGoModelsOptions = {}): C
 	return {
 		name: "opencode-go",
 		async fetch(_previous, signal) {
+			if (options.signedIn && !(await options.signedIn())) throw new Error("No OpenCode Go API key");
 			const body = await getJson(fetch, `${options.baseUrl ?? OPENCODE_GO_BASE_URL}/v1/models`, {
 				headers: { accept: "application/json" },
 				signal,

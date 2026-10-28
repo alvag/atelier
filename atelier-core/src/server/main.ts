@@ -7,6 +7,12 @@ import { parseCompactAt } from "../compaction/compactor.ts";
 import { describeError } from "../events.ts";
 import { openMcp } from "../mcp/index.ts";
 import { connectMemory, MemoryUnavailableError, memoryPromptsEnabled } from "../memory/index.ts";
+import {
+	catalogFile,
+	DynamicModelCatalog,
+	defaultCatalogSources,
+	modelRefreshEnabled,
+} from "../model-catalog/index.ts";
 import { SYSTEM_PROMPT_APPEND } from "../prompt.ts";
 import { BACKEND_NAMES, type BackendName } from "../protocol/types.ts";
 import { checkRoot } from "../root.ts";
@@ -36,6 +42,9 @@ Environment:
   ATELIER_LOGIN_CHECK=off
                          options.list offers every backend's models without asking
                          Claude Code, auth.json or the Keychain which ones are signed in
+  ATELIER_MODEL_REFRESH=off
+                         Offer the models of the code and of ~/.atelier/models.json
+                         without asking models.dev or the providers for new ones
   ATELIER_ALLOW_ROOT     As root (uid 0) the server refuses to start unless this is exactly
                          "I accept the risk"; it then warns on every start
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
@@ -69,13 +78,24 @@ try {
 	process.exit(2);
 }
 
+// The model lists: the code's, then what the providers listed, refreshed in the background. The echo backend has none.
+const catalog =
+	process.env.ATELIER_BACKEND === "echo"
+		? undefined
+		: new DynamicModelCatalog({
+				file: catalogFile(homedir()),
+				sources: defaultCatalogSources({ home: homedir(), env: process.env }),
+				network: modelRefreshEnabled(process.env),
+			});
+void catalog?.start();
+
 const createBackend = (name: BackendName) =>
 	process.env.ATELIER_BACKEND === "echo"
 		? new EchoBackend()
-		: createNamedBackend(
-				name,
-				compactAt === undefined ? {} : { anthropicApi: { compactAt }, openaiCodex: { compactAt } },
-			);
+		: createNamedBackend(name, {
+				...(compactAt === undefined ? {} : { anthropicApi: { compactAt }, openaiCodex: { compactAt } }),
+				...(catalog === undefined ? {} : { claudeCode: { listModels: (list) => void catalog.listClaudeCode(list) } }),
+			});
 
 // The models options.list offers: the echo backend (tests) has none, ATELIER_LOGIN_CHECK=off asks nothing.
 const signedIn = async (): Promise<readonly BackendName[]> =>
@@ -96,6 +116,7 @@ const server = new RpcServer({
 	write: (line) => process.stdout.write(line),
 	createBackend,
 	signedIn,
+	...(catalog === undefined ? {} : { catalog }),
 	review: reviewEnabled(process.env),
 	noSandbox: !sandboxEnabled(process.env),
 	tools: coreTools,
