@@ -11,6 +11,7 @@ import {
 	createBashTool,
 	FakeBackend,
 	type FakeStep,
+	folderKey,
 	RpcServer,
 	Sandbox,
 } from "@atelier/core";
@@ -258,6 +259,108 @@ describe("TUI", { timeout: 20_000 }, () => {
 		await until(() => h.screen.screen().includes("cost: $0.5000 this session"));
 		expect(h.screen.screen()).toContain("atelier · fake · m · subscription");
 		expect(h.backend.prompts).toEqual(["hi"]);
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
+	/** Saves a session of `folder` with one billed turn that ended `daysAgo`, as the core lays it out. */
+	async function savedSession(folder: string, id: string, costUsd: number, daysAgo = 1): Promise<void> {
+		const at = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+		const path = join(home, ".atelier", "sessions", folderKey(folder));
+		await mkdir(path, { recursive: true });
+		const lines = [
+			{ kind: "atelier.session", version: 1, id, cwd: folder, createdAt: at },
+			{ type: "config", backend: "anthropic-api", model: "saved-model", mode: "normal" },
+			{ type: "event", event: { ...finished, seq: 2, turnId: "t", usage, costUsd, at } },
+		];
+		await writeFile(join(path, `${id}.jsonl`), lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+	}
+
+	it("prints this session's stats with /stats and this folder's with /stats project, with their costs", async () => {
+		await savedSession(cwd, "older", 2);
+		await savedSession(cwd, "ancient", 3, 60);
+		await savedSession(join(cwd, "elsewhere"), "other", 7);
+		const h = harness([[{ event: started }, { event: finished }]], { saveSessions: true, columns: 160 });
+		const code = run(["--mode", "auto"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("hi");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("/stats");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("stats · this session · finished turns"));
+		const session = h.screen.screen();
+		expect(session).toContain("reading saved sessions…");
+		expect(session).toContain("≈$0.50 subscription (API-equivalent, not billed)");
+		expect(session).toMatch(/By model +cost +turns/);
+		expect(session).not.toContain("By project");
+		expect(session).not.toContain("$2.00");
+
+		h.screen.type("/stats project");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("stats · this folder · last 30 days · 2 sessions"));
+		expect(h.screen.screen()).toContain("$2.00 billed · ≈$0.50 subscription");
+		expect(h.screen.screen()).toMatch(/By day +cost/);
+		expect(h.screen.screen()).not.toContain("$7.00");
+
+		h.screen.type("/stats project --since all");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("stats · this folder · all time · 3 sessions"));
+		expect(h.screen.screen()).toContain("$5.00 billed");
+
+		h.screen.type("/stats --since soon");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("--since must be a number of days (7d), a date (2026-10-01) or all"));
+		h.screen.type("/stats everything");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("usage: /stats [project] [--since 7d|YYYY-MM-DD|all]"));
+		expect(h.backend.prompts).toEqual(["hi"]);
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
+	it("runs /stats while a turn runs, counting the turns that finished, and queues nothing", async () => {
+		await savedSession(cwd, "older", 2);
+		const gate: { release?: () => void } = {};
+		const h = harness(
+			[
+				[
+					{ event: started },
+					{ run: () => new Promise<void>((resolve) => (gate.release = resolve)) },
+					{ event: finished },
+				],
+			],
+			{ saveSessions: true, columns: 160 },
+		);
+		const code = run(["--mode", "auto"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => gate.release !== undefined);
+		h.screen.type("/stats");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("No finished turns yet."));
+		h.screen.type("/stats project");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("stats · this folder · last 30 days · 1 session"));
+		expect(h.screen.screen()).not.toContain("commands run when the turn ends");
+		expect(h.core.commands.filter((command) => command.command === "session.queue")).toEqual([]);
+		gate.release?.();
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
+	it("says a session that is not saved has no stats of its own", async () => {
+		const h = harness([]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/stats");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("stats: this session is not saved"));
 		h.screen.type("/exit");
 		h.screen.type("\r");
 		expect(await code).toBe(0);
