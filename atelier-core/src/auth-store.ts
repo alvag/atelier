@@ -212,7 +212,8 @@ export class AuthStore {
 			const seen = await this.#abandoned(lock);
 			if (seen !== undefined) {
 				await this.#takeOver(lock, seen, owner);
-				continue;
+				// A lock that cannot be removed would be judged and taken over again forever: the deadline still counts.
+				if (Date.now() < deadline) continue;
 			}
 			if (Date.now() >= deadline)
 				throw new AuthStoreError(`${this.#file} is locked by another Atelier (${lock}); try again`);
@@ -232,7 +233,7 @@ export class AuthStore {
 				() => 0,
 			),
 		]);
-		// Gone meanwhile: the next try creates it.
+		// Gone meanwhile, and the next try creates it, or not read this time.
 		if (content === undefined) return undefined;
 		const holder = holderOf(content);
 		// Empty, of a format this version does not read, or another machine's, whose processes cannot be asked: its holder
@@ -289,12 +290,13 @@ function holderOf(content: string): { pid: number; host: string } | undefined {
 }
 
 /**
- * What a lock holds; undefined once it is gone. One that is there but cannot be read (another user's) holds
- * `UNREADABLE_LOCK`, an unknown format whose age alone counts.
+ * What a lock holds; undefined once it is gone, or while reading it fails for a reason that says nothing of its
+ * holder (EMFILE, EIO): the waiter keeps waiting. One that is there but its permissions keep from being read (another
+ * user's) holds `UNREADABLE_LOCK`, an unknown format whose age alone counts.
  */
 function readLock(path: string): Promise<string | undefined> {
 	return readFile(path, "utf8").catch((error: NodeJS.ErrnoException) =>
-		error.code === "ENOENT" ? undefined : UNREADABLE_LOCK,
+		error.code === "EACCES" || error.code === "EPERM" ? UNREADABLE_LOCK : undefined,
 	);
 }
 

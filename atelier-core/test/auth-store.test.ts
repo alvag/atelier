@@ -348,21 +348,58 @@ it("reads the lock's fields by name, and judges a lock it cannot read by its age
 	expect(new AuthStore(file).providers()).toEqual(["a", "b"]);
 });
 
-it("judges a lock it cannot read by its age, like one of a format it does not know", async () => {
-	const store = new AuthStore(file, { lockTimeoutMs: 100, staleLockMs: 10_000 });
+it("keeps waiting for a lock it fails to read for another reason than its permissions, however old", async () => {
+	const store = new AuthStore(file, { lockTimeoutMs: 200, staleLockMs: 10_000 });
 	await store.set("anthropic", { type: "api_key", key: "before" });
+	// Reading it fails (EISDIR), as a passing EMFILE or EIO would: that says nothing of its holder.
 	const lock = `${file}.lock`;
-	// Left by another user (root, say): it is there, but this process cannot read it.
-	await writeFile(lock, lockOf({ pid: process.pid }), { mode: 0o000 });
-	try {
-		await expect(store.set("anthropic", { type: "api_key", key: "after" })).rejects.toThrow(
-			/locked by another Atelier/,
-		);
+	await mkdir(lock);
+	const old = new Date(Date.now() - 30_000);
+	await utimes(lock, old, old);
+	await expect(store.set("anthropic", { type: "api_key", key: "after" })).rejects.toThrow(/locked by another Atelier/);
+	expect(store.get("anthropic")).toEqual({ type: "api_key", key: "before" });
+}, 3_000);
+
+// Root reads any file, so it never meets a lock it cannot read.
+it.skipIf(process.getuid?.() === 0)(
+	"gives up on time on an old lock it cannot read when it fails to remove it",
+	async () => {
+		const store = new AuthStore(file, { lockTimeoutMs: 200, staleLockMs: 10_000 });
+		await store.set("anthropic", { type: "api_key", key: "before" });
+		// Judged old enough to take over, but a directory that unlink refuses.
+		const lock = `${file}.lock`;
+		await mkdir(lock, { mode: 0o000 });
 		const old = new Date(Date.now() - 30_000);
 		await utimes(lock, old, old);
-		await store.set("anthropic", { type: "api_key", key: "after" });
-		expect(store.get("anthropic")).toEqual({ type: "api_key", key: "after" });
-	} finally {
-		await chmod(lock, 0o600).catch(() => {});
-	}
-});
+		try {
+			await expect(store.set("anthropic", { type: "api_key", key: "after" })).rejects.toThrow(
+				/locked by another Atelier/,
+			);
+		} finally {
+			await chmod(lock, 0o700).catch(() => {});
+		}
+	},
+	3_000,
+);
+
+it.skipIf(process.getuid?.() === 0)(
+	"judges a lock it cannot read by its age, like one of a format it does not know",
+	async () => {
+		const store = new AuthStore(file, { lockTimeoutMs: 100, staleLockMs: 10_000 });
+		await store.set("anthropic", { type: "api_key", key: "before" });
+		const lock = `${file}.lock`;
+		// Left by another user (root, say): it is there, but this process cannot read it.
+		await writeFile(lock, lockOf({ pid: process.pid }), { mode: 0o000 });
+		try {
+			await expect(store.set("anthropic", { type: "api_key", key: "after" })).rejects.toThrow(
+				/locked by another Atelier/,
+			);
+			const old = new Date(Date.now() - 30_000);
+			await utimes(lock, old, old);
+			await store.set("anthropic", { type: "api_key", key: "after" });
+			expect(store.get("anthropic")).toEqual({ type: "api_key", key: "after" });
+		} finally {
+			await chmod(lock, 0o600).catch(() => {});
+		}
+	},
+);
