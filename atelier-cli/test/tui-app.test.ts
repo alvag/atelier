@@ -2055,6 +2055,22 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
+	it("refuses a --model of another backend on resume, before taking the terminal, saying how to move", async () => {
+		const h = harness([]);
+		const stub = stubCore({
+			answer: (command) =>
+				command.command === "sessions.list"
+					? { sessions: [{ id: "old1", backend: "claude-code", resumable: true }] }
+					: { sessionId: "s1" },
+		});
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		expect(await run(["--resume", "old1", "--model", "openai-codex/gpt-6-luna"], h.io, () => h.backend)).toBe(1);
+		expect(h.err()).toBe(
+			"error: Session old1 was saved on claude-code, and --model openai-codex/gpt-6-luna names another backend: a resumed session keeps its backend. Resume it without that --model, then choose openai-codex/gpt-6-luna in /model to move it there with a summary of the conversation.\n",
+		);
+		expect(stub.log.commands.map((command) => command.command)).not.toContain("session.resume");
+	});
+
 	/** A TUI on a stub core that emits the approvals a test asks for, with no key guard. */
 	async function approvalCore() {
 		const h = harness([]);

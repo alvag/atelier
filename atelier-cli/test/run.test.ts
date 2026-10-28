@@ -1994,6 +1994,19 @@ describe("saved sessions", () => {
 		expect(await readFile(path, "utf8")).toBe(before);
 	});
 
+	it("refuses a --model of another backend on resume, saying how to move the session there", async () => {
+		const id = await save("q", "a", 1_700_000_000);
+		const { h, code, names } = await resumeWith(["--resume", id, "--model", "openai-codex/gpt-6-luna"]);
+		expect(code).toBe(2);
+		expect(names).toEqual([]);
+		expect(h.err()).toBe(
+			`error: Session ${id} was saved on claude-code, and --model openai-codex/gpt-6-luna names another backend: a resumed session keeps its backend. Resume it without that --model, then choose openai-codex/gpt-6-luna in /model (in the terminal interface) to move it there with a summary of the conversation.\n`,
+		);
+		const same = await resumeWith(["--resume", id, "--model", "claude-code/sonnet", "go"]);
+		expect(same.code).toBe(0);
+		expect(same.h.backend.startOptions?.model).toBe("sonnet");
+	});
+
 	it("refuses a --backend other than the one the session was saved on", async () => {
 		const id = await save("q", "a", 1_700_000_000);
 		const { h, code, names } = await resumeWith(["--resume", id, "--backend", "anthropic-api"]);

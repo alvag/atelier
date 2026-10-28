@@ -36,7 +36,7 @@ import {
 	visibleText,
 	writeDefaultPermissionMode,
 } from "@atelier/core";
-import { parseCliArgs, USAGE, UsageError } from "./args.ts";
+import { parseCliArgs, resumeRefusal, USAGE, UsageError } from "./args.ts";
 import { runDesktop } from "./desktop.ts";
 import { OWN_ROOT, versionLabel } from "./install-marker.ts";
 import {
@@ -233,10 +233,10 @@ export async function run(
 			io.stderr(`error: ${error.message}\n`);
 			return EXIT_FAILED;
 		}
-		if (args.explicitBackend !== undefined && args.explicitBackend !== resumed.config.backend) {
-			io.stderr(
-				`error: Session ${resumed.header.id} was saved on ${resumed.config.backend}; --backend ${args.explicitBackend} cannot resume it.\n`,
-			);
+		// Line by line there is no /model: the terminal interface's moves the session.
+		const refused = resumeRefusal(args, resumed.header.id, resumed.config.backend, " (in the terminal interface)");
+		if (refused !== undefined) {
+			io.stderr(`error: ${refused}\n`);
 			return EXIT_USAGE;
 		}
 	}
