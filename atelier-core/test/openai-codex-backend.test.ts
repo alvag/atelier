@@ -9,7 +9,9 @@ import type { BackendSession, BackendStartOptions, ToolCall } from "../src/backe
 import { createBackend } from "../src/backend-factory.ts";
 import { CodexAccess, type CodexVariant } from "../src/backends/openai-codex/access.ts";
 import { OpenAiCodexBackend } from "../src/backends/openai-codex/backend.ts";
+import { compactThreshold } from "../src/compaction/compactor.ts";
 import type { AtelierEventBody } from "../src/events.ts";
+import { ModelData, useModelData } from "../src/model-catalog/index.ts";
 import { defineTool } from "../src/tools/types.ts";
 import { FakeOpenAiAuth, fakeCodexAccess, fakeJwt, fakeRefresh } from "./support/fake-openai-auth.ts";
 import { callItem, completed, FakeResponses, textItem } from "./support/fake-responses.ts";
@@ -82,17 +84,35 @@ async function start(options: Partial<BackendStartOptions> = {}, variant?: Codex
 	return { session, calls };
 }
 
-it("gives the Codex catalog the account's token and id, and nothing when nobody is signed in", async () => {
+it("gives the Codex catalog the Codex sign-in's token and id, and never another variant's token", async () => {
 	const access = () => new CodexAccess({ store, authUrl: auth.url });
+	expect(await access().catalogHeaders()).toBeUndefined();
+	await signInChatGpt();
+	// Sign in with ChatGPT's token goes to api.openai.com only: the Codex host never gets it.
 	expect(await access().catalogHeaders()).toBeUndefined();
 	await signInLegacy();
 	expect(await access().catalogHeaders()).toEqual({
 		authorization: `Bearer ${legacy.access}`,
 		"chatgpt-account-id": accountId,
 	});
-	await store.remove("openai-codex");
-	await signInChatGpt();
-	expect(await access().catalogHeaders()).toEqual({ authorization: `Bearer ${chatgpt.access}` });
+	expect(await new CodexAccess({ store, authUrl: auth.url, variant: "chatgpt" }).catalogHeaders()).toBeUndefined();
+});
+
+it("takes the window of the model it runs, also after the model changes", async () => {
+	await signInLegacy();
+	useModelData(new ModelData({ "openai-codex": [{ id: "gpt-6.1-terra", contextWindow: 400_000 }] }));
+	try {
+		const { session } = await start();
+		api.answers.push({ events: completed([textItem("one")]) });
+		expect((await turn(session)).at(-1)).toMatchObject({ context: { window: 272_000 } });
+		await session.configure?.({ model: "gpt-6.1-terra" });
+		api.answers.push({ events: completed([textItem("two")]) });
+		expect((await turn(session, "next")).at(-1)).toMatchObject({
+			context: { window: 400_000, compactAt: compactThreshold({ window: 400_000, maxTokens: 32_000 }) },
+		});
+	} finally {
+		useModelData(new ModelData());
+	}
 });
 
 async function turn(session: BackendSession, prompt = "hi"): Promise<AtelierEventBody[]> {
