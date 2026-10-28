@@ -51,17 +51,22 @@ export class PromptBlock implements Component {
  * lined up with the text. Without the shade, the editor as pi-tui draws it.
  */
 export class PromptEditor extends Editor {
-	/**
-	 * Out of sight while a question is open: it draws nothing and takes no key or click, so the question keeps them all.
-	 * What it holds stays in it and shows again once it is back.
-	 */
-	hidden = false;
 	readonly #paint: Paint;
 	readonly #shade: Shade;
-	constructor(tui: TUI, theme: EditorTheme, paint: Paint, shade: Shade) {
+	readonly #questionOpen: () => boolean;
+	/**
+	 * Out of sight while `questionOpen` says a question is open: it draws nothing and takes no key or click, so the
+	 * question keeps them all. What it holds stays in it and shows again once it is back.
+	 */
+	constructor(tui: TUI, theme: EditorTheme, paint: Paint, shade: Shade, questionOpen: () => boolean) {
 		super(tui, theme);
 		this.#paint = paint;
 		this.#shade = shade;
+		this.#questionOpen = questionOpen;
+	}
+
+	get hidden(): boolean {
+		return this.#questionOpen();
 	}
 
 	protected override renderTopBorder(width: number, hiddenLineCount: number): string {
