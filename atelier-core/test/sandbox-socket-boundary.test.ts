@@ -1,13 +1,17 @@
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
 
+/** A root short enough for a Unix socket path: the system's temporary folder when it is short (/tmp/claude inside a sandbox), /tmp otherwise. */
+const shortBase = () => (tmpdir().length <= 20 ? tmpdir() : "/tmp");
+
 it.skipIf(process.platform !== "darwin" || isInsideSandbox()).each([101, 102, 103])(
-	"uses the actual socket path boundary (%i bytes), with an unsafe fallback pre-created",
+	"starts in TMPDIR itself when its socket path is %i bytes, without touching an invalid short folder",
 	async (bytes) => {
 		const previous = process.env.TMPDIR;
-		const root = await mkdtemp(join(process.env.REVIEW_SOCKET_ROOT ?? "/tmp", "atelier-boundary-"));
+		const root = await mkdtemp(join(shortBase(), "atelier-boundary-"));
 		const suffix = `/srt-mux-${process.pid}-0.sock`;
 		const targetLength = bytes - Buffer.byteLength(suffix);
 		const dir = join(root, "x".repeat(targetLength - Buffer.byteLength(root) - 1));

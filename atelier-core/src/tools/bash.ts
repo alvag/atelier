@@ -134,6 +134,11 @@ function commandEnv(extra: Readonly<Record<string, string>>): NodeJS.ProcessEnv 
 	return { ...env, ...extra };
 }
 
+/** The sandbox should have started and did not: yolo asks too. */
+function failedToStart(status: SandboxStatus): boolean {
+	return !status.available && status.failed === true;
+}
+
 /** Not a destructive command, but a request the verifier never gets. */
 const VERIFIER_UNSANDBOXED = "the verifier's bash cannot run outside the sandbox";
 
@@ -256,7 +261,7 @@ export function createBashTool({
 						reason: reason.trim(),
 						...confirmed,
 						...rememberOffer(command, confirmed.confirm, sandbox),
-						...(!status.available && status.failed ? { sandboxFailed: true } : {}),
+						...(failedToStart(status) ? { sandboxFailed: true as const } : {}),
 					},
 				};
 			}
@@ -269,7 +274,7 @@ export function createBashTool({
 					command,
 					...confirmed,
 					...rememberOffer(command, confirmed.confirm, sandbox),
-					...(status.failed ? { sandboxFailed: true } : {}),
+					...(failedToStart(status) ? { sandboxFailed: true as const } : {}),
 				},
 				warning: status.reason,
 			};

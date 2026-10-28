@@ -958,6 +958,19 @@ describe("bash outside the sandbox", () => {
 		expect(await readFile(join(cwd, "marker"), "utf8")).toBe("");
 	});
 
+	it("does not offer yolo for a request to leave a sandbox that failed to start, without a terminal", async () => {
+		const h = harness(
+			[[bash({ command: "printf x", unsandboxed: true, reason: "needs the network" }), { event: finished }]],
+			{ sandbox: "failed" },
+		);
+		await run(["--mode", "yolo", "--no-review", "x"], h.io, h.createBackend);
+		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+		expect(h.err()).toContain(
+			"bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask: printf x\n  reason: needs the network\n",
+		);
+		expect(h.err()).not.toContain("--mode yolo allows it");
+	});
+
 	it("warns again in the next turns, which the status line did not cover", async () => {
 		const turn = [bash({ command: "echo one" }), { event: finished }];
 		const h = harness([turn, turn], { input: ["first", "second"] });

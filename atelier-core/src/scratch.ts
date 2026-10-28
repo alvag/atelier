@@ -82,14 +82,16 @@ export interface BorrowLimits {
 export class BorrowTimeoutError extends Error {}
 
 /**
- * Makes `tmpdir()` answer `dir` while `run` runs, and what it answered before
- * after it, even when it fails, times out or is aborted: for a library that puts
- * what it makes in the temporary folder, with no option for another place. Only
- * the function changes, never `process.env.TMPDIR`, so no child process started
- * meanwhile inherits `dir`. It starts once no directory is being made and no
- * sweep is running there, and those asked for meanwhile wait for it to end, so
- * none lands in `dir`, where the sweep of a later process would never look. A
- * synchronous one cannot wait: it goes in the folder `tmpdir()` answered before.
+ * Makes `tmpdir()` answer `dir` while `run` runs, then restores the earlier
+ * answer, even when `run` fails, times out or is aborted. It is for a library
+ * that puts what it makes in the temporary folder and has no option for another
+ * place. Only the function changes, never `process.env.TMPDIR`, so no child
+ * process started meanwhile inherits `dir`.
+ *
+ * It starts once no directory is being made and no sweep is running, and those
+ * asked for meanwhile wait for it to end: none lands in `dir`, where a later
+ * sweep would never look. A synchronous one cannot wait, so it goes in the
+ * folder `tmpdir()` answered before.
  */
 export async function borrowTmpdir<T>(dir: string, run: () => Promise<T>, limits: BorrowLimits = {}): Promise<T> {
 	while (borrowed !== undefined) await borrowed.done;
@@ -102,7 +104,7 @@ export async function borrowTmpdir<T>(dir: string, run: () => Promise<T>, limits
 		}),
 	};
 	borrowed = current;
-	const real = os.tmpdir;
+	const realTmpdir = os.tmpdir;
 	try {
 		if (users > 0)
 			await unlessAborted(
@@ -116,7 +118,7 @@ export async function borrowTmpdir<T>(dir: string, run: () => Promise<T>, limits
 		return await unlessAborted(withinTime(run(), limits.timeoutMs), limits.signal);
 	} finally {
 		idle = undefined;
-		setTmpdir(real);
+		setTmpdir(realTmpdir);
 		borrowed = undefined;
 		end();
 	}

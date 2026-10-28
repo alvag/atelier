@@ -36,8 +36,10 @@ const finished: FakeStep = {
 const call = (input: Record<string, string | boolean>, callId = "c1"): FakeStep => ({
 	toolCall: { tool: "bash", input, callId },
 });
+/** Runs a turn to its end; its events are not looked at. */
 const collect = async (session: Session) => {
 	for await (const _event of session.send("go")) {
+		// Drained only.
 	}
 };
 function held() {
@@ -79,7 +81,7 @@ afterEach(async () => {
 	else process.env.TMPDIR = original;
 	await rm(root, { recursive: true, force: true });
 });
-describe("short socket folder validation (request 1)", () => {
+describe("short socket folder validation", () => {
 	it.each(["file", "symlink", "0755", "0770"])(
 		"rejects a pre-created %s without changing its contents or TMPDIR",
 		async (kind) => {
@@ -128,7 +130,7 @@ describe("short socket folder validation (request 1)", () => {
 		expect(await sandbox.status()).toEqual({ available: false, failed: true, reason: message });
 	});
 });
-describe("failed-start yolo approvals (request 2)", () => {
+describe("yolo approvals after a failed start", () => {
 	it.each(["initialize", "dependencies", "dependency throw"])(
 		"denies plain and explicit-unsandboxed retries after %s failure, with byte-identical data",
 		async (how) => {
@@ -205,7 +207,7 @@ it("asks for a yolo-waived guard command after failed startup", async () => {
 	h.manager.initialize = async () => {
 		throw new Error("failed");
 	};
-	const command = ["git", "push"].join(" ");
+	const command = "git push";
 	const backend = new FakeBackend([[call({ command }), finished]]);
 	const asked: string[] = [];
 	const session = await Session.start({
@@ -224,7 +226,7 @@ it("asks for a yolo-waived guard command after failed startup", async () => {
 	expect(backend.toolResults).toEqual([{ ok: false, output: "The user denied this command." }]);
 });
 
-describe("process-wide TMPDIR interactions (request 1 and scratch condition)", () => {
+describe("what the rest of the process sees while the library starts", () => {
 	it.each(["unsandboxed", "noSandbox"])("preserves the user's TMPDIR in another session's %s child", async (kind) => {
 		const backend = new FakeBackend([
 			[
@@ -355,33 +357,30 @@ describe("process-wide TMPDIR interactions (request 1 and scratch condition)", (
 		}
 		expect(restored).toBe(long);
 	});
-	it.skipIf(!("borrowTmpdir" in scratch))(
-		"serializes two borrowing writers and then admits scratch readers",
-		async () => {
-			const first = deferred<void>();
-			const entered = deferred<void>();
-			const seen: string[] = [];
-			const a = scratch.borrowTmpdir(socketRoot, async () => {
-				seen.push(tmpdir());
-				entered.resolve();
-				await first.promise;
-			});
-			await entered.promise;
-			const b = scratch.borrowTmpdir(root, async () => {
-				seen.push(tmpdir());
-			});
-			const reader = scratch.createScratchDir("session");
-			try {
-				await drain();
-				expect(seen).toEqual([socketRoot]);
-			} finally {
-				first.resolve();
-			}
-			await Promise.all([a, b]);
-			const made = await reader;
-			expect(seen).toEqual([socketRoot, root]);
-			expect(made.path.startsWith(`${long}/atelier-session-`)).toBe(true);
-			expect(process.env.TMPDIR).toBe(long);
-		},
-	);
+	it("serializes two borrowing writers and then admits scratch readers", async () => {
+		const first = deferred<void>();
+		const entered = deferred<void>();
+		const seen: string[] = [];
+		const a = scratch.borrowTmpdir(socketRoot, async () => {
+			seen.push(tmpdir());
+			entered.resolve();
+			await first.promise;
+		});
+		await entered.promise;
+		const b = scratch.borrowTmpdir(root, async () => {
+			seen.push(tmpdir());
+		});
+		const reader = scratch.createScratchDir("session");
+		try {
+			await drain();
+			expect(seen).toEqual([socketRoot]);
+		} finally {
+			first.resolve();
+		}
+		await Promise.all([a, b]);
+		const made = await reader;
+		expect(seen).toEqual([socketRoot, root]);
+		expect(made.path.startsWith(`${long}/atelier-session-`)).toBe(true);
+		expect(process.env.TMPDIR).toBe(long);
+	});
 });

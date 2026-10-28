@@ -453,10 +453,10 @@ export async function run(
 					);
 				else {
 					// With a sandbox that failed to start every mode asks, so --mode yolo is no way around the question.
-					const yolo = sandboxFailed === true ? "" : " (--mode yolo allows it)";
+					const yoloHint = sandboxFailed === true ? "" : " (--mode yolo allows it)";
 					io.stderr(
 						why
-							? `bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask${yolo}: ${shown.text}\n  reason: ${why.text}\n`
+							? `bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask${yoloHint}: ${shown.text}\n  reason: ${why.text}\n`
 							: sandboxFailed === true
 								? `bash command needs approval and there is no terminal to ask; the sandbox failed to start: ${shown.text}\n`
 								: `bash command needs approval and there is no terminal to ask; the sandbox is off or unavailable (--mode yolo allows it): ${shown.text}\n`,
