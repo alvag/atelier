@@ -1,4 +1,5 @@
 import type { Effort } from "../../events.ts";
+import { currentModelData } from "../../model-catalog/current.ts";
 import type { PriceTier } from "../../pricing.ts";
 
 /**
@@ -118,6 +119,24 @@ export const UNKNOWN_OPENCODE_GO_MODEL: OpenCodeGoModel = Object.freeze({
 	efforts: [],
 });
 
+/**
+ * A model the table or the model catalog knows. One only the catalog knows goes through Chat Completions, which the
+ * console translates for any model; models.dev's `none` level is the `reasoning_effort` that turns it off.
+ */
+export function knownOpenCodeGoModel(id: string): OpenCodeGoModel | undefined {
+	const entry = OPENCODE_GO_MODELS[id];
+	if (entry) return entry;
+	const listed = currentModelData().model("opencode-go", id);
+	if (!listed) return undefined;
+	return {
+		protocol: "openai-completions",
+		contextWindow: listed.contextWindow ?? UNKNOWN_OPENCODE_GO_MODEL.contextWindow,
+		efforts: listed.efforts ?? [],
+		...(listed.off ? { off: "none" } : {}),
+		...(listed.prices === undefined ? {} : { prices: listed.prices }),
+	};
+}
+
 export function openCodeGoModel(id: string): OpenCodeGoModel {
-	return OPENCODE_GO_MODELS[id] ?? UNKNOWN_OPENCODE_GO_MODEL;
+	return knownOpenCodeGoModel(id) ?? UNKNOWN_OPENCODE_GO_MODEL;
 }

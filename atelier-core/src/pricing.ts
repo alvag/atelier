@@ -1,5 +1,6 @@
-import { OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
+import { knownOpenCodeGoModel, OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
 import type { Effort, Usage } from "./events.ts";
+import { currentModelData } from "./model-catalog/current.ts";
 import type { ThinkingLevel } from "./profiles/index.ts";
 
 /** USD per million tokens. `cacheWrite` is the 5-minute cache write; Atelier writes no 1-hour entries. */
@@ -120,9 +121,9 @@ export function thinkingToSend(
 ): ThinkingSend | undefined {
 	if (level === undefined) return undefined;
 	const id = ALIASES[model] ?? model;
-	// OpenCode Go's Claude models take what Anthropic's do; the rest take the levels of its table.
+	// OpenCode Go's Claude models take what Anthropic's do; the rest take the levels of its table, or of the catalog.
 	if (backend === "opencode-go" && EFFORT_LEVELS[id] === undefined) {
-		const entry = OPENCODE_GO_MODELS[model];
+		const entry = knownOpenCodeGoModel(model);
 		// `disabled` stands for the model's own value, which Chat Completions sends as its reasoning_effort.
 		if (level === "off")
 			return entry?.off === undefined ? { report: "unsupported" } : { report: "off", thinking: "disabled" };
@@ -135,12 +136,26 @@ export function thinkingToSend(
 		return { report: "off", thinking: off };
 	}
 	const effort = level === "minimal" ? "low" : level;
-	return EFFORT_LEVELS[id]?.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
+	return effortLevels(id, backend)?.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
 }
 
-/** Cost of one API request, or undefined when the model is not in the table (Anthropic's, then OpenCode Go's). */
+/** The levels of Anthropic's table; for a model it lacks, the ones the model catalog gives (Anthropic's API only). */
+function effortLevels(id: string, backend: ThinkingBackend): readonly Effort[] | undefined {
+	const known = EFFORT_LEVELS[id];
+	if (known !== undefined || backend !== "anthropic-api") return known;
+	return currentModelData().model("anthropic-api", id)?.efforts;
+}
+
+/**
+ * Cost of one API request, or undefined when nothing prices the model: Anthropic's table, then OpenCode Go's, then
+ * the model catalog's Anthropic models and its OpenCode Go models.
+ */
 export function costOfRequest(model: string, usage: Usage): number | undefined {
-	const tiers = PRICES[model] ?? OPENCODE_GO_MODELS[model]?.prices;
+	const tiers =
+		PRICES[model] ??
+		OPENCODE_GO_MODELS[model]?.prices ??
+		currentModelData().model("anthropic-api", model)?.prices ??
+		knownOpenCodeGoModel(model)?.prices;
 	if (!tiers) return undefined;
 	const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
 	const tier = tiers.find((t) => t.upToPromptTokens === undefined || promptTokens <= t.upToPromptTokens);

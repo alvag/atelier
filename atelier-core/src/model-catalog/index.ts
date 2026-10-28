@@ -1,3 +1,4 @@
+export { currentModelData, useModelData } from "./current.ts";
 export {
 	CATALOG_BACKENDS,
 	type CatalogBackend,
