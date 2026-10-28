@@ -11,6 +11,7 @@ import {
 	type QueueKind,
 	type SavedEntry,
 	type SavedSessionInfo,
+	type SecurityRunner,
 	type SessionConfiguration,
 	visibleText,
 	writeDefaultPermissionMode,
@@ -97,6 +98,8 @@ export interface TuiOptions {
 	onInterrupt?: (handler: () => void) => () => void;
 	/** The Claude Code binary `/login` runs; the one Atelier installs when absent. Tests pass a fake. */
 	claudeCode?: string;
+	/** What asks the macOS Keychain whether it has a key, for `/login`; tests pass a fake. */
+	runSecurity?: SecurityRunner;
 	/** What the session's backend lacks (a login, a key), said at start; nothing is checked when absent. */
 	checkLogin?: (backend: string) => Promise<string | undefined>;
 	/** How long closing the session may take before the core is closed anyway (default 3000 ms). */
@@ -982,6 +985,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			home: options.home ?? homedir(),
 			env: options.env ?? {},
 			...(options.claudeCode === undefined ? {} : { claudeCode: options.claudeCode }),
+			...(options.runSecurity === undefined ? {} : { runSecurity: options.runSecurity }),
 			interactive: true,
 			choose: async (title, list) => {
 				const choices = list.map(({ label, status }, index) => ({

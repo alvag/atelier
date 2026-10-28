@@ -61,6 +61,7 @@ export {
 	MISSING_API_KEY_MESSAGE,
 	MissingApiKeyError,
 	resolveApiKey,
+	type SecurityRunner,
 	STORE_KEY_COMMAND,
 } from "./credentials.ts";
 export * from "./events.ts";

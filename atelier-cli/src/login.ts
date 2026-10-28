@@ -9,6 +9,7 @@ import {
 	claudeCodeLogout,
 	describeClaudeCodeAuth,
 	describeError,
+	type SecurityRunner,
 } from "@atelier/core";
 
 /** How to sign in: with an account in the browser, or with an API key. */
@@ -32,8 +33,9 @@ export interface LoginPorts {
 	env: Record<string, string | undefined>;
 	/** The Claude Code binary; the one Atelier installs when absent. Tests pass a fake. */
 	claudeCode?: string;
-	/** The platform the Keychain is looked up on; tests pass another so no test asks the real one. */
+	/** The platform the Keychain is looked up on, and what asks it; tests pass a fake so no test asks the real one. */
 	platform?: NodeJS.Platform;
+	runSecurity?: SecurityRunner;
 	/** Whether a person can answer: signing in with an account and confirming a sign-out need one. */
 	interactive: boolean;
 	/** The index of the option chosen, or undefined when cancelled. */
@@ -113,6 +115,7 @@ async function statusOf(ports: LoginPorts, method: LoginMethod): Promise<string>
 		store: store(ports),
 		env: {},
 		...(ports.platform ? { platform: ports.platform } : {}),
+		...(ports.runSecurity ? { runSecurity: ports.runSecurity } : {}),
 	})) === "keychain"
 		? "in the Keychain"
 		: "not configured";
