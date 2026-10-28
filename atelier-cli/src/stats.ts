@@ -3,7 +3,7 @@ import { readSessionStats, type SessionStats, type StatsRow, type StatsSpend, ty
 
 /** The breakdowns `--by` can choose, in the order they print. */
 const BREAKDOWNS = ["day", "project", "model", "phase", "role"] as const;
-type Breakdown = (typeof BREAKDOWNS)[number];
+export type Breakdown = (typeof BREAKDOWNS)[number];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -33,7 +33,14 @@ export async function runStats(
 		io.stdout(`${JSON.stringify({ since: period.since?.toISOString() ?? null, ...stats }, null, 2)}\n`);
 		return 0;
 	}
-	io.stdout(report(stats, period.label, by === undefined ? BREAKDOWNS : [by as Breakdown]));
+	const { label } = period;
+	io.stdout(
+		statsReport(stats, {
+			heading: `atelier stats · ${label} · ${plural(stats.sessions, "session")} · ${plural(stats.byProject.length, "project")}`,
+			empty: `No turns ${label === "all time" ? "saved" : label.replace(/^last/, "in the last")}.`,
+			breakdowns: by === undefined ? BREAKDOWNS : [by as Breakdown],
+		}),
+	);
 	return 0;
 }
 
@@ -59,21 +66,25 @@ export function parseSince(value: string, now: number): { since?: Date; label: s
 	return { since, label: `since ${value}` };
 }
 
-function report(stats: SessionStats, label: string, breakdowns: readonly Breakdown[]): string {
+/** What a report says first, what it says when no turn counts, and the breakdowns it prints, in their order. */
+export interface ReportShape {
+	heading: string;
+	empty: string;
+	breakdowns: readonly Breakdown[];
+}
+
+/** The totals, a table per breakdown and the files left out: what `atelier stats` and the TUI's `/stats` print. */
+export function statsReport(stats: SessionStats, shape: ReportShape): string {
 	const { total } = stats;
-	const lines = [
-		`atelier stats · ${label} · ${plural(stats.sessions, "session")} · ${plural(stats.byProject.length, "project")}`,
-		"",
-	];
-	if (total.turns === 0)
-		lines.push(`No turns ${label === "all time" ? "saved" : label.replace(/^last/, "in the last")}.`);
+	const lines = [shape.heading, ""];
+	if (total.turns === 0) lines.push(shape.empty);
 	else {
 		lines.push(
 			`Total    ${totalCost(total)}`,
 			`         ${plural(total.turns, "turn")} · ${plural(total.requests, "request")}`,
 			`Tokens   ${tokens(total.usage)}`,
 		);
-		for (const by of breakdowns) {
+		for (const by of shape.breakdowns) {
 			const rows = rowsOf(stats, by);
 			lines.push("", ...table(`By ${by}`, rows));
 			const mixed = MIXED_NOTES[by];
@@ -179,6 +190,6 @@ function compact(value: number): string {
 	return String(value);
 }
 
-function plural(count: number, word: string): string {
+export function plural(count: number, word: string): string {
 	return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
