@@ -3,7 +3,10 @@ import type { PriceTier } from "../../pricing.ts";
 
 /**
  * OpenCode Go's one base URL: the Messages API answers at `<base>/v1/messages`, Chat Completions at
- * `<base>/v1/chat/completions`. The URL pi-ai 1.4.0 uses for OpenCode Go (`providers/data/opencode-go.json`).
+ * `<base>/v1/chat/completions`. It is the URL of pi-ai 1.4.0, the one gentle-shell 4.4.0 runs
+ * (`dist/providers/data/opencode-go.json`, line 1: `"baseUrl":"https://opencode.ai/inference/go"` and `.../go/v1`);
+ * pi-ai 1.2.0 still had `https://opencode.ai/zen/go`. OpenCode's page (opencode.ai/docs/go) lists the same
+ * `inference/go` endpoints.
  */
 export const OPENCODE_GO_BASE_URL = "https://opencode.ai/inference/go";
 
