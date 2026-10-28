@@ -182,6 +182,17 @@ export interface SessionSetup {
 	summary: { model?: string; thinking?: ThinkingLevel } | undefined;
 }
 
+/** A request failed after it showed text or thinking: it is not sent again, since the user already saw part of it. */
+class AfterOutputError extends Error {
+	override name = "AfterOutputError";
+	readonly failure: unknown;
+
+	constructor(failure: unknown) {
+		super(describeError(failure));
+		this.failure = failure;
+	}
+}
+
 /** What one request gave: its items, why it stopped short, and its usage. */
 interface Answer {
 	output: ResponsesItem[];
@@ -254,7 +265,6 @@ class OpenAiCodexSession implements BackendSession {
 		this.#turnStart = this.#history.length - 1;
 		this.#turnPrompt = undefined;
 		const meter = { usage: { ...ZERO_USAGE }, requests: 0 };
-		let renewed = false;
 		// A compaction that fails is not tried again in the same turn; an overflow gets one compaction.
 		let thresholdFailed = false;
 		let overflowTried = false;
@@ -278,25 +288,18 @@ class OpenAiCodexSession implements BackendSession {
 				}
 				let answer: Answer;
 				try {
-					answer = yield* this.#ask(this.#body(), abort.signal, true);
+					answer = yield* this.#request(this.#body(), abort.signal, true);
 					requests++;
 				} catch (error) {
 					if (abort.signal.aborted) throw error;
-					const kind = (error as Partial<ResponsesError>).kind;
-					if (kind === "auth" && !renewed) {
-						renewed = true;
-						await this.#access.renew();
-						continue;
+					// What the user already saw cannot be taken back: the request is not sent again, and the next turn
+					// starts from the history as it was.
+					if (error instanceof AfterOutputError) {
+						const event = this.#error(error.failure);
+						yield event.type === "error" ? { ...event, recoverable: true } : event;
+						break;
 					}
-					if (kind === "refused" && this.#access.fallBack()) {
-						yield errorEvent(
-							"variant_changed",
-							`ChatGPT's Codex endpoint refused Atelier (${this.#redact(describeError(error))}); this session continues with Sign in with ChatGPT.`,
-							true,
-						);
-						continue;
-					}
-					if (kind === "overflow" && !overflowTried) {
+					if ((error as Partial<ResponsesError>).kind === "overflow" && !overflowTried) {
 						overflowTried = true;
 						const compacted = yield* this.#compact("overflow", abort.signal, meter);
 						if (abort.signal.aborted) {
@@ -307,7 +310,6 @@ class OpenAiCodexSession implements BackendSession {
 					}
 					throw error;
 				}
-				renewed = false;
 				usage = addUsage(usage, answer.usage);
 				const kept = answer.output.flatMap((item) => forHistory(item) ?? []);
 				this.#history.push(...kept);
@@ -362,24 +364,68 @@ class OpenAiCodexSession implements BackendSession {
 		});
 	}
 
-	/** Sends one request; with `show`, its text and reasoning are yielded as they come. */
+	/**
+	 * Sends one request as `#ask` does, and once more after refreshing a token OpenAI refused, or with Sign in with
+	 * ChatGPT when the Codex endpoint refused Atelier. A request that already showed something is never sent again.
+	 */
+	async *#request(
+		body: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+		show: boolean,
+	): AsyncGenerator<AtelierEventBody, Answer> {
+		let renewed = false;
+		for (;;) {
+			try {
+				return yield* this.#ask(body, signal, show);
+			} catch (error) {
+				if (signal?.aborted || error instanceof AfterOutputError) throw error;
+				const kind = (error as Partial<ResponsesError>).kind;
+				if (kind === "auth" && !renewed) {
+					renewed = true;
+					await this.#access.renew();
+					continue;
+				}
+				if (kind === "refused" && this.#access.fallBack()) {
+					yield errorEvent(
+						"variant_changed",
+						`ChatGPT's Codex endpoint refused Atelier (${this.#redact(describeError(error))}); this session continues with Sign in with ChatGPT.`,
+						true,
+					);
+					continue;
+				}
+				throw error;
+			}
+		}
+	}
+
+	/**
+	 * Sends one request; with `show`, its text and reasoning are yielded as they come. A failure after any of them was
+	 * yielded is an `AfterOutputError`.
+	 */
 	async *#ask(
 		body: Record<string, unknown>,
 		signal: AbortSignal | undefined,
 		show: boolean,
 	): AsyncGenerator<AtelierEventBody, Answer> {
 		let answer: Answer | undefined;
-		for await (const event of streamResponse(this.#access.endpoint(this.#id), body, signal)) {
-			if (event.type === "text_delta") {
-				if (show) yield { type: "text_delta", text: event.text };
-			} else if (event.type === "reasoning_delta") {
-				if (show) yield { type: "thinking_delta", text: event.text };
-			} else
-				answer = {
-					output: event.output,
-					incomplete: event.status === "incomplete" ? (event.incompleteReason ?? "incomplete") : undefined,
-					usage: toUsage(event.usage),
-				};
+		let shown = false;
+		try {
+			for await (const event of streamResponse(this.#access.endpoint(this.#id), body, signal)) {
+				if (event.type === "text_delta" && show) {
+					shown = true;
+					yield { type: "text_delta", text: event.text };
+				} else if (event.type === "reasoning_delta" && show) {
+					shown = true;
+					yield { type: "thinking_delta", text: event.text };
+				} else if (event.type === "done")
+					answer = {
+						output: event.output,
+						incomplete: event.status === "incomplete" ? (event.incompleteReason ?? "incomplete") : undefined,
+						usage: toUsage(event.usage),
+					};
+			}
+		} catch (error) {
+			throw shown && !signal?.aborted ? new AfterOutputError(error) : error;
 		}
 		if (answer === undefined) throw new Error("The response ended without an answer.");
 		return answer;
@@ -430,7 +476,7 @@ class OpenAiCodexSession implements BackendSession {
 		let answer: Answer;
 		try {
 			const input = withInstruction(items.slice(0, cut), summaryInstruction(instructions));
-			answer = yield* this.#ask(this.#body({ input, summary: true }), signal, false);
+			answer = yield* this.#request(this.#body({ input, summary: true }), signal, false);
 		} catch (error) {
 			yield failed(signal.aborted ? "Interrupted by the user." : this.#redact(describeError(error)));
 			return false;
@@ -501,7 +547,7 @@ class OpenAiCodexSession implements BackendSession {
 		const input = withInstruction(this.#history, SUMMARY_INSTRUCTION);
 		let answer: Answer;
 		try {
-			const asking = this.#ask(this.#body({ input, summary: true }), undefined, false);
+			const asking = this.#request(this.#body({ input, summary: true }), undefined, false);
 			for (;;) {
 				const next = await asking.next();
 				if (next.done) {

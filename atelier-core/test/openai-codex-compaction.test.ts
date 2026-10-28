@@ -8,7 +8,7 @@ import type { BackendSession, BackendStartOptions } from "../src/backend.ts";
 import { OpenAiCodexBackend } from "../src/backends/openai-codex/backend.ts";
 import { SUMMARY_HEADINGS } from "../src/compaction/compactor.ts";
 import type { AtelierEventBody } from "../src/events.ts";
-import { fakeCodexAccess, fakeRefresh } from "./support/fake-openai-auth.ts";
+import { FakeOpenAiAuth, fakeCodexAccess, fakeRefresh } from "./support/fake-openai-auth.ts";
 import { callItem, completed, FakeResponses, textItem } from "./support/fake-responses.ts";
 import { requireIsolatedHome } from "./support/login-isolation.ts";
 
@@ -41,7 +41,7 @@ afterEach(async () => {
 	await rm(home, { recursive: true, force: true });
 });
 
-async function start(options: Partial<BackendStartOptions> = {}, compactAt = 50) {
+async function start(options: Partial<BackendStartOptions> = {}, compactAt = 50, authUrl?: string) {
 	const summaries: string[] = [];
 	const backend = new OpenAiCodexBackend({
 		store,
@@ -49,6 +49,7 @@ async function start(options: Partial<BackendStartOptions> = {}, compactAt = 50)
 		baseDelayMs: 0,
 		compactAt,
 		keepRecentTokens: 1,
+		...(authUrl === undefined ? {} : { authUrl }),
 	});
 	const session = await backend.start({
 		cwd: "/work",
@@ -146,4 +147,48 @@ it("summarizes the whole conversation for another backend, on the compaction's m
 		tool_choice: "none",
 	});
 	expect(session.resumeState?.()).toEqual(history);
+});
+
+it("never compacts and repeats a request whose overflow came after text was shown, and ends with a recoverable error", async () => {
+	const { session } = await start({}, 1_000_000);
+	await twoTurns(session);
+	const before = api.requests.length;
+	api.answers.push({
+		events: [
+			{ type: "response.output_text.delta", delta: "already shown" },
+			{ type: "response.failed", response: { error: { code: "context_length_exceeded", message: "too long" } } },
+		],
+	});
+	const events = await all(session.send("third"));
+	expect(events.filter((event) => event.type === "text_delta")).toEqual([
+		{ type: "text_delta", text: "already shown" },
+	]);
+	expect(events.some((event) => event.type === "compaction_started")).toBe(false);
+	expect(events.find((event) => event.type === "error")).toMatchObject({ code: "context_overflow", recoverable: true });
+	expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
+	expect(api.requests).toHaveLength(before + 1);
+});
+
+it("refreshes a refused token once and retries the summary of /compact and of a backend change", async () => {
+	const auth = await new FakeOpenAiAuth().start();
+	try {
+		const fresh = () => fakeCodexAccess(`acct-${randomUUID()}`);
+		auth.routes.set("/oauth/token", () => ({
+			json: { access_token: fresh(), refresh_token: fakeRefresh(), expires_in: 3600 },
+		}));
+		const { session } = await start({}, 1_000_000, auth.url);
+		await twoTurns(session);
+		api.answers.push({ status: 401, json: { error: { message: "token expired" } } });
+		api.answers.push({ events: completed([textItem(SUMMARY)]) });
+		const compacted = await all(session.compact?.() ?? []);
+		expect(compacted.find((event) => event.type === "compaction_finished")).toMatchObject({ ok: true });
+		expect(auth.requests.filter((request) => request.path === "/oauth/token")).toHaveLength(1);
+
+		api.answers.push({ status: 401, json: { error: { message: "token expired" } } });
+		api.answers.push({ events: completed([textItem(SUMMARY)]) });
+		await expect(session.summarize?.()).resolves.toMatchObject({ requests: 1 });
+		expect(auth.requests.filter((request) => request.path === "/oauth/token")).toHaveLength(2);
+	} finally {
+		await auth.stop();
+	}
 });
