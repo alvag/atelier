@@ -86,7 +86,8 @@ it("keeps the directory when kill returns EPERM even if ps suggests reuse", asyn
 // Approved design: Windows is uncertain and must keep directories.
 it("does not delete on Windows when kill returns ESRCH", async () => {
 	const dir = await fixture();
-	const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+	const platform = Object.getOwnPropertyDescriptor(process, "platform");
+	if (platform === undefined) throw new Error("process.platform has no property descriptor to restore");
 	Object.defineProperty(process, "platform", { value: "win32", configurable: true });
 	vi.spyOn(process, "kill").mockImplementation(() => {
 		throw Object.assign(new Error("gone"), { code: "ESRCH" });
