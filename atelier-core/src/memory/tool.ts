@@ -49,8 +49,11 @@ const SECRET_WORD = /PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?
  * lookahead with its backreference takes the run whole, without giving characters back: linear on any text.
  */
 const ASSIGNMENT = /(?<![A-Za-z0-9_.-])(?=([A-Za-z0-9_.-]+))\1["']?[ \t]*[:=][ \t]*/g;
-/** The value an assignment gives: quoted, or up to a space, a quote, a comma or a semicolon. */
-const ASSIGNED_VALUE = /"[^"\n]*"|'[^'\n]*'|[^\s"',;]+/y;
+/**
+ * The value an assignment gives: quoted, across lines if it takes them, past a backslash-escaped quote in double
+ * quotes; a quote left open, to the end of its line; or up to a space, a quote, a comma or a semicolon.
+ */
+const ASSIGNED_VALUE = /"(?:\\[\s\S]|[^"\\])*"|'[^']*'|["'][^\n]*|[^\s"',;]+/y;
 
 /** The values assigned to names with a secret's word in them, replaced by `[REDACTED]`; the names stay. */
 function maskAssigned(text: string): string {

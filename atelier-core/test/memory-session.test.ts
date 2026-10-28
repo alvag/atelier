@@ -816,7 +816,18 @@ describe("user prompts", () => {
 	});
 
 	it("masks a long unspaced blob in linear time, and still masks the secret at its end", async () => {
-		const runs = ["a-", "a.", "a_", "a+", "x://", "curl -u a:b ", "curl -ua:'", 'wget --password "'];
+		const runs = [
+			"a-",
+			"a.",
+			"a_",
+			"a+",
+			"x://",
+			"curl -u a:b ",
+			"curl -ua:'",
+			'wget --password "',
+			'k_secret="\\',
+			"k_secret='",
+		];
 		const blobs = runs.map((run) => `${run.repeat(30_000)} DB_PASSWORD=hunter2`);
 		const { memory, session: s, send } = await session(blobs.map(() => [{ event: finished }]));
 		const started = performance.now();
@@ -826,6 +837,24 @@ describe("user prompts", () => {
 		expect(elapsed).toBeLessThan(1000);
 		expect(memory.prompts).toHaveLength(runs.length);
 		for (const kept of memory.prompts) expect(kept).not.toContain("hunter2");
+	});
+
+	it("masks a quoted value assigned to a secret's name across lines, past escaped quotes, or to the line's end when unclosed", async () => {
+		const prompts = [
+			'SECRET_KEY: "multi\nline"\nnext: 1',
+			"db_password = 'a\nb' rest",
+			'API_TOKEN="pa\\"ss" x',
+			'TOKEN: "abc def\nnext',
+		];
+		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
+		for (const prompt of prompts) await send(prompt);
+		await s.close();
+		expect(memory.prompts).toEqual([
+			"SECRET_KEY: [REDACTED]\nnext: 1",
+			"db_password = [REDACTED] rest",
+			"API_TOKEN=[REDACTED] x",
+			"TOKEN: [REDACTED]\nnext",
+		]);
 	});
 
 	it("masks a URL password up to the authority's last '@', with '@' or '/' inside it", async () => {
