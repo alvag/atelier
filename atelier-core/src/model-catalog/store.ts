@@ -34,6 +34,11 @@ export type FetchResult = { kind: "changed"; models: CatalogModels; etag?: strin
 /** Where models come from: `fetch` throws when it cannot say, and the cached answer stays. */
 export interface CatalogSource {
 	name: string;
+	/**
+	 * Whether the user is signed in to the source, checked without reading a credential; without a sign-in `fetch`
+	 * is not called. Absent: the source needs none.
+	 */
+	available?(): Promise<boolean>;
 	fetch(previous: SourceEntry | undefined, signal: AbortSignal): Promise<FetchResult>;
 }
 
@@ -113,8 +118,9 @@ export interface RefreshOptions {
 /**
  * `fresh`: asked within the interval, not asked again. `changed` and `unchanged`: what the source answered.
  * `failed`: no answer; the cached one stays as it was, and the source is asked again at the next refresh.
+ * `skipped`: not signed in to it, so nothing was asked; the cached answer stays.
  */
-export type RefreshOutcome = "fresh" | "changed" | "unchanged" | "failed";
+export type RefreshOutcome = "fresh" | "changed" | "unchanged" | "failed" | "skipped";
 
 /** Asks `source` for its models when its cached answer is older than the interval, and keeps the answer in `file`. */
 export async function refreshSource(
@@ -126,7 +132,7 @@ export async function refreshSource(
 	const previous = (await readCatalog(file)).sources[source.name];
 	const interval = options.intervalMs ?? CATALOG_REFRESH_INTERVAL_MS;
 	if (!options.force && previous !== undefined && now - previous.checkedAt < interval) return "fresh";
-	let result: FetchResult | undefined;
+	let result: FetchResult | "skipped" | undefined;
 	try {
 		result = await withinTimeout(source, previous, options.timeoutMs ?? CATALOG_REQUEST_TIMEOUT_MS);
 	} catch {
@@ -134,6 +140,7 @@ export async function refreshSource(
 	}
 	// A failure leaves the file as it was, so the next refresh asks again instead of waiting out the interval.
 	if (result === undefined) return "failed";
+	if (result === "skipped") return "skipped";
 	try {
 		if (result.kind === "changed")
 			await saveSource(file, source.name, {
@@ -149,14 +156,15 @@ export async function refreshSource(
 }
 
 /**
- * The source's answer, or a rejection once `timeoutMs` passes: the signal stops its request, and the race covers
- * what it awaits before it (a key, a token, a Claude Code session), which no signal reaches.
+ * The source's answer, `skipped` when the user is not signed in to it, or a rejection once `timeoutMs` passes: the
+ * signal stops its request, and the race covers what it awaits before it (the sign-in check, a key, a token, a
+ * Claude Code session), which no signal reaches.
  */
 function withinTimeout(
 	source: CatalogSource,
 	previous: SourceEntry | undefined,
 	timeoutMs: number,
-): Promise<FetchResult> {
+): Promise<FetchResult | "skipped"> {
 	const controller = new AbortController();
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const timeout = new Promise<never>((_resolve, reject) => {
@@ -166,7 +174,11 @@ function withinTimeout(
 			reject(error);
 		}, timeoutMs);
 	});
-	return Promise.race([source.fetch(previous, controller.signal), timeout]).finally(() => clearTimeout(timer));
+	const ask = async (): Promise<FetchResult | "skipped"> => {
+		if (source.available && !(await source.available())) return "skipped";
+		return source.fetch(previous, controller.signal);
+	};
+	return Promise.race([ask(), timeout]).finally(() => clearTimeout(timer));
 }
 
 /** Asks every source at once; one that fails or hangs does not hold up the others. */

@@ -23,7 +23,8 @@ export async function runModels(options: { refresh?: true }, io: ModelsIO): Prom
 	const network = modelRefreshEnabled(io.env);
 	const catalog = new DynamicModelCatalog({
 		file,
-		sources: defaultCatalogSources({ home: io.home, env: io.env }),
+		// Asked for by the user: a key in the Keychain may be read for --refresh.
+		sources: defaultCatalogSources({ home: io.home, env: io.env, interactive: options.refresh === true }),
 		network,
 	});
 	if (options.refresh) {

@@ -41,7 +41,8 @@ Environment:
                          and the verifier gets no bash (session.start can also ask for it)
   ATELIER_LOGIN_CHECK=off
                          options.list offers every backend's models without asking
-                         Claude Code, auth.json or the Keychain which ones are signed in
+                         Claude Code, auth.json or the Keychain which ones are signed in;
+                         the model catalog reads no credential and asks only models.dev
   ATELIER_MODEL_REFRESH=off
                          Offer the models of the code and of ~/.atelier/models.json
                          without asking models.dev or the providers for new ones
