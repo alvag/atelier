@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,8 @@ import {
 } from "../src/index.ts";
 import type { McpServerConfig } from "../src/mcp/config.ts";
 import { McpManager } from "../src/mcp/manager.ts";
+import { createMcpTools, MCP_CALL_TOOL } from "../src/mcp/tools.ts";
+import { sweepStaleScratch } from "../src/scratch.ts";
 import type { SubagentDefinition } from "../src/subagents/definitions.ts";
 
 const FIXTURE = fileURLToPath(new URL("fixtures/mcp/server.ts", import.meta.url));
@@ -246,6 +248,33 @@ describe("MCP in a session", () => {
 			expect(await readFile(path ?? "", "utf8")).toBe(`start-${"x".repeat(50_000)}-end`);
 		} finally {
 			await session.close();
+		}
+	});
+
+	it("saves a long result and an image without a scratch directory each in one of its own, which a sweep deletes once its process is dead", async () => {
+		const manager = mcp([server("fixture", {}, { MCP_BIG_CHARS: "50000" })]);
+		const mcpCall = createMcpTools(manager).find((tool) => tool.name === MCP_CALL_TOOL);
+		const previous = process.env.TMPDIR;
+		const root = join(dir, "tmp");
+		await mkdir(root);
+		process.env.TMPDIR = root;
+		try {
+			const big = await mcpCall?.execute({ server: "fixture", tool: "big" }, { cwd: dir });
+			const image = await mcpCall?.execute({ server: "fixture", tool: "image" }, { cwd: dir });
+			const bigPath = big?.fullOutputPath ?? "";
+			const imagePath = /saved to (\S+\.png)\]/.exec(image?.output ?? "")?.[1] ?? "";
+			expect(await readFile(bigPath, "utf8")).toBe(`start-${"x".repeat(50_000)}-end`);
+			expect(await readFile(imagePath, "utf8")).toBe("png-bytes");
+			for (const path of [bigPath, imagePath]) expect((await readdir(join(path, ".."))).length).toBe(1);
+			expect((await readdir(root)).every((name) => name.startsWith("atelier-mcp-"))).toBe(true);
+
+			const dead = { isAlive: () => false, startedAt: async () => undefined };
+			expect(await sweepStaleScratch({ tmpRoot: root, processes: dead })).toHaveLength(2);
+			expect(await readdir(root)).toEqual([]);
+		} finally {
+			if (previous === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previous;
+			await manager.close();
 		}
 	});
 
