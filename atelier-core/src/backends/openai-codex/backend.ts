@@ -85,7 +85,8 @@ export class OpenAiCodexBackend implements AgentBackend {
 
 	async start(start: BackendStartOptions): Promise<BackendSession> {
 		const model = start.model ?? this.#options.model ?? DEFAULT_CODEX_MODEL;
-		const window = this.#options.contextWindow ?? codexContextWindow(model);
+		const keepRecent = this.#options.keepRecentTokens ?? KEEP_RECENT_TOKENS;
+		const { contextWindow, compactAt } = this.#options;
 		return new OpenAiCodexSession({
 			access: new CodexAccess(this.#options),
 			model,
@@ -98,10 +99,13 @@ export class OpenAiCodexBackend implements AgentBackend {
 			compactionState: start.compactionState,
 			compacted: start.compacted,
 			summary: start.compaction,
-			compaction: {
-				window,
-				compactAt: compactThreshold({ window, maxTokens: OUTPUT_RESERVE, override: this.#options.compactAt }),
-				keepRecent: this.#options.keepRecentTokens ?? KEEP_RECENT_TOKENS,
+			compaction: (forModel) => {
+				const window = contextWindow ?? codexContextWindow(forModel);
+				return {
+					window,
+					compactAt: compactThreshold({ window, maxTokens: OUTPUT_RESERVE, override: compactAt }),
+					keepRecent,
+				};
 			},
 		});
 	}
@@ -176,7 +180,8 @@ export interface SessionSetup {
 	executeTool: ToolExecutor;
 	maxRequests: number;
 	history: ResponsesItem[];
-	compaction: CompactionConfig;
+	/** The compaction of each model the session runs: the window depends on it. */
+	compaction: (model: string) => CompactionConfig;
 	compactionState: (() => string | undefined) | undefined;
 	compacted: ((summary: string) => void) | undefined;
 	/** The model and level of the summary request, when the profile's compaction entry sets them. */
@@ -219,6 +224,7 @@ class OpenAiCodexSession implements BackendSession {
 	#unmeasured = false;
 	#files: FileActivity = { read: [], edited: [] };
 	#summary: SessionSetup["summary"];
+	#compaction: CompactionConfig;
 	/** Index of the user message that started the current turn; -1 between turns or once a summary holds it. */
 	#turnStart = -1;
 	/** The current turn's request, verbatim, once a summary had to carry it. */
@@ -230,6 +236,7 @@ class OpenAiCodexSession implements BackendSession {
 		this.#model = setup.model;
 		this.#thinking = setup.thinking;
 		this.#reasoning = codexReasoning(setup.model, setup.thinking);
+		this.#compaction = setup.compaction(setup.model);
 		this.#history = setup.history;
 		this.#summary = setup.summary;
 	}
@@ -242,6 +249,7 @@ class OpenAiCodexSession implements BackendSession {
 		this.#model = change.model ?? this.#model;
 		this.#thinking = change.thinking ?? this.#thinking;
 		this.#reasoning = codexReasoning(this.#model, this.#thinking);
+		this.#compaction = this.#setup.compaction(this.#model);
 		if (change.compaction !== undefined) this.#summary = change.compaction ?? undefined;
 	}
 
@@ -280,7 +288,7 @@ class OpenAiCodexSession implements BackendSession {
 					stopReason = "turn_limit";
 					break;
 				}
-				if (!thresholdFailed && !this.#unmeasured && this.#contextTokens() >= this.#setup.compaction.compactAt) {
+				if (!thresholdFailed && !this.#unmeasured && this.#contextTokens() >= this.#compaction.compactAt) {
 					thresholdFailed = !(yield* this.#compact("threshold", abort.signal, meter));
 					if (abort.signal.aborted) {
 						stopReason = "interrupted";
@@ -439,7 +447,7 @@ class OpenAiCodexSession implements BackendSession {
 	}
 
 	#context(): ContextUsage {
-		const { window, compactAt } = this.#setup.compaction;
+		const { window, compactAt } = this.#compaction;
 		return { tokens: this.#contextTokens(), window, compactAt };
 	}
 
@@ -469,7 +477,7 @@ class OpenAiCodexSession implements BackendSession {
 			error,
 		});
 		const items = this.#history;
-		const cut = findItemCut(items, this.#setup.compaction.keepRecent);
+		const cut = findItemCut(items, this.#compaction.keepRecent);
 		if (cut === undefined) {
 			yield failed("There is not enough history to compact.");
 			return false;

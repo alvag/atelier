@@ -122,18 +122,12 @@ export class CodexAccess {
 	}
 
 	/**
-	 * What the Codex model catalog is asked with: the signed-in account's fresh token, and its id where it has one;
-	 * undefined when nobody is signed in.
+	 * What the Codex model catalog, on the Codex host, is asked with: the Codex sign-in's fresh token and its account
+	 * id. Undefined without that sign-in: Sign in with ChatGPT's token is only ever sent to api.openai.com.
 	 */
 	async catalogHeaders(): Promise<Record<string, string> | undefined> {
-		let variant: CodexVariant;
-		try {
-			variant = this.variant;
-		} catch (error) {
-			if (error instanceof NotSignedInError) return undefined;
-			throw error;
-		}
-		const credential = await this.#fresh(variant);
+		if (this.#options.variant === "chatgpt" || this.#stored("legacy") === undefined) return undefined;
+		const credential = await this.#fresh("legacy");
 		const accountId =
 			typeof credential.accountId === "string" ? credential.accountId : codexAccountId(credential.access);
 		return {
