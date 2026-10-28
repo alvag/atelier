@@ -77,7 +77,8 @@ export function parsePasted(input: string, state: string): Authorization {
 	try {
 		params = new URL(value).searchParams;
 	} catch {
-		bare = !value.includes("=");
+		// A bare code may hold `=` (base64 padding): only `code=` makes it a query.
+		bare = !value.includes("code=") && !value.includes("://");
 		params = bare ? new URLSearchParams({ code: value }) : new URLSearchParams(value);
 	}
 	const error = params.get("error");
