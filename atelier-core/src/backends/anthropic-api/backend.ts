@@ -1,4 +1,4 @@
-import Anthropic, { APIError } from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
 import type {
 	AgentBackend,
 	BackendSession,
@@ -44,15 +44,15 @@ import {
 import { UsageMeter } from "../../usage-meter.ts";
 import { systemPrompt } from "./system-prompt.ts";
 import { toAnthropicTools } from "./tool-schema.ts";
+import { anthropicTransport, finalMessage, type ModelTransport } from "./transport.ts";
+
+export { DEFAULT_CONTEXT_WINDOW } from "./transport.ts";
 
 export const BACKEND_ID = "anthropic-api";
 export const DEFAULT_API_MODEL = "claude-sonnet-5-5";
 /** Output budget per request; a turn that needs more continues after its tool results. */
 export const DEFAULT_MAX_TOKENS = 16_000;
 export const DEFAULT_MAX_REQUESTS_PER_TURN = 50;
-/** Used when the models API does not say the model's window. */
-export const DEFAULT_CONTEXT_WINDOW = 200_000;
-const WINDOW_LOOKUP_TIMEOUT_MS = 5_000;
 const INTERRUPTED_TOOL = "Interrupted by the user.";
 /** 5-minute TTL, the API default. */
 const BREAKPOINT: Anthropic.CacheControlEphemeral = Object.freeze({ type: "ephemeral" });
@@ -246,10 +246,12 @@ export class AnthropicApiBackend implements AgentBackend {
 		const summary =
 			start.compaction === undefined ? undefined : summaryRequest(model, start.thinking, start.compaction);
 		const maxRequests = start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
+		const transport = anthropicTransport(client);
+		const transportFor = () => transport;
 		// The window lookup runs while the session starts; the first request waits for it, never the start.
 		const { contextWindow, compactAt, keepRecentTokens } = this.#options;
 		const compactionFor = (forModel: string): Promise<CompactionConfig> =>
-			(contextWindow === undefined ? lookupWindow(client, forModel) : Promise.resolve(contextWindow)).then(
+			(contextWindow === undefined ? transportFor().contextWindow(forModel) : Promise.resolve(contextWindow)).then(
 				(window) => ({
 					window,
 					compactAt: compactThreshold({ window, maxTokens: state.maxTokens, override: compactAt }),
@@ -257,7 +259,7 @@ export class AnthropicApiBackend implements AgentBackend {
 				}),
 			);
 		return new AnthropicApiSession(
-			client,
+			transportFor,
 			state,
 			start.executeTool,
 			maxRequests,
@@ -290,25 +292,9 @@ function savedMessages(resume: ResumeState | undefined): StoredMessage[] {
 	return messages as StoredMessage[];
 }
 
-/** The model's input window from the models API, once per session; any failure falls back to the default. */
-async function lookupWindow(client: Anthropic, model: string): Promise<number> {
-	try {
-		const info = await client.models.retrieve(model, null, { maxRetries: 0, timeout: WINDOW_LOOKUP_TIMEOUT_MS });
-		return info.max_input_tokens ?? DEFAULT_CONTEXT_WINDOW;
-	} catch {
-		return DEFAULT_CONTEXT_WINDOW;
-	}
-}
-
-/** The API's answer to a prompt larger than the window. */
-function isOverflow(error: unknown): boolean {
-	if (!(error instanceof APIError)) return false;
-	if (error.status === 413) return true;
-	return error.status === 400 && /prompt is too long|request_too_large|context window/i.test(error.message);
-}
-
 class AnthropicApiSession implements BackendSession {
-	readonly #client: Anthropic;
+	/** The transport of each model: the session's and the summary's may differ. */
+	readonly #transportFor: (model: string) => ModelTransport;
 	readonly #state: RequestState;
 	readonly #executeTool: ToolExecutor;
 	readonly #maxRequests: number;
@@ -339,7 +325,7 @@ class AnthropicApiSession implements BackendSession {
 	#turnPrompt: string | undefined;
 
 	constructor(
-		client: Anthropic,
+		transportFor: (model: string) => ModelTransport,
 		state: RequestState,
 		executeTool: ToolExecutor,
 		maxRequests: number,
@@ -351,7 +337,7 @@ class AnthropicApiSession implements BackendSession {
 		summary?: SummaryRequestState,
 		thinking?: SessionChange["thinking"],
 	) {
-		this.#client = client;
+		this.#transportFor = transportFor;
 		this.#state = state;
 		this.#executeTool = executeTool;
 		this.#maxRequests = maxRequests;
@@ -412,17 +398,11 @@ class AnthropicApiSession implements BackendSession {
 					}
 				}
 				let message: Anthropic.Message;
+				const transport = this.#transportFor(this.#state.model);
 				try {
-					const stream = this.#client.messages.stream(buildRequest(this.#state), { signal: abort.signal });
-					for await (const event of stream) {
-						if (event.type !== "content_block_delta") continue;
-						if (event.delta.type === "text_delta") yield { type: "text_delta", text: event.delta.text };
-						else if (event.delta.type === "thinking_delta")
-							yield { type: "thinking_delta", text: event.delta.thinking };
-					}
-					message = await stream.finalMessage();
+					message = yield* transport.request(buildRequest(this.#state), abort.signal);
 				} catch (error) {
-					if (abort.signal.aborted || overflowTried || !isOverflow(error)) throw error;
+					if (abort.signal.aborted || overflowTried || !transport.isOverflow(error)) throw error;
 					overflowTried = true;
 					const compacted = yield* this.#compact("overflow", abort.signal, meter);
 					if (abort.signal.aborted) {
@@ -523,7 +503,7 @@ class AnthropicApiSession implements BackendSession {
 		const state = this.#summaryState();
 		let response: Anthropic.Message;
 		try {
-			response = await this.#client.messages.stream(buildHandoffRequest(state)).finalMessage();
+			response = await finalMessage(this.#transportFor(state.model).request(buildHandoffRequest(state)));
 		} catch (error) {
 			throw new Error(this.#redact(describeError(error)));
 		}
@@ -614,8 +594,9 @@ class AnthropicApiSession implements BackendSession {
 		}
 		let response: Anthropic.Message;
 		try {
-			const request = buildSummaryRequest(this.#summaryState(), cut, instructions);
-			response = await this.#client.messages.stream(request, { signal }).finalMessage();
+			const state = this.#summaryState();
+			const request = buildSummaryRequest(state, cut, instructions);
+			response = await finalMessage(this.#transportFor(state.model).request(request, signal));
 		} catch (error) {
 			yield failed(signal.aborted ? "Interrupted by the user." : this.#redact(describeError(error)));
 			return false;
@@ -712,15 +693,7 @@ class AnthropicApiSession implements BackendSession {
 	}
 
 	#apiError(error: unknown): AtelierEventBody {
-		const message = this.#redact(describeError(error));
-		if (!(error instanceof APIError)) return errorEvent("api_error", message, true);
-		const type = (error.error as { error?: { type?: string } } | undefined)?.error?.type;
-		if (error.status === 429 || type === "rate_limit_error") return errorEvent("rate_limited", message, true);
-		if (error.status === 529 || type === "overloaded_error") return errorEvent("overloaded", message, true);
-		if (error.status === 401 || type === "authentication_error")
-			return errorEvent("authentication_error", message, false);
-		if (error.status === 400 || type === "invalid_request_error") return errorEvent("invalid_request", message, false);
-		return errorEvent("api_error", message, error.status === undefined || error.status >= 500);
+		return this.#transportFor(this.#state.model).errorEvent(error, this.#redact(describeError(error)));
 	}
 
 	async interrupt(): Promise<void> {
