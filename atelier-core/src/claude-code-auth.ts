@@ -176,5 +176,7 @@ export async function loginWarning(backend: string, options: LoginWarningOptions
 	if (status.loggedIn) return undefined;
 	const withKey =
 		(await apiKeySource(keys)) === undefined ? "" : ", or --backend anthropic-api to use your Anthropic API key";
-	return `Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account${withKey}.`;
+	const withGo =
+		openCodeGoKeySource(keys) === undefined ? "" : ", or --backend opencode-go to use your OpenCode Go key";
+	return `Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account${withKey}${withGo}.`;
 }

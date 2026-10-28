@@ -210,6 +210,7 @@ describe("options.list", () => {
 				backends: [
 					{ name: "claude-code", models: [...BACKEND_MODELS["claude-code"]] },
 					{ name: "anthropic-api", models: [...BACKEND_MODELS["anthropic-api"]] },
+					{ name: "opencode-go", models: [...BACKEND_MODELS["opencode-go"]] },
 				],
 				efforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
 				modes: ["normal", "auto", "yolo"],

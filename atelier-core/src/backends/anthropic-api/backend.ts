@@ -37,6 +37,7 @@ import {
 import {
 	costOfRequest,
 	summarizesThinking,
+	type ThinkingBackend,
 	type ThinkingOff,
 	type ThinkingSend,
 	thinkingToSend,
@@ -73,6 +74,10 @@ export interface AnthropicApiBackendOptions {
 	compactAt?: number;
 	/** Size of the history tail a compaction keeps verbatim. */
 	keepRecentTokens?: number;
+	/** The backend's name in its events: `opencode-go` runs this same loop. */
+	id?: ThinkingBackend;
+	/** Called once per session for the transport of each model; the Messages API through the SDK when absent. */
+	connect?: () => (model: string) => ModelTransport;
 }
 
 interface CompactionConfig {
@@ -89,12 +94,13 @@ export type SummaryRequestState = Pick<RequestState, "model" | "effort" | "think
 
 /** The summary request's model and level: the compaction entry's, and the session's where the entry sets none. */
 function summaryRequest(
+	id: ThinkingBackend,
 	model: string,
 	thinking: SessionChange["thinking"],
 	entry: NonNullable<SessionChange["compaction"]>,
 ): SummaryRequestState {
 	const summaryModel = entry.model ?? model;
-	const sent = thinkingToSend(summaryModel, entry.thinking ?? thinking, BACKEND_ID);
+	const sent = thinkingToSend(summaryModel, entry.thinking ?? thinking, id);
 	return {
 		model: summaryModel,
 		...(sent?.effort === undefined ? {} : { effort: sent.effort }),
@@ -217,21 +223,29 @@ function cacheMiss(message: Anthropic.Message): AtelierEventBody | undefined {
 
 /** Runs turns with Atelier's own loop on the Messages API, billed to an API key. */
 export class AnthropicApiBackend implements AgentBackend {
-	readonly id = BACKEND_ID;
+	readonly id: ThinkingBackend;
 	readonly #options: AnthropicApiBackendOptions;
 
 	constructor(options: AnthropicApiBackendOptions) {
 		this.#options = options;
+		this.id = options.id ?? BACKEND_ID;
+	}
+
+	#connect(): (model: string) => ModelTransport {
+		if (this.#options.connect) return this.#options.connect();
+		const transport = anthropicTransport(
+			new Anthropic({
+				apiKey: this.#options.apiKey,
+				...(this.#options.fetch === undefined ? {} : { fetch: this.#options.fetch }),
+				...(this.#options.maxRetries === undefined ? {} : { maxRetries: this.#options.maxRetries }),
+			}),
+		);
+		return () => transport;
 	}
 
 	async start(start: BackendStartOptions): Promise<BackendSession> {
-		const client = new Anthropic({
-			apiKey: this.#options.apiKey,
-			...(this.#options.fetch === undefined ? {} : { fetch: this.#options.fetch }),
-			...(this.#options.maxRetries === undefined ? {} : { maxRetries: this.#options.maxRetries }),
-		});
 		const model = start.model ?? this.#options.model ?? DEFAULT_API_MODEL;
-		const sent = thinkingToSend(model, start.thinking, BACKEND_ID);
+		const sent = thinkingToSend(model, start.thinking, this.id);
 		const state: RequestState = {
 			model,
 			maxTokens: this.#options.maxTokens ?? DEFAULT_MAX_TOKENS,
@@ -244,26 +258,27 @@ export class AnthropicApiBackend implements AgentBackend {
 		};
 		// The summary request has its own model and level when the profile's compaction entry sets them.
 		const summary =
-			start.compaction === undefined ? undefined : summaryRequest(model, start.thinking, start.compaction);
+			start.compaction === undefined ? undefined : summaryRequest(this.id, model, start.thinking, start.compaction);
 		const maxRequests = start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
-		const transport = anthropicTransport(client);
-		const transportFor = () => transport;
+		const transportFor = this.#connect();
 		// The window lookup runs while the session starts; the first request waits for it, never the start.
 		const { contextWindow, compactAt, keepRecentTokens } = this.#options;
 		const compactionFor = (forModel: string): Promise<CompactionConfig> =>
-			(contextWindow === undefined ? transportFor().contextWindow(forModel) : Promise.resolve(contextWindow)).then(
-				(window) => ({
-					window,
-					compactAt: compactThreshold({ window, maxTokens: state.maxTokens, override: compactAt }),
-					keepRecent: keepRecentTokens ?? KEEP_RECENT_TOKENS,
-				}),
-			);
+			(contextWindow === undefined
+				? transportFor(forModel).contextWindow(forModel)
+				: Promise.resolve(contextWindow)
+			).then((window) => ({
+				window,
+				compactAt: compactThreshold({ window, maxTokens: state.maxTokens, override: compactAt }),
+				keepRecent: keepRecentTokens ?? KEEP_RECENT_TOKENS,
+			}));
 		return new AnthropicApiSession(
 			transportFor,
 			state,
 			start.executeTool,
 			maxRequests,
 			this.#options.apiKey,
+			this.id,
 			compactionFor,
 			sent?.report,
 			start.compactionState,
@@ -299,6 +314,7 @@ class AnthropicApiSession implements BackendSession {
 	readonly #executeTool: ToolExecutor;
 	readonly #maxRequests: number;
 	readonly #apiKey: string;
+	readonly #id: ThinkingBackend;
 	readonly #compactionFor: (model: string) => Promise<CompactionConfig>;
 	#compactionReady: Promise<CompactionConfig>;
 	/** What `session_started` says about the effort, as the last `configure` left it. */
@@ -330,6 +346,7 @@ class AnthropicApiSession implements BackendSession {
 		executeTool: ToolExecutor,
 		maxRequests: number,
 		apiKey: string,
+		id: ThinkingBackend,
 		compactionFor: (model: string) => Promise<CompactionConfig>,
 		effort: ThinkingSend["report"] | undefined,
 		compactionState?: () => string | undefined,
@@ -342,6 +359,7 @@ class AnthropicApiSession implements BackendSession {
 		this.#executeTool = executeTool;
 		this.#maxRequests = maxRequests;
 		this.#apiKey = apiKey;
+		this.#id = id;
 		this.#compactionFor = compactionFor;
 		this.#compactionReady = compactionFor(state.model);
 		this.#thinking = thinking;
@@ -356,12 +374,12 @@ class AnthropicApiSession implements BackendSession {
 	}
 
 	async *send(prompt: string): AsyncIterable<AtelierEventBody> {
-		if (this.#closed) throw new Error("The anthropic-api session is closed.");
+		if (this.#closed) throw new Error(`The ${this.#id} session is closed.`);
 		if (!this.#announced) {
 			this.#announced = true;
 			yield {
 				type: "session_started",
-				backend: BACKEND_ID,
+				backend: this.#id,
 				model: this.#state.model,
 				authSource: "api_key",
 				...(this.#effort === undefined ? {} : { effort: this.#effort }),
@@ -452,7 +470,7 @@ class AnthropicApiSession implements BackendSession {
 		const state = this.#state;
 		const model = change.model ?? state.model;
 		const thinking = change.thinking ?? this.#thinking;
-		const sent = thinkingToSend(model, thinking, BACKEND_ID);
+		const sent = thinkingToSend(model, thinking, this.#id);
 		delete state.effort;
 		delete state.thinking;
 		delete state.summarizeThinking;
@@ -463,7 +481,8 @@ class AnthropicApiSession implements BackendSession {
 		this.#thinking = thinking;
 		// A new entry replaces the summary request's model and level; none makes it the session's own request.
 		if (change.compaction !== undefined) {
-			this.#summary = change.compaction === null ? undefined : summaryRequest(model, thinking, change.compaction);
+			this.#summary =
+				change.compaction === null ? undefined : summaryRequest(this.#id, model, thinking, change.compaction);
 		}
 		if (model !== state.model) {
 			state.model = model;
@@ -474,7 +493,7 @@ class AnthropicApiSession implements BackendSession {
 	}
 
 	async *compact(instructions?: string): AsyncIterable<AtelierEventBody> {
-		if (this.#closed) throw new Error("The anthropic-api session is closed.");
+		if (this.#closed) throw new Error(`The ${this.#id} session is closed.`);
 		const abort = new AbortController();
 		this.#abort = abort;
 		if (!(await this.#ready(abort.signal))) {
@@ -497,7 +516,7 @@ class AnthropicApiSession implements BackendSession {
 	 * counted stay as they are; the request is the compaction's, with the compaction entry's model and level.
 	 */
 	async summarize(): Promise<BackendSummary> {
-		if (this.#closed) throw new Error("The anthropic-api session is closed.");
+		if (this.#closed) throw new Error(`The ${this.#id} session is closed.`);
 		const messages = this.#state.messages;
 		if (messages.length === 0) throw new Error("There is no conversation to summarize.");
 		const state = this.#summaryState();
