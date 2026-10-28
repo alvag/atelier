@@ -109,11 +109,115 @@ const VALUE_MASKS: RegExp[] = [
 	/(?<=['"])([A-Za-z0-9_-]*Authorization["'][ \t]*[:=][ \t]*)(?![ \t"'])[^\n]*/gi,
 	/(?<![-'"A-Za-z0-9_])([A-Za-z0-9_-]*Authorization["']?[ \t]*[:=][ \t]*)(?![ \t"'])[^\n]*/gi,
 	/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi,
-	// The password of curl's -u / --user user:password, quoted or not.
-	/(?<!\S)((?:-u|--user)(?:[ \t]+|=)'[^\s:']+:)[^'\n]*/g,
-	/(?<!\S)((?:-u|--user)(?:[ \t]+|=)"[^\s:"]+:)[^"\n]*/g,
-	/(?<!\S)((?:-u|--user)(?:[ \t]+|=)[^\s:'"]+:)[^\s'"]+/g,
 ];
+
+/** A curl or wget command's name, also at the end of a path (`/usr/bin/curl`). */
+const PASSWORD_COMMAND = /(?<![\w.-])(curl|wget)(?:\.exe)?(?![\w.-])/g;
+/** Characters that end a command where no quote holds them. */
+const COMMAND_END = ";&|\n`()";
+/** curl's options whose value is `user:password`, alone (the value is the next word) or with it attached. */
+const CURL_USER = /^(?:(-u|-U|--user|--proxy-user)$|-[uU]|--user=|--proxy-user=)/;
+/** wget's options whose value is a password, alone or with `=value`. */
+const WGET_PASSWORD = /^(?:--(?:(?:http|ftp|proxy)-)?passw(?:or)?d)(=|$)/;
+
+/**
+ * The next shell word of a command from `from`, past blanks and line continuations: where it starts and ends, with
+ * its quotes (a quote left open runs to the end of the text). Undefined where the command ends.
+ */
+function shellWord(text: string, from: number): { start: number; end: number } | undefined {
+	let i = from;
+	while (text[i] === " " || text[i] === "\t" || (text[i] === "\\" && text[i + 1] === "\n"))
+		i += text[i] === "\\" ? 2 : 1;
+	if (i >= text.length || COMMAND_END.includes(text[i] as string)) return undefined;
+	const start = i;
+	while (i < text.length) {
+		const c = text[i] as string;
+		if (c === " " || c === "\t" || COMMAND_END.includes(c) || (c === "\\" && text[i + 1] === "\n")) break;
+		if (c === "\\") i += 2;
+		else if (c === "'" || c === '"') i = pastQuote(text, c, i + 1);
+		else i++;
+	}
+	return { start, end: Math.min(i, text.length) };
+}
+
+/** Just past the first `quote` from `from` (a backslash escapes inside double quotes), or the text's end. */
+function pastQuote(text: string, quote: string, from: number): number {
+	for (let i = from; i < text.length; i++) {
+		if (quote === '"' && text[i] === "\\") i++;
+		else if (text[i] === quote) return i + 1;
+	}
+	return text.length;
+}
+
+/**
+ * Where the password of a `user:password` word between `start` and `end` lies: after the first ':', to the word's
+ * end, or to the quote that closes the word when the ':' is inside quotes that close it (`'ana:p w'`).
+ */
+function passwordAfterColon(text: string, start: number, end: number): [number, number] | undefined {
+	let quote = "";
+	for (let i = start; i < end; i++) {
+		const c = text[i];
+		if (c === "\\" && quote !== "'") i++;
+		else if (quote === "" && (c === "'" || c === '"')) quote = c;
+		else if (c === quote) quote = "";
+		else if (c === ":") {
+			const closed = quote !== "" && text[end - 1] === quote && pastQuote(text, quote, i + 1) === end;
+			const last = closed ? end - 1 : end;
+			return i + 1 < last ? [i + 1, last] : undefined;
+		}
+	}
+	return undefined;
+}
+
+/** Where the passwords of one curl or wget command lie, from its first word at `from` to where the command ends. */
+function commandPasswords(text: string, command: string, from: number): { spans: [number, number][]; end: number } {
+	const spans: [number, number][] = [];
+	let valueNext: "user" | "password" | undefined;
+	let end = from;
+	for (let word = shellWord(text, from); word; word = shellWord(text, word.end)) {
+		end = word.end;
+		const raw = text.slice(word.start, word.end);
+		// The word after an option that takes its value apart: a password whole, or a user:password.
+		const valued = valueNext;
+		valueNext = undefined;
+		if (valued === "password") spans.push([word.start, word.end]);
+		const found = valued === "user" ? passwordAfterColon(text, word.start, word.end) : undefined;
+		if (found) spans.push(found);
+		if (valued) continue;
+		const user = command === "curl" ? CURL_USER.exec(raw) : null;
+		const password = command === "wget" ? WGET_PASSWORD.exec(raw) : null;
+		if (user?.[1]) valueNext = "user";
+		else if (user) {
+			const found = passwordAfterColon(text, word.start + user[0].length, word.end);
+			if (found) spans.push(found);
+		} else if (password?.[1] === "") valueNext = "password";
+		else if (password && word.start + password[0].length < word.end) {
+			spans.push([word.start + password[0].length, word.end]);
+		}
+	}
+	return { spans, end };
+}
+
+/**
+ * The password of curl's `-u` / `--user` and `-U` / `--proxy-user` `user:password` and of wget's `--password` (and
+ * its `--http-`, `--ftp-` and `--proxy-` forms) replaced by `[REDACTED]`, read as the shell reads the command's words:
+ * quoted, escaped or attached to the option. Another command's `-u` is left alone. Each command is read once and the
+ * search resumes past it, so the work stays linear on any text.
+ */
+function maskCommandPasswords(text: string): string {
+	let masked = "";
+	let last = 0;
+	PASSWORD_COMMAND.lastIndex = 0;
+	for (let command = PASSWORD_COMMAND.exec(text); command !== null; command = PASSWORD_COMMAND.exec(text)) {
+		const { spans, end } = commandPasswords(text, command[1] as string, PASSWORD_COMMAND.lastIndex);
+		PASSWORD_COMMAND.lastIndex = Math.max(PASSWORD_COMMAND.lastIndex, end);
+		for (const [start, stop] of spans) {
+			masked += `${text.slice(last, start)}[REDACTED]`;
+			last = stop;
+		}
+	}
+	return masked + text.slice(last);
+}
 
 /** The private key blocks and the shapes `findSecret` knows, replaced by `[REDACTED]` where they stand whole. */
 function maskShapes(text: string): string {
@@ -129,7 +233,7 @@ function maskPlaced(text: string): string {
 		(masked, pattern) => masked.replace(pattern, (_match, name: string) => `${name}[REDACTED]`),
 		text,
 	);
-	return maskAssigned(maskUrlPasswords(valued));
+	return maskAssigned(maskUrlPasswords(maskCommandPasswords(valued)));
 }
 
 /**

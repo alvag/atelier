@@ -791,14 +791,15 @@ describe("user prompts", () => {
 	});
 
 	it("masks a long unspaced blob in linear time, and still masks the secret at its end", async () => {
-		const blobs = ["a-", "a.", "a_", "a+", "x://"].map((run) => `${run.repeat(30_000)} DB_PASSWORD=hunter2`);
+		const runs = ["a-", "a.", "a_", "a+", "x://", "curl -u a:b ", "curl -ua:'", 'wget --password "'];
+		const blobs = runs.map((run) => `${run.repeat(30_000)} DB_PASSWORD=hunter2`);
 		const { memory, session: s, send } = await session(blobs.map(() => [{ event: finished }]));
 		const started = performance.now();
 		for (const blob of blobs) await send(blob);
 		const elapsed = performance.now() - started;
 		await s.close();
 		expect(elapsed).toBeLessThan(1000);
-		expect(memory.prompts).toHaveLength(5);
+		expect(memory.prompts).toHaveLength(runs.length);
 		for (const kept of memory.prompts) expect(kept).not.toContain("hunter2");
 	});
 
@@ -853,6 +854,34 @@ describe("user prompts", () => {
 			"stripe [REDACTED] and [REDACTED]",
 			"curl -u ana:[REDACTED] https://api.test",
 			"curl --user=ana:[REDACTED] x; curl --user 'ana:[REDACTED]' y",
+		]);
+	});
+
+	it("masks the password of curl -u and -U and of wget's --password in every quoting, and no other command's -u", async () => {
+		const prompts = [
+			"curl -u admin:'S3cr3t!' https://api.test",
+			'curl -u ana:"p w" x',
+			'curl -u "ana:pa\\"ss" x',
+			"curl -s -uana:pw x && curl -k --user 'ana:p w' y",
+			"curl -X POST \\\n  -U proxy:pw --proxy-user=p:q https://api.test",
+			"/usr/bin/curl -u ana: x; curl -u ana x",
+			"wget --user=ana --password 'p w' x; wget --http-password=pw y",
+			"docker run -u 1000:1000 img; docker run --user node:node img | curl -s x",
+			"sudo -u ana:pw ls; then curl the API with -u ana:pw",
+		];
+		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
+		for (const prompt of prompts) await send(prompt);
+		await s.close();
+		expect(memory.prompts).toEqual([
+			"curl -u admin:[REDACTED] https://api.test",
+			"curl -u ana:[REDACTED] x",
+			'curl -u "ana:[REDACTED]" x',
+			"curl -s -uana:[REDACTED] x && curl -k --user 'ana:[REDACTED]' y",
+			"curl -X POST \\\n  -U proxy:[REDACTED] --proxy-user=p:[REDACTED] https://api.test",
+			"/usr/bin/curl -u ana: x; curl -u ana x",
+			"wget --user=ana --password [REDACTED] x; wget --http-password=[REDACTED] y",
+			"docker run -u 1000:1000 img; docker run --user node:node img | curl -s x",
+			"sudo -u ana:pw ls; then curl the API with -u ana:[REDACTED]",
 		]);
 	});
 
