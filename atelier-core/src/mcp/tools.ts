@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { describeError } from "../events.ts";
+import { createScratchDir } from "../scratch.ts";
 import { defineTool, type ToolDefinition, type ToolOutcome } from "../tools/types.ts";
 import type { McpManager } from "./manager.ts";
 
@@ -91,9 +91,10 @@ export function createMcpTools(manager: McpManager): ToolDefinition[] {
 			} catch (error) {
 				return { ok: false, output: `MCP call failed: ${describeError(error)}`, summary, truncated: false };
 			}
+			const files = filesDir(scratchDir);
 			// The result comes from the server: a secret in it is hidden, in the file of a long one too.
-			const text = manager.hide(await resultText(result, scratchDir));
-			return { ok: result.isError !== true, summary, ...(await cut(text, scratchDir)) };
+			const text = manager.hide(await resultText(result, files));
+			return { ok: result.isError !== true, summary, ...(await cut(text, files)) };
 		},
 	});
 	return [search, call];
@@ -139,22 +140,38 @@ function classifierText(server: string, tool: string, found: Tool | undefined): 
 	].join("\n");
 }
 
+/** Where a call's files go, made on first use. */
+type FilesDir = () => Promise<string>;
+
+/**
+ * The session scratch directory, or else one directory of the call's own that outlives this process until a sweep,
+ * created only when a file is saved.
+ */
+function filesDir(scratchDir: string | undefined): FilesDir {
+	if (scratchDir !== undefined) return async () => scratchDir;
+	let own: Promise<string> | undefined;
+	return () => {
+		own ??= createScratchDir("mcp").then((scratch) => scratch.path);
+		return own;
+	};
+}
+
 /**
  * What the model reads of a result: its text blocks, or its structured content when it has no content. Images, audio
  * and binary resources are saved to the scratch directory, and the model is told where.
  */
-async function resultText(result: CallToolResult, scratchDir: string | undefined): Promise<string> {
+async function resultText(result: CallToolResult, files: FilesDir): Promise<string> {
 	const parts: string[] = [];
 	for (const block of result.content) {
 		if (block.type === "text") parts.push(block.text);
 		else if (block.type === "image" || block.type === "audio")
-			parts.push(await saved(block.type, block.mimeType, block.data, scratchDir));
+			parts.push(await saved(block.type, block.mimeType, block.data, files));
 		else if (block.type === "resource_link") parts.push(`[resource link: ${block.uri}]`);
 		else if (block.type === "resource") {
 			const { resource } = block;
 			if ("text" in resource && typeof resource.text === "string") parts.push(resource.text);
 			else if ("blob" in resource && typeof resource.blob === "string")
-				parts.push(await saved("resource", resource.mimeType ?? "application/octet-stream", resource.blob, scratchDir));
+				parts.push(await saved("resource", resource.mimeType ?? "application/octet-stream", resource.blob, files));
 		}
 	}
 	if (parts.length === 0 && result.structuredContent !== undefined) return JSON.stringify(result.structuredContent);
@@ -170,9 +187,9 @@ const EXTENSIONS: Record<string, string> = {
 	"audio/mpeg": "mp3",
 };
 
-async function saved(kind: string, mimeType: string, base64: string, scratchDir: string | undefined): Promise<string> {
+async function saved(kind: string, mimeType: string, base64: string, files: FilesDir): Promise<string> {
 	const bytes = Buffer.from(base64, "base64");
-	const path = join(scratchDir ?? tmpdir(), `mcp-${randomBytes(6).toString("hex")}.${EXTENSIONS[mimeType] ?? "bin"}`);
+	const path = join(await files(), `mcp-${randomBytes(6).toString("hex")}.${EXTENSIONS[mimeType] ?? "bin"}`);
 	await writeFile(path, bytes);
 	return `[${kind} ${mimeType}, ${bytes.length} bytes, saved to ${path}]`;
 }
@@ -180,10 +197,10 @@ async function saved(kind: string, mimeType: string, base64: string, scratchDir:
 /** The text as the model gets it: whole when short, else its start and end around a marker, the whole text in a file. */
 async function cut(
 	text: string,
-	scratchDir: string | undefined,
+	files: FilesDir,
 ): Promise<Pick<ToolOutcome, "output" | "truncated" | "fullOutputPath">> {
 	if (text.length <= MAX_RESULT_CHARS) return { output: text, truncated: false };
-	const path = join(scratchDir ?? tmpdir(), `mcp-${randomBytes(6).toString("hex")}.txt`);
+	const path = join(await files(), `mcp-${randomBytes(6).toString("hex")}.txt`);
 	await writeFile(path, text);
 	const half = MAX_RESULT_CHARS / 2;
 	const removed = text.length - 2 * half;

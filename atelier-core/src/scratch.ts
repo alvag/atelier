@@ -12,10 +12,10 @@ import { join } from "node:path";
  * process that dies leaves them behind; the first one a process creates starts
  * a sweep, in the background, of those whose owner is gone.
  */
-export type ScratchKind = "session" | "verify" | "freeze" | "bash";
+export type ScratchKind = "session" | "verify" | "freeze" | "bash" | "mcp";
 
 /** `trash` is a stale directory moved aside to be deleted, left there only when its deletion failed. */
-const NAME = /^atelier-(session|verify|freeze|bash|trash)-[A-Za-z0-9]{6}$/;
+const NAME = /^atelier-(session|verify|freeze|bash|mcp|trash)-[A-Za-z0-9]{6}$/;
 const OWNER_FILE = ".atelier-owner";
 const WORK = "work";
 /** `ps` counts whole seconds, and Node starts a little after its process: a later start within this is the same process. */
