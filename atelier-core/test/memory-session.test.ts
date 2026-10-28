@@ -1206,3 +1206,16 @@ describe("independent recovery/privacy regressions", () => {
 		}
 	});
 });
+
+it.each(["Authorization", "Proxy-Authorization", "X-Forwarded-Authorization"])(
+	"masks a quoted-name %s header whose unquoted value contains quotes",
+	async (name) => {
+		const r = await session([[{ event: finished }]]);
+		try {
+			await r.send(`headers:\n  "${name}": Digest username="u", response="PRIVATEPAYLOAD"`);
+			expect(r.memory.prompts).toEqual([`headers:\n  "${name}": [REDACTED]`]);
+		} finally {
+			await r.session.close();
+		}
+	},
+);
