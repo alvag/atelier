@@ -282,16 +282,19 @@ function parse(argv: readonly string[]) {
 }
 
 /**
- * `--model` read as profiles read a model: `openai-codex/gpt-6-luna` names its backend too, a name without one of their
- * prefixes is taken as it is.
+ * A model as `--model` and `/model` take it, read as profiles read one: `openai-codex/gpt-6-luna` names its backend
+ * too; a name without one of their prefixes is taken as it is.
  */
+export function readModel(value: string): ReturnType<typeof parseModel> {
+	const prefixed = PROFILE_BACKENDS.some((name) => value.startsWith(`${name}/`));
+	return prefixed ? parseModel(value) : { ok: true, entry: { model: value } };
+}
+
 function modelOption(value: string | undefined): { model?: string; backend?: BackendName } {
 	if (value === undefined) return {};
-	const prefixed = PROFILE_BACKENDS.some((name) => value.startsWith(`${name}/`));
-	if (!prefixed) return { model: value };
-	const parsed = parseModel(value);
-	if (!parsed.ok) throw new UsageError(`--model: ${parsed.why}.`);
-	const { backend, model } = parsed.entry;
+	const read = readModel(value);
+	if (!read.ok) throw new UsageError(`--model: ${read.why}.`);
+	const { backend, model } = read.entry;
 	return { ...(model === undefined ? {} : { model }), ...(backend === undefined ? {} : { backend }) };
 }
 

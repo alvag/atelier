@@ -1,9 +1,18 @@
-import { type PermissionMode, type SavedSessionInfo, visibleText } from "@atelier/core";
+import { formatModel, type PermissionMode, type SavedSessionInfo, visibleText } from "@atelier/core";
+import { BACKEND_NAMES, type BackendName } from "@atelier/core/protocol";
 import type { Choice } from "./dialog.ts";
+
+/** A model of a provider signed in to, as `options.list` lists it. */
+export interface ListedModel {
+	provider: BackendName;
+	model: string;
+}
 
 /** What `options.list` answers, as the selectors read it. */
 export interface Options {
 	backends: { name: string; models: string[] }[];
+	/** Absent from a core that does not list them. */
+	models?: ListedModel[];
 	efforts: string[];
 	modes: PermissionMode[];
 	profiles: string[];
@@ -30,6 +39,35 @@ function choice(value: string, now: string | undefined, ...notes: (string | unde
 /** One choice for each value, the one in use marked. */
 export const choicesOf = (values: readonly string[], now: string | undefined): Choice<string>[] =>
 	values.map((value) => choice(value, now));
+
+/**
+ * The models of the providers signed in to, `model [provider]`, each valued `provider/model`. The one in use (the
+ * backend's first model when none was chosen) is marked current; when the list lacks it, it comes first all the same,
+ * `signed out` when its provider is not listed.
+ */
+export function modelChoices(
+	options: Options,
+	running: string | undefined,
+	model: string | undefined,
+): Choice<string>[] {
+	const models = options.models ?? [];
+	const backend = BACKEND_NAMES.find((name) => name === running);
+	const inUse = model ?? options.backends.find((listed) => listed.name === backend)?.models[0];
+	const now = backend === undefined || inUse === undefined ? undefined : formatModel(backend, inUse);
+	const row = (provider: BackendName, name: string, ...notes: (string | undefined)[]) => {
+		const value = formatModel(provider, name);
+		const said = [value === now ? "current" : undefined, ...notes].filter((note) => note !== undefined);
+		return {
+			value,
+			label: `${shown(name)} [${provider}]`,
+			...(said.length === 0 ? {} : { description: said.join(" · ") }),
+		};
+	};
+	const listed = models.map(({ provider, model: name }) => row(provider, name));
+	if (backend === undefined || inUse === undefined || listed.some((choice) => choice.value === now)) return listed;
+	const signedOut = !models.some(({ provider }) => provider === backend);
+	return [row(backend, inUse, signedOut ? "signed out" : undefined), ...listed];
+}
 
 /** The permission modes, each with what it does. */
 export const modeChoices = (modes: readonly PermissionMode[], now: string | undefined): Choice<string>[] =>

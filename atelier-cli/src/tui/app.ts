@@ -17,11 +17,13 @@ import {
 	writeDefaultPermissionMode,
 } from "@atelier/core";
 import type { CoreExit } from "@atelier/core/client";
-import { BACKEND_NAMES, type BackendName } from "@atelier/core/protocol";
+import type { BackendName } from "@atelier/core/protocol";
 import {
+	type AutocompleteItem,
 	CombinedAutocompleteProvider,
 	type Component,
 	Container,
+	fuzzyFilter,
 	getTerminalColorMode,
 	Loader,
 	matchesKey,
@@ -29,7 +31,7 @@ import {
 	type TerminalColors,
 	Text,
 } from "@earendil-works/pi-tui";
-import type { CliArgs } from "../args.ts";
+import { type CliArgs, readModel } from "../args.ts";
 import {
 	LOGIN_USAGE,
 	LOGOUT_USAGE,
@@ -72,6 +74,7 @@ import {
 	choicesOf,
 	LIST_ROWS,
 	modeChoices,
+	modelChoices,
 	nextMode,
 	type Options,
 	profileChoices,
@@ -131,11 +134,10 @@ const ANSWER_GUARD_MS = 400;
 const COLOR_QUERY_MS = 500;
 
 const COMMANDS = [
-	{ name: "model", description: "Change the model from the next turn [name]" },
+	{ name: "model", description: "Change the model, of any provider signed in to [provider/model]" },
 	{ name: "effort", description: "Change the thinking level from the next turn [level]" },
 	{ name: "profile", description: "Freeze another profile for this session [name]" },
 	{ name: "mode", description: "Change the permission mode: [normal|auto|yolo] | default <mode>" },
-	{ name: "backend", description: "Move the session to another backend, with a summary [name]" },
 	{ name: "feature", description: "Open or fold the ODD feature's tasks (Ctrl+T)" },
 	{ name: "mcp", description: "Show the MCP servers; login|logout <server> signs one in or out" },
 	{ name: "permissions", description: "List the permission rules you allowed; remove <number> removes one" },
@@ -157,7 +159,6 @@ const CANCELLED = "\0";
 const shown = (text: string) => visibleText(text);
 const isMode = (word: string | undefined): word is PermissionMode =>
 	word === "normal" || word === "auto" || word === "yolo";
-const isBackend = (word: string | undefined): word is BackendName => BACKEND_NAMES.some((name) => name === word);
 
 /** ` (asked by worker)` for a subagent's question; the main agent's says nothing. */
 const asker = (event: AtelierEvent) =>
@@ -475,7 +476,22 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const questionOpen = () => questions.length > 0;
 	const queue = new QueuePanel(paint, questionOpen);
 	const editor = new PromptEditor(tui, editorTheme(paint), paint, shade, questionOpen);
-	editor.setAutocompleteProvider(new CombinedAutocompleteProvider(COMMANDS, args.cwd, null));
+	/** `/model ` lists the models of the providers signed in to, as `options.list` answered them last. */
+	const completeModels = async (prefix: string): Promise<AutocompleteItem[] | null> => {
+		const options = await listed;
+		if (options === undefined) return null;
+		const choices = modelChoices(options, footer.state.backend, footer.state.model);
+		const found = fuzzyFilter(choices, prefix.trim(), (choice) => choice.value);
+		return found.map(({ value, description }) => {
+			const slash = value.indexOf("/");
+			const notes = [value.slice(0, slash), ...(description === undefined ? [] : [description])];
+			return { value, label: shown(value.slice(slash + 1)).text, description: notes.join(" · ") };
+		});
+	};
+	const commands = COMMANDS.map((command) =>
+		command.name === "model" ? { ...command, getArgumentCompletions: completeModels } : command,
+	);
+	editor.setAutocompleteProvider(new CombinedAutocompleteProvider(commands, args.cwd, null));
 	const loader = new Loader(
 		tui,
 		(text) => paint("cyan", text),
@@ -603,7 +619,20 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				true,
 			);
 		});
-	const listOptions = async () => (await request({ command: "options.list", cwd: args.cwd })) as Options | undefined;
+	/** What `options.list` answered last, or is answering: the models the editor completes. */
+	let listed: Promise<Options | undefined> = Promise.resolve(undefined);
+	const listOptions = async () => {
+		const asked = request({ command: "options.list", cwd: args.cwd }) as Promise<Options | undefined>;
+		listed = asked;
+		return asked;
+	};
+	/** Asks again for the models in the background, as a sign-in may have changed them; a failure says nothing. */
+	const refreshModels = () => {
+		listed = link.request({ command: "options.list", cwd: args.cwd }).then(
+			(answer) => answer as Options,
+			() => undefined,
+		);
+	};
 	/** Sends a change of the session's configuration and shows in the footer what the core answered. */
 	const configure = async (command: ClientCommand) => {
 		const asked = sessionId;
@@ -794,25 +823,60 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		conversation.note("usage: /mode [normal|auto|yolo] | /mode default <normal|auto|yolo>", true);
 	};
 
+	/**
+	 * Changes the model, chosen from the models of every provider signed in to or named `provider/model`: one of the
+	 * session's backend changes at once, one of another moves the session there.
+	 */
 	const runModel = async (name: string | undefined) => {
-		const { backend, model: now } = footer.state;
-		let model = name;
-		if (model === undefined) {
+		const { backend: on, model: now } = footer.state;
+		let value = name;
+		if (value === undefined) {
 			const options = await listOptions();
 			if (options === undefined) return;
-			const models = options.backends.find((listed) => listed.name === backend)?.models ?? [];
-			if (models.length === 0)
-				return conversation.note(
-					`no models listed for ${shown(backend ?? "this backend").text}; use /model <name>`,
-					true,
-				);
-			model = await pick(`Model on ${shown(backend ?? "").text}`, [], choicesOf(models, now), now);
-			if (model === undefined) return;
+			const choices = modelChoices(options, on, now);
+			if (choices.length === 0) return conversation.note("no provider signed in: use /login to add one", true);
+			const current = choices.find((choice) => choice.description?.startsWith("current"))?.value;
+			value = await pick("Select a model", [], choices, current);
+			if (value === undefined) return;
 		}
+		const read = readModel(value);
+		if (!read.ok) return conversation.note(`error: ${read.why}`, true);
+		const { backend, model } = read.entry;
+		if (model === undefined) return;
+		if (backend !== undefined && backend !== on) return moveTo(backend, model);
 		if (model === now) return conversation.note(`model: ${shown(model).text} (unchanged)`);
 		if ((await configure({ command: "session.set_model", sessionId, model })) === undefined) return;
 		chosen = { ...chosen, model };
 		conversation.note(`model: ${shown(model).text} from the next turn; the prompt cache starts over`);
+	};
+
+	/** Moves the session to `model` on another backend once the user confirms that a summary replaces the conversation. */
+	const moveTo = async (backend: BackendName, model: string) => {
+		const { backend: from, model: now } = footer.state;
+		const answer = await pick(
+			`Move this session to ${backend}?`,
+			[
+				"The new backend gets a summary of the conversation, not the conversation itself:",
+				"detail is lost, and the prompt cache starts over.",
+			],
+			[
+				{ value: "move", label: "Move, with a summary" },
+				{ value: "stay", label: `Stay on ${shown(from ?? "this backend").text}` },
+			],
+			"stay",
+		);
+		if (answer !== "move")
+			return conversation.note(now === undefined ? "model: unchanged" : `model: ${shown(now).text} (unchanged)`);
+		conversation.note(`moving to ${backend}: summarizing the conversation…`);
+		tui.requestRender();
+		const configuration = await configure({ command: "session.set_backend", sessionId, backend, model });
+		if (configuration === undefined) return;
+		chosen = { ...chosen, backend, model };
+		reportSession();
+		const carried = configuration.backendChange?.summarized
+			? "with a summary of the conversation"
+			: "nothing to carry yet";
+		conversation.note(`backend: ${backend}, model: ${shown(model).text} from the next turn, ${carried}`);
 	};
 
 	const runEffort = async (level: string | undefined) => {
@@ -847,46 +911,6 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if ((await configure({ command: "session.set_profile", sessionId, profile })) === undefined) return;
 		chosen = { ...chosen, profile };
 		conversation.note(`profile: ${shown(profile).text} from the next turn`);
-	};
-
-	/** Moves the session to another backend once the user confirms that a summary replaces the conversation. */
-	const runBackend = async (name: string | undefined) => {
-		const now = footer.state.backend;
-		let backend = name;
-		if (backend === undefined) {
-			const options = await listOptions();
-			if (options === undefined) return;
-			const names = options.backends.map((listed) => listed.name);
-			backend = await pick("Backend", [], choicesOf(names, now), now);
-			if (backend === undefined) return;
-		}
-		if (!isBackend(backend)) return conversation.note(`usage: /backend [${BACKEND_NAMES.join("|")}]`, true);
-		if (backend === now) return conversation.note(`backend: ${backend} (unchanged)`);
-		const answer = await pick(
-			`Move this session to ${backend}?`,
-			[
-				"The new backend gets a summary of the conversation, not the conversation itself:",
-				"detail is lost, and the prompt cache starts over.",
-			],
-			[
-				{ value: "move", label: "Move, with a summary" },
-				{ value: "stay", label: `Stay on ${shown(now ?? "this backend").text}` },
-			],
-			"stay",
-		);
-		if (answer !== "move") return conversation.note(`backend: ${shown(now ?? "unchanged").text} (unchanged)`);
-		conversation.note(`moving to ${backend}: summarizing the conversation…`);
-		tui.requestRender();
-		const configuration = await configure({ command: "session.set_backend", sessionId, backend });
-		if (configuration === undefined) return;
-		// The model chosen was the old backend's; the new one starts with the profile's or its default.
-		const { model: _model, ...rest } = chosen;
-		chosen = { ...rest, backend };
-		reportSession();
-		const carried = configuration.backendChange?.summarized
-			? "with a summary of the conversation"
-			: "nothing to carry yet";
-		conversation.note(`backend: ${backend} from the next turn, ${carried}`);
 	};
 
 	/** Shows `next` in a conversation of its own and closes the session it replaces. */
@@ -1177,10 +1201,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 	/** The commands that take no more than the arguments in their usage; with others they print it. */
 	const usages = new Map([
-		["/model", "/model [name]"],
+		["/model", "/model [provider/model]"],
 		["/effort", "/effort [level]"],
 		["/profile", "/profile [name]"],
-		["/backend", `/backend [${BACKEND_NAMES.join("|")}]`],
 		["/new", "/new"],
 		["/feature", "/feature"],
 		["/mcp", "/mcp [login|logout <server>]"],
@@ -1197,13 +1220,15 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (command === "/model" && single) await runModel(argument);
 		else if (command === "/effort" && single) await runEffort(argument);
 		else if (command === "/profile" && single) await runProfile(argument);
-		else if (command === "/backend" && single) await runBackend(argument);
 		else if (text === "/new") await runNew();
 		else if (text === "/feature") toggleFeature();
 		else if (command === "/mcp") await runMcp(words.slice(1));
 		else if (command === "/permissions") await runPermissions(words.slice(1));
-		else if (command === "/login" || command === "/logout") await runLogin(command, words.slice(1));
-		else if (text === "/status") runStatus();
+		else if (command === "/login" || command === "/logout") {
+			await runLogin(command, words.slice(1));
+			// A sign-in adds its provider's models to /model, a sign-out takes them away.
+			refreshModels();
+		} else if (text === "/status") runStatus();
 		else if (command === "/resume" && single) await runResume(argument);
 		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });
 		else if (/^\/review(?:\s+\S+)?$/.test(text))
@@ -1327,6 +1352,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				tui.requestRender();
 			});
 	}
+	refreshModels();
 	// The state first: Herdr takes a resume command only from a reporter that holds the pane.
 	reportState("idle");
 	reportSession();
