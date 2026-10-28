@@ -10,6 +10,7 @@ Coding-agent orchestrator with two first-class clients, a terminal UI and a desk
 
 - Node 22.19+ and pnpm. TypeScript runs natively; there is no build step.
 - For the default `claude-code` backend: a Claude subscription. Atelier brings its own Claude Code; sign in once with `atelier login account anthropic` (or `/login` in a session), which runs Claude Code's sign-in in the browser. It shares the login of any Claude Code on this machine, so if `claude` is already logged in there is nothing to do.
+- For the `openai-codex` backend: a ChatGPT subscription (Plus, Pro or a business plan). Sign in with `atelier login account openai-codex` (OpenAI Codex, the Codex CLI's sign-in, in the browser or with a device code) or `atelier login account openai-chatgpt` (Sign in with ChatGPT, the way OpenAI offers other agents); the backend uses the first when both are there. OpenAI may refuse the Codex sign-in at any time, and using it from another program may go against OpenAI's terms. Either counts against your plan's limits.
 - For the `anthropic-api` backend: an Anthropic API key with credit. `atelier login api-key anthropic` asks for it without showing it and keeps it in `~/.atelier/auth.json`. `ANTHROPIC_API_KEY` set for a single command takes priority, and a key stored in the macOS Keychain (service `atelier-anthropic`) by earlier versions still works. Do not export `ANTHROPIC_API_KEY` in your shell profile: Claude Code would then bill the API instead of your subscription.
 - For the `opencode-go` backend: an [OpenCode Go](https://opencode.ai/docs/go) plan. `atelier login api-key opencode-go` keeps its key in `~/.atelier/auth.json`; `OPENCODE_API_KEY` set for a command takes priority. Then `atelier --backend opencode-go` runs `minimax-m3`, or `--model` another of its models (`/model` lists them).
 - Optional: [Engram](https://github.com/Gentleman-Programming/engram) 3.4.0 or newer for long-term memory.
@@ -35,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/alvag/atelier/main/install.sh | sh 
 | `atelier mcp list`      | Connect to the MCP servers of `~/.atelier/mcp.json` and show their state, tools and errors.                    |
 | `atelier mcp login <s>` | Sign a remote MCP server in with OAuth, in the browser; `atelier mcp logout <s>` signs it out.                 |
 | `atelier login`         | Sign in with an account or an API key, choosing the provider; shows each one's state.                          |
-| `atelier logout`        | Sign out of what is signed in: a stored API key, or the Claude Code login.                                     |
+| `atelier logout`        | Sign out of what is signed in: a stored API key, an OpenAI sign-in, or the Claude Code login.                  |
 | `atelier stats`         | Show what the saved sessions cost: totals and by day, project, model, phase and role (`--since 7d`, `--json`). |
 
 `atelier update` only touches a copy installed this way, and refuses one with local changes. To work on Atelier itself, clone the repository and run it with `pnpm install` and `pnpm atelier` (see [development](docs/development.md)).
@@ -138,7 +139,8 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 | `sandbox.json`         | Extra writable paths and hidden paths for `bash` ([sandbox](docs/sandbox.md#configuration-files)).                                                      |
 | `mcp.json`             | MCP servers the agent can use, in the `mcpServers` format of Claude Code ([MCP](docs/mcp.md)).                                                          |
 | `mcp-auth.json`        | OAuth sign-ins of MCP servers (`0600`), written by `atelier mcp login`.                                                                                 |
-| `auth.json`            | API keys stored by `atelier login` (`0600`); the agent cannot read it.                                                                                  |
+| `auth.json`            | API keys and OpenAI sign-ins stored by `atelier login` (`0600`); the agent cannot read it.                                                              |
+| `device-id`            | This installation's id for Sign in with ChatGPT (`0600`).                                                                                               |
 | `sessions/`            | Saved sessions ([saved sessions](docs/sessions.md)).                                                                                                    |
 
 A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent reads `AGENTS.md` (or `CLAUDE.md`) from the working directory and its parents, and `~/.agents/AGENTS.md`. It also lists the skills in `.agents/skills/` (from the working directory up to the repository root) and in `~/.agents/skills/`, each a folder with a `SKILL.md`, and reads one when a task matches it; the first turn says which skills were loaded.
@@ -152,6 +154,7 @@ A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent
 | `ATELIER_MEMORY_PROMPTS=off` | Your prompts are not saved to long-term memory.                                                                     |
 | `ATELIER_MCP=off`            | No MCP servers.                                                                                                     |
 | `ATELIER_LOGIN_CHECK=off`    | Do not check at start whether the backend has its login or key.                                                     |
+| `ATELIER_CODEX_VARIANT`      | `legacy` or `chatgpt`: the OpenAI sign-in `openai-codex` uses, instead of the Codex one first and ChatGPT after.    |
 | `ATELIER_SCRATCH_SWEEP=off`  | No cleanup of the temporary directories that crashed sessions left ([temporary directories](docs/architecture.md)). |
 
 ## Inspiration

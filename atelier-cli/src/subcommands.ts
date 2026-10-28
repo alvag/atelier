@@ -50,7 +50,7 @@ const SPECS: Record<Subcommand["name"], SubcommandSpec> = {
 		},
 	},
 	login: {
-		usage: "atelier login [account|api-key] [anthropic|opencode-go]",
+		usage: "atelier login [account|api-key] [anthropic|opencode-go|openai-codex|openai-chatgpt]",
 		parse(words, prompt) {
 			const target = parseLoginTarget(words);
 			if (target === undefined)
@@ -61,7 +61,7 @@ const SPECS: Record<Subcommand["name"], SubcommandSpec> = {
 		},
 	},
 	logout: {
-		usage: "atelier logout [account|api-key] [anthropic|opencode-go]",
+		usage: "atelier logout [account|api-key] [anthropic|opencode-go|openai-codex|openai-chatgpt]",
 		parse(words, prompt) {
 			const target = parseLoginTarget(words);
 			if (target === undefined)

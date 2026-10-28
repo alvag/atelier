@@ -3,14 +3,21 @@ import {
 	AuthStore,
 	apiKeySource,
 	authFile,
+	CHATGPT_PROVIDER,
 	type ClaudeCodeAuthStatus,
+	CODEX_PROVIDER,
+	type Credential,
 	claudeCodeAuthStatus,
 	claudeCodeLogin,
 	claudeCodeLogout,
 	describeClaudeCodeAuth,
 	describeError,
+	loginChatGpt,
+	loginCodex,
+	type OAuthInteraction,
 	OPENCODE_GO_KEY_ENV,
 	OPENCODE_GO_PROVIDER,
+	openInBrowser,
 	type SecurityRunner,
 } from "@atelier/core";
 
@@ -44,6 +51,12 @@ export interface LoginPorts {
 	choose(title: string, options: readonly LoginOption[]): Promise<number | undefined>;
 	/** A line read without showing it. */
 	askSecret(prompt: string): Promise<string | undefined>;
+	/** A line that `signal` stops waiting for (the browser answered first); undefined when cancelled or stopped. */
+	askUntil(prompt: string, signal: AbortSignal): Promise<string | undefined>;
+	/** Opens a sign-in page; the system's browser when absent. */
+	openBrowser?: (url: string) => Promise<void>;
+	/** Where the OpenAI sign-ins go, for tests: a fake auth server and a free port instead of 1455. */
+	openai?: { authUrl?: string; callbackPort?: number; minPollIntervalMs?: number };
 	confirm(question: string): Promise<boolean>;
 	/** Runs `task` with the terminal handed to it, for Claude Code's own sign-in. */
 	handOver<T>(task: () => Promise<T>): Promise<T>;
@@ -51,9 +64,12 @@ export interface LoginPorts {
 	fail(text: string): void;
 }
 
+/** What the OpenAI sign-ins take from the caller: tests pass a fake browser and auth server. */
+export type OpenAiLoginHooks = Pick<LoginPorts, "openBrowser" | "openai">;
+
 /**
- * A provider and the backend that uses it. Each method lists its own providers: Codex joins the accounts as one more
- * row. An API key names the variable that overrides the stored one, and whether the Keychain may hold it.
+ * A provider and the backend that uses it. Each method lists its own providers. An API key names the variable that
+ * overrides the stored one, and whether the Keychain may hold it.
  */
 interface Provider {
 	id: string;
@@ -61,10 +77,27 @@ interface Provider {
 	backend: string;
 	env?: string;
 	keychain?: boolean;
+	/** How `/logout` names what it removes. */
+	signedInLabel?: string;
 }
 
+const CODEX: Provider = {
+	id: CODEX_PROVIDER,
+	label: "OpenAI Codex (ChatGPT Plus/Pro)",
+	backend: "openai-codex",
+	signedInLabel: "OpenAI Codex sign-in",
+};
+const CHATGPT: Provider = {
+	id: CHATGPT_PROVIDER,
+	label: "Sign in with ChatGPT",
+	backend: "openai-codex",
+	signedInLabel: "Sign in with ChatGPT",
+};
+/** The accounts Atelier signs in to itself and keeps in `auth.json`; Anthropic's is Claude Code's own. */
+const OPENAI_ACCOUNTS: readonly Provider[] = [CODEX, CHATGPT];
+
 const PROVIDERS: Record<LoginMethod, readonly Provider[]> = {
-	account: [{ id: ANTHROPIC_PROVIDER, label: "Anthropic", backend: "claude-code" }],
+	account: [{ id: ANTHROPIC_PROVIDER, label: "Anthropic", backend: "claude-code" }, ...OPENAI_ACCOUNTS],
 	"api-key": [
 		{ id: ANTHROPIC_PROVIDER, label: "Anthropic", backend: "anthropic-api", env: "ANTHROPIC_API_KEY", keychain: true },
 		{ id: OPENCODE_GO_PROVIDER, label: "OpenCode Go", backend: "opencode-go", env: OPENCODE_GO_KEY_ENV },
@@ -76,8 +109,8 @@ const METHODS: readonly { method: LoginMethod; label: string }[] = [
 	{ method: "api-key", label: "Sign in with an API key" },
 ];
 
-export const LOGIN_USAGE = "/login [account|api-key] [anthropic|opencode-go]";
-export const LOGOUT_USAGE = "/logout [account|api-key] [anthropic|opencode-go]";
+export const LOGIN_USAGE = "/login [account|api-key] [anthropic|opencode-go|openai-codex|openai-chatgpt]";
+export const LOGOUT_USAGE = "/logout [account|api-key] [anthropic|opencode-go|openai-codex|openai-chatgpt]";
 
 /** `[account|api-key] [provider]`, either word optional; undefined for anything else. */
 export function parseLoginTarget(words: readonly string[]): LoginTarget | undefined {
@@ -106,7 +139,12 @@ async function accountStatus(ports: LoginPorts): Promise<ClaudeCodeAuthStatus | 
 	}
 }
 
+const isOpenAiAccount = (provider: Provider) => OPENAI_ACCOUNTS.some(({ id }) => id === provider.id);
+const signedInTo = (ports: LoginPorts, provider: Provider) => store(ports).get(provider.id)?.type === "oauth";
+
 async function statusOf(ports: LoginPorts, method: LoginMethod, provider: Provider): Promise<string> {
+	if (method === "account" && isOpenAiAccount(provider))
+		return signedInTo(ports, provider) ? "✓ signed in" : "not signed in";
 	if (method === "account") {
 		const status = await accountStatus(ports);
 		if (status instanceof Error) return `unknown: ${status.message}`;
@@ -170,7 +208,65 @@ export async function login(ports: LoginPorts, target: LoginTarget = {}): Promis
 		if (target.provider === undefined) ports.say("Nothing changed.");
 		return false;
 	}
-	return method === "account" ? loginAccount(ports) : loginApiKey(ports, provider);
+	if (method === "api-key") return loginApiKey(ports, provider);
+	return isOpenAiAccount(provider) ? loginOpenAi(ports, provider) : loginAccount(ports);
+}
+
+/** No browser to open here: a session over SSH, or Linux without a display. */
+function headless(ports: LoginPorts): boolean {
+	if (ports.env.SSH_CONNECTION || ports.env.SSH_TTY) return true;
+	return (ports.platform ?? process.platform) === "linux" && !ports.env.DISPLAY && !ports.env.WAYLAND_DISPLAY;
+}
+
+const CODEX_TERMS =
+	"OpenAI Codex uses the Codex CLI's own sign-in, on ChatGPT's Codex endpoint: OpenAI may refuse it at any time, and using it from another program may go against its terms. Sign in with ChatGPT (/login account openai-chatgpt) is the way OpenAI offers other agents. Either counts against your ChatGPT plan's limits.";
+
+/** Signs in to ChatGPT for the openai-codex backend and keeps the tokens in `auth.json`. */
+async function loginOpenAi(ports: LoginPorts, provider: Provider): Promise<boolean> {
+	if (!ports.interactive) {
+		ports.fail("signing in with an account needs a terminal: run atelier login in one");
+		return false;
+	}
+	const noBrowser = headless(ports);
+	const interaction: OAuthInteraction = {
+		openBrowser: noBrowser
+			? async () => {}
+			: (url) => (ports.openBrowser ?? ((page: string) => openInBrowser(new URL(page))))(url),
+		show: (text) => ports.say(text),
+		// An empty line cancels, as Esc does in the TUI.
+		askPasted: async (prompt, signal) => (await ports.askUntil(`${prompt}: `, signal))?.trim() || undefined,
+	};
+	const settings = ports.openai ?? {};
+	let credential: Credential;
+	try {
+		if (provider.id === CODEX_PROVIDER) {
+			ports.say(CODEX_TERMS);
+			const ways = [
+				{ method: "browser" as const, label: "In the browser" },
+				{ method: "device" as const, label: "With a device code" },
+			];
+			if (noBrowser) ways.reverse();
+			const index = await ports.choose("How to sign in to OpenAI Codex", ways);
+			const way = index === undefined ? undefined : ways[index];
+			if (way === undefined) {
+				ports.say("Nothing changed.");
+				return false;
+			}
+			credential = await loginCodex(interaction, { method: way.method, ...settings });
+		} else {
+			if (noBrowser) ports.say("No browser here: open the URL below on any device, then paste the URL it ends on.");
+			const { minPollIntervalMs: _unused, ...chatgpt } = settings;
+			credential = await loginChatGpt(interaction, { home: ports.home, ...chatgpt });
+		}
+		await store(ports).set(provider.id, credential);
+	} catch (error) {
+		ports.fail(describeError(error));
+		return false;
+	}
+	ports.say(
+		`✓ ${provider.signedInLabel === CODEX.signedInLabel ? "OpenAI Codex" : provider.label}: signed in, stored in ~/.atelier/auth.json; --backend ${provider.backend} uses it.`,
+	);
+	return true;
 }
 
 async function loginAccount(ports: LoginPorts): Promise<boolean> {
@@ -225,6 +321,14 @@ interface SignedIn extends LoginOption {
 /** What can be signed out of: each stored key, and Claude Code's login. */
 async function signedIn(ports: LoginPorts): Promise<SignedIn[]> {
 	const entries: SignedIn[] = [];
+	for (const provider of OPENAI_ACCOUNTS)
+		if (signedInTo(ports, provider))
+			entries.push({
+				method: "account",
+				provider: provider.id,
+				label: provider.signedInLabel ?? provider.label,
+				status: "✓ signed in",
+			});
 	for (const provider of PROVIDERS["api-key"])
 		if (store(ports).get(provider.id) !== undefined)
 			entries.push({
@@ -269,7 +373,7 @@ export async function logout(ports: LoginPorts, target: LoginTarget = {}): Promi
 		ports.say("Nothing changed.");
 		return false;
 	}
-	if (entry.method === "api-key") {
+	if (entry.method === "api-key" || entry.provider !== ANTHROPIC_PROVIDER) {
 		await store(ports).remove(entry.provider);
 		ports.say(`${entry.label} removed from ~/.atelier/auth.json.`);
 		return true;

@@ -19,6 +19,7 @@ import type { CoreExit } from "@atelier/core/client";
 import { decodeServerMessage, encodeMessage, LineSplitter } from "@atelier/core/protocol";
 import { type ProgramStatus, resetCapabilitiesCache, type Terminal } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeOpenAiAuth, fakeJwt, fakeRefresh } from "../../atelier-core/test/support/fake-openai-auth.ts";
 import { requireIsolatedHome } from "../../atelier-core/test/support/login-isolation.ts";
 import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
@@ -3085,5 +3086,66 @@ describe("independent authentication security probes", { timeout: 20_000 }, () =
 		h.screen.type("/exit");
 		h.screen.type("\r");
 		expect(await code).toBe(0);
+	});
+});
+
+describe("TUI sign-in with ChatGPT", { timeout: 20_000 }, () => {
+	it("asks for the pasted URL in a question, closes it when the browser finishes, and stores the sign-in", async () => {
+		const auth = await new FakeOpenAiAuth().start();
+		const access = fakeJwt({ sub: "user" });
+		auth.routes.set("/api/accounts/oauth/token", () => ({
+			json: {
+				access_token: access,
+				refresh_token: fakeRefresh(),
+				id_token: "id",
+				expires_in: 3600,
+				scope: "chatgpt.tokens.use.direct",
+			},
+		}));
+		const free = createServer();
+		await new Promise<void>((resolve) => free.listen(0, "127.0.0.1", resolve));
+		const callbackPort = (free.address() as { port: number }).port;
+		await new Promise((resolve) => free.close(resolve));
+		let page = "";
+		const h = harness([]);
+		const code = run(
+			["--no-session"],
+			{
+				...h.io,
+				// A desktop with a display, wherever the suite runs.
+				env: { DISPLAY: ":0" },
+				openaiLogin: {
+					openai: { authUrl: auth.url, callbackPort },
+					openBrowser: async (url) => {
+						page = url;
+					},
+				},
+			},
+			() => h.backend,
+		);
+		try {
+			await until(h.screen.started);
+			h.screen.type("/login account openai-chatgpt");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("paste the URL it ends on"));
+			expect(h.screen.screen()).toContain("Sign in at:");
+			const url = new URL(page);
+			await fetch(
+				`${url.searchParams.get("redirect_uri")}?code=c-1&state=${url.searchParams.get("state")}&client_id=issued-1`,
+			);
+			await until(() => h.screen.screen().includes("✓ Sign in with ChatGPT: signed in"));
+			expect(JSON.parse(await readFile(join(home, ".atelier", "auth.json"), "utf8"))["openai-chatgpt"]).toMatchObject({
+				access,
+				clientId: "issued-1",
+			});
+			expect(JSON.stringify(h.core.commands).includes(access)).toBe(false);
+			expect(h.backend.prompts).toEqual([]);
+			// The question closed by itself: what is typed now goes to the editor again.
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+		} finally {
+			await auth.stop();
+		}
 	});
 });

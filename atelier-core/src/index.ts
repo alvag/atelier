@@ -79,6 +79,7 @@ export {
 	mcpConfigFile,
 	openMcp,
 } from "./mcp/index.ts";
+export { openInBrowser } from "./mcp/oauth.ts";
 export {
 	connectMemory,
 	FakeMemory,
@@ -111,6 +112,7 @@ export {
 	updateTask,
 } from "./odd/feature-doc.ts";
 export { FEATURE_TOOL, ODD_DIR, OddTracker, PHASE_TOOL } from "./odd/tracker.ts";
+export * from "./openai/index.ts";
 export {
 	type DefaultPermissionMode,
 	PERMISSION_MODES,

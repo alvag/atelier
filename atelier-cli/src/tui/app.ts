@@ -30,7 +30,15 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import type { CliArgs } from "../args.ts";
-import { LOGIN_USAGE, LOGOUT_USAGE, type LoginPorts, login, logout, parseLoginTarget } from "../login.ts";
+import {
+	LOGIN_USAGE,
+	LOGOUT_USAGE,
+	type LoginPorts,
+	login,
+	logout,
+	type OpenAiLoginHooks,
+	parseLoginTarget,
+} from "../login.ts";
 import { mcpReport } from "../mcp-report.ts";
 import {
 	PERMISSIONS_USAGE,
@@ -43,7 +51,7 @@ import {
 import { savedTranscript } from "../transcript.ts";
 import { Attention } from "./attention.ts";
 import { Conversation } from "./conversation.ts";
-import { type Choice, ChoiceDialog, type Folded, PasteFilter, SecretDialog } from "./dialog.ts";
+import { type Choice, ChoiceDialog, type Folded, PasteDialog, PasteFilter, SecretDialog } from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
 import {
 	type FooterState,
@@ -100,6 +108,8 @@ export interface TuiOptions {
 	claudeCode?: string;
 	/** What asks the macOS Keychain whether it has a key, for `/login`; tests pass a fake. */
 	runSecurity?: SecurityRunner;
+	/** The browser and the auth server of the OpenAI sign-ins; tests pass fakes. */
+	openaiLogin?: OpenAiLoginHooks;
 	/** What the session's backend lacks (a login, a key), said at start; nothing is checked when absent. */
 	checkLogin?: (backend: string) => Promise<string | undefined>;
 	/** How long closing the session may take before the core is closed anyway (default 3000 ms). */
@@ -455,7 +465,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const dialogs = new Container();
 	/** Questions waiting for an answer, the first one on screen. */
 	const questions: {
-		dialog: ChoiceDialog<string> | SecretDialog;
+		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog;
 		cancel: () => void;
 		local: boolean;
 		blocked?: Blocked | undefined;
@@ -985,6 +995,27 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			questions.push(entry);
 			if (questions.length === 1) showQuestion();
 		});
+	/** A line to paste, in a question that closes by itself when `signal` aborts (the browser finished first). */
+	const askUntil = (title: string, signal: AbortSignal) =>
+		new Promise<string | undefined>((resolve) => {
+			let answered = false;
+			const settle = (value: string | undefined) => {
+				if (answered) return;
+				answered = true;
+				signal.removeEventListener("abort", stop);
+				const at = questions.indexOf(entry);
+				if (at !== -1) questions.splice(at, 1);
+				resolve(value);
+				showQuestion();
+				reportRunning();
+			};
+			const stop = () => settle(undefined);
+			const entry = { dialog: new PasteDialog(title, paint, settle), cancel: stop, local: true };
+			if (signal.aborted) return resolve(undefined);
+			signal.addEventListener("abort", stop, { once: true });
+			questions.push(entry);
+			if (questions.length === 1) showQuestion();
+		});
 	/** `/login` and `/logout`, as `atelier login` and `atelier logout` do, with lists and dialogs. Not a turn. */
 	const runLogin = async (command: string, words: string[]) => {
 		const target = parseLoginTarget(words);
@@ -1006,6 +1037,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				return chosen === undefined ? undefined : Number(chosen);
 			},
 			askSecret: (prompt) => askSecret(prompt.replace(/:\s*$/, "")),
+			askUntil: (prompt, signal) => askUntil(prompt.replace(/:\s*$/, ""), signal),
+			...options.openaiLogin,
 			confirm: (question) =>
 				new Promise((resolve) =>
 					ask(

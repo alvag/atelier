@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import type { SecurityRunner } from "@atelier/core";
-import type { LoginOption, LoginPorts } from "./login.ts";
+import type { LoginOption, LoginPorts, OpenAiLoginHooks } from "./login.ts";
 import type { LineReader } from "./terminal-input.ts";
 
 export interface LineLoginOptions {
@@ -9,6 +9,7 @@ export interface LineLoginOptions {
 	claudeCode?: string;
 	/** What asks the macOS Keychain whether it has a key; tests pass a fake. */
 	runSecurity?: SecurityRunner;
+	openaiLogin?: OpenAiLoginHooks;
 	/** Whether a person types the answers (a terminal); otherwise a piped key is read and nothing is chosen. */
 	interactive: boolean;
 	lines: LineReader;
@@ -51,6 +52,7 @@ export function lineLoginPorts(options: LineLoginOptions): LoginPorts {
 		env: options.env ?? process.env,
 		...(options.claudeCode === undefined ? {} : { claudeCode: options.claudeCode }),
 		...(options.runSecurity === undefined ? {} : { runSecurity: options.runSecurity }),
+		...options.openaiLogin,
 		interactive: options.interactive,
 		async choose(title, list) {
 			if (!options.interactive) {
@@ -64,6 +66,20 @@ export function lineLoginPorts(options: LineLoginOptions): LoginPorts {
 			return Number.isInteger(index) && index >= 0 && index < list.length ? index : undefined;
 		},
 		askSecret: (prompt) => ask(prompt, true),
+		/** Pasted text answers this one: it is the URL the browser ended on. */
+		async askUntil(prompt, signal) {
+			if (signal.aborted) return undefined;
+			if (options.interactive) lines.discardTyped();
+			write(prompt);
+			const stopped = new Promise<undefined>((resolve) =>
+				signal.addEventListener("abort", () => resolve(undefined), { once: true }),
+			);
+			const answer = await Promise.race([lines.next(prompt.length).then((line) => ({ line })), stopped]);
+			write("\n");
+			if (answer !== undefined) return answer.line;
+			lines.abandon();
+			return undefined;
+		},
 		async confirm(question) {
 			const answer = await ask(`${question} [y/N] `);
 			return !lines.pasted() && /^y(es)?$/i.test(answer?.trim() ?? "");
