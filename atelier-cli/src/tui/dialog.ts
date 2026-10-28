@@ -1,3 +1,4 @@
+import { isPastedRedirect } from "@atelier/core";
 import {
 	type Component,
 	type Focusable,
@@ -249,8 +250,7 @@ export class SecretDialog implements Component, Focusable {
 
 /** What the paste question shows of the text: the URL without its authorization code, never a bare code. */
 export function withoutCode(text: string): string {
-	if (text !== "" && !text.includes("code=") && !text.includes("://"))
-		return `[hidden code, ${Array.from(text).length} characters]`;
+	if (text !== "" && !isPastedRedirect(text)) return `[hidden code, ${Array.from(text).length} characters]`;
 	return text.replace(/(code=)[^&#\s]*/g, "$1[hidden]");
 }
 
