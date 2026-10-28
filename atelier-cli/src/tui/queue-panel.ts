@@ -5,10 +5,14 @@ import type { Paint } from "./style.ts";
 /** The most queued messages shown; the rest are counted. */
 const SHOWN = 5;
 
-/** The messages queued while a turn runs, over the editor: one dimmed line each, cut to the width. */
+/**
+ * The messages queued while a turn runs, over the editor: one dimmed line each, cut to the width. The hint to edit them
+ * is left out while a question is open, since the question takes the keys.
+ */
 export class QueuePanel implements Component {
 	readonly #paint: Paint;
 	messages: readonly QueuedMessage[] = [];
+	asking = false;
 
 	constructor(paint: Paint) {
 		this.#paint = paint;
@@ -26,7 +30,7 @@ export class QueuePanel implements Component {
 		});
 		const more = this.messages.length - SHOWN;
 		if (more > 0) lines.push(`… ${more} more`);
-		lines.push("Alt+↑ edit");
+		if (!this.asking) lines.push("Alt+↑ edit");
 		return lines.map((line) => this.#paint("dim", truncateToWidth(` ${line}`, width)));
 	}
 }

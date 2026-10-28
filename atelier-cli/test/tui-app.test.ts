@@ -844,6 +844,51 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(130);
 	});
 
+	it("hides the editor while a question is open, even from a click, and gives back what it held", async () => {
+		const gate: { release?: () => void } = {};
+		const h = harness([
+			[
+				{ run: () => new Promise<void>((resolve) => (gate.release = resolve)) },
+				{ toolCall: { tool: "bash", input: { command: "echo hi" } } },
+				{ event: finished },
+			],
+			[{ event: finished }],
+		]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => gate.release !== undefined);
+		h.screen.type("draft");
+		await until(() => h.screen.screen().includes("draft"));
+		// The row the editor was last drawn on, from the cursor move before it.
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: the cursor moves are what is read
+		const rows = [...h.screen.raw().matchAll(/\x1b\[(\d+);1H\x1b\[2K[^\x1b]*draft/g)];
+		const row = rows.at(-1)?.[1] ?? "0";
+		gate.release?.();
+		await until(() => h.screen.screen().includes("Run this command?"));
+		const shown = h.screen.raw().length;
+		const since = () => plain(h.screen.raw().slice(shown));
+		// A click where the editor was, then keys and Enter: they all go to the question, which Enter answers.
+		h.screen.type(`\x1b[<0;5;${row}M`);
+		h.screen.type(`\x1b[<0;5;${row}m`);
+		h.screen.type("xyz");
+		h.screen.type("\r");
+		await until(() => h.backend.toolResults.length === 1);
+		expect(h.backend.toolResults[0]?.output).toContain("hi");
+		expect(h.core.commands.filter((command) => command.command === "session.queue")).toEqual([]);
+		// The editor came back with what it held, without what was typed to the question.
+		await until(() => since().includes("draft"));
+		expect(since()).not.toContain("xyz");
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 2);
+		expect(h.backend.prompts[1]).toBe("draft");
+		await until(() => h.screen.screen().includes("$1.00"));
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
 	it("ignores the keys typed just as an approval appears", async () => {
 		const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo hi" } } }, { event: finished }]]);
 		h.io.tui = { ...h.io.tui, answerGuardMs: 300 };

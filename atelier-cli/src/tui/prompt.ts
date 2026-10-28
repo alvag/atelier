@@ -51,6 +51,11 @@ export class PromptBlock implements Component {
  * lined up with the text. Without the shade, the editor as pi-tui draws it.
  */
 export class PromptEditor extends Editor {
+	/**
+	 * Out of sight while a question is open: it draws nothing and takes no key or click, so the question keeps them all.
+	 * What it holds stays in it and shows again once it is back.
+	 */
+	hidden = false;
 	readonly #paint: Paint;
 	readonly #shade: Shade;
 	constructor(tui: TUI, theme: EditorTheme, paint: Paint, shade: Shade) {
@@ -74,7 +79,12 @@ export class PromptEditor extends Editor {
 		return `${BORDER}${hiddenLineCount > 0 ? this.#paint("dim", `${direction} ${hiddenLineCount} more`) : ""}`;
 	}
 
+	override handleInput(data: string): void {
+		if (!this.hidden) super.handleInput(data);
+	}
+
 	override render(width: number): string[] {
+		if (this.hidden) return [];
 		if (!this.#shade.on) return super.render(width);
 		const lines = super.render(Math.max(1, width - MARK.length));
 		const empty = this.getText() === "";
@@ -95,6 +105,7 @@ export class PromptEditor extends Editor {
 
 	/** The pointer over the text is where the text is, after the mark. */
 	override handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.hidden) return undefined;
 		if (!this.#shade.on) return super.handleMouse(event);
 		return super.handleMouse({
 			...event,

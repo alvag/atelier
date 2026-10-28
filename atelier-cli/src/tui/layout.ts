@@ -29,9 +29,13 @@ export function createScreen(terminal: Terminal, fullscreen: boolean, paint: Pai
 /**
  * Puts the document (the header and the transcript) on screen with the parts fixed under it. Full screen, the document
  * scrolls in the space the fixed parts leave, following its end while the view is at it; on the main screen they go one
- * after the other.
+ * after the other. A part with `shown` takes no room while it says false.
  */
-export function mount(tui: TUI, document: Component, fixed: { component: Component; editor?: boolean }[]): void {
+export function mount(
+	tui: TUI,
+	document: Component,
+	fixed: { component: Component; editor?: boolean; shown?: () => boolean }[],
+): void {
 	if (!isViewportTUI(tui)) {
 		tui.addChild(document);
 		for (const { component } of fixed) tui.addChild(component);
@@ -39,7 +43,12 @@ export function mount(tui: TUI, document: Component, fixed: { component: Compone
 	}
 	const transcript = new ScrollView(document, { follow: "end", primary: true, overscroll: "chain", scrollbar: "auto" });
 	const bottom = new VStack(
-		fixed.map(({ component, editor }) => ({ component, shrink: 1, minSize: editor ? EDITOR_MIN_ROWS : 0 })),
+		fixed.map(({ component, editor, shown }) => ({
+			component,
+			shrink: 1,
+			minSize: editor ? EDITOR_MIN_ROWS : 0,
+			...(shown === undefined ? {} : { visible: shown }),
+		})),
 	);
 	tui.setLayoutRoot(
 		new VStack([

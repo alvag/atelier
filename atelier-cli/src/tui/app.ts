@@ -453,7 +453,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		{ component: odd },
 		{ component: dialogs },
 		{ component: queue },
-		{ component: editor, editor: true },
+		{ component: editor, editor: true, shown: () => !editor.hidden },
 		{ component: footer },
 	]);
 	tui.setFocus(editor);
@@ -511,6 +511,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			first.told = true;
 			attention.waiting(first.blocked.kind);
 		}
+		// An open question takes every key: the editor is out of sight until it closes, and so is the queue's hint.
+		editor.hidden = first !== undefined;
+		queue.asking = first !== undefined;
 		if (first) {
 			dialogs.addChild(first.dialog);
 			first.dialog.reveal();
@@ -1093,6 +1096,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const removeKeys = tui.addInputListener((data) => {
 		// While a question is open, it reads the input through the same filter: a paste begun before it stays a paste.
 		if (questions.length === 0) input.feed(data);
+		// Nothing but the open question takes the keys, even after a click elsewhere.
+		const asked = questions[0]?.dialog;
+		if (asked !== undefined && !asked.focused) tui.setFocus(asked);
 		if (matchesKey(data, "ctrl+c")) {
 			if (busy && !interrupted) interrupt();
 			else if (!busy && editor.getText() !== "") editor.setText("");

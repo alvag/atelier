@@ -109,6 +109,8 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                                        |
 | PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.                         |
 
+While a question or a list is open, the editor is hidden and every key goes to the question; what you had typed comes back to the editor, unsent, when it closes.
+
 ### Permission modes
 
 - `normal`: commands run in the sandbox without asking; what the sandbox cannot cover (leaving it, writing outside the working directory, deleting or publishing work) asks you.
