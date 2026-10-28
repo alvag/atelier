@@ -374,7 +374,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const settings = await readTuiSettings(options.home);
 	const shade = new Shade(options.color);
 	let conversation = new Conversation(paint, args.cwd, shade);
-	conversation.view.thinking = !settings.hideThinking;
+	conversation.view.liveThinking = !settings.hideThinking;
 	// A wrong setting does not stop the session: it says what it used instead.
 	for (const warning of settings.warnings) conversation.note(`warning: ${warning}`, true);
 	let chosen: Chosen = {
@@ -882,7 +882,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	/** A conversation for the next session, after a rule that ends the one before. */
 	const nextConversation = (title: string) => {
 		const next = new Conversation(paint, args.cwd, shade);
-		next.view.thinking = conversation.view.thinking !== false;
+		next.view.thinking = conversation.view.thinking === true;
+		next.view.liveThinking = conversation.view.liveThinking !== false;
 		next.addChild(new Text(paint("dim", `── ${title} ──`), 1, 1));
 		transcript.addChild(next);
 		return next;

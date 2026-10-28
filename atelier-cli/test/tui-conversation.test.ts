@@ -64,40 +64,69 @@ describe("Conversation", () => {
 		expect(text).toContain(" ● First line.\n\n   Second line.");
 	});
 
-	it("shows the model's thinking in the block, folded to one line with Ctrl+R", () => {
-		const bodies: Body[] = [
+	it("shows the model's thinking while it arrives and folds it when the model moves on; Ctrl+R opens all of it", () => {
+		const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
+		const send = (bodies: Body[]) => {
+			for (const event of stamp(bodies)) conversation.event(event);
+			return conversation.render(80).join("\n");
+		};
+		let text = send([
 			{ type: "thinking_delta", text: "" },
 			{ type: "thinking_delta", text: "Checking the " },
 			{ type: "thinking_delta", text: "alias." },
-			{ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "ls" } },
+		]);
+		expect(text).toContain(" ✻ Checking the alias.");
+		text = send([{ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "ls" } }]);
+		expect(text).toContain(" ✻ Thinking…");
+		expect(text).not.toContain("alias");
+		text = send([
 			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "ls (exit 0)", truncated: false },
 			{ type: "thinking_delta", text: "It is right." },
-			{ type: "text_delta", text: "Done." },
-		];
-		const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
-		for (const event of stamp(bodies)) conversation.event(event);
-		const open = conversation.render(80).join("\n");
-		expect(open).toContain(" ✻ Checking the alias.\n ✻ It is right.\n ⎿ Ran 1 command\n\n ● Done.");
+		]);
+		expect(text).toContain(" ✻ Thinking…\n ✻ It is right.\n ⎿ Ran 1 command");
+		text = send([{ type: "text_delta", text: "Done." }]);
+		expect(text).toContain(" ✻ Thinking…\n ⎿ Ran 1 command\n\n ● Done.");
+		expect(text).not.toContain("right");
 		conversation.toggleThinking();
-		const folded = conversation.render(80).join("\n");
-		expect(folded).toContain(" ✻ Thinking…\n ⎿ Ran 1 command");
-		expect(folded).not.toContain("alias");
+		text = conversation.render(80).join("\n");
+		expect(text).toContain(" ✻ Checking the alias.\n ✻ It is right.\n ⎿ Ran 1 command\n\n ● Done.");
 		conversation.toggleCards();
-		const expanded = conversation.render(80).join("\n");
-		expect(expanded).toMatch(/⎿ ▾ Ran 1 command\n ✻ Thinking…\n.*▾ bash ls · exit 0 ✓\n(.*\n)*.*✻ Thinking…/);
+		text = conversation.render(80).join("\n");
+		expect(text).toMatch(
+			/⎿ ▾ Ran 1 command\n ✻ Checking the alias\.\n.*▾ bash ls · exit 0 ✓\n(.*\n)*.*✻ It is right\./,
+		);
+		conversation.toggleCards();
+		conversation.toggleThinking();
+		text = conversation.render(80).join("\n");
+		expect(text).toContain(" ✻ Thinking…\n ⎿ Ran 1 command");
+		expect(text).not.toContain("alias");
+	});
+
+	it("folds the last thinking of a turn that ends without text", () => {
+		const { text } = shown([
+			{ type: "thinking_delta", text: "Nothing to add." },
+			{ type: "turn_finished", stopReason: "end_turn", usage },
+		]);
+		expect(text).toContain(" ✻ Thinking…");
+		expect(text).not.toContain("Nothing to add.");
+	});
+
+	it("hides the thinking even while it arrives when the view says so, until Ctrl+R", () => {
+		const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
+		conversation.view.liveThinking = false;
+		for (const event of stamp([{ type: "thinking_delta", text: "Weighing." }])) conversation.event(event);
+		expect(conversation.render(80).join("\n")).toContain(" ✻ Thinking…");
+		conversation.toggleThinking();
+		expect(conversation.render(80).join("\n")).toContain(" ✻ Weighing.");
+		conversation.toggleThinking();
+		expect(conversation.render(80).join("\n")).not.toContain("Weighing");
 	});
 
 	it("opens or folds one block or one thinking with a click, until the next Ctrl+O or Ctrl+R", () => {
 		const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
-		for (const event of stamp([
-			{ type: "thinking_delta", text: "Checking." },
-			{ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "ls" } },
-			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "ls (exit 0)", truncated: false },
-			{ type: "text_delta", text: "Done." },
-			{ type: "tool_call_started", callId: "c2", tool: "bash", input: { command: "pwd" } },
-			{ type: "tool_call_finished", callId: "c2", ok: true, summary: "pwd (exit 0)", truncated: false },
-		]))
-			conversation.event(event);
+		const send = (bodies: Body[]) => {
+			for (const event of stamp(bodies)) conversation.event(event);
+		};
 		const click = (text: string) => {
 			const lines = conversation.render(80);
 			const y = lines.findIndex((line) => line.includes(text));
@@ -118,13 +147,27 @@ describe("Conversation", () => {
 			expect(result).toMatchObject({ handled: true });
 			return conversation.render(80).join("\n");
 		};
+		send([{ type: "thinking_delta", text: "Checking." }]);
+		// Folded by hand while it arrives, it stays folded.
 		let text = click("✻ Checking.");
 		expect(text).toContain("✻ Thinking…");
+		send([
+			{ type: "tool_call_started", callId: "c1", tool: "bash", input: { command: "ls" } },
+			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "ls (exit 0)", truncated: false },
+			{ type: "text_delta", text: "Done." },
+			{ type: "tool_call_started", callId: "c2", tool: "bash", input: { command: "pwd" } },
+			{ type: "tool_call_finished", callId: "c2", ok: true, summary: "pwd (exit 0)", truncated: false },
+		]);
+		text = conversation.render(80).join("\n");
+		expect(text).not.toContain("Checking.");
 		text = click("⎿ Ran 1 command");
 		expect(text).toContain("▾ bash ls · exit 0 ✓");
 		expect(text).not.toContain("▾ bash pwd");
+		// Opened by hand once it ended, it stays open while more comes.
 		text = click("✻ Thinking…");
 		expect(text).toContain("✻ Checking.");
+		send([{ type: "text_delta", text: " More." }]);
+		expect(conversation.render(80).join("\n")).toContain("✻ Checking.");
 		text = click("▾ bash ls");
 		expect(text).not.toContain("▾ bash ls");
 		click("⎿ Ran 1 command");
@@ -132,6 +175,10 @@ describe("Conversation", () => {
 		text = conversation.render(80).join("\n");
 		expect(text).toContain("▾ bash ls · exit 0 ✓");
 		expect(text).toContain("▾ bash pwd · exit 0 ✓");
+		conversation.toggleCards();
+		conversation.toggleThinking();
+		conversation.toggleThinking();
+		expect(conversation.render(80).join("\n")).not.toContain("Checking.");
 	});
 
 	it("paints the thinking dimmed, italic and magenta", () => {

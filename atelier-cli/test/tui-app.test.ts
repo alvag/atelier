@@ -982,6 +982,30 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(0);
 	});
 
+	it("folds the thinking once the turn moves on, and opens and folds it with Ctrl+R", async () => {
+		const h = harness([
+			[
+				{ event: { type: "thinking_delta", text: "Weighing the alias." } },
+				{ event: { type: "text_delta", text: "Settled." } },
+				{ event: finished },
+			],
+		]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("think");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		expect(h.screen.screen()).toContain("✻ Thinking…");
+		expect(h.screen.screen()).not.toContain("Weighing the alias.");
+		h.screen.type("\x12");
+		await until(() => h.screen.screen().includes("✻ Weighing the alias."));
+		// The screen keeps what was written before: the fold is one more `✻ Thinking…` after the open thinking.
+		h.screen.type("\x12");
+		await until(() => h.screen.screen().split("✻ Weighing the alias.").at(-1)?.includes("✻ Thinking…") === true);
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
 	it("starts with the thinking folded when the setting says so, and opens and folds it with Ctrl+R", async () => {
 		const h = harness([[{ event: { type: "thinking_delta", text: "Weighing the alias." } }, { event: finished }]]);
 		await mkdir(join(home, ".atelier"));

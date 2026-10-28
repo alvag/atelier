@@ -44,9 +44,10 @@ export function activitySummary(cards: readonly ToolCard[]): string {
 	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** A stretch of the model's thinking, as its deltas arrive, and what a click made of it. */
+/** A stretch of the model's thinking, as its deltas arrive, whether the model moved on from it, and what a click made of it. */
 interface Thought {
 	text: string;
+	ended?: boolean;
 	clicked?: Clicked;
 }
 
@@ -89,12 +90,20 @@ export class ActivityBlock implements Component {
 		return this.#clicked?.epoch === this.#epoch ? this.#clicked.value : this.#view.expanded;
 	}
 
+	/** Thinking shows while it arrives and folds once it ends, unless a click or Ctrl+R said otherwise. */
 	#shows(thought: Thought): boolean {
-		return thought.clicked?.epoch === this.#epoch ? thought.clicked.value : this.#view.thinking !== false;
+		if (thought.clicked?.epoch === this.#epoch) return thought.clicked.value;
+		return this.#view.thinking === true || (thought.ended !== true && this.#view.liveThinking !== false);
 	}
 
 	add(card: ToolCard): void {
+		this.end();
 		this.#steps.push(card);
+	}
+
+	/** The model moved on from its thinking: to a call, its text or the turn's end. */
+	end(): void {
+		for (const step of this.#steps) if (isThought(step)) step.ended = true;
 	}
 
 	/** More of the model's thinking: the stretch it is in, or a new one after a call. */
