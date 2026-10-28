@@ -54,10 +54,7 @@ export class PromptEditor extends Editor {
 	readonly #paint: Paint;
 	readonly #shade: Shade;
 	readonly #questionOpen: () => boolean;
-	/**
-	 * Out of sight while `questionOpen` says a question is open: it draws nothing and takes no key or click, so the
-	 * question keeps them all. What it holds stays in it and shows again once it is back.
-	 */
+	/** `questionOpen` says whether a question is open, which puts the editor out of sight. */
 	constructor(tui: TUI, theme: EditorTheme, paint: Paint, shade: Shade, questionOpen: () => boolean) {
 		super(tui, theme);
 		this.#paint = paint;
@@ -65,6 +62,10 @@ export class PromptEditor extends Editor {
 		this.#questionOpen = questionOpen;
 	}
 
+	/**
+	 * Out of sight while a question is open: it draws nothing and takes no key or click, so the question keeps them all.
+	 * What it holds stays in it and shows again once it is back.
+	 */
 	get hidden(): boolean {
 		return this.#questionOpen();
 	}
