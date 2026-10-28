@@ -127,6 +127,22 @@ describe("a spent OpenCode Go plan", () => {
 		expect(provider.count()).toBe(1);
 	});
 
+	it.each([
+		"Rolling 5-hour limit reached",
+		"5 hour limit exceeded",
+		"5h usage window used up",
+		"Five-hour limit reached",
+	])("counts the 5-hour limit as the plan's, asked once on both protocols: %s", async (message) => {
+		for (const model of ["minimax-m3", "glm-5.3"]) {
+			const provider = scripted(() =>
+				json(429, { type: "error", error: { type: "rate_limit_error", message } }, { "retry-after-ms": "1" }),
+			);
+			const events = await collect((await start(provider.fetch, model)).send("hi"));
+			expect(errorOf(events)).toMatchObject({ code: "quota_exceeded", recoverable: false });
+			expect(provider.count()).toBe(1);
+		}
+	});
+
 	it("leaves a plain rate limit retried on the Messages API models", async () => {
 		const provider = scripted(
 			() => json(429, { error: { message: "Too many requests" } }, { "retry-after-ms": "1" }),
