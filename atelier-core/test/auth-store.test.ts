@@ -347,3 +347,22 @@ it("reads the lock's fields by name, and judges a lock it cannot read by its age
 	await new AuthStore(file, { lockTimeoutMs: 1_000, staleLockMs: 60_000 }).set("b", { type: "api_key", key: "2" });
 	expect(new AuthStore(file).providers()).toEqual(["a", "b"]);
 });
+
+it("judges a lock it cannot read by its age, like one of a format it does not know", async () => {
+	const store = new AuthStore(file, { lockTimeoutMs: 100, staleLockMs: 10_000 });
+	await store.set("anthropic", { type: "api_key", key: "before" });
+	const lock = `${file}.lock`;
+	// Left by another user (root, say): it is there, but this process cannot read it.
+	await writeFile(lock, lockOf({ pid: process.pid }), { mode: 0o000 });
+	try {
+		await expect(store.set("anthropic", { type: "api_key", key: "after" })).rejects.toThrow(
+			/locked by another Atelier/,
+		);
+		const old = new Date(Date.now() - 30_000);
+		await utimes(lock, old, old);
+		await store.set("anthropic", { type: "api_key", key: "after" });
+		expect(store.get("anthropic")).toEqual({ type: "api_key", key: "after" });
+	} finally {
+		await chmod(lock, 0o600).catch(() => {});
+	}
+});

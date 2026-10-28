@@ -47,6 +47,8 @@ const STALE_LOCK_MS = 10_000;
  * to another process, or the holder was stopped long enough that the sign-in it refreshes is better asked again.
  */
 const ABANDONED_LOCK_MS = 10 * 60_000;
+/** What a lock that exists but cannot be read holds, for the takeover to compare: no lock written by Atelier holds it. */
+const UNREADABLE_LOCK = "\u0000unreadable";
 /** How much the clock's idea of when this machine started may be off. */
 const BOOT_MARGIN_MS = 5_000;
 const LOCK_RETRY_MS = 20;
@@ -224,7 +226,7 @@ export class AuthStore {
 	 */
 	async #abandoned(lock: string): Promise<string | undefined> {
 		const [content, age] = await Promise.all([
-			readFile(lock, "utf8").catch(() => undefined),
+			readLock(lock),
 			stat(lock).then(
 				(stats) => Date.now() - stats.mtimeMs,
 				() => 0,
@@ -261,8 +263,7 @@ export class AuthStore {
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			const stuck = await this.#abandoned(breaker);
-			if (stuck !== undefined && (await readFile(breaker, "utf8").catch(() => undefined)) === stuck)
-				await unlink(breaker).catch(() => {});
+			if (stuck !== undefined && (await readLock(breaker)) === stuck) await unlink(breaker).catch(() => {});
 			return;
 		}
 		try {
@@ -285,6 +286,16 @@ function holderOf(content: string): { pid: number; host: string } | undefined {
 	return typeof pid === "number" && Number.isInteger(pid) && pid > 0 && typeof host === "string"
 		? { pid, host }
 		: undefined;
+}
+
+/**
+ * What a lock holds; undefined once it is gone. One that is there but cannot be read (another user's) holds
+ * `UNREADABLE_LOCK`, an unknown format whose age alone counts.
+ */
+function readLock(path: string): Promise<string | undefined> {
+	return readFile(path, "utf8").catch((error: NodeJS.ErrnoException) =>
+		error.code === "ENOENT" ? undefined : UNREADABLE_LOCK,
+	);
 }
 
 /** How long this machine has run; undefined where it cannot be asked (a sandbox may refuse it). */
