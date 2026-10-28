@@ -7,6 +7,7 @@ import { BorrowTimeoutError, borrowTmpdir } from "../scratch.ts";
 import { describeViolations } from "./sandbox-blocks.ts";
 import { loadSandboxAdditions, type SandboxAdditions } from "./sandbox-config.ts";
 import {
+	cliCredentialFiles,
 	configFilePaths,
 	configPath,
 	includedConfigFiles,
@@ -340,8 +341,9 @@ function pointsBack(gitDir: string, top: string): boolean {
  * filters it only when `allowedDomains` is set.
  *
  * The configuration only adds. The secret file patterns also hold under every
- * added directory, and `.atelier` of the working directory (the project's
- * configuration) cannot be written by a command.
+ * added directory, `.atelier` of the working directory (the project's
+ * configuration) cannot be written by a command, and neither can other tools'
+ * credential files, even under a directory the configuration adds.
  */
 export function agentPolicy({
 	cwd,
@@ -373,6 +375,7 @@ export function agentPolicy({
 				...[cwd, ...writable].flatMap(libraryProtectedPaths),
 				...[cwd, ...writable].flatMap((dir) => operationStatePaths(join(dir, ".git"))),
 				join(cwd, ".atelier"),
+				...cliCredentialFiles(home),
 			],
 		},
 	};
@@ -904,7 +907,11 @@ export class Sandbox {
 			...optional("worktreeGit", linkedWorktreeGit(cwd)),
 			gitPaths: gitProtectedPaths(cwd, home),
 		}).filesystem;
-		const places = denyWrite.map((entry) => (typeof entry === "string" ? entry : entry.path));
+		// Other tools' credential files stay writable here, so their own sign-in and token refresh keep working.
+		const credentials = new Set(cliCredentialFiles(home));
+		const places = denyWrite
+			.map((entry) => (typeof entry === "string" ? entry : entry.path))
+			.filter((place) => !credentials.has(place));
 		const profile = outsideProfile(home, places, cwd);
 		return { file: "/usr/bin/sandbox-exec", args: ["-p", profile, "bash", "-c", command] };
 	}

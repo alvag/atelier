@@ -227,6 +227,25 @@ describe("edit never writes secrets", () => {
 		expect(await text(path)).toBe("alpha\n");
 	});
 
+	it.each([
+		".codex/auth.json",
+		".local/share/opencode/auth.json",
+		".netrc",
+		".git-credentials",
+		".config/git/credentials",
+	])("refuses another tool's credential file %s without asking, even with approvals granted", async (file) => {
+		const path = join(home, file);
+		await mkdir(join(path, ".."), { recursive: true });
+		await writeFile(path, "alpha\n");
+		await symlink(path, join(cwd, "credential-link.txt"));
+		for (const target of [path, "credential-link.txt"]) {
+			const { questions, results } = await run([target], { permissionMode: "yolo" });
+			expect(questions).toEqual([]);
+			expect(results[0]).toEqual({ ok: false, output: `Path is a protected secret location: ${target}` });
+		}
+		expect(await text(path)).toBe("alpha\n");
+	});
+
 	it("refuses a symlink in the working directory that leads to a secret", async () => {
 		await symlink(join(home, ".ssh", "config"), join(cwd, "sneaky.txt"));
 		const { questions, results } = await run(["sneaky.txt"]);

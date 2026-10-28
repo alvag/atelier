@@ -313,6 +313,18 @@ describe.skipIf(!onMac)("the sandbox configuration files", () => {
 		expect(await readFile(join(home, ".atelier", "sandbox.json"), "utf8")).toBe("{}");
 	});
 
+	it("keeps another tool's credential file unwritable inside an added directory", async () => {
+		await mkdir(join(home, ".codex"));
+		await writeFile(join(home, ".codex", "auth.json"), "TOY-CLI-CREDENTIAL\n");
+		await configure(join(home, ".atelier", "sandbox.json"), { allowWrite: ["~/.codex"] });
+		const result = await run(
+			`echo x > ${home}/.codex/auth.json; rm ${home}/.codex/auth.json; echo ok > ${home}/.codex/config.toml`,
+		);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(2);
+		expect(await readFile(join(home, ".codex", "auth.json"), "utf8")).toBe("TOY-CLI-CREDENTIAL\n");
+		expect(await readFile(join(home, ".codex", "config.toml"), "utf8")).toBe("ok\n");
+	});
+
 	it("stops the command with the file and the problem when a file is invalid, instead of ignoring it", async () => {
 		await configure(join(cwd, ".atelier", "sandbox.json"), '{ "allowWrite": ["~"] }');
 		const result = await run(`echo ran > ${cwd}/ran.txt`);
@@ -782,6 +794,13 @@ describe.skipIf(!onMac)("the commands the user's rules cover", () => {
 		const result = await run(`touch ${home}/covered.txt`);
 		expect(result.ok).toBe(true);
 		expect(await exists(join(home, "covered.txt"))).toBe(true);
+	});
+
+	it("write other tools' credential files, as their own sign-in and token refresh do", async () => {
+		await mkdir(join(home, ".codex"));
+		expect((await run(`touch ${home}/.codex/auth.json ${home}/.netrc`)).ok).toBe(true);
+		expect(await exists(join(home, ".codex", "auth.json"))).toBe(true);
+		expect(await exists(join(home, ".netrc"))).toBe(true);
 	});
 
 	it("never write ~/.atelier, by a name the rules do not see or through a link", async () => {
