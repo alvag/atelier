@@ -1,3 +1,4 @@
+import type { VerifyDefect, VerifyOutcome, VerifyRequirement } from "../events.ts";
 import { escapeAgentText } from "../permission-classifier.ts";
 import type { Finding } from "./findings.ts";
 import type { Receipt } from "./receipts.ts";
@@ -38,6 +39,41 @@ export function reviewNoticeLines(receipt: Receipt, receiptPath: string | undefi
 	if (verdict === "escalated" && receipt.corrected !== null)
 		lines.push("Its correction is still in the worktree; the user can undo it with /undo-correction.");
 	if (receiptPath !== undefined) lines.push(`Receipt: ${receiptPath}`);
+	return lines;
+}
+
+/**
+ * What the agent is told about a verification that did not pass (`needs_decision` or `failed`, not interrupted): its
+ * reason, the requirements left unverified and the open defects; undefined for one that passed.
+ */
+export function verificationNoticeLines(
+	end: { outcome: VerifyOutcome; reason?: string; cause?: string; openDefects: readonly VerifyDefect[] },
+	requirements: readonly VerifyRequirement[],
+): string[] | undefined {
+	if (end.outcome === "passed" || end.outcome === "corrected" || end.cause === "interrupted") return undefined;
+	const why = end.reason ?? end.cause;
+	const lines = [
+		`Atelier's verification of your last change: ${end.outcome}${why === undefined ? "." : `: ${oneLine(why)}`}`,
+	];
+	const unverified = requirements.filter((requirement) => requirement.verdict === "unverified");
+	const items = [
+		...end.openDefects.map((defect) => ({
+			title: "Open defects",
+			line: cut(`- ${oneLine(defect.id)} ${defect.severity}: ${oneLine(defect.summary)}`),
+		})),
+		...unverified.map((requirement) => ({
+			title: "Unverified requirements",
+			line: cut(`- ${oneLine(requirement.id)}: ${oneLine(requirement.requirement)}`),
+		})),
+	];
+	const shown = items.slice(0, NOTICE_MAX_ITEMS);
+	for (const title of ["Open defects", "Unverified requirements"]) {
+		const all = items.filter((entry) => entry.title === title);
+		if (all.length === 0) continue;
+		const listed = shown.filter((entry) => entry.title === title);
+		lines.push(`${title} (${all.length}):`, ...listed.map((entry) => entry.line));
+		if (listed.length < all.length) lines.push(`…and ${all.length - listed.length} more in the turn's events.`);
+	}
 	return lines;
 }
 

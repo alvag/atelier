@@ -13,6 +13,7 @@ import {
 	type TurnPhase,
 	type TurnPhases,
 	type Usage,
+	type VerifyRequirement,
 	ZERO_USAGE,
 } from "../events.ts";
 import type { ProfileBackend, Role, RoleBackendFactory, RoleSettings, ThinkingLevel } from "../profiles/index.ts";
@@ -26,7 +27,7 @@ import type { ToolDefinition } from "../tools/types.ts";
 import { type Candidate, emptyStartBase, type FreezeOptions, freezeCandidate, readTurnGit } from "./candidate.ts";
 import type { Finding } from "./findings.ts";
 import { gitText, runGit } from "./git.ts";
-import { followUpsBlock, reviewNoticeLines } from "./notice.ts";
+import { followUpsBlock, reviewNoticeLines, verificationNoticeLines } from "./notice.ts";
 import { findReceipt, findReceipts, latestCorrection, type Receipt, replaceReceipt, writeReceipt } from "./receipts.ts";
 import { type ReviewDeps, type RoleName, type RoleResult, runReview } from "./reviewer.ts";
 import { type Assessment, assessRisk, type Escalation } from "./risk.ts";
@@ -115,7 +116,7 @@ export class SessionReview {
 	/** The user allowed every high-risk review of this session: no more questions until it closes. */
 	#allowedForSession = false;
 	/** What the agent is told before its next prompt about the latest review; the newest replaces an older one. */
-	#notice: { review?: string[] | undefined } = {};
+	#notice: { verification?: string[] | undefined; review?: string[] | undefined } = {};
 	/** A notice the backend never took, for the next prompt unless a newer one came since. */
 	#returned: string | undefined;
 
@@ -155,7 +156,7 @@ export class SessionReview {
 
 	/** The notice of the latest review for the agent's next prompt, once; undefined when there is nothing to tell. */
 	takeNotice(): string | undefined {
-		const parts = [this.#notice.review].filter((part) => part !== undefined);
+		const parts = [this.#notice.verification, this.#notice.review].filter((part) => part !== undefined);
 		const text = parts.length === 0 ? this.#returned : followUpsBlock(parts);
 		this.#notice = {};
 		this.#returned = undefined;
@@ -164,7 +165,7 @@ export class SessionReview {
 
 	/** A notice the backend failed before taking goes back for the next prompt, unless a newer one came since. */
 	returnNotice(text: string): void {
-		if (this.#notice.review === undefined) this.#returned ??= text;
+		if (this.#notice.verification === undefined && this.#notice.review === undefined) this.#returned ??= text;
 	}
 
 	async close(): Promise<void> {
@@ -481,13 +482,22 @@ export class SessionReview {
 			ran = addPhaseSpent(ran, { usage: ZERO_USAGE, ...(run.agents === undefined ? {} : { agents: run.agents }) });
 			return run;
 		};
+		// The last round's requirements and how it ended: what the agent is told when it did not pass.
+		let requirements: readonly VerifyRequirement[] = [];
 		const result = await verify(
 			{ candidate, declaration, count },
 			{
 				runVerifier: async (call) => saw(await this.#runVerifier(host, declaration, call, count)),
 				correct: async (message) => saw(await host.correct(message)),
 				freeze: () => freezeCandidate(host.cwd, freezing),
-				push: (event) => host.push(event),
+				push: (event) => {
+					if (event.type === "verification_round" && event.ok) requirements = event.requirements;
+					else if (event.type === "verification_finished" && event.cause !== "interrupted") {
+						this.#notice.verification = verificationNoticeLines(event, requirements);
+						this.#returned = undefined;
+					}
+					host.push(event);
+				},
 				createId: host.createId,
 				aborted: () => host.signal.aborted,
 			},
