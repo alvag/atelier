@@ -8,7 +8,7 @@ import { createBashTool } from "../src/tools/bash.ts";
 import { createEditTool, createWriteTool } from "../src/tools/index.ts";
 import { isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
 
-// Slow by nature, not by waiting: each edit or write test runs about 80 git processes to work out the protected
+// Slow by nature, not by waiting: each edit or write test runs dozens of git processes to work out the protected
 // places, and the bash test starts the real sandbox; under heavy load 5 s is not enough.
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -36,8 +36,9 @@ async function fixture() {
 it.each(["edit", "write"] as const)("%s stays fail-closed when git cannot parse an included config", async (tool) => {
 	const { cwd, home, hook } = await fixture();
 	const backend = new FakeBackend([
+		// The agent cannot corrupt the include itself: it is protected too.
+		[{ toolCall: { tool: "write", callId: "corrupt", input: { path: "included", content: "[invalid\n" } } }, finished],
 		[
-			{ toolCall: { tool: "write", callId: "corrupt", input: { path: "included", content: "[invalid\n" } } },
 			{
 				toolCall: {
 					tool,
@@ -48,7 +49,6 @@ it.each(["edit", "write"] as const)("%s stays fail-closed when git cannot parse 
 							: { path: ".hooks/pre-commit", edits: [{ oldText: "old", newText: "new" }] },
 				},
 			},
-			{ toolCall: { tool: "write", callId: "restore", input: { path: "included", content: "# ok\n" } } },
 			finished,
 		],
 	]);
@@ -64,11 +64,18 @@ it.each(["edit", "write"] as const)("%s stays fail-closed when git cannot parse 
 	});
 	try {
 		for await (const _ of session.send("go"));
+		// Broken from outside the agent, as a bad merge or a tool could leave it: git no longer answers.
+		await writeFile(join(cwd, "included"), "[invalid\n");
+		expect(() => execFileSync("git", ["rev-parse", "--git-dir"], { cwd, stdio: "pipe" })).toThrow();
+		for await (const _ of session.send("go"));
 	} finally {
 		await session.close();
 	}
 	expect(questions).toEqual([]);
-	expect(backend.toolResults[1]?.ok).toBe(false);
+	expect(backend.toolResults).toEqual([
+		{ ok: false, output: "included is git state that runs code: the agent does not write it." },
+		{ ok: false, output: ".hooks/pre-commit is git state that runs code: the agent does not write it." },
+	]);
 	expect(await readFile(hook, "utf8")).toBe("old\n");
 });
 
