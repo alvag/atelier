@@ -109,7 +109,7 @@ export class Conversation extends Container {
 	#assessed: ReviewBlock | undefined;
 	readonly #verifications = new Map<string, VerifyCard>();
 
-	/** `now` tells the time a turn ends at. */
+	/** `now` tells the time a turn ends at, and how long each call took. */
 	constructor(paint: Paint, cwd: string, shade = new Shade(false), now: () => Date = () => new Date()) {
 		super();
 		this.#paint = paint;
@@ -215,7 +215,7 @@ export class Conversation extends Container {
 				this.#verification(event.verifyId).event(event);
 				return;
 			case "tool_call_started": {
-				const card = new ToolCard(event.tool, event.input, this.view, this.#paint, event.callId);
+				const card = new ToolCard(event.tool, event.input, this.view, this.#paint, event.callId, this.#now);
 				this.#cards.set(event.callId, card);
 				this.#activityBlock().add(card);
 				return;
