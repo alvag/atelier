@@ -109,20 +109,22 @@ it("keeps MCP binary attachments outside the borrowed folder", async () => {
 	const h = held();
 	const ready = h.sandbox.status();
 	await h.began.promise;
+	const manager = {
+		hide: (text: string) => text,
+		call: async () => ({ content: [{ type: "image", mimeType: "image/png", data: "eA==" }] }),
+	} as unknown as McpManager;
+	const call = createMcpTools(manager).find((tool) => tool.name === "mcp_call");
+	if (!call) throw new Error("missing call");
+	// The attachment's scratch directory waits for the start, so nothing is made in the borrowed folder meanwhile.
+	const calling = call.execute({ server: "s", tool: "t" }, { cwd: root });
 	try {
-		const manager = {
-			hide: (text: string) => text,
-			call: async () => ({ content: [{ type: "image", mimeType: "image/png", data: "eA==" }] }),
-		} as unknown as McpManager;
-		const call = createMcpTools(manager).find((tool) => tool.name === "mcp_call");
-		if (!call) throw new Error("missing call");
-		const result = await call.execute({ server: "s", tool: "t" }, { cwd: root });
-		expect(result.output).toContain(`saved to ${long}/mcp-`);
+		await drain();
 		expect(await readdir(tmpdir())).toEqual([]);
 	} finally {
 		h.end.resolve();
 		await ready;
 	}
+	expect((await calling).output).toContain(`saved to ${long}/atelier-mcp-`);
 });
 it("web_fetch uses no borrowed temporary files", async () => {
 	const server = createServer((_request, response) => {

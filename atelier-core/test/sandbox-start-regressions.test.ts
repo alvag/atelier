@@ -310,16 +310,22 @@ describe("what the rest of the process sees while the library starts", () => {
 			call: async () => ({ content: [{ type: "text", text: "x".repeat(20_001) }] }),
 			hide: (text: string) => text,
 		} as unknown as McpManager;
-		let path: string | undefined;
+		const tool = createMcpTools(manager).find((item) => item.name === "mcp_call");
+		if (!tool) throw new Error("mcp_call missing");
+		// Its file goes in a scratch directory of its own, which waits for the start like any other.
+		let done = false;
+		const calling = tool.execute({ server: "s", tool: "t" }, { cwd: root }).finally(() => {
+			done = true;
+		});
 		try {
-			const tool = createMcpTools(manager).find((item) => item.name === "mcp_call");
-			if (!tool) throw new Error("mcp_call missing");
-			path = (await tool.execute({ server: "s", tool: "t" }, { cwd: root })).fullOutputPath;
+			await drain();
+			expect(done).toBe(false);
 		} finally {
 			h.end.resolve();
 			await pending;
 		}
-		expect(path?.startsWith(`${long}/mcp-`)).toBe(true);
+		const path = (await calling).fullOutputPath;
+		expect(path?.startsWith(`${long}/atelier-mcp-`)).toBe(true);
 	});
 	it("waits for startup before creating a Session's scratch directory", async () => {
 		const h = held();
