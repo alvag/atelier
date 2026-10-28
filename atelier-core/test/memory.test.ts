@@ -334,3 +334,17 @@ it("classifies a timeout, a closed connection or an internal error as uncertain:
 		expect(error).toBeInstanceOf(MemoryUncertainError);
 	}
 });
+
+it("gives a prompt save 5 s and every other call 15 s, so a hung Engram holds a turn's end 5 s at most", async () => {
+	const timeouts: Record<string, number | undefined> = {};
+	const client = {
+		callTool: async (request: { name: string }, _schema: unknown, options?: { timeout?: number }) => {
+			timeouts[request.name] = options?.timeout;
+			return { content: [{ type: "text", text: JSON.stringify({ id: 1 }) }] };
+		},
+	} as unknown as Client;
+	const memory = new EngramMemory(client, "proj", { prompts: true });
+	await memory.savePrompt("fix it");
+	await memory.save({ title: "A", type: "decision", content: "x" });
+	expect(timeouts).toEqual({ mem_save_prompt: 5_000, mem_save: 15_000 });
+});

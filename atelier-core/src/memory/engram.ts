@@ -35,6 +35,8 @@ const REQUIRED_TOOLS = [
 /** Variables that point a client at another Engram server; this adapter owns its own process. */
 const SERVER_VARIABLES = ["ENGRAM_URL", "ENGRAM_PORT", "ENGRAM_SOCKET"];
 const CALL_TIMEOUT_MS = 15_000;
+/** A prompt save holds the end of its turn, so it waits less; a lost one is not retried anyway. */
+const PROMPT_TIMEOUT_MS = 5_000;
 const PREVIEW_CHARS = 200;
 /** Metadata lines Engram appends after an observation's content. */
 const METADATA =
@@ -170,7 +172,12 @@ export class EngramMemory implements MemoryPort {
 
 	async savePrompt(text: string): Promise<void> {
 		if (!this.#features.prompts) return;
-		await this.call("mem_save_prompt", { content: text, ...this.#session() }, z.object({}).passthrough());
+		await this.call(
+			"mem_save_prompt",
+			{ content: text, ...this.#session() },
+			z.object({}).passthrough(),
+			PROMPT_TIMEOUT_MS,
+		);
 	}
 
 	async begin(id: string, directory: string): Promise<void> {
@@ -196,16 +203,25 @@ export class EngramMemory implements MemoryPort {
 	}
 
 	/** Calls a tool and validates its JSON answer; any surprise is a MemoryError, never a guess. */
-	async call<T>(name: string, args: Record<string, unknown>, schema: z.ZodType<T>): Promise<T> {
-		const response = await this.#raw(name, args);
+	async call<T>(
+		name: string,
+		args: Record<string, unknown>,
+		schema: z.ZodType<T>,
+		timeout = CALL_TIMEOUT_MS,
+	): Promise<T> {
+		const response = await this.#raw(name, args, timeout);
 		if (response.isError) throw new MemoryError(`Engram ${name}: ${response.text}`);
 		return parse(response.text, schema, name);
 	}
 
-	async #raw(name: string, args: Record<string, unknown>): Promise<{ isError: boolean; text: string }> {
+	async #raw(
+		name: string,
+		args: Record<string, unknown>,
+		timeout = CALL_TIMEOUT_MS,
+	): Promise<{ isError: boolean; text: string }> {
 		let result: Awaited<ReturnType<Client["callTool"]>>;
 		try {
-			result = await this.#client.callTool({ name, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
+			result = await this.#client.callTool({ name, arguments: args }, undefined, { timeout });
 		} catch (error) {
 			// Never a crash of the caller. Engram refusing the request is a clear failure; a timeout, a dead process, a cut
 			// connection or an internal error leave unknown whether the call landed.
