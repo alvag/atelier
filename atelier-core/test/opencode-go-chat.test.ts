@@ -56,10 +56,10 @@ function textReply(text: string): { sse: string } {
 	};
 }
 
-async function start(calls: ToolCall[] = [], model = MODEL): Promise<BackendSession> {
+async function start(calls: ToolCall[] = [], model = MODEL, maxRetries = 0): Promise<BackendSession> {
 	const backend = await createBackend("opencode-go", {
 		resolveOpenCodeGoKey: async () => KEY,
-		opencodeGo: { baseUrl: provider.url, maxRetries: 0, model },
+		opencodeGo: { baseUrl: provider.url, maxRetries, model },
 	});
 	return backend.start({
 		cwd: "/tmp",
@@ -230,13 +230,50 @@ describe("opencode-go on Chat Completions", () => {
 		expect(history[1]?.content.map(({ type }) => type)).toEqual(["text"]);
 	});
 
-	it("reports a refused key without the key, and does not retry it", async () => {
+	it("reports a refused key without the key, says how to change it, and does not retry it", async () => {
 		provider.answer({ status: 401, json: { error: { message: `Invalid API key ${KEY}` } } });
-		const events = await collect((await start()).send("hi"));
+		const events = await collect((await start([], MODEL, 2)).send("hi"));
 		const error = events.find((event) => event.type === "error");
 		expect(error).toMatchObject({ type: "error", code: "authentication_error", recoverable: false });
+		expect((error as { message: string }).message).toBe(
+			"401 Invalid API key [redacted]. OpenCode Go refused the key: store another with /login api-key opencode-go (atelier login api-key opencode-go), or check OPENCODE_API_KEY.",
+		);
 		expect(JSON.stringify(events)).not.toContain(KEY);
 		expect(provider.received).toHaveLength(1);
+	});
+
+	it("says when the plan's usage limit is reached, on either protocol, and does not retry it", async () => {
+		provider.answer(
+			{ status: 429, json: { error: { message: "Monthly usage limit reached" } } },
+			{ status: 402, json: { type: "error", error: { type: "billing_error", message: "Insufficient balance" } } },
+		);
+		const chat = await collect((await start([], MODEL, 2)).send("hi"));
+		const messages = await collect((await start([], "minimax-m3", 2)).send("hi"));
+		for (const events of [chat, messages]) {
+			const error = events.find((event) => event.type === "error") as {
+				code: string;
+				message: string;
+				recoverable: boolean;
+			};
+			expect(error).toMatchObject({ code: "quota_exceeded", recoverable: false });
+			expect(error.message).toContain(
+				"OpenCode Go's usage limit is reached: it counts 5-hour, weekly and monthly limits; see https://opencode.ai/console.",
+			);
+		}
+		expect(provider.received).toHaveLength(2);
+	});
+
+	it("retries a request the provider could not serve, before anything streamed", async () => {
+		provider.answer({ status: 503, json: { error: { message: "busy" } } }, textReply("Back."));
+		const events = await collect((await start([], MODEL, 1)).send("hi"));
+		expect(events).toContainEqual({ type: "text_delta", text: "Back." });
+		expect(provider.received).toHaveLength(2);
+	});
+
+	it("tells a rate limit apart from the usage limit", async () => {
+		provider.answer({ status: 429, json: { error: { message: "Too many requests" } } });
+		const events = await collect((await start()).send("hi"));
+		expect(events.find((event) => event.type === "error")).toMatchObject({ code: "rate_limited", recoverable: true });
 	});
 });
 
