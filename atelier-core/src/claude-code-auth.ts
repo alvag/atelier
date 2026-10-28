@@ -2,7 +2,12 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { AuthStore } from "./auth-store.ts";
-import { apiKeySource, MISSING_API_KEY_MESSAGE } from "./credentials.ts";
+import {
+	apiKeySource,
+	MISSING_API_KEY_MESSAGE,
+	MISSING_OPENCODE_GO_KEY_MESSAGE,
+	openCodeGoKeySource,
+} from "./credentials.ts";
 
 /** What `claude auth status --json` says; `authMethod` is `claude.ai` for a Claude subscription. */
 export interface ClaudeCodeAuthStatus {
@@ -148,7 +153,8 @@ export interface LoginWarningOptions extends ClaudeCodeRunOptions {
 
 /**
  * What a session on `backend` lacks to start working, said before the first prompt: Claude Code's login for
- * `claude-code`, an API key for `anthropic-api`. Undefined when nothing is missing or the backend needs neither.
+ * `claude-code`, an API key for `anthropic-api` or `opencode-go`. Undefined when nothing is missing or the backend
+ * needs none of them.
  */
 export async function loginWarning(backend: string, options: LoginWarningOptions = {}): Promise<string | undefined> {
 	const keys = {
@@ -158,6 +164,8 @@ export async function loginWarning(backend: string, options: LoginWarningOptions
 	};
 	if (backend === "anthropic-api")
 		return (await apiKeySource(keys)) === undefined ? MISSING_API_KEY_MESSAGE : undefined;
+	if (backend === "opencode-go")
+		return openCodeGoKeySource(keys) === undefined ? MISSING_OPENCODE_GO_KEY_MESSAGE : undefined;
 	if (backend !== "claude-code") return undefined;
 	let status: ClaudeCodeAuthStatus;
 	try {

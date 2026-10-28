@@ -70,7 +70,7 @@ export class McpManager {
 			 * path is absolute, and none otherwise (a relative path would name the working directory).
 			 */
 			providers?: AuthStore;
-			/** Where ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN are read from, to hide them too; this process's by default. */
+			/** Where ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN and OPENCODE_API_KEY are read from, to hide them too; this process's by default. */
 			env?: Record<string, string | undefined>;
 		} = {},
 	) {
@@ -281,7 +281,7 @@ export class McpManager {
 
 	/**
 	 * The text with every secret of the configuration, of the OAuth sign-ins and of the providers' credentials (the keys
-	 * of `auth.json` and ANTHROPIC_API_KEY) replaced by `***`: a server's own file tool must not hand them to the agent.
+	 * of `auth.json`, ANTHROPIC_API_KEY and OPENCODE_API_KEY) replaced by `***`: a server's own file tool must not hand them to the agent.
 	 */
 	hide(text: string): string {
 		return this.#hide(text);
@@ -308,8 +308,8 @@ export class McpManager {
 	}
 }
 
-/** The environment's Anthropic credentials, which every stdio server inherits: hidden in what servers answer. */
-const ENV_CREDENTIALS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
+/** The environment's provider credentials, which every stdio server inherits: hidden in what servers answer. */
+const ENV_CREDENTIALS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENCODE_API_KEY"] as const;
 
 /** The server wants a sign-in: its tokens are gone or refused, or it answers 401 and has no Authorization header of its own. */
 function needsSignIn(config: McpServerConfig, error: unknown): boolean {

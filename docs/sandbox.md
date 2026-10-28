@@ -18,7 +18,7 @@ Not covered:
 - The agent's network is not restricted: a command can reach the network and anything it can read.
 - Other platforms: no Linux or Windows code exists.
 - The `read`, `edit`, `write` and `grep` tools are not run by the sandbox; code decides what they open, which is a separate mechanism. `edit` and `write` leave `--cwd` only with the user's approval, file by file. `read` and `grep` may leave it but refuse the same secret directories and `denyRead` entries the sandbox hides from `bash`, whether or not the sandbox is running.
-- `bash` also runs without `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`; that filters its environment and is not isolation.
+- `bash` also runs without `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `OPENCODE_API_KEY`; that filters its environment and is not isolation.
 
 ## What you see
 

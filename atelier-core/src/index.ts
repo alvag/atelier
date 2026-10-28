@@ -59,8 +59,13 @@ export {
 	KEYCHAIN_SERVICE,
 	KeychainError,
 	MISSING_API_KEY_MESSAGE,
+	MISSING_OPENCODE_GO_KEY_MESSAGE,
 	MissingApiKeyError,
+	OPENCODE_GO_KEY_ENV,
+	OPENCODE_GO_PROVIDER,
+	openCodeGoKeySource,
 	resolveApiKey,
+	resolveOpenCodeGoKey,
 	type SecurityRunner,
 	STORE_KEY_COMMAND,
 } from "./credentials.ts";
