@@ -1,3 +1,4 @@
+import { CODEX_MODELS } from "./backends/openai-codex/models.ts";
 import { OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
 import type { BackendName } from "./protocol/types.ts";
 
@@ -10,4 +11,5 @@ export const BACKEND_MODELS: Readonly<Record<BackendName, readonly string[]>> = 
 	"anthropic-api": ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
 	// The table's first model is the default, minimax-m3.
 	"opencode-go": Object.keys(OPENCODE_GO_MODELS),
+	"openai-codex": CODEX_MODELS,
 });

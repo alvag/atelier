@@ -68,7 +68,10 @@ try {
 const createBackend = (name: BackendName) =>
 	process.env.ATELIER_BACKEND === "echo"
 		? new EchoBackend()
-		: createNamedBackend(name, compactAt === undefined ? {} : { anthropicApi: { compactAt } });
+		: createNamedBackend(
+				name,
+				compactAt === undefined ? {} : { anthropicApi: { compactAt }, openaiCodex: { compactAt } },
+			);
 
 // The echo backend (tests) and ATELIER_MEMORY=off run without long-term memory.
 const memoryOff = process.env.ATELIER_BACKEND === "echo" || process.env.ATELIER_MEMORY === "off";

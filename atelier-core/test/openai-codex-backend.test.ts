@@ -1,0 +1,294 @@
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, expect, it } from "vitest";
+import { z } from "zod";
+import { AuthStore, authFile } from "../src/auth-store.ts";
+import type { BackendSession, BackendStartOptions, ToolCall } from "../src/backend.ts";
+import { createBackend } from "../src/backend-factory.ts";
+import type { CodexVariant } from "../src/backends/openai-codex/access.ts";
+import { OpenAiCodexBackend } from "../src/backends/openai-codex/backend.ts";
+import type { AtelierEventBody } from "../src/events.ts";
+import { defineTool } from "../src/tools/types.ts";
+import { FakeOpenAiAuth, fakeCodexAccess, fakeJwt, fakeRefresh } from "./support/fake-openai-auth.ts";
+import { callItem, completed, FakeResponses, textItem } from "./support/fake-responses.ts";
+import { requireIsolatedHome } from "./support/login-isolation.ts";
+
+requireIsolatedHome();
+
+let home: string;
+let store: AuthStore;
+let api: FakeResponses;
+let auth: FakeOpenAiAuth;
+let accountId: string;
+let legacy: { access: string; refresh: string };
+let chatgpt: { access: string; refresh: string };
+
+const echoTool = defineTool({
+	name: "echo",
+	description: "Echoes the text back.",
+	inputShape: { text: z.string() },
+	execute: async ({ text }) => ({ ok: true, output: `echo: ${text}`, summary: text, truncated: false }),
+});
+
+beforeEach(async () => {
+	home = await mkdtemp(join(tmpdir(), "atelier-codex-backend-"));
+	store = new AuthStore(authFile(home));
+	api = await new FakeResponses().start();
+	auth = await new FakeOpenAiAuth().start();
+	accountId = `acct-${randomUUID()}`;
+	legacy = { access: fakeCodexAccess(accountId), refresh: fakeRefresh() };
+	chatgpt = { access: fakeJwt({ sub: randomUUID() }), refresh: fakeRefresh() };
+});
+
+afterEach(async () => {
+	await api.stop();
+	await auth.stop();
+	await rm(home, { recursive: true, force: true });
+});
+
+const signInLegacy = (expires = Date.now() + 3_600_000) =>
+	store.set("openai-codex", { type: "oauth", ...legacy, expires, accountId } as never);
+const signInChatGpt = () =>
+	store.set("openai-chatgpt", {
+		type: "oauth",
+		...chatgpt,
+		expires: Date.now() + 3_600_000,
+		clientId: "issued-1",
+		scopes: [],
+	} as never);
+
+async function start(options: Partial<BackendStartOptions> = {}, variant?: CodexVariant) {
+	const calls: ToolCall[] = [];
+	const backend = new OpenAiCodexBackend({
+		store,
+		codexUrl: api.url,
+		openaiUrl: `${api.url}/v1`,
+		authUrl: auth.url,
+		baseDelayMs: 0,
+		...(variant ? { variant } : {}),
+	});
+	const session = await backend.start({
+		cwd: "/work",
+		systemPromptAppend: "Follow ODD.",
+		tools: [echoTool],
+		executeTool: async (call) => {
+			calls.push(call);
+			return { ok: true, output: `echo: ${(call.input as { text: string }).text}` };
+		},
+		...options,
+	});
+	return { session, calls };
+}
+
+async function turn(session: BackendSession, prompt = "hi"): Promise<AtelierEventBody[]> {
+	const events: AtelierEventBody[] = [];
+	for await (const event of session.send(prompt)) events.push(event);
+	return events;
+}
+
+it("runs a turn on ChatGPT's Codex endpoint: the account, the tools, the reasoning, the usage with the cache", async () => {
+	await signInLegacy();
+	api.answers.push({
+		events: [
+			{ type: "response.reasoning_summary_text.delta", delta: "Plan" },
+			...completed(
+				[
+					{ type: "reasoning", id: "rs_1", summary: [], encrypted_content: "opaque" },
+					callItem("call_1", "echo", { text: "x" }),
+				],
+				{ input_tokens: 100, input_tokens_details: { cached_tokens: 60 }, output_tokens: 10 },
+			),
+		],
+	});
+	api.answers.push({
+		events: [
+			{ type: "response.output_text.delta", delta: "Done" },
+			...completed([{ ...textItem("Done"), id: "msg_1", status: "completed" }], {
+				input_tokens: 130,
+				output_tokens: 4,
+			}),
+		],
+	});
+	const { session, calls } = await start({ thinking: "high" });
+	const events = await turn(session);
+
+	expect(events[0]).toMatchObject({
+		type: "session_started",
+		backend: "openai-codex",
+		model: "gpt-6-sol",
+		authSource: "subscription",
+		effort: "high",
+	});
+	expect(events.filter((event) => event.type === "thinking_delta" || event.type === "text_delta")).toEqual([
+		{ type: "thinking_delta", text: "Plan" },
+		{ type: "text_delta", text: "Done" },
+	]);
+	expect(calls).toEqual([{ tool: "echo", input: { text: "x" }, callId: "call_1" }]);
+	expect(events.at(-1)).toMatchObject({
+		type: "turn_finished",
+		stopReason: "end_turn",
+		requests: 2,
+		usage: { input: 170, cacheRead: 60, output: 14, cacheWrite: 0 },
+		context: { window: 272_000 },
+	});
+	expect(events.at(-1)).not.toHaveProperty("costUsd");
+
+	const [first, second] = api.requests;
+	expect(first?.path).toBe("/codex/responses");
+	expect(first?.headers).toMatchObject({
+		authorization: `Bearer ${legacy.access}`,
+		"chatgpt-account-id": accountId,
+		"openai-beta": "responses=experimental",
+		originator: "atelier",
+	});
+	expect(first?.body).toMatchObject({
+		model: "gpt-6-sol",
+		store: false,
+		stream: true,
+		reasoning: { effort: "high", summary: "auto" },
+		include: ["reasoning.encrypted_content"],
+		prompt_cache_key: first?.headers["session-id"],
+		tools: [{ type: "function", name: "echo", strict: false }],
+	});
+	expect(first?.body.instructions).toContain("Working directory: /work");
+	expect(first?.body.instructions).toContain("Follow ODD.");
+	expect(second?.body.input).toEqual([
+		{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+		{ type: "reasoning", id: "rs_1", summary: [], encrypted_content: "opaque" },
+		{ type: "function_call", call_id: "call_1", name: "echo", arguments: '{"text":"x"}' },
+		{ type: "function_call_output", call_id: "call_1", output: "echo: x" },
+	]);
+
+	// The answer enters the history without the ids a request without storage cannot refer to.
+	api.answers.push({ events: completed([textItem("again")]) });
+	await turn(session, "more");
+	expect(((api.requests[2]?.body.input ?? []) as unknown[]).slice(4)).toEqual([
+		{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Done" }] },
+		{ type: "message", role: "user", content: [{ type: "input_text", text: "more" }] },
+	]);
+});
+
+it("changes the model and the reasoning between turns, and resumes a saved conversation", async () => {
+	await signInLegacy();
+	api.answers.push({ events: completed([textItem("one")]) });
+	const { session } = await start();
+	await turn(session);
+	expect(api.requests[0]?.body.reasoning).toEqual({ summary: "auto" });
+	await session.configure?.({ model: "gpt-6-luna", thinking: "off" });
+	api.answers.push({ events: completed([textItem("two")]) });
+	const events = await turn(session, "next");
+	expect(api.requests[1]?.body).toMatchObject({ model: "gpt-6-luna", reasoning: { effort: "none" } });
+	expect(events.at(-1)).toMatchObject({ type: "turn_finished" });
+
+	const saved = session.resumeState?.();
+	const { session: resumed } = await start(saved === undefined ? {} : { resume: saved });
+	api.answers.push({ events: completed([textItem("three")]) });
+	await turn(resumed, "last");
+	expect(api.requests[2]?.body.input).toHaveLength(5);
+});
+
+it("refreshes a token about to expire before the request, and keeps the new one", async () => {
+	await signInLegacy(Date.now() + 60_000);
+	const fresh = { access: fakeCodexAccess(accountId), refresh: fakeRefresh() };
+	auth.routes.set("/oauth/token", () => ({
+		json: { access_token: fresh.access, refresh_token: fresh.refresh, expires_in: 3600 },
+	}));
+	api.answers.push({ events: completed([textItem("ok")]) });
+	const { session } = await start();
+	await turn(session);
+	expect(auth.requests[0]?.body).toMatchObject({ grant_type: "refresh_token", refresh_token: legacy.refresh });
+	expect(api.requests[0]?.headers.authorization).toBe(`Bearer ${fresh.access}`);
+	expect(store.get("openai-codex")).toMatchObject({ access: fresh.access, refresh: fresh.refresh, accountId });
+});
+
+it("refreshes a refused token once and retries, and asks to sign in again when the refresh is refused too", async () => {
+	await signInLegacy();
+	const fresh = fakeCodexAccess(accountId);
+	auth.routes.set("/oauth/token", () => ({
+		json: { access_token: fresh, refresh_token: fakeRefresh(), expires_in: 3600 },
+	}));
+	api.answers.push({ status: 401, json: { error: { message: "token expired" } } });
+	api.answers.push({ events: completed([textItem("ok")]) });
+	const { session } = await start();
+	expect((await turn(session)).at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+	expect(api.requests[1]?.headers.authorization).toBe(`Bearer ${fresh}`);
+
+	auth.routes.set("/oauth/token", () => ({ status: 400, json: { error: "invalid_grant" } }));
+	api.answers.push({ status: 401, json: { error: { message: "token expired" } } });
+	const events = await turn(session, "again");
+	const error = events.find((event) => event.type === "error");
+	expect(error).toMatchObject({ code: "not_logged_in", recoverable: false });
+	expect((error as { message: string }).message).toContain("/login account openai-codex");
+});
+
+it("says how to sign in when there is no sign-in", async () => {
+	const { session } = await start();
+	const events = await turn(session);
+	expect(events.find((event) => event.type === "error")).toMatchObject({ code: "not_logged_in" });
+	expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error", requests: 0 });
+	expect(api.requests).toHaveLength(0);
+});
+
+it("moves to Sign in with ChatGPT when the Codex endpoint refuses Atelier, unless a variant was forced", async () => {
+	await signInLegacy();
+	await signInChatGpt();
+	api.answers.push({ status: 403, json: { error: { message: "client not allowed" } } });
+	api.answers.push({ events: completed([textItem("ok")]) });
+	const { session } = await start();
+	const events = await turn(session);
+	expect(events.find((event) => event.type === "error")).toMatchObject({ code: "variant_changed", recoverable: true });
+	expect(api.requests.map((request) => request.path)).toEqual(["/codex/responses", "/v1/responses"]);
+	expect(api.requests[1]?.headers.authorization).toBe(`Bearer ${chatgpt.access}`);
+	expect(api.requests[1]?.headers).not.toHaveProperty("chatgpt-account-id");
+	api.answers.push({ events: completed([textItem("ok")]) });
+	await turn(session, "again");
+	expect(api.requests[2]?.path).toBe("/v1/responses");
+
+	api.answers.push({ status: 403, json: { error: { message: "client not allowed" } } });
+	const { session: forced } = await start({}, "legacy");
+	const refused = await turn(forced);
+	expect(refused.find((event) => event.type === "error")).toMatchObject({ code: "api_error" });
+	expect(api.requests.at(-1)?.path).toBe("/codex/responses");
+});
+
+it("stops at the subscription's usage limit, saying when it resets, and hides the tokens in any message", async () => {
+	await signInLegacy();
+	api.answers.push({
+		status: 429,
+		json: { error: { code: "usage_limit_reached", plan_type: "PRO", message: "limit" } },
+	});
+	const { session } = await start();
+	const events = await turn(session);
+	expect(events.find((event) => event.type === "error")).toMatchObject({ code: "usage_limit", recoverable: false });
+	expect((events.find((event) => event.type === "error") as { message: string }).message).toMatch(/pro plan/);
+
+	api.answers.push({ status: 400, json: { error: { message: `bad token ${legacy.access}` } } });
+	const leaked = (await turn(session, "again")).find((event) => event.type === "error") as { message: string };
+	expect(leaked.message).toContain("[redacted]");
+	expect(leaked.message).not.toContain(legacy.access);
+});
+
+it("is built by name, with the variant ATELIER_CODEX_VARIANT forces, and refuses a variant it does not know", async () => {
+	const backend = await createBackend("openai-codex", { openaiCodex: { store }, env: {} });
+	expect(backend.id).toBe("openai-codex");
+	await expect(
+		createBackend("openai-codex", { openaiCodex: { store }, env: { ATELIER_CODEX_VARIANT: "beta" } }),
+	).rejects.toThrow("ATELIER_CODEX_VARIANT must be legacy or chatgpt");
+	await signInLegacy();
+	await signInChatGpt();
+	api.answers.push({ events: completed([textItem("ok")]) });
+	const forced = await createBackend("openai-codex", {
+		openaiCodex: { store, codexUrl: api.url, openaiUrl: `${api.url}/v1`, baseDelayMs: 0 },
+		env: { ATELIER_CODEX_VARIANT: "chatgpt" },
+	});
+	const session = await forced.start({
+		cwd: "/w",
+		systemPromptAppend: "",
+		tools: [],
+		executeTool: async () => ({ ok: true, output: "" }),
+	});
+	await turn(session);
+	expect(api.requests[0]?.path).toBe("/v1/responses");
+});
