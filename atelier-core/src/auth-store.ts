@@ -83,8 +83,9 @@ export class AuthStore {
 	secrets(): string[] {
 		return Object.values(this.#read()).flatMap((entry) => {
 			if (!isCredential(entry)) return [];
+			// Trimmed as the keys are used (resolveApiKey trims), so a padded key is found as it is sent.
 			const values = entry.type === "api_key" ? [entry.key] : [entry.access, entry.refresh];
-			return values.filter((value) => value.trim() !== "");
+			return values.map((value) => value.trim()).filter((value) => value !== "");
 		});
 	}
 
