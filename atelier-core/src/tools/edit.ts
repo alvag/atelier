@@ -22,6 +22,13 @@ function occurrences(content: string, text: string): number[] {
 	return found;
 }
 
+/** The 1-based line of `content` that `offset` is on. */
+function lineAt(content: string, offset: number): number {
+	let line = 1;
+	for (let i = content.indexOf("\n"); i !== -1 && i < offset; i = content.indexOf("\n", i + 1)) line++;
+	return line;
+}
+
 /** Writes through a temporary file in the same directory and renames it, so readers never see a partial file. */
 export async function writeAtomic(path: string, content: string, mode: number): Promise<void> {
 	const temporary = join(dirname(path), `.${basename(path)}.${randomBytes(6).toString("hex")}.atelier-tmp`);
@@ -180,11 +187,14 @@ export function createEditTool(options: EditOptions = {}): ToolDefinition {
 
 				await writeAtomic(target, result, info.mode & 0o7777);
 				const count = `${edits.length} ${edits.length === 1 ? "edit" : "edits"}`;
+				const startLines: number[] = [];
+				for (const { start, index } of ranges) startLines[index] = lineAt(content, start);
 				return {
 					ok: true,
 					output: `Edited ${path}: ${count} applied.`,
 					summary: `${path} (${count})`,
 					truncated: false,
+					startLines,
 				};
 			} catch (error) {
 				return failure(errorMessage(error));

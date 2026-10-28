@@ -1439,6 +1439,7 @@ export class Session {
 				truncated: outcome.truncated,
 				...(outcome.fullOutputPath === undefined ? {} : { fullOutputPath: outcome.fullOutputPath }),
 				...(outcome.blocked === undefined ? {} : { blocked: outcome.blocked }),
+				...(outcome.startLines === undefined ? {} : { startLines: outcome.startLines }),
 			});
 			return { ok: outcome.ok, output: outcome.output };
 		} catch (error) {

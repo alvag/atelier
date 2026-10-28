@@ -72,6 +72,8 @@ export interface ToolOutcome {
 	fullOutputPath?: string;
 	/** What the sandbox blocked in the call, as short causes; absent when it reported nothing. */
 	blocked?: string[];
+	/** For `edit`: the line each edit starts at in the file before it, in the order of the edits. */
+	startLines?: number[];
 }
 
 /** A tool as the core and every backend see it: input is validated before it reaches `execute`. */

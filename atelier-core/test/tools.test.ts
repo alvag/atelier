@@ -172,6 +172,22 @@ describe("edit", () => {
 		expect(await readFile(join(cwd, "f.ts"), "utf8")).toBe("const a = 10;\nconst b = 20;\n");
 	});
 
+	it("says the line each edit starts at in the file before it, in the order of the edits", async () => {
+		await writeFile(join(cwd, "f.ts"), "one\ntwo\nthree\nfour\n");
+		const result = await editTool.execute(
+			{
+				path: "f.ts",
+				edits: [
+					{ oldText: "four", newText: "4" },
+					{ oldText: "wo\nthr", newText: "WO\nTHR" },
+					{ oldText: "one", newText: "1\n1.5" },
+				],
+			},
+			ctx,
+		);
+		expect(result).toMatchObject({ ok: true, startLines: [4, 2, 1] });
+	});
+
 	it("treats replacement text literally", async () => {
 		await writeFile(join(cwd, "f.txt"), "price\n");
 		await editTool.execute({ path: "f.txt", edits: [{ oldText: "price", newText: "$& $1 $$" }] }, ctx);
