@@ -85,18 +85,115 @@ const drain = async () => {
 };
 
 describe("the library's socket with a long TMPDIR", () => {
-	it("starts the library with TMPDIR in a short folder of the user's own, 0700, and puts TMPDIR back", async () => {
+	it("starts the library with tmpdir() in a short folder of the user's own, 0700, and puts it back", async () => {
 		process.env.TMPDIR = longTemp;
-		const { manager, seen, release } = heldManager();
+		const env: (string | undefined)[] = [];
+		const { manager, seen, release } = heldManager(() => env.push(process.env.TMPDIR));
 		release();
 		const sandbox = new Sandbox({ platform: "darwin", manager, socketRoot });
 		expect(await sandbox.status()).toEqual({ available: true });
 		const short = join(socketRoot, `atelier-${uid}`);
 		expect(seen).toEqual([short]);
+		// Only the function answers the short folder: what a child process inherits never changes.
+		expect(env).toEqual([longTemp]);
+		expect(tmpdir()).toBe(longTemp);
 		const info = await lstat(short);
 		expect(info.isDirectory()).toBe(true);
 		expect(info.mode & 0o777).toBe(0o700);
 		expect(process.env.TMPDIR).toBe(longTemp);
+	});
+
+	it("leaves a TMPDIR whose socket path is 103 bytes, as the library builds it, alone", async () => {
+		const suffix = `/srt-mux-${process.pid}-0.sock`;
+		const fits = join(base, "f".repeat(103 - Buffer.byteLength(base) - 1 - Buffer.byteLength(suffix)));
+		await mkdir(fits);
+		process.env.TMPDIR = fits;
+		expect(Buffer.byteLength(fits + suffix)).toBe(103);
+		const { manager, seen, release } = heldManager();
+		release();
+		expect(await new Sandbox({ platform: "darwin", manager, socketRoot }).status()).toEqual({ available: true });
+		expect(seen).toEqual([fits]);
+	});
+
+	it("gives the short folder back and fails when the library does not start in time", async () => {
+		process.env.TMPDIR = longTemp;
+		const { manager, release } = heldManager();
+		const sandbox = new Sandbox({ platform: "darwin", manager, socketRoot, startTimeoutMs: 50 });
+		try {
+			expect(await sandbox.status()).toEqual({
+				available: false,
+				reason: "the sandbox did not start within 0.05 s",
+				failed: true,
+			});
+			expect(tmpdir()).toBe(longTemp);
+			// The temporary directories are no longer held up.
+			const { path } = await createScratchDir("session");
+			expect(path.startsWith(`${longTemp}/atelier-session-`)).toBe(true);
+		} finally {
+			release();
+		}
+	});
+
+	it("gives the short folder back when reset() comes while the library is starting", async () => {
+		process.env.TMPDIR = longTemp;
+		const { manager, started, release } = heldManager();
+		const sandbox = new Sandbox({ platform: "darwin", manager, socketRoot });
+		const status = sandbox.status();
+		await started;
+		try {
+			await sandbox.reset();
+			expect(await status).toEqual({
+				available: false,
+				reason: "the sandbox was reset while it was starting",
+				failed: true,
+			});
+			expect(tmpdir()).toBe(longTemp);
+			const { path } = await createScratchDir("session");
+			expect(path.startsWith(`${longTemp}/atelier-session-`)).toBe(true);
+		} finally {
+			release();
+		}
+	});
+
+	it("checks the short folder again right before the library starts", async () => {
+		process.env.TMPDIR = longTemp;
+		const short = join(socketRoot, `atelier-${uid}`);
+		// A sweep held on its question keeps the start waiting, after the first check.
+		let answer!: () => void;
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		let asked!: () => void;
+		const asking = new Promise<void>((resolve) => {
+			asked = resolve;
+		});
+		const live = join(longTemp, "atelier-bash-CCCCCC");
+		await mkdir(join(live, "work"), { recursive: true });
+		await writeFile(join(live, ".atelier-owner"), JSON.stringify({ pid: 999_999_999, startedAt: 0 }));
+		const sweep = sweepStaleScratch({
+			processes: {
+				isAlive: () => true,
+				startedAt: async () => {
+					asked();
+					await answered;
+					return 0;
+				},
+			},
+		});
+		await asking;
+		const { manager, seen, release } = heldManager();
+		release();
+		const status = new Sandbox({ platform: "darwin", manager, socketRoot }).status();
+		await drain();
+		await chmod(short, 0o755);
+		answer();
+		await sweep;
+		expect(await status).toEqual({
+			available: false,
+			reason: `${short} is not a directory of this user's own (mode 0700)`,
+			failed: true,
+		});
+		expect(seen).toEqual([]);
 	});
 
 	it("leaves a TMPDIR that fits alone", async () => {

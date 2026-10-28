@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "no
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
-import { borrowTmpdir } from "../scratch.ts";
+import { BorrowTimeoutError, borrowTmpdir } from "../scratch.ts";
 import { describeViolations } from "./sandbox-blocks.ts";
 import { loadSandboxAdditions, type SandboxAdditions } from "./sandbox-config.ts";
 import {
@@ -524,6 +524,8 @@ export interface SandboxOptions {
 	tempDir?: string;
 	/** Where the short folder for the library's socket goes when TMPDIR is too long; `/tmp` by default. */
 	socketRoot?: string;
+	/** How long the library may take to start in that short folder; 10 s by default. */
+	startTimeoutMs?: number;
 	/** Defaults to the Node installation that runs this process. */
 	nodePrefix?: string;
 	/**
@@ -629,12 +631,17 @@ function errorMessage(error: unknown): string {
 /** What macOS allows for the path of a Unix socket, without its final NUL. */
 const MAX_SOCKET_PATH = 103;
 
+/** How long the library may take to start in the short folder before it is given back. */
+const START_TIMEOUT_MS = 10_000;
+
 /**
  * Whether the socket the library makes in the temporary folder for its proxy
  * (`srt-mux-<pid>-<n>.sock`, with no option for another place) fits there.
+ * `<n>` counts the library's starts in base 36 from `0`: the first one in a
+ * process, the one that matters, is one character.
  */
 function socketFits(dir: string): boolean {
-	return Buffer.byteLength(join(dir, `srt-mux-${process.pid}-zzzz.sock`)) <= MAX_SOCKET_PATH;
+	return Buffer.byteLength(join(dir, `srt-mux-${process.pid}-0.sock`)) <= MAX_SOCKET_PATH;
 }
 
 /**
@@ -648,6 +655,10 @@ function ownShortDir(root: string): string {
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 	}
+	return checkOwnDir(dir);
+}
+
+function checkOwnDir(dir: string): string {
 	const info = lstatSync(dir);
 	if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)
 		throw new Error(`${dir} is not a directory of this user's own (mode 0700)`);
@@ -663,6 +674,8 @@ export class Sandbox {
 	readonly #options: SandboxOptions;
 	#ready: Promise<SandboxStatus> | undefined;
 	#manager: SandboxManagerLike | undefined;
+	/** Ends a start in the short folder that has not finished, so that `reset()` gives the folder back. */
+	#starting: AbortController | undefined;
 
 	constructor(options: SandboxOptions = {}) {
 		this.#options = options;
@@ -688,11 +701,40 @@ export class Sandbox {
 			const initialize = () => manager.initialize(SESSION_CONFIG, undefined, true);
 			// A socket that does not fit fails with EINVAL: the library starts with TMPDIR in a short folder instead.
 			if (socketFits(tmpdir())) await initialize();
-			else await borrowTmpdir(ownShortDir(this.#options.socketRoot ?? "/tmp"), initialize);
+			else await this.#initializeInShortDir(initialize);
 			this.#manager = manager;
 			return { available: true };
 		} catch (error) {
 			return { available: false, reason: errorMessage(error), failed: true };
+		}
+	}
+
+	/**
+	 * With `tmpdir()` in the short folder, checked again right before the library
+	 * starts, since a wait for the temporary directories can come in between. A
+	 * start that does not finish in time, or that `reset()` ends, gives the folder
+	 * back and fails; the library may go on alone, and later starts fail with it.
+	 */
+	async #initializeInShortDir(initialize: () => Promise<void>): Promise<void> {
+		const dir = ownShortDir(this.#options.socketRoot ?? "/tmp");
+		const starting = new AbortController();
+		this.#starting = starting;
+		const timeoutMs = this.#options.startTimeoutMs ?? START_TIMEOUT_MS;
+		try {
+			await borrowTmpdir(
+				dir,
+				() => {
+					checkOwnDir(dir);
+					return initialize();
+				},
+				{ timeoutMs, signal: starting.signal },
+			);
+		} catch (error) {
+			if (error instanceof BorrowTimeoutError)
+				throw new Error(`the sandbox did not start within ${timeoutMs / 1000} s`);
+			throw error;
+		} finally {
+			if (this.#starting === starting) this.#starting = undefined;
 		}
 	}
 
@@ -791,6 +833,7 @@ export class Sandbox {
 
 	/** Stops the library's proxies; the next command starts it again. */
 	async reset(): Promise<void> {
+		this.#starting?.abort(new Error("the sandbox was reset while it was starting"));
 		const manager = this.#manager;
 		this.#ready = undefined;
 		this.#manager = undefined;

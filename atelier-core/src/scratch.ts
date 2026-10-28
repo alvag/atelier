@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import type { Stats } from "node:fs";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
+import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -44,12 +45,12 @@ interface Owner {
 
 const self: Owner = { pid: process.pid, startedAt: Date.now() - process.uptime() * 1000 };
 
-/** The system's temporary folder as the user set it, also while `borrowTmpdir` points TMPDIR elsewhere. */
-function systemTmpdir(): string {
+/** The system's temporary folder as the user set it, also while `borrowTmpdir` points `tmpdir()` elsewhere. */
+export function systemTmpdir(): string {
 	return borrowed?.original ?? tmpdir();
 }
 
-/** The borrowing in progress, and what TMPDIR said before it. */
+/** The borrowing in progress, and what `tmpdir()` said before it. */
 let borrowed: { original: string; done: Promise<void> } | undefined;
 /** Directories being made and sweeps running in the system's temporary folder; a borrowing waits for them. */
 let users = 0;
@@ -70,16 +71,29 @@ async function inSystemTmpdir<T>(use: (root: string) => Promise<T>): Promise<T> 
 	}
 }
 
+export interface BorrowLimits {
+	/** How long `run` may take; past it the folder is given back and the borrowing fails, while `run` goes on alone. */
+	timeoutMs?: number;
+	/** Gives the folder back at once and fails the borrowing, with the signal's reason. */
+	signal?: AbortSignal;
+}
+
+/** `run` took longer than `BorrowLimits.timeoutMs`. */
+export class BorrowTimeoutError extends Error {}
+
 /**
- * Points TMPDIR at `dir` while `run` runs, and back after it, even when it
- * fails: for a library that puts what it makes in the temporary folder, with no
- * option for another place. It starts once no directory is being made and no
+ * Makes `tmpdir()` answer `dir` while `run` runs, and what it answered before
+ * after it, even when it fails, times out or is aborted: for a library that puts
+ * what it makes in the temporary folder, with no option for another place. Only
+ * the function changes, never `process.env.TMPDIR`, so no child process started
+ * meanwhile inherits `dir`. It starts once no directory is being made and no
  * sweep is running there, and those asked for meanwhile wait for it to end, so
- * none lands in `dir`, where the sweep of a later process would never look.
- * A synchronous one cannot wait: it goes in the folder TMPDIR said before.
+ * none lands in `dir`, where the sweep of a later process would never look. A
+ * synchronous one cannot wait: it goes in the folder `tmpdir()` answered before.
  */
-export async function borrowTmpdir<T>(dir: string, run: () => Promise<T>): Promise<T> {
+export async function borrowTmpdir<T>(dir: string, run: () => Promise<T>, limits: BorrowLimits = {}): Promise<T> {
 	while (borrowed !== undefined) await borrowed.done;
+	limits.signal?.throwIfAborted();
 	let end!: () => void;
 	const current = {
 		original: tmpdir(),
@@ -88,21 +102,55 @@ export async function borrowTmpdir<T>(dir: string, run: () => Promise<T>): Promi
 		}),
 	};
 	borrowed = current;
-	const previous = process.env.TMPDIR;
+	const real = os.tmpdir;
 	try {
 		if (users > 0)
-			await new Promise<void>((resolve) => {
-				idle = resolve;
-			});
+			await unlessAborted(
+				new Promise<void>((resolve) => {
+					idle = resolve;
+				}),
+				limits.signal,
+			);
 		idle = undefined;
-		process.env.TMPDIR = dir;
-		return await run();
+		setTmpdir(() => dir);
+		return await unlessAborted(withinTime(run(), limits.timeoutMs), limits.signal);
 	} finally {
-		if (previous === undefined) delete process.env.TMPDIR;
-		else process.env.TMPDIR = previous;
+		idle = undefined;
+		setTmpdir(real);
 		borrowed = undefined;
 		end();
 	}
+}
+
+/** Replaces `os.tmpdir`, for the modules that imported it by name too. */
+function setTmpdir(answer: () => string): void {
+	os.tmpdir = answer;
+	syncBuiltinESMExports();
+}
+
+function withinTime<T>(work: Promise<T>, timeoutMs: number | undefined): Promise<T> {
+	if (timeoutMs === undefined) return work;
+	// What it does after the time is up is no longer anyone's to handle.
+	work.catch(() => {});
+	let timer: NodeJS.Timeout | undefined;
+	const late = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => reject(new BorrowTimeoutError(`did not finish within ${timeoutMs} ms`)), timeoutMs);
+	});
+	return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
+function unlessAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (signal === undefined) return work;
+	work.catch(() => {});
+	let stop: (() => void) | undefined;
+	const aborted = new Promise<never>((_resolve, reject) => {
+		stop = () => reject(signal.reason);
+		if (signal.aborted) stop();
+		else signal.addEventListener("abort", stop, { once: true });
+	});
+	return Promise.race([work, aborted]).finally(() => {
+		if (stop) signal.removeEventListener("abort", stop);
+	});
 }
 
 export async function createScratchDir(kind: ScratchKind, options: ScratchOptions = {}): Promise<ScratchDir> {
