@@ -935,6 +935,9 @@ describe("user prompts", () => {
 			"curl -u ana:pa&ss https://x; curl -u ana:pa;ss y; curl -u ana:pa|ss z",
 			"curl -u ana:pa(ss) x && curl --user=ana:pw&x",
 			"curl -u ana:pass\\\nword x; wget --password pa&ss y; curl -u a:b; curl -u c:d",
+			"I tried curl but it doesn't authenticate.\ncurl -u admin:S3cret https://api",
+			"curl doesn't work, I use curl -u ana:hunter2 https://x, it's odd",
+			'sh -c "curl -u a:b x"; curl -u c:d y "z"; curl -H \'X: a;b\' -u e:f',
 		];
 		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
 		for (const prompt of prompts) await send(prompt);
@@ -952,6 +955,9 @@ describe("user prompts", () => {
 			"curl -u ana:[REDACTED] https://x; curl -u ana:[REDACTED] y; curl -u ana:[REDACTED] z",
 			"curl -u ana:[REDACTED] x && curl --user=ana:[REDACTED]",
 			"curl -u ana:[REDACTED] x; wget --password [REDACTED] y; curl -u a:[REDACTED] curl -u c:[REDACTED]",
+			"I tried curl but it doesn't authenticate.\ncurl -u admin:[REDACTED] https://api",
+			"curl doesn't work, I use curl -u ana:[REDACTED] https://x, it's odd",
+			'sh -c "curl -u a:[REDACTED] x"; curl -u c:[REDACTED] y "z"; curl -H \'X: a;b\' -u e:[REDACTED]',
 		]);
 	});
 
