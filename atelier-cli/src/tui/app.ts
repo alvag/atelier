@@ -439,8 +439,18 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	let feature = new FeaturePanel(paint);
 	odd.addChild(feature);
 	const dialogs = new Container();
-	const queue = new QueuePanel(paint);
-	const editor = new PromptEditor(tui, editorTheme(paint), paint, shade);
+	/** Questions waiting for an answer, the first one on screen. */
+	const questions: {
+		dialog: ChoiceDialog<string>;
+		cancel: () => void;
+		local: boolean;
+		blocked?: Blocked | undefined;
+		told?: boolean;
+	}[] = [];
+	/** An open question takes every key: the editor is out of sight until it closes, and so is the queue's hint. */
+	const questionOpen = () => questions.length > 0;
+	const queue = new QueuePanel(paint, questionOpen);
+	const editor = new PromptEditor(tui, editorTheme(paint), paint, shade, questionOpen);
 	editor.setAutocompleteProvider(new CombinedAutocompleteProvider(COMMANDS, args.cwd, null));
 	const loader = new Loader(
 		tui,
@@ -453,7 +463,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		{ component: odd },
 		{ component: dialogs },
 		{ component: queue },
-		{ component: editor, editor: true, shown: () => !editor.hidden },
+		{ component: editor, editor: true, shown: () => !questionOpen() },
 		{ component: footer },
 	]);
 	tui.setFocus(editor);
@@ -466,16 +476,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const done = new Promise<number>((resolve) => {
 		finish = resolve;
 	});
-	/** Questions waiting for an answer, the first one on screen. */
 	/** Follows every chunk of input, the editor's and the questions', so a paste stays one across them. */
 	const input = new PasteFilter();
-	const questions: {
-		dialog: ChoiceDialog<string>;
-		cancel: () => void;
-		local: boolean;
-		blocked?: Blocked | undefined;
-		told?: boolean;
-	}[] = [];
 	const programStatus = new ProgramStatusReporter(options.terminal);
 	/** Tells the terminal, and Herdr when the TUI runs in one of its panes, what the TUI is doing. */
 	const reportState = (state: Parameters<ProgramStatusReporter["report"]>[0], blocked?: Blocked) => {
@@ -511,9 +513,6 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			first.told = true;
 			attention.waiting(first.blocked.kind);
 		}
-		// An open question takes every key: the editor is out of sight until it closes, and so is the queue's hint.
-		editor.hidden = first !== undefined;
-		queue.asking = first !== undefined;
 		if (first) {
 			dialogs.addChild(first.dialog);
 			first.dialog.reveal();

@@ -11,11 +11,13 @@ const SHOWN = 5;
  */
 export class QueuePanel implements Component {
 	readonly #paint: Paint;
+	readonly #questionOpen: () => boolean;
 	messages: readonly QueuedMessage[] = [];
-	asking = false;
 
-	constructor(paint: Paint) {
+	/** `questionOpen` says whether a question is open now; the panel asks it each time it is drawn. */
+	constructor(paint: Paint, questionOpen: () => boolean) {
 		this.#paint = paint;
+		this.#questionOpen = questionOpen;
 	}
 
 	invalidate(): void {}
@@ -31,7 +33,7 @@ export class QueuePanel implements Component {
 		const more = this.messages.length - SHOWN;
 		if (more > 0) lines.push(`… ${more} more`);
 		// Shift+Up works without setting up the terminal; Alt+Up too where Option is sent as Alt.
-		if (!this.asking) lines.push("Shift+↑ edit");
+		if (!this.#questionOpen()) lines.push("Shift+↑ edit");
 		return lines.map((line) => this.#paint("dim", truncateToWidth(` ${line}`, width)));
 	}
 }
