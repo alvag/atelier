@@ -1,7 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { type CatalogModels, catalogModels, isRecord, ModelData } from "./model-data.ts";
+import {
+	CATALOG_BACKENDS,
+	type CatalogListing,
+	type CatalogModel,
+	type CatalogModels,
+	catalogModels,
+	isRecord,
+	ModelData,
+} from "./model-data.ts";
 
 /** How long what a source said is used before it is asked again. */
 export const CATALOG_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -55,12 +63,25 @@ export async function readCatalog(file: string): Promise<CatalogFile> {
 	return { sources };
 }
 
+/** The last write to each file in this process: the next one waits for it, so no source's answer is lost here. */
+const writing = new Map<string, Promise<void>>();
+
 /**
  * Replaces one source's entry: reads the file again, then writes it whole to a temporary next to it and renames it
  * over, so a reader never sees half a file. Two processes writing at once can lose one's answer, never the file:
  * it is asked again at the next refresh.
  */
-async function saveSource(file: string, name: string, entry: SourceEntry): Promise<void> {
+function saveSource(file: string, name: string, entry: SourceEntry): Promise<void> {
+	const write = (writing.get(file) ?? Promise.resolve()).then(() => writeSource(file, name, entry));
+	const settled = write.catch(() => {});
+	writing.set(file, settled);
+	void settled.then(() => {
+		if (writing.get(file) === settled) writing.delete(file);
+	});
+	return write;
+}
+
+async function writeSource(file: string, name: string, entry: SourceEntry): Promise<void> {
 	const catalog = await readCatalog(file);
 	catalog.sources[name] = entry;
 	await mkdir(dirname(file), { recursive: true, mode: 0o700 });
@@ -121,7 +142,32 @@ export async function refreshSource(
 	return result === undefined ? "failed" : result.kind;
 }
 
-/** What the catalog's sources say, for the backends' lookups. */
+/** Asks every source at once; one that fails or hangs does not hold up the others. */
+export async function refreshCatalog(
+	file: string,
+	sources: readonly CatalogSource[],
+	options: RefreshOptions = {},
+): Promise<Record<string, RefreshOutcome>> {
+	const outcomes = await Promise.all(
+		sources.map(async (source) => [source.name, await refreshSource(file, source, options)] as const),
+	);
+	return Object.fromEntries(outcomes);
+}
+
+/**
+ * What the catalog's sources say, for the backends' lookups: models.dev's data, under what each backend's provider
+ * listed, field by field, since the provider knows its own models best.
+ */
 export function modelDataOf(catalog: CatalogFile): ModelData {
-	return new ModelData(catalog.sources["models.dev"]?.models ?? {});
+	const models: CatalogModels = {};
+	const listed: CatalogListing = {};
+	for (const backend of CATALOG_BACKENDS) {
+		const merged = new Map<string, CatalogModel>();
+		for (const model of catalog.sources["models.dev"]?.models[backend] ?? []) merged.set(model.id, model);
+		const provided = catalog.sources[backend]?.models[backend];
+		for (const model of provided ?? []) merged.set(model.id, { ...merged.get(model.id), ...model });
+		models[backend] = [...merged.values()];
+		if (provided) listed[backend] = provided.map((model) => model.id);
+	}
+	return new ModelData(models, listed);
 }

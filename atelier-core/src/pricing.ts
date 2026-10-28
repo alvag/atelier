@@ -131,19 +131,19 @@ export function thinkingToSend(
 		return entry?.efforts.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
 	}
 	if (level === "off") {
-		const off = THINKING_OFF[id];
+		const off = THINKING_OFF[id] ?? catalogModel(id, backend)?.off;
 		if (off === undefined || (off === "between_tools" && backend === "claude-code")) return { report: "unsupported" };
 		return { report: "off", thinking: off };
 	}
 	const effort = level === "minimal" ? "low" : level;
-	return effortLevels(id, backend)?.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
+	const levels = EFFORT_LEVELS[id] ?? catalogModel(id, backend)?.efforts;
+	return levels?.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
 }
 
-/** The levels of Anthropic's table; for a model it lacks, the ones the model catalog gives (Anthropic's API only). */
-function effortLevels(id: string, backend: ThinkingBackend): readonly Effort[] | undefined {
-	const known = EFFORT_LEVELS[id];
-	if (known !== undefined || backend !== "anthropic-api") return known;
-	return currentModelData().model("anthropic-api", id)?.efforts;
+/** What the model catalog says of a model Anthropic's tables lack, on Anthropic's API. */
+function catalogModel(id: string, backend: ThinkingBackend) {
+	if (EFFORT_LEVELS[id] !== undefined || backend !== "anthropic-api") return undefined;
+	return currentModelData().model("anthropic-api", id);
 }
 
 /**

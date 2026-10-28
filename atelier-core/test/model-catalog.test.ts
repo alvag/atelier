@@ -110,7 +110,7 @@ it("keeps what models.dev says of the providers' models in ~/.atelier/models.jso
 		prices: [{ input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }],
 		efforts: ["low", "medium", "high", "xhigh", "max"],
 	});
-	// `none` turns thinking off; a level Atelier does not send is left out.
+	// `none` turns thinking off, as `disabled` stands for it; a level Atelier does not send is left out.
 	expect(data.model("opencode-go", "grok-4.7")).toEqual({
 		id: "grok-4.7",
 		contextWindow: 500_000,
@@ -119,7 +119,7 @@ it("keeps what models.dev says of the providers' models in ~/.atelier/models.jso
 			{ input: 4, output: 12, cacheRead: 1, cacheWrite: 0 },
 		],
 		efforts: ["low", "high"],
-		off: true,
+		off: "disabled",
 	});
 	// A window that is not a size, or a tier that is not by prompt size, is not invented: it is left out.
 	expect(data.model("opencode-go", "odd-tier")).toEqual({ id: "odd-tier" });
