@@ -227,8 +227,13 @@ async function* serverEvents(response: Response): AsyncGenerator<Record<string, 
 	if (!response.body) return;
 	const decoder = new TextDecoder();
 	let buffer = "";
+	// A \r at a chunk's end may be the first half of a \r\n: it waits for the next chunk.
+	let pending = "";
 	for await (const chunk of response.body) {
-		buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+		const text = pending + decoder.decode(chunk as Uint8Array, { stream: true });
+		pending = text.endsWith("\r") ? "\r" : "";
+		// Lines may end in \r\n, \n or \r: all are read as \n.
+		buffer += (pending ? text.slice(0, -1) : text).replace(/\r\n?/g, "\n");
 		let end = buffer.indexOf("\n\n");
 		while (end !== -1) {
 			const block = buffer.slice(0, end);
