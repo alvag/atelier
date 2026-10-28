@@ -338,6 +338,71 @@ describe("toChatRequest", () => {
 	});
 });
 
+/** Waits for a condition instead of a fixed delay. */
+async function until(condition: () => boolean): Promise<void> {
+	for (let i = 0; i < 400 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+	expect(condition()).toBe(true);
+}
+
+describe("the connection of a Chat Completions answer", () => {
+	it("is closed once [DONE] arrives, even when the server leaves it open", async () => {
+		provider.answer({
+			sse: sse([chunk({ content: "Hi." }, "stop"), usageChunk({ prompt_tokens: 1, completion_tokens: 1 })], {
+				done: true,
+			}),
+			keepOpen: true,
+		});
+		const events = await collect((await start()).send("hi"));
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+		await until(() => provider.closed === 1);
+	});
+
+	/** A transport whose answer streams `body` and records whether its reader was cancelled. */
+	function recorded(body: string): {
+		transport: ReturnType<typeof chatCompletionsTransport>;
+		cancelled: () => boolean;
+	} {
+		let cancelled = false;
+		const fetch = (async () =>
+			new Response(
+				new ReadableStream({
+					start(controller) {
+						// Left open after `body`, as a server that does not end the answer.
+						controller.enqueue(new TextEncoder().encode(body));
+					},
+					cancel() {
+						cancelled = true;
+					},
+				}),
+				{ headers: { "content-type": "text/event-stream" } },
+			)) as typeof globalThis.fetch;
+		return {
+			transport: chatCompletionsTransport({ apiKey: KEY, baseUrl: "https://provider.invalid/go", headers: {}, fetch }),
+			cancelled: () => cancelled,
+		};
+	}
+
+	const params = { model: MODEL, max_tokens: 10, messages: [{ role: "user" as const, content: "hi" }] };
+
+	it.each([
+		["an error chunk", sse([{ error: { message: "overloaded" } }])],
+		["a line that is not JSON", "data: {not json\n\n"],
+	])("is cancelled when the answer stops at %s", async (_name, body) => {
+		const { transport, cancelled } = recorded(body);
+		const stream = transport.request(params);
+		await expect(stream.next()).rejects.toThrow();
+		expect(cancelled()).toBe(true);
+	});
+
+	it("is cancelled when whoever reads the answer stops early", async () => {
+		const { transport, cancelled } = recorded(sse([chunk({ content: "Hel" })]));
+		const stream = transport.request(params);
+		expect(await stream.next()).toEqual({ done: false, value: { type: "text_delta", text: "Hel" } });
+		await stream.return(undefined as never);
+		expect(cancelled()).toBe(true);
+	});
+});
+
 describe("chatCompletionsTransport", () => {
 	it("knows a prompt larger than the window", () => {
 		const transport = chatCompletionsTransport({ apiKey: KEY, baseUrl: provider.url, headers: {} });

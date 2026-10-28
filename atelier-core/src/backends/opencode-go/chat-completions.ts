@@ -178,12 +178,20 @@ interface ChatChunk {
 	error?: { message?: string };
 }
 
-/** The body's bytes: the first read, already made, then the rest. */
+/**
+ * The body's bytes: the first read, already made, then the rest. However the reading stops (`[DONE]`, an error, an
+ * abort, a reader that leaves early), the body is cancelled, so the connection is not left held.
+ */
 async function* bytesFrom(
 	first: ReadableStreamReadResult<Uint8Array>,
 	reader: ReadableStreamDefaultReader<Uint8Array>,
 ): AsyncGenerator<Uint8Array> {
-	for (let next = first; !next.done; next = await reader.read()) yield next.value;
+	try {
+		for (let next = first; !next.done; next = await reader.read()) yield next.value;
+	} finally {
+		// Settles at once on a body already ended or errored; a failure here changes nothing.
+		await reader.cancel().catch(() => {});
+	}
 }
 
 /** The `[DONE]` line that closes a stream. */
