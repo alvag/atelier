@@ -22,6 +22,20 @@ const CLI_CREDENTIALS = [
 	".config/git/credentials",
 ];
 
+/**
+ * Other names for the Codex CLI's sign-in: a symlink in the working directory, a path through `..`, and, on macOS,
+ * whose file system ignores letter case, the same path in capitals.
+ */
+async function otherNamesOfCodexAuth(home: string, cwd: string): Promise<string[]> {
+	await symlink(join(home, ".codex", "auth.json"), join(cwd, "codex-auth.json"));
+	return [
+		"codex-auth.json",
+		"../home/.codex/auth.json",
+		join(home, "notes", "..", ".codex", "auth.json"),
+		...(process.platform === "darwin" ? [join(home, ".CODEX", "AUTH.JSON")] : []),
+	];
+}
+
 async function writeCliCredentials(home: string): Promise<void> {
 	for (const path of CLI_CREDENTIALS) {
 		await mkdir(join(home, path, ".."), { recursive: true });
@@ -89,6 +103,15 @@ describe("read outside the working directory", () => {
 			expect(JSON.stringify(result)).not.toContain("TOY-CLI-CREDENTIAL");
 		}
 		expect(await read(join(home, ".codex", "config.toml"))).toMatchObject({ ok: true });
+	});
+
+	it("refuses the Codex CLI's sign-in by another name: a symlink, a path through .., other letter case", async () => {
+		await writeCliCredentials(home);
+		for (const path of await otherNamesOfCodexAuth(home, cwd)) {
+			const result = await read(path);
+			expect(result, path).toMatchObject({ ok: false, output: `${PROTECTED} ${path}` });
+			expect(JSON.stringify(result)).not.toContain("TOY-CLI-CREDENTIAL");
+		}
 	});
 
 	it("refuses a symlink in the working directory that leads into a secret directory", async () => {
@@ -159,6 +182,14 @@ describe.each([
 		expect((await grep("toy", join(home, ".codex", "config.toml"))).output).toContain("model = 'toy'");
 		for (const path of CLI_CREDENTIALS)
 			expect((await grep("TOY", join(home, path))).output, path).not.toContain("TOY-CLI-CREDENTIAL");
+	});
+
+	it("returns nothing of the Codex CLI's sign-in by another name: a symlink, a path through .., other letter case", async () => {
+		await writeCliCredentials(home);
+		for (const path of await otherNamesOfCodexAuth(home, cwd))
+			expect((await grep("TOY", path)).output, path).not.toContain("TOY-CLI-CREDENTIAL");
+		// The symlink is also skipped when the search walks the working directory.
+		expect((await grep("TOY", undefined)).output).not.toContain("TOY-CLI-CREDENTIAL");
 	});
 
 	it("skips what the configuration's denyRead lists", async () => {

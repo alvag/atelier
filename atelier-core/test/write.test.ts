@@ -281,6 +281,24 @@ describe("write never writes what is protected", () => {
 		);
 	});
 
+	it("refuses the Codex CLI's sign-in by another name: a symlink, a path through .., other letter case", async () => {
+		const file = join(home, ".codex", "auth.json");
+		await mkdir(join(home, ".codex"));
+		await mkdir(join(home, "notes"));
+		await writeFile(file, "TOY-CLI-CREDENTIAL\n");
+		await symlink(file, join(cwd, "codex-auth.json"));
+		const names = [
+			"codex-auth.json",
+			"../home/.codex/auth.json",
+			join(home, "notes", "..", ".codex", "auth.json"),
+			...(process.platform === "darwin" ? [join(home, ".CODEX", "AUTH.JSON")] : []),
+		];
+		for (const path of names)
+			await refused(path, `Path is a protected secret location: ${path}`, async () =>
+				expect(await text(file)).toBe("TOY-CLI-CREDENTIAL\n"),
+			);
+	});
+
 	it("refuses a symlink in the working directory that leads to a secret directory", async () => {
 		await symlink(join(home, ".ssh"), join(cwd, "sneaky"));
 		await refused("sneaky/id", "Path is a protected secret location: sneaky/id", async () =>
