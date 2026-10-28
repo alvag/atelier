@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { CODEX_CLIENT_ID, loginCodex, refreshCodex } from "../src/openai/codex-auth.ts";
-import { type OAuthInteraction, OpenAiAuthError } from "../src/openai/oauth.ts";
+import { type OAuthInteraction, OpenAiAuthError, parsePasted } from "../src/openai/oauth.ts";
 import { FakeOpenAiAuth, fakeCodexAccess, fakeRefresh } from "./support/fake-openai-auth.ts";
 
 let auth: FakeOpenAiAuth;
@@ -123,6 +123,86 @@ it("takes the pasted redirect URL, or the bare code, and refuses one of another 
 	await expect(loginCodex(stranger, { method: "browser", authUrl: auth.url, callbackPort: port })).rejects.toThrow(
 		/state/,
 	);
+});
+
+it("refuses a pasted URL or query without the sign-in's state, and never repeats the code in an error", () => {
+	expect(parsePasted("bare-code", "expected").code).toBe("bare-code");
+	expect(() => parsePasted("http://127.0.0.1:1455/auth/callback?code=other-login", "expected")).toThrow(/state/);
+	expect(() => parsePasted("code=other-login", "expected")).toThrow(/state/);
+	const code = `test-code-${randomUUID()}`;
+	const failed = (() => {
+		try {
+			parsePasted(
+				`http://127.0.0.1:1455/auth/callback?code=${code}&state=expected&error=access_denied&error_description=bad+${code}`,
+				"expected",
+			);
+		} catch (error) {
+			return (error as Error).message;
+		}
+		return "";
+	})();
+	expect(failed).toMatch(/access_denied|bad/);
+	expect(failed).not.toContain(code);
+});
+
+it("says a failed redirect without the code it carried", async () => {
+	const port = await freePort();
+	const code = `test-code-${randomUUID()}`;
+	const person = user();
+	const login = loginCodex(person, { method: "browser", authUrl: auth.url, callbackPort: port }).then(
+		() => new Error("signed in"),
+		(error: unknown) => error as Error,
+	);
+	await until(() => person.opened.length === 1);
+	const state = new URL(person.opened[0] ?? "").searchParams.get("state");
+	const page = await fetch(
+		`http://127.0.0.1:${port}/auth/callback?state=${state}&code=${code}&error=server_error&error_description=${code}`,
+	);
+	expect(await page.text()).not.toContain(code);
+	const error = await login;
+	expect(error).toBeInstanceOf(OpenAiAuthError);
+	expect(error.message).not.toContain(code);
+});
+
+it("stops polling and cancels the device code when the user cancels while it waits", async () => {
+	let polls = 0;
+	auth.routes.set("/api/accounts/deviceauth/usercode", () => ({
+		json: { device_auth_id: "dev-1", user_code: "WXYZ-1234", interval: "0" },
+	}));
+	auth.routes.set("/api/accounts/deviceauth/token", () => {
+		polls++;
+		return { status: 403, json: {} };
+	});
+	let cancel: () => void = () => {};
+	const waited: AbortSignal[] = [];
+	const person: OAuthInteraction = {
+		...user(),
+		waitOrCancel: (_prompt, signal) => {
+			waited.push(signal);
+			return new Promise<void>((resolve) => {
+				cancel = resolve;
+			});
+		},
+	};
+	const login = loginCodex(person, { method: "device", authUrl: auth.url, minPollIntervalMs: 0 }).then(
+		() => new Error("signed in"),
+		(error: unknown) => error as Error,
+	);
+	await until(() => polls >= 2);
+	cancel();
+	expect((await login).message).toMatch(/cancelled/);
+	const after = polls;
+	// A few more turns of the event loop: a poll still running would show up here.
+	for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+	expect(polls).toBeLessThanOrEqual(after + 1);
+	expect(auth.requests.some((request) => request.path === "/oauth/token")).toBe(false);
+
+	// Signed in on the other device: the question that offered to cancel closes.
+	auth.routes.set("/api/accounts/deviceauth/token", () => ({
+		json: { authorization_code: "c-7", code_verifier: "v-7" },
+	}));
+	await loginCodex(person, { method: "device", authUrl: auth.url, minPollIntervalMs: 0 });
+	expect(waited.at(-1)?.aborted).toBe(true);
 });
 
 it("asks for the pasted URL when another program holds the callback port", async () => {

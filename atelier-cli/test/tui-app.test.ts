@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -3090,6 +3091,77 @@ describe("independent authentication security probes", { timeout: 20_000 }, () =
 });
 
 describe("TUI sign-in with ChatGPT", { timeout: 20_000 }, () => {
+	it("never shows the authorization code typed or pasted in the question", async () => {
+		const auth = await new FakeOpenAiAuth().start();
+		const code = `test-code-${randomUUID()}`;
+		const h = harness([]);
+		const run$ = run(
+			["--no-session"],
+			{
+				...h.io,
+				env: { DISPLAY: ":0" },
+				openaiLogin: { openai: { authUrl: auth.url, callbackPort: 0 }, openBrowser: async () => {} },
+			},
+			() => h.backend,
+		);
+		try {
+			await until(h.screen.started);
+			h.screen.type("/login account openai-codex");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("How to sign in to OpenAI Codex"));
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("paste the URL it ends on"));
+			h.screen.type(`\x1b[200~http://localhost:1455/auth/callback?code=${code}&state=x\x1b[201~`);
+			h.screen.type("c");
+			await until(() => h.screen.screen().includes("code=[hidden]"));
+			expect(h.screen.raw()).not.toContain(code);
+			h.screen.type("\x1b");
+			await until(() => h.screen.screen().includes("cancelled"));
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await run$).toBe(0);
+		} finally {
+			await auth.stop();
+		}
+	});
+
+	it("cancels a device code with Ctrl+C, stops polling, and stays open", async () => {
+		const auth = await new FakeOpenAiAuth().start();
+		let polls = 0;
+		auth.routes.set("/api/accounts/deviceauth/usercode", () => ({
+			json: { device_auth_id: "test-device", user_code: "TEST-CODE", interval: "0" },
+		}));
+		auth.routes.set("/api/accounts/deviceauth/token", () => {
+			polls++;
+			return { status: 403, json: {} };
+		});
+		const h = harness([]);
+		const run$ = run(
+			["--no-session"],
+			{ ...h.io, env: { DISPLAY: ":0" }, openaiLogin: { openai: { authUrl: auth.url, minPollIntervalMs: 1 } } },
+			() => h.backend,
+		);
+		try {
+			await until(h.screen.started);
+			h.screen.type("/login account openai-codex");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("How to sign in to OpenAI Codex"));
+			h.screen.type("\x1b[B");
+			h.screen.type("\r");
+			await until(() => polls >= 2 && h.screen.screen().includes("Esc cancels"));
+			h.screen.type("\x03");
+			await until(() => h.screen.screen().includes("the sign-in was cancelled"));
+			const after = polls;
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await run$).toBe(0);
+			expect(polls).toBeLessThanOrEqual(after + 1);
+			expect(auth.requests.some((request) => request.path === "/oauth/token")).toBe(false);
+		} finally {
+			await auth.stop();
+		}
+	});
+
 	it("asks for the pasted URL in a question, closes it when the browser finishes, and stores the sign-in", async () => {
 		const auth = await new FakeOpenAiAuth().start();
 		const access = fakeJwt({ sub: "user" });

@@ -124,6 +124,29 @@ async function loginWithDeviceCode(
 	interaction: OAuthInteraction,
 	options: CodexLoginOptions,
 ): Promise<CodexCredential> {
+	// The user may cancel while the code waits: that stops the polling and every request with it.
+	const ended = new AbortController();
+	const cancelled = new AbortController();
+	const signal = AbortSignal.any([cancelled.signal, ...(options.signal ? [options.signal] : [])]);
+	try {
+		return await deviceCode(interaction, { ...options, signal }, () => {
+			interaction.waitOrCancel?.("Waiting for the code to be entered", ended.signal).then(
+				() => {
+					if (!ended.signal.aborted) cancelled.abort();
+				},
+				() => {},
+			);
+		});
+	} finally {
+		ended.abort();
+	}
+}
+
+async function deviceCode(
+	interaction: OAuthInteraction,
+	options: CodexLoginOptions & { signal: AbortSignal },
+	offerCancel: () => void,
+): Promise<CodexCredential> {
 	const base = authUrl(options);
 	const what = "The device code request";
 	const started = await postJson(
@@ -138,6 +161,7 @@ async function loginWithDeviceCode(
 	if (typeof device.device_auth_id !== "string" || typeof device.user_code !== "string" || !Number.isFinite(interval))
 		throw new OpenAiAuthError(`${what} answered without a device code`);
 	interaction.show(`On any device, open ${base}/codex/device and enter the code ${device.user_code}.`);
+	offerCancel();
 
 	const granted = await pollUntil(
 		async () => {
@@ -166,7 +190,7 @@ async function loginWithDeviceCode(
 			intervalMs: interval * 1000,
 			minIntervalMs: options.minPollIntervalMs ?? MIN_POLL_INTERVAL_MS,
 			deadlineMs: DEVICE_CODE_TIMEOUT_MS,
-			...(options.signal ? { signal: options.signal } : {}),
+			signal: options.signal,
 		},
 	);
 	return exchange(granted.code, granted.verifier, `${base}/deviceauth/callback`, options);
