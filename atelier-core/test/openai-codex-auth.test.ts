@@ -272,3 +272,37 @@ it("refreshes the tokens, and says the sign-in expired when the refresh token is
 	expect((error as OpenAiAuthError).expired).toBe(true);
 	expect((error as Error).message).not.toContain(old);
 });
+
+it("keeps a device code the user already approved: cancelling during its token exchange changes nothing", async () => {
+	auth.routes.set("/api/accounts/deviceauth/usercode", () => ({
+		json: { device_auth_id: "dev-1", user_code: "WXYZ-1234", interval: "0" },
+	}));
+	auth.routes.set("/api/accounts/deviceauth/token", () => ({
+		json: { authorization_code: "c-8", code_verifier: "v-8" },
+	}));
+	let cancel: () => void = () => {};
+	let offerOpenAtExchange: boolean | undefined;
+	const offers: AbortSignal[] = [];
+	const person: OAuthInteraction = {
+		...user(),
+		waitOrCancel: (_prompt, signal) => {
+			offers.push(signal);
+			return new Promise<void>((resolve) => {
+				cancel = resolve;
+			});
+		},
+	};
+	// The user cancels just as the token exchange starts, after the code was approved.
+	const exchanging: typeof fetch = async (input, init) => {
+		if (String(input).endsWith("/oauth/token")) {
+			offerOpenAtExchange = offers.at(-1)?.aborted === false;
+			cancel();
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+		return fetch(input, init);
+	};
+	await expect(
+		loginCodex(person, { method: "device", authUrl: auth.url, minPollIntervalMs: 0, fetch: exchanging }),
+	).resolves.toMatchObject({ access, accountId });
+	expect(offerOpenAtExchange).toBe(false);
+});
