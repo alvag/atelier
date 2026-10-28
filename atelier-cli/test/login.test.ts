@@ -50,6 +50,7 @@ function ports(options: { choices?: number[]; secrets?: string[]; confirms?: boo
 			shown.push(`ask: ${prompt}`);
 			return options.secrets?.shift();
 		},
+		askUntil: async () => undefined,
 		confirm: async (question) => {
 			shown.push(`confirm: ${question}`);
 			return options.confirms?.shift() ?? false;
@@ -157,7 +158,11 @@ it("changes nothing when no key is given or the list is cancelled", async () => 
 it("hands the terminal to Claude Code's own sign-in and checks that it is logged in afterwards", async () => {
 	const p = ports({ choices: [0] });
 	expect(await login(p.value, { method: "account" })).toBe(true);
-	expect(p.lists[0]?.options).toEqual([{ label: "Anthropic", status: "not logged in" }]);
+	expect(p.lists[0]?.options).toEqual([
+		{ label: "Anthropic", status: "not logged in" },
+		{ label: "OpenAI Codex (ChatGPT Plus/Pro)", status: "not signed in" },
+		{ label: "Sign in with ChatGPT", status: "not signed in" },
+	]);
 	expect(p.handedOvers()).toBe(1);
 	expect(await calls()).toEqual(["auth status --json", "auth login --claudeai", "auth status --json"]);
 	expect(p.shown.at(-1)).toBe("✓ Anthropic: subscription configured (max). The claude-code backend uses it.");
@@ -210,5 +215,7 @@ it("fails to sign out of a provider it does not know, instead of saying there is
 	expect(p.shown).toEqual(['error: unknown provider "nope" for an API key; the providers are: anthropic, opencode-go']);
 	const any = ports();
 	expect(await logout(any.value, { provider: "nope" })).toBe(false);
-	expect(any.shown).toEqual(['error: unknown provider "nope"; the providers are: anthropic, opencode-go']);
+	expect(any.shown).toEqual([
+		'error: unknown provider "nope"; the providers are: anthropic, openai-codex, openai-chatgpt, opencode-go',
+	]);
 });

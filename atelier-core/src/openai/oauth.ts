@@ -149,9 +149,14 @@ export async function waitForAuthorization(
 	interaction: OAuthInteraction,
 	signIn: BrowserSignIn,
 ): Promise<Authorization> {
+	// Without the loopback server only the pasted URL finishes the sign-in: the port is taken, or not one to listen on.
+	let unreachable: string | undefined;
 	const callback = await listenForCallback(signIn.host, signIn.port, signIn.state).catch(
 		(error: NodeJS.ErrnoException) => {
-			if (error.code !== "EADDRINUSE") throw error;
+			unreachable =
+				error.code === "EADDRINUSE"
+					? `Port ${signIn.port} is in use (${signIn.portOwner})`
+					: `Atelier cannot listen on port ${signIn.port} (${error.code ?? error.message})`;
 			return undefined;
 		},
 	);
@@ -160,9 +165,9 @@ export async function waitForAuthorization(
 	const cancelled = AbortSignal.any([timeout, ...(interaction.signal ? [interaction.signal] : [])]);
 	try {
 		interaction.show(`Sign in at: ${signIn.url}`);
-		if (callback === undefined)
+		if (unreachable !== undefined)
 			interaction.show(
-				`Port ${signIn.port} is in use (${signIn.portOwner}): after signing in, the browser cannot reach Atelier. Copy the URL the browser ends on and paste it here.`,
+				`${unreachable}: after signing in, the browser cannot reach Atelier. Copy the URL the browser ends on and paste it here.`,
 			);
 		await interaction.openBrowser(signIn.url).catch(() => {});
 		const pasted = interaction

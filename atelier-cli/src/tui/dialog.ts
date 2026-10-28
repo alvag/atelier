@@ -246,3 +246,55 @@ export class SecretDialog implements Component, Focusable {
 		];
 	}
 }
+
+/**
+ * A line to paste: the URL a browser sign-in ended on. Unlike a secret, it shows what was typed; it closes by itself
+ * when the browser finishes first.
+ */
+export class PasteDialog implements Component, Focusable {
+	focused = false;
+	readonly #title: string;
+	readonly #paint: Paint;
+	readonly #input = new Input();
+
+	constructor(title: string, paint: Paint, answer: (value: string | undefined) => void) {
+		this.#title = title;
+		this.#paint = paint;
+		this.#input.onSubmit = (value) => answer(value);
+		this.#input.onEscape = () => answer(undefined);
+	}
+
+	handleInput(data: string): void {
+		this.#input.handleInput(data);
+	}
+
+	reveal(): void {}
+
+	toggle(): boolean {
+		return false;
+	}
+
+	invalidate(): void {}
+
+	render(width: number): string[] {
+		const paint = this.#paint;
+		const inner = Math.max(1, width - 4);
+		const title = truncateToWidth(` ${this.#title} `, inner);
+		const fill = Math.max(0, width - 2 - visibleWidth(title));
+		const hint = truncateToWidth(
+			"Finish in the browser, or paste the URL it ends on · Enter sends · Esc cancels",
+			inner,
+		);
+		const typed = this.#input.getValue();
+		// The end of a long URL is what changes as it is typed or pasted.
+		const shown = typed.length > inner - 2 ? `…${typed.slice(typed.length - (inner - 3))}` : typed;
+		const line = (text: string) =>
+			`${paint("yellow", "│")} ${text}${" ".repeat(Math.max(0, inner - visibleWidth(text)))} ${paint("yellow", "│")}`;
+		return [
+			truncateToWidth(paint("yellow", `┌${title}${"─".repeat(fill)}┐`), width),
+			line(hint),
+			line(`> ${shown}`),
+			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
+		];
+	}
+}

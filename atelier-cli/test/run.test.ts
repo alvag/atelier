@@ -24,6 +24,7 @@ import {
 	VERSION,
 } from "@atelier/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeOpenAiAuth, fakeCodexAccess, fakeRefresh } from "../../atelier-core/test/support/fake-openai-auth.ts";
 import { requireIsolatedHome } from "../../atelier-core/test/support/login-isolation.ts";
 import { run } from "../src/run.ts";
 
@@ -2113,6 +2114,42 @@ describe("login and logout", () => {
 		expect(h.backend.prompts).toEqual([]);
 	});
 
+	it("atelier login signs in to Codex with the redirect URL pasted on the terminal", async () => {
+		const auth = await new FakeOpenAiAuth().start();
+		const access = fakeCodexAccess("acct-pasted");
+		auth.routes.set("/oauth/token", () => ({
+			json: { access_token: access, refresh_token: fakeRefresh(), expires_in: 3600 },
+		}));
+		const home = dirname(cwd);
+		const h = harness([], { isTTY: true, keepStdinOpen: true, home });
+		let page = "";
+		// The browser cannot reach Atelier (port 1 is not one it can listen on): the user pastes where it ended.
+		Object.assign(h.io, {
+			env: { DISPLAY: ":0" },
+			openaiLogin: {
+				openai: { authUrl: auth.url, callbackPort: 1 },
+				openBrowser: async (url: string) => {
+					page = url;
+				},
+			},
+		});
+		try {
+			const pending = run(["login", "account", "openai-codex"], h.io, h.createBackend);
+			await vi.waitFor(() => expect(h.out()).toContain("Choose 1-2"), { timeout: 5000 });
+			(h.io.stdin as PassThrough).write("1\r");
+			await vi.waitFor(() => expect(h.out()).toContain("Paste the redirect URL"), { timeout: 5000 });
+			const state = new URL(page).searchParams.get("state");
+			(h.io.stdin as PassThrough).write(`http://localhost:1/auth/callback?code=c-1&state=${state}\r`);
+			expect(await pending).toBe(0);
+			expect(h.out()).toContain("✓ OpenAI Codex: signed in, stored in ~/.atelier/auth.json");
+			expect(h.out()).not.toContain(access);
+			const stored = JSON.parse(await readFile(join(home, ".atelier", "auth.json"), "utf8"));
+			expect(stored["openai-codex"]).toMatchObject({ access, accountId: "acct-pasted" });
+		} finally {
+			await auth.stop();
+		}
+	});
+
 	it("atelier login without a terminal says what to give, and signing in with an account needs one", async () => {
 		const h = harness([], { home: dirname(cwd) });
 		expect(await run(["login"], h.io, h.createBackend)).toBe(1);
@@ -2130,7 +2167,9 @@ describe("login and logout", () => {
 		expect(h.err()).toContain("atelier login takes no session options (--model).");
 		const extra = harness([]);
 		expect(await run(["logout", "api-key", "anthropic", "more"], extra.io, extra.createBackend)).toBe(2);
-		expect(extra.err()).toContain("Usage: atelier logout [account|api-key] [anthropic|opencode-go]");
+		expect(extra.err()).toContain(
+			"Usage: atelier logout [account|api-key] [anthropic|opencode-go|openai-codex|openai-chatgpt]",
+		);
 	});
 
 	it("/login in the line-by-line session reads the key without echoing it", async () => {

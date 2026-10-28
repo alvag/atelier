@@ -39,7 +39,15 @@ import {
 import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { runDesktop } from "./desktop.ts";
 import { OWN_ROOT, versionLabel } from "./install-marker.ts";
-import { LOGIN_USAGE, LOGOUT_USAGE, type LoginTarget, login, logout, parseLoginTarget } from "./login.ts";
+import {
+	LOGIN_USAGE,
+	LOGOUT_USAGE,
+	type LoginTarget,
+	login,
+	logout,
+	type OpenAiLoginHooks,
+	parseLoginTarget,
+} from "./login.ts";
 import { lineLoginPorts } from "./login-cli.ts";
 import { mcpFailed, mcpReport } from "./mcp-report.ts";
 import { PERMISSIONS_USAGE, parsePermissions, removedText, rulesListing, ruleText } from "./permission-text.ts";
@@ -95,6 +103,8 @@ export interface CliIO {
 	claudeCode?: string;
 	/** What asks the macOS Keychain whether it has a key, for `/login`; tests pass a fake. */
 	runSecurity?: SecurityRunner;
+	/** The browser and the auth server of the OpenAI sign-ins; tests pass fakes. */
+	openaiLogin?: OpenAiLoginHooks;
 	/** What the session's backend lacks (a login, a key), said at start; nothing is checked when absent. */
 	checkLogin?: (backend: string) => Promise<string | undefined>;
 	/** Starts Electron for `atelier desktop` without waiting for it; tests pass their own, so none is launched. */
@@ -204,6 +214,7 @@ export async function run(
 			...(io.onInterrupt === undefined ? {} : { onInterrupt: io.onInterrupt }),
 			...(io.claudeCode === undefined ? {} : { claudeCode: io.claudeCode }),
 			...(io.runSecurity === undefined ? {} : { runSecurity: io.runSecurity }),
+			...(io.openaiLogin === undefined ? {} : { openaiLogin: io.openaiLogin }),
 			...(io.checkLogin === undefined ? {} : { checkLogin: io.checkLogin }),
 		});
 	}
@@ -568,6 +579,7 @@ export async function run(
 			env: io.env ?? process.env,
 			...(io.claudeCode === undefined ? {} : { claudeCode: io.claudeCode }),
 			...(io.runSecurity === undefined ? {} : { runSecurity: io.runSecurity }),
+			...(io.openaiLogin === undefined ? {} : { openaiLogin: io.openaiLogin }),
 			interactive: io.isTTY,
 			lines,
 			// Without the session's raw mode (stdout is not a terminal), only the key's line goes raw, so it is not echoed.
@@ -699,6 +711,7 @@ async function runLoginSubcommand(io: CliIO, action: "login" | "logout", target:
 		env: io.env ?? process.env,
 		...(io.claudeCode === undefined ? {} : { claudeCode: io.claudeCode }),
 		...(io.runSecurity === undefined ? {} : { runSecurity: io.runSecurity }),
+		...(io.openaiLogin === undefined ? {} : { openaiLogin: io.openaiLogin }),
 		interactive: io.isTTY,
 		lines,
 		write: io.stdout,
