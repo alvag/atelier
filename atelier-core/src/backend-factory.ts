@@ -3,7 +3,7 @@ import { AuthStore, authFile } from "./auth-store.ts";
 import type { AgentBackend } from "./backend.ts";
 import { AnthropicApiBackend, type AnthropicApiBackendOptions } from "./backends/anthropic-api/backend.ts";
 import { ClaudeCodeBackend, type ClaudeCodeBackendOptions } from "./backends/claude-code/backend.ts";
-import { CODEX_VARIANTS, type CodexVariant } from "./backends/openai-codex/access.ts";
+import { codexVariantFrom } from "./backends/openai-codex/access.ts";
 import { OpenAiCodexBackend, type OpenAiCodexBackendOptions } from "./backends/openai-codex/backend.ts";
 import { createOpenCodeGoBackend, type OpenCodeGoBackendOptions } from "./backends/opencode-go/backend.ts";
 import { resolveApiKey, resolveOpenCodeGoKey } from "./credentials.ts";
@@ -24,15 +24,6 @@ export interface BackendFactoryOptions {
 	resolveOpenCodeGoKey?: () => Promise<string>;
 }
 
-/** ATELIER_CODEX_VARIANT: `legacy` or `chatgpt` forces that sign-in; unset lets the backend choose. */
-function codexVariant(env: Record<string, string | undefined>): CodexVariant | undefined {
-	const value = env.ATELIER_CODEX_VARIANT?.trim();
-	if (value === undefined || value === "") return undefined;
-	if (!CODEX_VARIANTS.includes(value as CodexVariant))
-		throw new Error(`ATELIER_CODEX_VARIANT must be ${CODEX_VARIANTS.join(" or ")}, got ${JSON.stringify(value)}.`);
-	return value as CodexVariant;
-}
-
 /**
  * Builds a backend by name. anthropic-api and opencode-go read their API key; Claude Code uses the Claude subscription
  * and openai-codex the ChatGPT sign-in stored by `atelier login`, which it reads at each request.
@@ -40,7 +31,7 @@ function codexVariant(env: Record<string, string | undefined>): CodexVariant | u
 export async function createBackend(name: BackendName, options: BackendFactoryOptions = {}): Promise<AgentBackend> {
 	if (name === "claude-code") return new ClaudeCodeBackend(options.claudeCode);
 	if (name === "openai-codex") {
-		const variant = codexVariant(options.env ?? process.env);
+		const variant = codexVariantFrom(options.env ?? process.env);
 		return new OpenAiCodexBackend({
 			store: new AuthStore(authFile(homedir())),
 			...(variant === undefined ? {} : { variant }),

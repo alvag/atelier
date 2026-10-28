@@ -1,7 +1,9 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import type { AuthStore } from "./auth-store.ts";
+import { homedir } from "node:os";
+import { AuthStore, authFile } from "./auth-store.ts";
+import { CodexAccess, codexVariantFrom } from "./backends/openai-codex/access.ts";
 import {
 	apiKeySource,
 	MISSING_API_KEY_MESSAGE,
@@ -151,10 +153,21 @@ export interface LoginWarningOptions extends ClaudeCodeRunOptions {
 	platform?: NodeJS.Platform;
 }
 
+/** Why a session on `openai-codex` has no ChatGPT sign-in to use, or undefined when it has one. */
+function codexWarning(store: AuthStore, env: Record<string, string | undefined>): string | undefined {
+	try {
+		const variant = codexVariantFrom(env);
+		void new CodexAccess({ store, ...(variant === undefined ? {} : { variant }) }).variant;
+		return undefined;
+	} catch (error) {
+		return (error as Error).message;
+	}
+}
+
 /**
  * What a session on `backend` lacks to start working, said before the first prompt: Claude Code's login for
- * `claude-code`, an API key for `anthropic-api` or `opencode-go`. Undefined when nothing is missing or the backend
- * needs none of them.
+ * `claude-code`, an API key for `anthropic-api` or `opencode-go`, a ChatGPT sign-in for `openai-codex`. Undefined when
+ * nothing is missing or the backend needs none of them.
  */
 export async function loginWarning(backend: string, options: LoginWarningOptions = {}): Promise<string | undefined> {
 	const keys = {
@@ -162,10 +175,12 @@ export async function loginWarning(backend: string, options: LoginWarningOptions
 		...(options.store === undefined ? {} : { store: options.store }),
 		...(options.platform === undefined ? {} : { platform: options.platform }),
 	};
+	const store = options.store ?? new AuthStore(authFile(homedir()));
 	if (backend === "anthropic-api")
 		return (await apiKeySource(keys)) === undefined ? MISSING_API_KEY_MESSAGE : undefined;
 	if (backend === "opencode-go")
 		return openCodeGoKeySource(keys) === undefined ? MISSING_OPENCODE_GO_KEY_MESSAGE : undefined;
+	if (backend === "openai-codex") return codexWarning(store, keys.env);
 	if (backend !== "claude-code") return undefined;
 	let status: ClaudeCodeAuthStatus;
 	try {
@@ -174,9 +189,10 @@ export async function loginWarning(backend: string, options: LoginWarningOptions
 		return `Claude Code's login could not be checked: ${(error as Error).message}`;
 	}
 	if (status.loggedIn) return undefined;
-	const withKey =
-		(await apiKeySource(keys)) === undefined ? "" : ", or --backend anthropic-api to use your Anthropic API key";
-	const withGo =
-		openCodeGoKeySource(keys) === undefined ? "" : ", or --backend opencode-go to use your OpenCode Go key";
-	return `Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account${withKey}${withGo}.`;
+	const others = [
+		...((await apiKeySource(keys)) === undefined ? [] : [", or --backend anthropic-api to use your Anthropic API key"]),
+		...(openCodeGoKeySource(keys) === undefined ? [] : [", or --backend opencode-go to use your OpenCode Go key"]),
+		...(codexWarning(store, {}) === undefined ? [", or --backend openai-codex to use your ChatGPT sign-in"] : []),
+	];
+	return `Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account${others.join("")}.`;
 }
