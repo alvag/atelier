@@ -8,7 +8,7 @@ import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { McpManager } from "../mcp/index.ts";
 import type { MemoryPort } from "../memory/index.ts";
 import { PERMISSION_MODES } from "../modes.ts";
-import { BACKEND_MODELS } from "../options.ts";
+import { BASE_CATALOG, type ModelCatalog } from "../options.ts";
 import { type DefaultPermissionMode, readDefaultPermissionMode } from "../permission-mode.ts";
 import { PermissionRules } from "../permission-rules.ts";
 import {
@@ -72,6 +72,13 @@ export interface RpcServerOptions {
 	 * `session.delete`. On by default when there is a `home`; `serve` turns it off for the echo backend.
 	 */
 	sessions?: boolean;
+	/** Where `options.list` takes each backend's models from; the lists in the code by default. */
+	catalog?: ModelCatalog;
+	/**
+	 * The backends with a sign-in or a key, whose models `options.list` offers; asked at each `options.list`, so a
+	 * `/login` shows at the next one. Without it none is offered.
+	 */
+	signedIn?: () => Promise<readonly BackendName[]>;
 	/** Where a folder's profile pins are; defaults to asking git. Tests make it slow. */
 	pinPlaces?: (cwd: string) => Promise<PinPlaces>;
 	onShutdown?: () => void;
@@ -473,10 +480,22 @@ export class RpcServer {
 		}
 	}
 
-	/** What the selectors of a client offer: the backends with their models, the effort levels, the modes and the profiles. */
+	/**
+	 * What the selectors of a client offer: the backends with their models, the models of the backends signed in to,
+	 * the effort levels, the modes and the profiles.
+	 */
 	async #optionsList(cwd: string | undefined): Promise<Result> {
+		const catalog = this.#options.catalog ?? BASE_CATALOG;
+		const [lists, signedIn] = await Promise.all([
+			Promise.all(BACKEND_NAMES.map((name) => catalog.models(name))),
+			this.#options.signedIn?.() ?? Promise.resolve<readonly BackendName[]>([]),
+		]);
+		const backends = BACKEND_NAMES.map((name, index) => ({ name, models: [...(lists[index] ?? [])] }));
 		return {
-			backends: BACKEND_NAMES.map((name) => ({ name, models: [...BACKEND_MODELS[name]] })),
+			backends,
+			models: backends
+				.filter(({ name }) => signedIn.includes(name))
+				.flatMap(({ name, models }) => models.map((model) => ({ provider: name, model }))),
 			efforts: [...THINKING_LEVELS],
 			modes: [...PERMISSION_MODES],
 			...(await this.#profiles(cwd)),

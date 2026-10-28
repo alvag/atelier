@@ -16,6 +16,7 @@ export {
 export { PIN_KIND, PIN_VERSION, type PinPlaces, type PinRead, parsePin, pinPlaces, readPin } from "./pins.ts";
 export {
 	closestName,
+	formatModel,
 	PROFILE_BACKENDS,
 	PROFILES_KIND,
 	PROFILES_VERSION,
@@ -24,6 +25,7 @@ export {
 	type ProfileReport,
 	type ProfilesFile,
 	type ProfilesRead,
+	parseModel,
 	parseProfiles,
 	profilesPath,
 	ROLES,

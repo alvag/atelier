@@ -2,12 +2,13 @@
 import { homedir } from "node:os";
 import process from "node:process";
 import { createBackend as createNamedBackend } from "../backend-factory.ts";
+import { signedInBackends } from "../claude-code-auth.ts";
 import { parseCompactAt } from "../compaction/compactor.ts";
 import { describeError } from "../events.ts";
 import { openMcp } from "../mcp/index.ts";
 import { connectMemory, MemoryUnavailableError, memoryPromptsEnabled } from "../memory/index.ts";
 import { SYSTEM_PROMPT_APPEND } from "../prompt.ts";
-import type { BackendName } from "../protocol/types.ts";
+import { BACKEND_NAMES, type BackendName } from "../protocol/types.ts";
 import { checkRoot } from "../root.ts";
 import { coreTools, sandboxEnabled } from "../tools/index.ts";
 import { EchoBackend } from "./echo-backend.ts";
@@ -32,6 +33,9 @@ Environment:
   ATELIER_REVIEW=off     Run sessions without the review of uncommitted changes (RDD)
   ATELIER_SANDBOX=off    Run every session's bash without the macOS sandbox: each command asks,
                          and the verifier gets no bash (session.start can also ask for it)
+  ATELIER_LOGIN_CHECK=off
+                         options.list offers every backend's models without asking
+                         Claude Code, auth.json or the Keychain which ones are signed in
   ATELIER_ALLOW_ROOT     As root (uid 0) the server refuses to start unless this is exactly
                          "I accept the risk"; it then warns on every start
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
@@ -73,6 +77,14 @@ const createBackend = (name: BackendName) =>
 				compactAt === undefined ? {} : { anthropicApi: { compactAt }, openaiCodex: { compactAt } },
 			);
 
+// The models options.list offers: the echo backend (tests) has none, ATELIER_LOGIN_CHECK=off asks nothing.
+const signedIn = async (): Promise<readonly BackendName[]> =>
+	process.env.ATELIER_BACKEND === "echo"
+		? []
+		: process.env.ATELIER_LOGIN_CHECK === "off"
+			? BACKEND_NAMES
+			: signedInBackends();
+
 // The echo backend (tests) and ATELIER_MEMORY=off run without long-term memory.
 const memoryOff = process.env.ATELIER_BACKEND === "echo" || process.env.ATELIER_MEMORY === "off";
 
@@ -83,6 +95,7 @@ const server = new RpcServer({
 	input: process.stdin,
 	write: (line) => process.stdout.write(line),
 	createBackend,
+	signedIn,
 	review: reviewEnabled(process.env),
 	noSandbox: !sandboxEnabled(process.env),
 	tools: coreTools,

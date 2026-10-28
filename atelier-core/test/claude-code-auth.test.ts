@@ -11,6 +11,7 @@ import {
 	claudeCodeLogout,
 	describeClaudeCodeAuth,
 	loginWarning,
+	signedInBackends,
 } from "../src/claude-code-auth.ts";
 import { MISSING_API_KEY_MESSAGE, MISSING_OPENCODE_GO_KEY_MESSAGE } from "../src/credentials.ts";
 import { requireIsolatedHome } from "./support/login-isolation.ts";
@@ -155,6 +156,30 @@ describe("loginWarning", () => {
 		expect(await check("anthropic-api")).toBe(MISSING_API_KEY_MESSAGE);
 		const missing = await loginWarning("claude-code", { executable: join(dir, "nope"), env: {}, store: store() });
 		expect(missing).toBe("Claude Code's login could not be checked: Claude Code binary not found (reinstall Atelier)");
+	});
+
+	it("lists the backends with a sign-in, as the warning judges them, from the variables and auth.json", async () => {
+		const signedIn = (env: Record<string, string> = {}) =>
+			signedInBackends({ executable: fake, env, store: store(), platform: "linux" });
+		await status({ loggedIn: false, authMethod: "none" });
+		expect(await signedIn()).toEqual([]);
+		await status({ loggedIn: true, authMethod: "claude.ai" });
+		await store().set("openai-codex", { type: "oauth", access: "a", refresh: "r", expires: 1 });
+		expect(await signedIn()).toEqual(["claude-code", "openai-codex"]);
+		await store().set("opencode-go", { type: "api_key", key: "k" });
+		expect(await signedIn({ ANTHROPIC_API_KEY: "k" })).toEqual([
+			"claude-code",
+			"anthropic-api",
+			"opencode-go",
+			"openai-codex",
+		]);
+		const missing = await signedInBackends({
+			executable: join(dir, "nope"),
+			env: {},
+			store: store(),
+			platform: "linux",
+		});
+		expect(missing).toEqual(["opencode-go", "openai-codex"]);
 	});
 
 	it("says when opencode-go has no key, from OPENCODE_API_KEY or atelier login", async () => {

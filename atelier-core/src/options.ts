@@ -13,3 +13,16 @@ export const BACKEND_MODELS: Readonly<Record<BackendName, readonly string[]>> = 
 	"opencode-go": Object.keys(OPENCODE_GO_MODELS),
 	"openai-codex": CODEX_MODELS,
 });
+
+/**
+ * Where the model lists come from: `options.list` asks it for every backend, so a catalog that also asks the providers'
+ * APIs replaces this one without changing a client.
+ */
+export interface ModelCatalog {
+	models(backend: BackendName): Promise<readonly string[]>;
+}
+
+/** The lists written in the code, `BACKEND_MODELS`. */
+export const BASE_CATALOG: ModelCatalog = Object.freeze({
+	models: async (backend: BackendName) => BACKEND_MODELS[backend],
+});

@@ -2,7 +2,15 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type ProfilesFile, parseProfiles, profilesPath, readProfiles, writeProfiles } from "../src/index.ts";
+import {
+	formatModel,
+	type ProfilesFile,
+	parseModel,
+	parseProfiles,
+	profilesPath,
+	readProfiles,
+	writeProfiles,
+} from "../src/index.ts";
 
 let base: string;
 let home: string;
@@ -132,5 +140,19 @@ describe("readProfiles and writeProfiles", () => {
 		const read = await readProfiles(home);
 		expect(read.valid && read.file).toEqual(written);
 		expect(await readdir(join(home, ".atelier"))).toEqual(["profiles.json"]);
+	});
+});
+
+describe("parseModel", () => {
+	it("splits a backend prefix from the model, as a profile reads it, and formatModel puts it back", () => {
+		expect(parseModel("openai-codex/gpt-6-luna")).toEqual({
+			ok: true,
+			entry: { backend: "openai-codex", model: "gpt-6-luna" },
+		});
+		expect(parseModel("sonnet")).toEqual({ ok: true, entry: { model: "sonnet" } });
+		expect(parseModel("vendor/model")).toEqual({ ok: true, entry: { model: "vendor/model" } });
+		expect(parseModel("claude-code/")).toEqual({ ok: false, why: 'no model after the "claude-code/" prefix' });
+		expect(parseModel("two words")).toEqual({ ok: false, why: "unsafe or empty model" });
+		expect(formatModel("opencode-go", "minimax-m3")).toBe("opencode-go/minimax-m3");
 	});
 });

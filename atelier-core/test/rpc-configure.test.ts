@@ -10,6 +10,7 @@ import {
 	FakeBackend,
 	type FakeStep,
 	RpcServer,
+	type RpcServerOptions,
 	type ServerMessage,
 } from "../src/index.ts";
 
@@ -27,7 +28,11 @@ afterEach(async () => {
 	await rm(home, { recursive: true, force: true });
 });
 
-function serve(turns: FakeStep[][] = [[{ event: finished }], [{ event: finished }]], configurable = true) {
+function serve(
+	turns: FakeStep[][] = [[{ event: finished }], [{ event: finished }]],
+	configurable = true,
+	extra: Partial<RpcServerOptions> = {},
+) {
 	const input = new PassThrough();
 	const messages: ServerMessage[] = [];
 	const backends: FakeBackend[] = [];
@@ -43,6 +48,7 @@ function serve(turns: FakeStep[][] = [[{ event: finished }], [{ event: finished 
 		tools: [],
 		systemPromptAppend: "",
 		home,
+		...extra,
 	});
 	const done = server.run();
 	let next = 0;
@@ -215,10 +221,37 @@ describe("options.list", () => {
 				],
 				efforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
 				modes: ["normal", "auto", "yolo"],
+				models: [],
 				profiles: ["cheap", "deep"],
 				active: "cheap",
 			},
 		});
+		await h.close();
+	});
+
+	it("lists the models of the backends with a sign-in, each with its backend, from the catalog", async () => {
+		const asked: string[] = [];
+		const h = serve(undefined, true, {
+			signedIn: async () => ["openai-codex", "claude-code"],
+			catalog: {
+				models: async (backend) => {
+					asked.push(backend);
+					return [`${backend}-one`, `${backend}-two`];
+				},
+			},
+		});
+		const response = await h.ask({ command: "options.list" });
+		expect(response.ok && response.result.models).toEqual([
+			{ provider: "claude-code", model: "claude-code-one" },
+			{ provider: "claude-code", model: "claude-code-two" },
+			{ provider: "openai-codex", model: "openai-codex-one" },
+			{ provider: "openai-codex", model: "openai-codex-two" },
+		]);
+		expect(response.ok && response.result.backends).toContainEqual({
+			name: "opencode-go",
+			models: ["opencode-go-one", "opencode-go-two"],
+		});
+		expect(asked).toContain("anthropic-api");
 		await h.close();
 	});
 

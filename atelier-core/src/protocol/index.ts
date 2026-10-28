@@ -23,7 +23,7 @@ export type {
 	Usage,
 } from "../events.ts";
 export { cacheHitRate, describeRefusal, PHASES, REFUSAL_CAUSES } from "../events.ts";
-export { BACKEND_MODELS } from "../options.ts";
+export { BACKEND_MODELS, BASE_CATALOG, type ModelCatalog } from "../options.ts";
 export type { ReviewConsentAnswer } from "../review/session-review.ts";
 export * from "./codec.ts";
 export * from "./types.ts";
