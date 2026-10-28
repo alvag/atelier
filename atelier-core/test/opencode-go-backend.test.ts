@@ -4,7 +4,7 @@ import { createBackend } from "../src/backend-factory.ts";
 import { OPENCODE_GO_BASE_URL, OPENCODE_GO_MODELS } from "../src/backends/opencode-go/models.ts";
 import type { AtelierEventBody } from "../src/events.ts";
 import { BACKEND_MODELS } from "../src/options.ts";
-import { costOfRequest } from "../src/pricing.ts";
+import { costOfRequest, thinkingToSend } from "../src/pricing.ts";
 import { VERSION } from "../src/version.ts";
 import { FakeProvider, sse } from "./support/fake-provider.ts";
 
@@ -134,11 +134,25 @@ describe("opencode-go on the Messages API", () => {
 });
 
 describe("the OpenCode Go models", () => {
-	it("offers the table's models, minimax-m3 first, each with a price", () => {
+	it("offers the table's models, minimax-m3 first, each with a price but where it depends on the hour", () => {
 		expect(BACKEND_MODELS["opencode-go"]).toEqual(Object.keys(OPENCODE_GO_MODELS));
 		expect(BACKEND_MODELS["opencode-go"][0]).toBe("minimax-m3");
-		for (const model of BACKEND_MODELS["opencode-go"])
-			expect(costOfRequest(model, { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 })).toBeGreaterThan(0);
+		expect(BACKEND_MODELS["opencode-go"]).toEqual(
+			expect.arrayContaining(["glm-5.3", "kimi-k3", "deepseek-v4-pro", "hy3"]),
+		);
+		const one = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
+		const unpriced = BACKEND_MODELS["opencode-go"].filter((model) => costOfRequest(model, one) === undefined);
+		expect(unpriced).toEqual(["deepseek-v4.1-flash", "deepseek-v4-pro"]);
+		expect(costOfRequest("beam-free", one)).toBe(0);
+		expect(costOfRequest("kimi-k3", { ...one, input: 1e6, output: 0 })).toBeCloseTo(3, 12);
+	});
+
+	it("sends the levels of Chat Completions models as reasoning_effort, and off where the model has a value for it", () => {
+		expect(thinkingToSend("glm-5.3", "high", "opencode-go")).toEqual({ report: "high", effort: "high" });
+		expect(thinkingToSend("glm-5.3", "medium", "opencode-go")).toEqual({ report: "unsupported" });
+		expect(thinkingToSend("hy3", "off", "opencode-go")).toEqual({ report: "off", thinking: "disabled" });
+		expect(thinkingToSend("glm-5.3", "off", "opencode-go")).toEqual({ report: "unsupported" });
+		expect(thinkingToSend("kimi-k2.7-code", "high", "opencode-go")).toEqual({ report: "unsupported" });
 	});
 
 	it("prices qwen3.7-plus by its tier", () => {

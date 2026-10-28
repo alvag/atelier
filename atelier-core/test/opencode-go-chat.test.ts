@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { BackendSession, ToolCall } from "../src/backend.ts";
 import { createBackend } from "../src/backend-factory.ts";
-import { ChatCompletionsError, chatCompletionsTransport } from "../src/backends/opencode-go/chat-completions.ts";
+import {
+	ChatCompletionsError,
+	chatCompletionsTransport,
+	toChatRequest,
+} from "../src/backends/opencode-go/chat-completions.ts";
 import type { AtelierEventBody } from "../src/events.ts";
 import { defineTool } from "../src/tools/types.ts";
 import { VERSION } from "../src/version.ts";
@@ -233,6 +237,30 @@ describe("opencode-go on Chat Completions", () => {
 		expect(error).toMatchObject({ type: "error", code: "authentication_error", recoverable: false });
 		expect(JSON.stringify(events)).not.toContain(KEY);
 		expect(provider.received).toHaveLength(1);
+	});
+});
+
+describe("toChatRequest", () => {
+	const base = {
+		max_tokens: 100,
+		messages: [{ role: "assistant" as const, content: [{ type: "text" as const, text: "a" }] }],
+	};
+
+	it("sends the effort as reasoning_effort, and the model's own value to turn it off", () => {
+		expect(toChatRequest({ ...base, model: "glm-5.3", output_config: { effort: "high" } })).toMatchObject({
+			reasoning_effort: "high",
+		});
+		expect(toChatRequest({ ...base, model: "hy3", thinking: { type: "disabled" } })).toMatchObject({
+			reasoning_effort: "none",
+		});
+		expect(toChatRequest({ ...base, model: "glm-5.3" })).not.toHaveProperty("reasoning_effort");
+	});
+
+	it("gives DeepSeek's assistant messages a reasoning_content, which it requires, and no one else's", () => {
+		const reasoning = (model: string) =>
+			(toChatRequest({ ...base, model }).messages as Record<string, unknown>[])[0]?.reasoning_content;
+		expect(reasoning("deepseek-v4-pro")).toBe("");
+		expect(reasoning("glm-5.3")).toBeUndefined();
 	});
 });
 

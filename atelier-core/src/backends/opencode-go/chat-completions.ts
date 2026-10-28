@@ -68,8 +68,9 @@ function userMessages(message: Anthropic.MessageParam): ChatMessage[] {
 	return out;
 }
 
-function assistantMessage(message: Anthropic.MessageParam): ChatMessage {
-	if (typeof message.content === "string") return { role: "assistant", content: message.content };
+function assistantMessage(message: Anthropic.MessageParam, replaysReasoning: boolean): ChatMessage {
+	const always = replaysReasoning ? { reasoning_content: "" } : {};
+	if (typeof message.content === "string") return { role: "assistant", content: message.content, ...always };
 	const text: string[] = [];
 	const reasoning: string[] = [];
 	const calls: ChatToolCall[] = [];
@@ -87,17 +88,18 @@ function assistantMessage(message: Anthropic.MessageParam): ChatMessage {
 		role: "assistant",
 		content: text.length === 0 ? null : text.join(""),
 		...(calls.length === 0 ? {} : { tool_calls: calls }),
-		...(reasoning.length === 0 ? {} : { reasoning_content: reasoning.join("\n") }),
+		...(reasoning.length === 0 ? always : { reasoning_content: reasoning.join("\n") }),
 	};
 }
 
 /** The Messages API request the session built, as a Chat Completions request. */
 export function toChatRequest(params: Anthropic.MessageCreateParamsNonStreaming): Record<string, unknown> {
+	const model = openCodeGoModel(params.model);
 	const system = params.system === undefined ? "" : textOf(params.system);
 	const messages: ChatMessage[] = [
 		...(system === "" ? [] : [{ role: "system" as const, content: system }]),
 		...params.messages.flatMap((message) =>
-			message.role === "user" ? userMessages(message) : [assistantMessage(message)],
+			message.role === "user" ? userMessages(message) : [assistantMessage(message, model.replaysReasoning === true)],
 		),
 	];
 	const tools = (params.tools ?? []).flatMap((tool) =>
@@ -110,7 +112,6 @@ export function toChatRequest(params: Anthropic.MessageCreateParamsNonStreaming)
 				]
 			: [],
 	);
-	const model = openCodeGoModel(params.model);
 	const effort = params.output_config?.effort;
 	const off = params.thinking?.type === "disabled" ? model.off : undefined;
 	return {
