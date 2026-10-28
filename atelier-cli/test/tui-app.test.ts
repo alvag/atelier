@@ -425,7 +425,8 @@ describe("TUI", { timeout: 20_000 }, () => {
 		it("shows the header in a terminal with Kitty images, such as Herdr or Warp", async () => {
 			vi.stubEnv("TERM_PROGRAM", "herdr");
 			resetCapabilitiesCache();
-			const h = harness([]);
+			// Wide enough for the whole folder, however long the temporary directory is.
+			const h = harness([], { columns: cwd.length + 100 });
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(() => h.screen.screen().includes("Atelier "));
 			expect(h.screen.screen()).toMatch(new RegExp(`Atelier \\S+ · \\S*${basename(cwd)}`));
@@ -2121,8 +2122,19 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		 * A Herdr socket that keeps every request; `hold` keeps the replies back until `answer` sends them. As Herdr does, it
 		 * refuses a `resume_argv` from a source that does not hold the pane, that is, has not reported a state yet.
 		 */
+		// A socket's path holds at most 104 bytes on macOS: the tests run in their folder and name the socket relative to it,
+		// so a long temporary directory does not keep the fake Herdr from listening.
+		let previousDir: string;
+		beforeEach(() => {
+			previousDir = process.cwd();
+			process.chdir(cwd);
+		});
+		afterEach(() => {
+			process.chdir(previousDir);
+		});
+
 		async function fakeHerdr(options: { hold?: boolean } = {}) {
-			const path = join(cwd, "herdr.sock");
+			const path = "herdr.sock";
 			const calls: HerdrCall[] = [];
 			const refused: HerdrCall[] = [];
 			const holders = new Set<unknown>();
