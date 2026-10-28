@@ -133,6 +133,24 @@ describe("loginWarning", () => {
 		expect(await check("fake")).toBeUndefined();
 	});
 
+	it("says how to sign in to ChatGPT for openai-codex, for the variant forced, and offers it when Claude Code is not logged in", async () => {
+		expect(await check("openai-codex")).toBe(
+			"Not signed in to ChatGPT for Codex: use /login account openai-codex (or atelier login account openai-codex), or Sign in with ChatGPT with /login account openai-chatgpt.",
+		);
+		await store().set("openai-codex", { type: "oauth", access: "a", refresh: "r", expires: 1 });
+		expect(await check("openai-codex")).toBeUndefined();
+		expect(await check("openai-codex", { ATELIER_CODEX_VARIANT: "chatgpt" })).toBe(
+			"Not signed in for the chatgpt variant: use /login account openai-chatgpt (or atelier login account openai-chatgpt).",
+		);
+		expect(await check("openai-codex", { ATELIER_CODEX_VARIANT: "beta" })).toBe(
+			'ATELIER_CODEX_VARIANT must be legacy or chatgpt, got "beta".',
+		);
+		await status({ loggedIn: false, authMethod: "none" });
+		expect(await check("claude-code")).toBe(
+			"Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account, or --backend openai-codex to use your ChatGPT sign-in.",
+		);
+	});
+
 	it("says what is missing for anthropic-api, and why Claude Code could not be asked", async () => {
 		expect(await check("anthropic-api")).toBe(MISSING_API_KEY_MESSAGE);
 		const missing = await loginWarning("claude-code", { executable: join(dir, "nope"), env: {}, store: store() });

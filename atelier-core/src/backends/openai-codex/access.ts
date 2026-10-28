@@ -22,6 +22,15 @@ export class NotSignedInError extends Error {
 	readonly code = "not_logged_in";
 }
 
+/** ATELIER_CODEX_VARIANT: `legacy` or `chatgpt` forces that sign-in; unset lets the session choose. */
+export function codexVariantFrom(env: Record<string, string | undefined>): CodexVariant | undefined {
+	const value = env.ATELIER_CODEX_VARIANT?.trim();
+	if (value === undefined || value === "") return undefined;
+	if (!CODEX_VARIANTS.includes(value as CodexVariant))
+		throw new Error(`ATELIER_CODEX_VARIANT must be ${CODEX_VARIANTS.join(" or ")}, got ${JSON.stringify(value)}.`);
+	return value as CodexVariant;
+}
+
 export function loginCommand(variant: CodexVariant): string {
 	return `/login account ${PROVIDER[variant]} (or atelier login account ${PROVIDER[variant]})`;
 }

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -234,6 +234,15 @@ it("(b) an MCP filesystem tool cannot return the stored key", async () => {
 		if (call === undefined) throw new Error("mcp_call is unavailable");
 		const result = await call.execute({ server: "files", tool: "read_file", arguments: { path: file } }, { cwd });
 		expect(result.output.includes(canary)).toBe(false);
+		// The OpenAI sign-ins' tokens, and the ones a refresh writes while the session runs, are hidden too.
+		const tokens = Array.from({ length: 4 }, () => `${canary}-${randomUUID()}`);
+		const store = new AuthStore(file);
+		await store.set("openai-codex", { type: "oauth", access: tokens[0] ?? "", refresh: tokens[1] ?? "", expires: 1 });
+		const before = await call.execute({ server: "files", tool: "read_file", arguments: { path: file } }, { cwd });
+		await store.set("openai-chatgpt", { type: "oauth", access: tokens[2] ?? "", refresh: tokens[3] ?? "", expires: 1 });
+		const after = await call.execute({ server: "files", tool: "read_file", arguments: { path: file } }, { cwd });
+		for (const output of [before.output, after.output]) expect(output.includes(canary)).toBe(false);
+		expect(after.output).toContain("openai-chatgpt");
 	} finally {
 		await manager.close();
 	}
