@@ -188,11 +188,13 @@ async function open(
 	const retries = endpoint.maxRetries ?? 3;
 	const base = endpoint.baseDelayMs ?? 1_000;
 	for (let attempt = 0; ; attempt++) {
+		// Outside the network retry: a sign-in that cannot give a token fails as it is, at once.
+		const headers = await endpoint.headers();
 		let response: Response;
 		try {
 			response = await (endpoint.fetch ?? fetch)(endpoint.url, {
 				method: "POST",
-				headers: { ...(await endpoint.headers()), accept: "text/event-stream", "content-type": "application/json" },
+				headers: { ...headers, accept: "text/event-stream", "content-type": "application/json" },
 				body: JSON.stringify(body),
 				...(signal ? { signal } : {}),
 			});
