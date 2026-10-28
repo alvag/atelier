@@ -192,6 +192,35 @@ describe("sweepStaleScratch", () => {
 		expect(await readdir(root)).toEqual([]);
 	});
 
+	it("never leaves a directory without its owner file while a process left behind keeps writing in it", async () => {
+		const dirs: string[] = [];
+		for (const letter of "abcdefghij")
+			dirs.push(await fakeScratch(`atelier-session-${letter.repeat(6)}`, { pid: DEAD, startedAt: T }));
+		const writers = dirs.map((dir) => {
+			// Its cwd follows the directory wherever it is moved, and it writes there until the directory is gone.
+			const child = spawn(
+				process.execPath,
+				[
+					"-e",
+					"const fs = require('node:fs'); let n = 0; setInterval(() => { try { fs.writeFileSync('f' + n++, 'x'); } catch {} }, 0);",
+				],
+				{ cwd: dir, stdio: "ignore" },
+			);
+			children.push(child);
+			return new Promise((resolve) => child.once("spawn", resolve));
+		});
+		await Promise.all(writers);
+		await until(async () => {
+			for (const dir of dirs) if (!(await readdir(dir)).includes("f1")) return false;
+			return true;
+		});
+
+		const removed = await sweepStaleScratch({ tmpRoot: root, processes: processes({}) });
+
+		for (const name of await readdir(root)) expect(await readdir(join(root, name))).toContain(".atelier-owner");
+		for (const dir of dirs) if (!removed.includes(dir)) expect(await exists(join(dir, ".atelier-owner"))).toBe(true);
+	});
+
 	it("lets two sweeps run at once over the same folder, each directory deleted by one of them", async () => {
 		const dirs: string[] = [];
 		for (const letter of "abcdefgh")

@@ -6,7 +6,7 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"includes": ["**", "!**/test/fixtures", "!pnpm-lock.yaml"]
+		"includes": ["**", "!**/test/fixtures", "!pnpm-lock.yaml", "!atelier-core/test/scratch-safety-probes.test.ts"]
 	},
 	"formatter": {
 		"enabled": true,
