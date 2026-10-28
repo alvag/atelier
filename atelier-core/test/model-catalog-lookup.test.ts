@@ -11,7 +11,8 @@ const catalog = new ModelData({
 	"anthropic-api": [
 		{ id: "claude-new-6", prices: [{ input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }], efforts: ["low", "high"] },
 		// The code's tables know these: what the catalog says of them is not used.
-		{ id: "claude-sonnet-4-6", efforts: ["low", "xhigh"] },
+		{ id: "claude-sonnet-4-6", efforts: ["low", "xhigh"], off: "disabled" },
+		{ id: "claude-off-6", off: "between_tools" },
 		{ id: "claude-opus-5-5", prices: [{ input: 100, output: 100, cacheRead: 0, cacheWrite: 0 }] },
 	],
 	"opencode-go": [
@@ -20,7 +21,7 @@ const catalog = new ModelData({
 			contextWindow: 500_000,
 			prices: [{ input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 }],
 			efforts: ["low", "high"],
-			off: true,
+			off: "disabled",
 		},
 		{ id: "bare-model" },
 		{ id: "minimax-m3", contextWindow: 10 },
@@ -41,9 +42,11 @@ it("sends the levels the catalog gives a model the code does not know, and only 
 	useModelData(catalog);
 	expect(thinkingToSend("claude-new-6", "high", "anthropic-api")).toEqual({ report: "high", effort: "high" });
 	expect(thinkingToSend("claude-new-6", "max", "anthropic-api")).toEqual({ report: "unsupported" });
-	// Anthropic's ways to turn thinking off differ by model: the catalog does not say which, so it is not sent.
+	// Thinking is turned off as the catalog says the model takes it, and not where it says nothing.
 	expect(thinkingToSend("claude-new-6", "off", "anthropic-api")).toEqual({ report: "unsupported" });
+	expect(thinkingToSend("claude-off-6", "off", "anthropic-api")).toEqual({ report: "off", thinking: "between_tools" });
 	expect(thinkingToSend("claude-sonnet-4-6", "xhigh", "anthropic-api")).toEqual({ report: "unsupported" });
+	expect(thinkingToSend("claude-sonnet-4-6", "off", "anthropic-api")).toEqual({ report: "unsupported" });
 
 	expect(thinkingToSend("grok-4.7", "minimal", "opencode-go")).toEqual({ report: "low", effort: "low" });
 	expect(thinkingToSend("grok-4.7", "off", "opencode-go")).toEqual({ report: "off", thinking: "disabled" });

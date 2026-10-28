@@ -1,5 +1,5 @@
 import { EFFORTS, type Effort } from "../events.ts";
-import type { PriceTier } from "../pricing.ts";
+import type { PriceTier, ThinkingOff } from "../pricing.ts";
 
 /** The backends whose models the catalog describes. */
 export type CatalogBackend = "anthropic-api" | "opencode-go" | "openai-codex" | "claude-code";
@@ -18,23 +18,34 @@ export interface CatalogModel {
 	prices?: readonly PriceTier[];
 	/** The levels the model takes, of the ones Atelier sends. */
 	efforts?: readonly Effort[];
-	/** Its thinking can be turned off. */
-	off?: true;
+	/** How its thinking is turned off, as `pricing.ts` sends it; `disabled` also stands for OpenCode Go's `none`. */
+	off?: ThinkingOff;
 }
 
 export type CatalogModels = Partial<Record<CatalogBackend, readonly CatalogModel[]>>;
+export type CatalogListing = Partial<Record<CatalogBackend, readonly string[]>>;
 
-/** The models the catalog knows, by backend, for the backends to look up the ones their tables lack. */
+/**
+ * The models the catalog knows, by backend, for the backends to look up the ones their tables lack; and the ones each
+ * provider listed, in its order, where it was asked.
+ */
 export class ModelData {
 	readonly #byBackend = new Map<CatalogBackend, Map<string, CatalogModel>>();
+	readonly #listed: CatalogListing;
 
-	constructor(models: CatalogModels = {}) {
+	constructor(models: CatalogModels = {}, listed: CatalogListing = {}) {
 		for (const backend of CATALOG_BACKENDS)
 			this.#byBackend.set(backend, new Map((models[backend] ?? []).map((model) => [model.id, model])));
+		this.#listed = listed;
 	}
 
 	model(backend: CatalogBackend, id: string): CatalogModel | undefined {
 		return this.#byBackend.get(backend)?.get(id);
+	}
+
+	/** The ids the backend's provider listed last; undefined when it was never asked or never answered. */
+	listed(backend: CatalogBackend): readonly string[] | undefined {
+		return this.#listed[backend];
 	}
 }
 
@@ -70,7 +81,7 @@ export function catalogModel(value: unknown): CatalogModel | undefined {
 		if (tiers.every((tier) => tier !== undefined)) model.prices = tiers;
 	}
 	if (Array.isArray(value.efforts)) model.efforts = value.efforts.filter(isEffort);
-	if (value.off === true) model.off = true;
+	if (value.off === "disabled" || value.off === "between_tools") model.off = value.off;
 	return model;
 }
 
