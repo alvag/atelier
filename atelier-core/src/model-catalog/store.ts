@@ -122,7 +122,7 @@ export async function refreshSource(
 	if (!options.force && previous !== undefined && now - previous.checkedAt < interval) return "fresh";
 	let result: FetchResult | undefined;
 	try {
-		result = await source.fetch(previous, AbortSignal.timeout(options.timeoutMs ?? CATALOG_REQUEST_TIMEOUT_MS));
+		result = await withinTimeout(source, previous, options.timeoutMs ?? CATALOG_REQUEST_TIMEOUT_MS);
 	} catch {
 		result = undefined;
 	}
@@ -140,6 +140,27 @@ export async function refreshSource(
 		return "failed";
 	}
 	return result === undefined ? "failed" : result.kind;
+}
+
+/**
+ * The source's answer, or a rejection once `timeoutMs` passes: the signal stops its request, and the race covers
+ * what it awaits before it (a key, a token, a Claude Code session), which no signal reaches.
+ */
+function withinTimeout(
+	source: CatalogSource,
+	previous: SourceEntry | undefined,
+	timeoutMs: number,
+): Promise<FetchResult> {
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => {
+			const error = new Error(`${source.name} did not answer within ${timeoutMs} ms`);
+			controller.abort(error);
+			reject(error);
+		}, timeoutMs);
+	});
+	return Promise.race([source.fetch(previous, controller.signal), timeout]).finally(() => clearTimeout(timer));
 }
 
 /** Asks every source at once; one that fails or hangs does not hold up the others. */

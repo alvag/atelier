@@ -177,6 +177,28 @@ it("lists the models Claude Code offers the subscription, aliases included, with
 	expect(data.model("claude-code", "opus")).toEqual({ id: "opus" });
 });
 
+it("gives up on a source that hangs before its request, without holding up the others", async () => {
+	routes["/go/v1/models"] = json({ data: [{ id: "grok-4.7" }] });
+	const never = () => new Promise<never>(() => {});
+	const outcomes = await refreshCatalog(
+		file,
+		[
+			claudeCodeModelsSource(never),
+			codexModelsSource({ headers: never, baseUrl: `${base}/backend-api` }),
+			anthropicModelsSource({ apiKey: never, baseUrl: base }),
+			openCodeGoModelsSource({ baseUrl: `${base}/go` }),
+		],
+		{ timeoutMs: 100 },
+	);
+	expect(outcomes).toEqual({
+		"claude-code": "failed",
+		"openai-codex": "failed",
+		"anthropic-api": "failed",
+		"opencode-go": "changed",
+	});
+	expect(modelDataOf(await readCatalog(file)).listed("opencode-go")).toEqual(["grok-4.7"]);
+});
+
 it("keeps the last list when a provider fails, and each source apart from the others", async () => {
 	routes["/go/v1/models"] = json({ data: [{ id: "grok-4.7" }] });
 	await refreshCatalog(file, [openCodeGoModelsSource({ baseUrl: `${base}/go` })], { now: 1_000 });
