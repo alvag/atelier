@@ -4,14 +4,20 @@ import type { Readable } from "node:stream";
 export interface LineReader {
 	/** Starts reading, so lines typed from now on are known to be early. */
 	open(): void;
-	/** The next line; `column` is where the cursor sits after the prompt, used to redraw while editing. */
-	next(column?: number): Promise<string | undefined>;
+	/**
+	 * The next line; `column` is where the cursor sits after the prompt, used to redraw while editing. A `hidden` line
+	 * is not echoed at all, for a secret.
+	 */
+	next(column?: number, options?: { hidden?: boolean }): Promise<string | undefined>;
 	/** Stops waiting for a read that will not be consumed (a cancelled question); its line goes to the next caller. */
 	abandon(): void;
 	/** Whether the line last returned had pasted text in it: a paste can fill in a form but never answer a question. */
 	pasted(): boolean;
 	/** Drops the lines typed so far, the one being typed included, and says how many. */
 	discardTyped(): number;
+	/** Stops reading the input, which another program then reads (Claude Code's sign-in); `resume` reads it again. */
+	pause(): void;
+	resume(): void;
 	close(): void;
 }
 
@@ -63,9 +69,11 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 	let column = 0;
 	let ended = false;
 	let opened = false;
+	/** The pending read is a secret: nothing of it is echoed. */
+	let hidden = false;
 
 	const echo = (text: string) => {
-		if (waiting && text !== "") write(text);
+		if (waiting && !hidden && text !== "") write(text);
 	};
 	/** The column where the line at `index` (counted by line breaks in the buffer) starts. */
 	const startOf = (index: number) => (index === 0 ? column : 0);
@@ -214,9 +222,10 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 			stdin.on("end", finish);
 			stdin.resume();
 		},
-		next(promptColumn = 0) {
+		next(promptColumn = 0, options = {}) {
 			this.open();
 			column = promptColumn;
+			hidden = options.hidden ?? false;
 			const early = typed.shift();
 			if (early !== undefined) {
 				handedPasted = early.pasted;
@@ -247,6 +256,16 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 			if (pasting) droppingPaste = true;
 			else pending = "";
 			return count;
+		},
+		pause() {
+			if (!opened) return;
+			stdin.off("data", onData);
+			stdin.pause();
+		},
+		resume() {
+			if (!opened) return;
+			stdin.on("data", onData);
+			stdin.resume();
 		},
 		close() {
 			stdin.off("data", onData);

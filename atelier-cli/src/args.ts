@@ -49,6 +49,8 @@ export const USAGE = `Usage: atelier [options] [prompt]
        atelier update [vX.Y.Z | --main]
        atelier desktop
        atelier mcp list | login <server> | logout <server>
+       atelier login [account|api-key] [anthropic]
+       atelier logout [account|api-key] [anthropic]
        atelier stats [--since 7d|30d|all|YYYY-MM-DD] [--project <dir>]
                      [--by day|project|model|phase|role] [--json]
 
@@ -69,9 +71,9 @@ Options:
                          without it, the default saved with /mode default, else normal
   -y, --yes              Deprecated alias of --mode normal; prints a warning
       --backend <name>   claude-code (default): Claude Code on your Claude subscription
-                         anthropic-api: Atelier's own loop, billed to an API key read
-                         from the macOS Keychain (service atelier-anthropic) or from
-                         ANTHROPIC_API_KEY
+                         anthropic-api: Atelier's own loop, billed to an API key:
+                         ANTHROPIC_API_KEY, else the one atelier login stored, else
+                         the macOS Keychain (service atelier-anthropic)
       --model <name>     Model to use (default: opus on claude-code,
                          claude-sonnet-5-5 on anthropic-api)
       --profile <name>   Agent profile from ~/.atelier/profiles.json for this session,
@@ -112,6 +114,13 @@ state, its tools and its errors; it exits with 1 when an entry is invalid or an 
 server does not connect. atelier mcp login <server> signs a remote server in with OAuth
 in the browser, and atelier mcp logout <server> deletes its sign-in. In a session, /mcp
 prints the servers, and /mcp login <server> and /mcp logout <server> do the same.
+
+atelier login signs in: with an account (Anthropic: Claude Code's own sign-in, in the
+browser, for the claude-code backend) or with an API key (Anthropic, for anthropic-api),
+asking what is not given and showing each provider's state. Keys go to
+~/.atelier/auth.json (0600), which the agent cannot read. atelier logout lists what is
+signed in and removes the one chosen; signing out of the Anthropic account signs Claude
+Code out on this machine too, so it asks first. In a session, /login and /logout do the same.
 
 Long-term memory is used when its memory service is installed; the session says
 which project it uses, or why it has none.

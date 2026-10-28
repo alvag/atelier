@@ -36,6 +36,30 @@ describe("terminal reader", () => {
 		expect(t.echo()).toBe("hi");
 	});
 
+	it("reads a hidden line, typed or pasted, without echoing any of it", async () => {
+		const t = terminal();
+		const line = t.reader.next(10, { hidden: true });
+		await t.type("sk-ax\x7f");
+		await t.type(`${PASTE_START}nt-secret${PASTE_END}\r`);
+		expect(await line).toBe("sk-ant-secret");
+		expect(t.echo()).toBe("");
+		const shown = t.reader.next(2);
+		await t.type("ok\r");
+		expect(await shown).toBe("ok");
+		expect(t.echo()).toBe("ok");
+	});
+
+	it("leaves the input alone while paused, for another program, and reads again once resumed", async () => {
+		const t = terminal();
+		t.reader.pause();
+		await t.type("meant for the other program\r");
+		t.stdin.read();
+		t.reader.resume();
+		const line = t.reader.next(2);
+		await t.type("after\r");
+		expect(await line).toBe("after");
+	});
+
 	it("takes a multi-line bracketed paste as one line, without echoing the markers", async () => {
 		const t = terminal();
 		const line = t.reader.next(2);
