@@ -207,8 +207,8 @@ export class EngramMemory implements MemoryPort {
 		try {
 			result = await this.#client.callTool({ name, arguments: args }, undefined, { timeout: CALL_TIMEOUT_MS });
 		} catch (error) {
-			// Never a crash of the caller. Engram refusing the request is a clear failure; a timeout, a dead process or a
-			// cut connection leave unknown whether the call landed.
+			// Never a crash of the caller. Engram refusing the request is a clear failure; a timeout, a dead process, a cut
+			// connection or an internal error leave unknown whether the call landed.
 			const message = `Engram ${name} failed: ${describeError(error)}`;
 			throw isRefusal(error) ? new MemoryError(message) : new MemoryUncertainError(message);
 		}
@@ -218,11 +218,16 @@ export class EngramMemory implements MemoryPort {
 	}
 }
 
+/** Protocol errors that leave unknown whether the call landed: no answer came, or Engram failed while handling it. */
+const UNCERTAIN_CODES: readonly number[] = [
+	ErrorCode.RequestTimeout,
+	ErrorCode.ConnectionClosed,
+	ErrorCode.InternalError,
+];
+
 /** An answer from Engram that refuses the request (invalid params, unknown tool...), so nothing was done. */
 function isRefusal(error: unknown): boolean {
-	return (
-		error instanceof McpError && error.code !== ErrorCode.RequestTimeout && error.code !== ErrorCode.ConnectionClosed
-	);
+	return error instanceof McpError && !UNCERTAIN_CODES.includes(error.code);
 }
 
 /**

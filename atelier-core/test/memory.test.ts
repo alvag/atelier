@@ -320,9 +320,9 @@ it("classifies a definite protocol rejection as failed, not uncertain (S1)", asy
 	expect(error).not.toBeInstanceOf(MemoryUncertainError);
 });
 
-it("classifies a timeout or a closed connection as uncertain: the call may have landed", async () => {
+it("classifies a timeout, a closed connection or an internal error as uncertain: the call may have landed", async () => {
 	const { McpError, ErrorCode } = await import("@modelcontextprotocol/sdk/types.js");
-	for (const code of [ErrorCode.RequestTimeout, ErrorCode.ConnectionClosed]) {
+	for (const code of [ErrorCode.RequestTimeout, ErrorCode.ConnectionClosed, ErrorCode.InternalError]) {
 		const client = {
 			callTool: async () => {
 				throw new McpError(code, "lost");
