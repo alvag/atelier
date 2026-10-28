@@ -200,3 +200,26 @@ it("reads a stream whose lines end in CRLF, even split between chunks", async ()
 		expect.objectContaining({ type: "done", status: "completed", output: [textItem("done")] }),
 	]);
 });
+
+it("reads a stream whose lines end in a bare CR, up to the CR that ends it", async () => {
+	const events = completed([textItem("done")]);
+	const text = events.map((event) => `data: ${JSON.stringify(event)}\r\r`).join("");
+	const cr: ResponsesEndpoint = {
+		url: "https://example.invalid/responses",
+		headers: async () => ({}),
+		fetch: async () =>
+			new Response(
+				new ReadableStream({
+					start(controller) {
+						// Each event in a chunk of its own: every chunk, the last one too, ends in \r.
+						for (const chunk of text.split(/(?<=\r\r)/)) controller.enqueue(new TextEncoder().encode(chunk));
+						controller.close();
+					},
+				}),
+				{ headers: { "content-type": "text/event-stream" } },
+			),
+	};
+	expect(await collect(streamResponse(cr, body))).toEqual([
+		expect.objectContaining({ type: "done", status: "completed", output: [textItem("done")] }),
+	]);
+});

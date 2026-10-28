@@ -222,36 +222,50 @@ async function open(
 	}
 }
 
+/** The JSON of one event's `data:` lines, or undefined when it carries none this client reads. */
+function eventOf(block: string): Record<string, unknown> | undefined {
+	const data = block
+		.split("\n")
+		.filter((line) => line.startsWith("data:"))
+		.map((line) => line.slice(5).trimStart())
+		.join("\n");
+	if (data === "" || data === "[DONE]") return undefined;
+	try {
+		return JSON.parse(data) as Record<string, unknown>;
+	} catch {
+		// A line that is not JSON carries nothing this client reads.
+		return undefined;
+	}
+}
+
 /** The events of a server-sent stream, one JSON object each. */
 async function* serverEvents(response: Response): AsyncGenerator<Record<string, unknown>> {
 	if (!response.body) return;
 	const decoder = new TextDecoder();
 	let buffer = "";
-	// A \r at a chunk's end may be the first half of a \r\n: it waits for the next chunk.
+	// A \r at a chunk's end may be the first half of a \r\n: it waits for the next chunk, or the stream's end.
 	let pending = "";
-	for await (const chunk of response.body) {
-		const text = pending + decoder.decode(chunk as Uint8Array, { stream: true });
-		pending = text.endsWith("\r") ? "\r" : "";
+	const read = (text: string, last: boolean) => {
+		const joined = pending + text;
+		pending = !last && joined.endsWith("\r") ? "\r" : "";
 		// Lines may end in \r\n, \n or \r: all are read as \n.
-		buffer += (pending ? text.slice(0, -1) : text).replace(/\r\n?/g, "\n");
-		let end = buffer.indexOf("\n\n");
-		while (end !== -1) {
-			const block = buffer.slice(0, end);
+		buffer += (pending ? joined.slice(0, -1) : joined).replace(/\r\n?/g, "\n");
+	};
+	/** The events the buffer ends; what follows the last blank line waits for more. */
+	function* complete(): Generator<Record<string, unknown>> {
+		for (let end = buffer.indexOf("\n\n"); end !== -1; end = buffer.indexOf("\n\n")) {
+			const event = eventOf(buffer.slice(0, end));
 			buffer = buffer.slice(end + 2);
-			end = buffer.indexOf("\n\n");
-			const data = block
-				.split("\n")
-				.filter((line) => line.startsWith("data:"))
-				.map((line) => line.slice(5).trimStart())
-				.join("\n");
-			if (data === "" || data === "[DONE]") continue;
-			try {
-				yield JSON.parse(data) as Record<string, unknown>;
-			} catch {
-				// A line that is not JSON carries nothing this client reads.
-			}
+			if (event !== undefined) yield event;
 		}
 	}
+	for await (const chunk of response.body) {
+		read(decoder.decode(chunk as Uint8Array, { stream: true }), false);
+		yield* complete();
+	}
+	// At the end, the \r held back ends its line. An event without the blank line after it is dropped, as SSE says.
+	read(decoder.decode(), true);
+	yield* complete();
 }
 
 function usageOf(response: Record<string, unknown> | undefined): ResponsesUsage {
