@@ -204,6 +204,23 @@ describe("ToolCard", () => {
 		`);
 	});
 
+	it("moves none of the edits that start on the same line by each other", () => {
+		const { lines } = card(
+			"edit",
+			{
+				path: "a.txt",
+				edits: [
+					{ oldText: "a", newText: "a\nA" },
+					{ oldText: "b", newText: "B" },
+					{ oldText: "z", newText: "Z" },
+				],
+			},
+			{ summary: "a.txt (3 edits)", startLines: [1, 1, 5] },
+		);
+		expect(lines.join("\n")).toContain("   │ 1 - b\n   │ 1 + B");
+		expect(lines.join("\n")).toContain("   │ 5 - z\n   │ 6 + Z");
+	});
+
 	it("shows an edit without numbers when the call does not say where it starts", () => {
 		const { lines } = card("edit", { path: "a.ts", edits: [{ oldText: "old", newText: "new" }] });
 		expect(lines.slice(1)).toEqual(["   │ - old", "   │ + new"]);
@@ -403,5 +420,34 @@ describe("ToolCard with large input", () => {
 		expect(edit.length).toBeLessThan(30);
 		const bash = quickly(() => card("bash", { command: `echo ${long}` }, { summary: "echo (exit 0)" }).lines);
 		expect(bash.length).toBeLessThan(20);
+	});
+
+	it("keeps another tool's JSON values within the card's lines, however long", () => {
+		const lines = quickly(
+			() =>
+				card(
+					"memory",
+					{ action: "save", tags: Array.from({ length: 20_000 }, (_, i) => `tag${i}`), meta: { body: long } },
+					{ summary: "save (1 memory)" },
+				).lines,
+		);
+		expect(lines.length).toBeLessThan(25);
+		expect(lines.join("\n")).toContain("…");
+	});
+
+	it("numbers an edit of thousands of edits without slowing down", () => {
+		const count = 2000;
+		// Each edit adds forty lines: what it moves the edits after it by is counted once, not once for each of them.
+		const extra = Array.from({ length: 39 }, (_, k) => `more${k}`).join("\n");
+		const edits = Array.from({ length: count }, (_, i) => ({ oldText: `l${i}`, newText: `L${i}\n${extra}` }));
+		// The file's order is the reverse of the call's.
+		const startLines = edits.map((_, i) => 2 * (count - i));
+		const lines = quickly(
+			() => card("edit", { path: "a.txt", edits }, { summary: `a.txt (${count} edits)`, startLines }).lines,
+		);
+		const text = lines.join("\n");
+		// The first in the file moves nothing; the last moves by 39 lines for each edit before it.
+		expect(text).toContain(`   │     2 - l${count - 1}\n   │     2 + L${count - 1}\n   │     3 + more0`);
+		expect(text).toContain(`   │  ${2 * count} - l0\n   │ ${2 * count + 39 * (count - 1)} + L0`);
 	});
 });
