@@ -9,8 +9,10 @@ export interface Received {
 	body: Record<string, unknown>;
 }
 
-/** What the fake answers: an event stream, or a status with a JSON body. */
-export type Answer = { sse: string } | { status: number; json: unknown; headers?: Record<string, string> };
+/** What the fake answers: an event stream (left open after its events with `keepOpen`), or a status with a JSON body. */
+export type Answer =
+	| { sse: string; keepOpen?: boolean }
+	| { status: number; json: unknown; headers?: Record<string, string> };
 
 /** Server-sent events, one `data:` line each, with the `event:` line the Messages API adds. */
 export function sse(events: readonly unknown[], options: { named?: boolean; done?: boolean } = {}): string {
@@ -27,6 +29,8 @@ export function sse(events: readonly unknown[], options: { named?: boolean; done
  */
 export class FakeProvider {
 	readonly received: Received[] = [];
+	/** How many answers' connections the client closed or let end. */
+	closed = 0;
 	readonly #answers: Answer[] = [];
 	readonly #server: Server;
 
@@ -52,7 +56,12 @@ export class FakeProvider {
 				const answer = provider.#answers.shift() ?? { status: 500, json: { error: "nothing scripted" } };
 				if ("sse" in answer) {
 					response.writeHead(200, { "content-type": "text/event-stream" });
-					response.end(answer.sse);
+					response.on("close", () => {
+						provider.closed++;
+					});
+					// A stream left open: only the client can close it.
+					if (answer.keepOpen) response.write(answer.sse);
+					else response.end(answer.sse);
 					return;
 				}
 				response.writeHead(answer.status, { "content-type": "application/json", ...answer.headers });
