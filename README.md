@@ -101,15 +101,15 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Shift+Up          | Take the queued messages back into the editor, to edit them and send them again (also Alt+Up).                 |
 | Esc               | Interrupt the running turn (what is queued comes back to the editor); in a question or a list, deny or cancel. |
 | Up / Down         | Prompt history; move in lists and questions.                                                                   |
-| Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit.                                               |
-| Ctrl+D            | Quit, on an empty editor.                                                                                      |
+| Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit; in a question or a list, as Esc.              |
+| Ctrl+D            | Quit, on an empty editor; in a question or a list, as Esc.                                                     |
 | Ctrl+O            | Expand or fold the blocks of calls and every card, or the whole command of an approval.                        |
 | Ctrl+R            | Open or fold the model's thinking, which folds once the model moves on (full screen, a click opens one block). |
 | Ctrl+T            | Open or fold the active feature's tasks.                                                                       |
 | Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                                        |
 | PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.                         |
 
-While a question or a list is open, the editor is hidden and every key goes to the question; what you had typed comes back to the editor, unsent, when it closes.
+While a question or a list is open, the editor is hidden and every key goes to the question, Ctrl+C and Ctrl+D included: they close it as Esc does, without interrupting the turn or quitting. What you had typed comes back to the editor, unsent, when it closes.
 
 ### Permission modes
 
