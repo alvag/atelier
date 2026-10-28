@@ -248,12 +248,15 @@ export function createBashTool({
 				if (policy === "verifier") return { refusal: refusal(VERIFIER_UNSANDBOXED, command) };
 				if (reason === undefined || reason.trim() === "")
 					throw new ToolInputError("reason is required with unsandboxed: say why this command must leave the sandbox.");
+				// A command denied for want of a sandbox must not get past the question by asking to leave it.
+				const status = await statusFor(sandbox, sandboxOff);
 				return {
 					approval: {
 						command,
 						reason: reason.trim(),
 						...confirmed,
 						...rememberOffer(command, confirmed.confirm, sandbox),
+						...(!status.available && status.failed ? { sandboxFailed: true } : {}),
 					},
 				};
 			}
@@ -266,7 +269,7 @@ export function createBashTool({
 					command,
 					...confirmed,
 					...rememberOffer(command, confirmed.confirm, sandbox),
-					...(status.failed ? { askInYolo: true } : {}),
+					...(status.failed ? { sandboxFailed: true } : {}),
 				},
 				warning: status.reason,
 			};

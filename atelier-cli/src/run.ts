@@ -409,7 +409,7 @@ export async function run(
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
 		...(args.noSandbox ? { noSandbox: true } : {}),
 		permissionRules: new PermissionRules(io.home === undefined ? {} : { home: io.home }),
-		approve: async ({ command, reason, tool, confirm, remember }) => {
+		approve: async ({ command, reason, tool, confirm, remember, sandboxFailed }) => {
 			// The command and the reason come from the model: show escape sequences and bidi controls instead of letting the terminal run them.
 			const shown = visibleText(command);
 			const why = reason === undefined ? undefined : visibleText(reason);
@@ -451,15 +451,17 @@ export async function run(
 					io.stderr(
 						`bash command matches a guard rule (${confirm}) and needs your approval, but there is no terminal to ask: ${shown.text}\n${why ? `  reason: ${why.text}\n` : ""}`,
 					);
-				else
+				else {
+					// With a sandbox that failed to start every mode asks, so --mode yolo is no way around the question.
+					const yolo = sandboxFailed === true ? "" : " (--mode yolo allows it)";
 					io.stderr(
 						why
-							? `bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask (--mode yolo allows it): ${shown.text}\n  reason: ${why.text}\n`
-							: // yolo asks about such a command only when its sandbox failed to start.
-								mode === "yolo"
-								? `bash command needs approval and there is no terminal to ask; the sandbox failed to start (yolo does not run commands without it unasked): ${shown.text}\n`
+							? `bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask${yolo}: ${shown.text}\n  reason: ${why.text}\n`
+							: sandboxFailed === true
+								? `bash command needs approval and there is no terminal to ask; the sandbox failed to start: ${shown.text}\n`
 								: `bash command needs approval and there is no terminal to ask; the sandbox is off or unavailable (--mode yolo allows it): ${shown.text}\n`,
 					);
+				}
 				return false;
 			}
 			const warning =

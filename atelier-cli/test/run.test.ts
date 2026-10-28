@@ -953,7 +953,7 @@ describe("bash outside the sandbox", () => {
 		await run(["--mode", "yolo", "--no-review", "x"], h.io, h.createBackend);
 		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
 		expect(h.err()).toContain(
-			"bash command needs approval and there is no terminal to ask; the sandbox failed to start (yolo does not run commands without it unasked): rm marker\n",
+			"bash command needs approval and there is no terminal to ask; the sandbox failed to start: rm marker\n",
 		);
 		expect(await readFile(join(cwd, "marker"), "utf8")).toBe("");
 	});

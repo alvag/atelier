@@ -41,8 +41,8 @@ export interface ToolGate {
 		 */
 		confirm?: string;
 		yoloWaived?: boolean;
-		/** `yolo` asks too: the sandbox that should contain the call failed to start. */
-		askInYolo?: boolean;
+		/** The sandbox that should contain the call failed to start: `yolo` asks too, and the client is told. */
+		sandboxFailed?: boolean;
 		/**
 		 * Only `auto` decides about the call, through the classifier, and asks the user when the classifier does not
 		 * decide; `normal` and `yolo` run it without asking (an MCP call).

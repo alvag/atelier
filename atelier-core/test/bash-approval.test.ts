@@ -247,7 +247,7 @@ describe("without a sandbox", () => {
 					answer: false,
 				},
 			);
-			expect(denied.questions).toEqual([{ callId: "c1", command: "echo hi" }]);
+			expect(denied.questions).toEqual([{ callId: "c1", command: "echo hi", sandboxFailed: true }]);
 			expect(denied.results).toEqual([{ ok: false, output: "The user denied this command." }]);
 			expect(ofType(denied.events[0] ?? [], "sandbox_warning")).toHaveLength(1);
 
@@ -258,7 +258,7 @@ describe("without a sandbox", () => {
 					permissionMode: "yolo",
 				},
 			);
-			expect(allowed.questions).toEqual([{ callId: "c1", command: "echo hi" }]);
+			expect(allowed.questions).toEqual([{ callId: "c1", command: "echo hi", sandboxFailed: true }]);
 			expect(allowed.results[0]?.output).toContain("hi");
 		},
 	);

@@ -123,6 +123,8 @@ export interface ApprovalRequest {
 	tool?: string;
 	/** The guard's confirm rule the command matches (`recursive removal`, `git push`, ...); `bash` only. */
 	confirm?: string;
+	/** The sandbox failed to start, so the command asks in every mode, `yolo` included; `bash` only. */
+	sandboxFailed?: true;
 	/**
 	 * What "Allow in this session" and "Allow always" would remember (`rules`, shown to the user); `always` is false when
 	 * only the session may keep them. Absent when the answer can only allow or deny.
@@ -1387,7 +1389,7 @@ export class Session {
 			// reversible delivery (a plain push or rebase) the gate marks.
 			const confirmed = approval?.confirm !== undefined;
 			const skipped =
-				(mode === "yolo" && approval?.askInYolo !== true && (!confirmed || approval?.yoloWaived === true)) ||
+				(mode === "yolo" && approval?.sandboxFailed !== true && (!confirmed || approval?.yoloWaived === true)) ||
 				(approval?.classifyOnly === true && mode !== "auto");
 			const verdict =
 				approval && mode === "auto" && !confirmed ? await this.#classify(callId, call.tool, approval, emit) : undefined;
@@ -1395,7 +1397,7 @@ export class Session {
 			if (approval && (skipped || verdict?.decision === "allow")) {
 				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
 			} else if (approval) {
-				const { command, reason, tool: asking, confirm } = approval;
+				const { command, reason, tool: asking, confirm, sandboxFailed } = approval;
 				const store = this.#options.permissionRules;
 				const remember =
 					store === undefined || approval.remember === undefined
@@ -1407,6 +1409,7 @@ export class Session {
 					...(asking === undefined ? {} : { tool: asking }),
 					...(confirm === undefined ? {} : { confirm }),
 					...(remember === undefined ? {} : { remember }),
+					...(sandboxFailed === true ? { sandboxFailed: true as const } : {}),
 				};
 				emit({ type: "approval_requested", callId, ...question });
 				const request = { callId, ...question };

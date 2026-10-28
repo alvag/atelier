@@ -297,6 +297,8 @@ export type AtelierEventBody =
 			reason?: string;
 			tool?: string;
 			confirm?: string;
+			/** The sandbox failed to start: the command asks in every mode, `yolo` included. */
+			sandboxFailed?: true;
 			/** What "Allow in this session" and "Allow always" would remember; absent when only Allow and Deny are offered. */
 			remember?: { rules: string[]; always: boolean };
 	  }
