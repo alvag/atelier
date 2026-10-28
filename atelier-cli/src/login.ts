@@ -232,6 +232,14 @@ async function signedIn(ports: LoginPorts): Promise<SignedIn[]> {
 
 /** `/logout` and `atelier logout`: lists what has a credential and removes the one chosen. */
 export async function logout(ports: LoginPorts, target: LoginTarget = {}): Promise<boolean> {
+	const known = (
+		target.method === undefined ? [...PROVIDERS.account, ...PROVIDERS["api-key"]] : PROVIDERS[target.method]
+	).map(({ id }) => id);
+	if (target.provider !== undefined && !known.includes(target.provider)) {
+		const kind = target.method === undefined ? "" : target.method === "account" ? " for an account" : " for an API key";
+		ports.fail(`unknown provider "${target.provider}"${kind}; the providers are: ${[...new Set(known)].join(", ")}`);
+		return false;
+	}
 	const entries = (await signedIn(ports)).filter(
 		(entry) =>
 			(target.method === undefined || entry.method === target.method) &&

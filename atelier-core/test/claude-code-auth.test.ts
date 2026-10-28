@@ -81,7 +81,9 @@ it("reads a binary that is not logged in, which exits with 1", async () => {
 it("fails with a message when the binary is missing or answers something else", async () => {
 	const missing = await claudeCodeAuthStatus({ executable: join(dir, "nope"), env: {} }).catch((error) => error);
 	expect(missing).toBeInstanceOf(ClaudeCodeAuthError);
-	expect(missing.message).toContain(`Claude Code could not be run (${join(dir, "nope")}`);
+	expect(missing.message).toBe("Claude Code binary not found (reinstall Atelier)");
+	const login = await claudeCodeLogin({ executable: join(dir, "nope"), env: {}, stdio: "ignore" }).catch((e) => e);
+	expect(login.message).toBe("Claude Code binary not found (reinstall Atelier)");
 	await writeFile(join(dir, "status.json"), "not json");
 	const garbled = await claudeCodeAuthStatus({ executable: fake, env: {} }).catch((error) => error);
 	expect(garbled).toBeInstanceOf(ClaudeCodeAuthError);
@@ -128,6 +130,6 @@ describe("loginWarning", () => {
 	it("says what is missing for anthropic-api, and why Claude Code could not be asked", async () => {
 		expect(await check("anthropic-api")).toBe(MISSING_API_KEY_MESSAGE);
 		const missing = await loginWarning("claude-code", { executable: join(dir, "nope"), env: {}, store: store() });
-		expect(missing).toMatch(/^Claude Code's login could not be checked: Claude Code could not be run/);
+		expect(missing).toBe("Claude Code's login could not be checked: Claude Code binary not found (reinstall Atelier)");
 	});
 });

@@ -162,3 +162,12 @@ it("signs out of a stored key, and of Claude Code only once it is confirmed", as
 	expect(await logout(nothing.value)).toBe(true);
 	expect(nothing.shown).toEqual(["Nothing to sign out of."]);
 });
+
+it("fails to sign out of a provider it does not know, instead of saying there is nothing", async () => {
+	const p = ports();
+	expect(await logout(p.value, { method: "api-key", provider: "nope" })).toBe(false);
+	expect(p.shown).toEqual(['error: unknown provider "nope" for an API key; the providers are: anthropic']);
+	const any = ports();
+	expect(await logout(any.value, { provider: "nope" })).toBe(false);
+	expect(any.shown).toEqual(['error: unknown provider "nope"; the providers are: anthropic']);
+});

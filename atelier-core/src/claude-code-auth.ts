@@ -24,6 +24,13 @@ export interface ClaudeCodeRunOptions {
 }
 
 const STATUS_TIMEOUT_MS = 15_000;
+const NOT_FOUND = "Claude Code binary not found (reinstall Atelier)";
+
+/** Why the binary could not be started: not there at all, or another failure. */
+const runError = (executable: string, error: Error & { code?: string | number | null | undefined }) =>
+	new ClaudeCodeAuthError(
+		error.code === "ENOENT" ? NOT_FOUND : `Claude Code could not be run (${executable}): ${error.message}`,
+	);
 
 /**
  * The Claude Code binary of the Agent SDK's package for this platform, found as the SDK finds it when no
@@ -49,10 +56,7 @@ export function bundledClaudeCode(): string | undefined {
 /** The binary to run, or the reason there is none. */
 function executableOf(options: ClaudeCodeRunOptions): string {
 	const executable = options.executable ?? bundledClaudeCode();
-	if (executable === undefined)
-		throw new ClaudeCodeAuthError(
-			`Claude Code is not installed for ${process.platform}-${process.arch}; reinstall Atelier.`,
-		);
+	if (executable === undefined) throw new ClaudeCodeAuthError(NOT_FOUND);
 	return executable;
 }
 
@@ -74,7 +78,7 @@ export function claudeCodeAuthStatus(options: ClaudeCodeRunOptions = {}): Promis
 			(error, stdout) => {
 				// Not logged in exits with 1 and still prints the status.
 				if (error !== null && typeof error.code !== "number") {
-					reject(new ClaudeCodeAuthError(`Claude Code could not be run (${executable}): ${error.message}`));
+					reject(runError(executable, error));
 					return;
 				}
 				const status = parseStatus(stdout);
@@ -121,9 +125,7 @@ function runInteractive(args: string[], options: ClaudeCodeInteractiveOptions): 
 	const executable = executableOf(options);
 	return new Promise((resolve, reject) => {
 		const child = spawn(executable, args, { env: envOf(options), stdio: options.stdio ?? "inherit" });
-		child.on("error", (error) =>
-			reject(new ClaudeCodeAuthError(`Claude Code could not be run (${executable}): ${error.message}`)),
-		);
+		child.on("error", (error) => reject(runError(executable, error)));
 		child.on("exit", (code, signal) => resolve(code ?? (signal === null ? 1 : 128)));
 	});
 }
