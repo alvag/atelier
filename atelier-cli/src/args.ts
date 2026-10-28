@@ -50,6 +50,8 @@ export interface CliArgs {
 	subcommand?: Subcommand;
 	/** The options of `atelier stats`, as given. */
 	stats?: { since?: string; project?: string; by?: string; json?: true };
+	/** `atelier models --refresh`: ask the sources before printing. */
+	refreshModels?: true;
 }
 
 /** The options only `atelier stats` takes. */
@@ -63,6 +65,7 @@ export const USAGE = `Usage: atelier [options] [prompt]
        atelier logout [account|api-key] [anthropic|opencode-go|openai-codex|openai-chatgpt]
        atelier stats [--since 7d|30d|all|YYYY-MM-DD] [--project <dir>]
                      [--by day|project|model|phase|role] [--json]
+       atelier models [--refresh]
 
 Runs a coding agent in the working directory. With a prompt, runs one turn
 and exits; without one, starts an interactive session (/exit or Ctrl+D to quit),
@@ -136,6 +139,10 @@ asking what is not given and showing each provider's state. Keys go to
 signed in and removes the one chosen; signing out of the Anthropic account signs Claude
 Code out on this machine too, so it asks first. In a session, /login and /logout do the same.
 
+atelier models prints the models /model offers for each backend: the code's list, then
+the ones its provider listed (new), from ~/.atelier/models.json. --refresh asks models.dev
+and the providers you are signed in to first.
+
 Long-term memory is used when its memory service is installed; the session says
 which project it uses, or why it has none.
 
@@ -162,6 +169,8 @@ Environment:
   ATELIER_SANDBOX=off    Run bash without the sandbox, like --no-sandbox
   ATELIER_TUI=off        Run the interactive session line by line, without the
                          terminal interface
+  ATELIER_MODEL_REFRESH=off
+                         Do not ask models.dev or the providers for new models
   ATELIER_ALLOW_ROOT     As root (uid 0) Atelier refuses to start unless this is exactly
                          "I accept the risk"; it then warns on every start
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
@@ -201,6 +210,8 @@ export function parseCliArgs(
 		throw new UsageError(error instanceof Error ? error.message : String(error));
 	}
 	if (values.main && subcommand === undefined) throw new UsageError("--main is only valid with atelier update.");
+	if (values.refresh && subcommand?.name !== "models")
+		throw new UsageError("--refresh is only valid with atelier models.");
 	const statsOption = STATS_OPTIONS.find((name) => values[name] !== undefined);
 	if (statsOption !== undefined && subcommand?.name !== "stats")
 		throw new UsageError(`--${statsOption} is only valid with atelier stats.`);
@@ -210,7 +221,9 @@ export function parseCliArgs(
 				? ["help", "version", "main"]
 				: subcommand.name === "stats"
 					? ["help", "version", ...STATS_OPTIONS]
-					: ["help", "version"];
+					: subcommand.name === "models"
+						? ["help", "version", "refresh"]
+						: ["help", "version"];
 		const given = Object.keys(values).filter((name) => !allowed.includes(name));
 		if (given.length > 0)
 			throw new UsageError(
@@ -244,6 +257,7 @@ export function parseCliArgs(
 		...(values["no-session"] ? { noSession: true as const } : {}),
 		...(values["no-fullscreen"] ? { noFullscreen: true as const } : {}),
 		...(subcommand === undefined ? {} : { subcommand }),
+		...(values.refresh ? { refreshModels: true as const } : {}),
 		...(subcommand?.name === "stats"
 			? {
 					stats: {
@@ -282,6 +296,7 @@ function parse(argv: readonly string[]) {
 			project: { type: "string" },
 			by: { type: "string" },
 			json: { type: "boolean" },
+			refresh: { type: "boolean" },
 		},
 	});
 }
