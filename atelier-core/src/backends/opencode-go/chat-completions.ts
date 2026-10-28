@@ -146,6 +146,8 @@ export function toChatRequest(params: Anthropic.MessageCreateParamsNonStreaming)
 		model: params.model,
 		messages,
 		...(tools.length === 0 ? {} : { tools }),
+		// A summary keeps the tools for the cached prefix but must not call them.
+		...(params.tool_choice?.type === "none" ? { tool_choice: "none" } : {}),
 		max_tokens: params.max_tokens,
 		...(effort === undefined || effort === null ? {} : { reasoning_effort: effort }),
 		...(off === undefined ? {} : { reasoning_effort: off }),
@@ -175,8 +177,11 @@ interface ChatChunk {
 	error?: { message?: string };
 }
 
-/** The JSON of each `data:` line of an event stream, until `[DONE]`. */
-async function* events(body: ReadableStream<Uint8Array>): AsyncGenerator<ChatChunk> {
+/** The `[DONE]` line that closes a stream. */
+const DONE = Symbol("done");
+
+/** The JSON of each `data:` line of an event stream, then `DONE` when the stream says it ended. */
+async function* events(body: ReadableStream<Uint8Array>): AsyncGenerator<ChatChunk | typeof DONE> {
 	const decoder = new TextDecoder();
 	let buffer = "";
 	for await (const bytes of body) {
@@ -186,7 +191,10 @@ async function* events(body: ReadableStream<Uint8Array>): AsyncGenerator<ChatChu
 		for (const line of lines) {
 			if (!line.startsWith("data:")) continue;
 			const data = line.slice(5).trim();
-			if (data === "[DONE]") return;
+			if (data === "[DONE]") {
+				yield DONE;
+				return;
+			}
 			if (data !== "") yield JSON.parse(data) as ChatChunk;
 		}
 	}
@@ -272,7 +280,12 @@ export function chatCompletionsTransport(options: ChatCompletionsOptions): Model
 			let finish: string | null | undefined;
 			let usage: ChatChunk["usage"];
 			const calls: { id: string; name: string; arguments: string }[] = [];
+			let done = false;
 			for await (const chunk of events(response.body)) {
+				if (chunk === DONE) {
+					done = true;
+					break;
+				}
 				if (chunk.error) throw new ChatCompletionsError(undefined, chunk.error.message ?? "stream error");
 				id = chunk.id ?? id;
 				usage = chunk.usage ?? usage;
@@ -297,6 +310,9 @@ export function chatCompletionsTransport(options: ChatCompletionsOptions): Model
 					slot.arguments += call.function?.arguments ?? "";
 				}
 			}
+			// A body that just stops was cut: its text and tool calls may be halves, so nothing of it is kept or run.
+			if (!done && (finish === undefined || finish === null))
+				throw new ChatCompletionsError(undefined, "The Chat Completions stream ended before the answer was complete.");
 			const toolUses = calls.flatMap((call, index) =>
 				call === undefined
 					? []
