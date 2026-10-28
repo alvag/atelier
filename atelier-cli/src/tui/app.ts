@@ -1273,15 +1273,16 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 	editor.onSubmit = (line) => void submit(line);
 
-	// Ctrl+C interrupts a turn, then quits; with no turn it clears the editor, then quits. Esc interrupts a turn.
+	// An open question takes every key, and Ctrl+C or Ctrl+D closes it. Otherwise Ctrl+C interrupts a turn, then quits;
+	// with no turn it clears the editor, then quits. Esc interrupts a turn, and Ctrl+D quits from an empty editor.
 	const removeKeys = tui.addInputListener((data) => {
 		// While a question is open, it reads the input through the same filter: a paste begun before it stays a paste.
 		if (questions.length === 0) input.feed(data);
 		// Nothing but the open question takes the keys, even after a click elsewhere.
 		const asked = questions[0];
 		if (asked !== undefined && !asked.dialog.focused) tui.setFocus(asked.dialog);
-		// As in Claude Code and Codex, Ctrl+C and Ctrl+D close an open question as Esc does: the hidden editor keeps what
-		// it holds, the turn goes on and the TUI stays.
+		// Ctrl+C and Ctrl+D close an open question as Esc does, and do nothing else: the hidden editor keeps what it holds,
+		// the turn goes on and the TUI stays.
 		if (asked !== undefined && (matchesKey(data, "ctrl+c") || matchesKey(data, "ctrl+d"))) {
 			asked.cancel();
 			tui.requestRender();
@@ -1323,7 +1324,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			quit(EXIT_OK);
 			return { consume: true };
 		}
-		// Shift+Tab takes the mode between normal and auto, as Claude Code's does; yolo is only chosen by name.
+		// Shift+Tab takes the mode between normal and auto; yolo is only chosen by name.
 		if (matchesKey(data, "shift+tab") && questions.length === 0) {
 			void setMode(nextMode(footer.state.mode));
 			return { consume: true };
