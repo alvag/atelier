@@ -454,7 +454,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const dialogs = new Container();
 	/** Questions waiting for an answer, the first one on screen. */
 	const questions: {
-		dialog: ChoiceDialog<string>;
+		dialog: ChoiceDialog<string> | SecretDialog;
 		cancel: () => void;
 		local: boolean;
 		blocked?: Blocked | undefined;
@@ -964,17 +964,25 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 
 	/** Reads a secret in a dialog over the editor, never on screen; undefined when Esc closes it. */
+	/**
+	 * Reads a secret as one more question: the editor hides, every key goes to it, and Esc, Ctrl+C or Ctrl+D close it
+	 * with nothing. Only how many characters it has ever shows.
+	 */
 	const askSecret = (title: string) =>
 		new Promise<string | undefined>((resolve) => {
-			const secret = new SecretDialog(title, paint, (value) => {
-				dialogs.clear();
-				showQuestion();
+			let answered = false;
+			const settle = (value: string | undefined) => {
+				if (answered) return;
+				answered = true;
+				const at = questions.indexOf(entry);
+				if (at !== -1) questions.splice(at, 1);
 				resolve(value);
-			});
-			dialogs.clear();
-			dialogs.addChild(secret);
-			tui.setFocus(secret);
-			tui.requestRender();
+				showQuestion();
+				reportRunning();
+			};
+			const entry = { dialog: new SecretDialog(title, paint, settle), cancel: () => settle(undefined), local: true };
+			questions.push(entry);
+			if (questions.length === 1) showQuestion();
 		});
 	/** `/login` and `/logout`, as `atelier login` and `atelier logout` do, with lists and dialogs. Not a turn. */
 	const runLogin = async (command: string, words: string[]) => {

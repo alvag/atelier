@@ -2898,6 +2898,46 @@ esac
 		expect(await code).toBe(130);
 	});
 
+	it("asks for the key and lists the methods as questions: the editor hides, Ctrl+C and Ctrl+D close them as Esc", async () => {
+		const h = harness([]);
+		// With color, so the empty editor shows its placeholder and its absence can be seen.
+		Object.assign(h.io, { claudeCode: await fakeClaude(), env: {}, color: true });
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		await until(() => h.screen.screen().includes("Ask Atelier to do anything"));
+		for (const close of ["\x03", "\x04"]) {
+			const mark = h.screen.raw().length;
+			const since = () => plain(h.screen.raw().slice(mark));
+			h.screen.type("/login api-key anthropic");
+			h.screen.type("\r");
+			await until(() => since().includes("0 characters (hidden)"));
+			h.screen.type("typed-secret-1");
+			await until(() => since().includes("14 characters (hidden)"));
+			// The editor is hidden while the key is asked, and the key never shows.
+			expect(since()).not.toContain("Ask Atelier to do anything");
+			expect(h.screen.raw()).not.toContain("typed-secret-1");
+			h.screen.type(close);
+			await until(() => since().includes("error: no key given; nothing changed"));
+			await until(() => since().includes("Ask Atelier to do anything"));
+		}
+		for (const close of ["\x03", "\x04"]) {
+			const mark = h.screen.raw().length;
+			const since = () => plain(h.screen.raw().slice(mark));
+			h.screen.type("/login");
+			h.screen.type("\r");
+			await until(() => since().includes("Select authentication method"));
+			expect(since()).not.toContain("Ask Atelier to do anything");
+			h.screen.type(close);
+			await until(() => since().includes("Nothing changed."));
+			await until(() => since().includes("Ask Atelier to do anything"));
+		}
+		expect(await authJson()).toEqual({});
+		expect(h.backend.prompts).toEqual([]);
+		// With no question open, Ctrl+C quits as before.
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
 	it("hands the terminal to Claude Code's sign-in and takes it back, then signs out only once confirmed", async () => {
 		const h = harness([]);
 		Object.assign(h.io, { claudeCode: await fakeClaude(), env: {} });
