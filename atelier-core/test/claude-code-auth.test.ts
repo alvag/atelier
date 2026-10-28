@@ -13,6 +13,9 @@ import {
 	loginWarning,
 } from "../src/claude-code-auth.ts";
 import { MISSING_API_KEY_MESSAGE } from "../src/credentials.ts";
+import { requireIsolatedHome } from "./support/login-isolation.ts";
+
+requireIsolatedHome();
 
 let dir: string;
 let fake: string;

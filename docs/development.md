@@ -42,6 +42,8 @@ node atelier-core/scripts/measure-review.ts --backend anthropic-api   # reviews 
 node atelier-core/scripts/measure-compaction.ts --backend anthropic-api   # forces compactions with a low threshold and checks what the agent remembers (costs real money); also --backend claude-code
 ```
 
+The tests never touch your credentials. `atelier-core/test/support/setup.ts` gives every test worker an empty home of its own when HOME is your real one, and fails any test that tries to run the Agent SDK's Claude Code, a `claude` on the PATH or macOS `security`; tests pass a fake `claude` script and a fake Keychain instead. A process a test starts gets the same guard with `--import atelier-core/test/support/child-guard.ts`, and exits with 99 when it trips. The login tests also fail before they start when HOME is your real home. To run them outside the agent's sandbox (the Seatbelt and PTY ones need it), give them a new, empty HOME and TMPDIR: `H=$(mktemp -d); mkdir $H/tmp; HOME=$H TMPDIR=$H/tmp NO_UPDATE_NOTIFIER=1 node_modules/.bin/vitest run <files>`.
+
 `ATELIER_RECORD_SDK=<file.jsonl>` appends every raw SDK message during a real run; that is how `atelier-core/test/fixtures/claude-code/` is recorded.
 
 ## Versioning

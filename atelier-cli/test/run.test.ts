@@ -24,6 +24,7 @@ import {
 	VERSION,
 } from "@atelier/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requireIsolatedHome } from "../../atelier-core/test/support/login-isolation.ts";
 import { run } from "../src/run.ts";
 
 const usage = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 };
@@ -139,6 +140,9 @@ function harness(
 			stderr += s;
 		},
 		cwd,
+		// No test runs the real Claude Code or asks the real Keychain: a missing binary and an empty Keychain.
+		claudeCode: join(cwd, "no-claude-in-tests"),
+		runSecurity: async () => ({ code: 44, stdout: "", stderr: "" }),
 		tools: [
 			...(options.sandbox === false ? unsandboxedTools : options.sandbox === "failed" ? failedSandboxTools : tools),
 			...(options.extraTools ?? []),
@@ -2058,6 +2062,7 @@ describe("remembered answers", () => {
 });
 
 describe("login and logout", () => {
+	requireIsolatedHome();
 	const stored = async (home: string) =>
 		JSON.parse(await readFile(join(home, ".atelier", "auth.json"), "utf8").catch(() => "{}"));
 

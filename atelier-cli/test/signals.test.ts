@@ -2,9 +2,12 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const main = join(import.meta.dirname, "../src/main.ts");
+/** Ends the child if it runs the real Claude Code or Keychain. */
+const childGuard = pathToFileURL(join(import.meta.dirname, "../../atelier-core/test/support/child-guard.ts")).href;
 /** Makes the child believe stdin and stdout are terminals, and shows each raw-mode switch on stdout. */
 const fakeTerminal = [
 	"process.stdin.isTTY = true;",
@@ -27,11 +30,32 @@ describe.skipIf(process.platform === "win32")("terminating signals", () => {
 	] as const)(
 		"%s leaves the terminal as it was and exits %i",
 		async (signal, code) => {
-			const child = spawn(process.execPath, ["--import", `data:text/javascript,${fakeTerminal}`, main], {
-				cwd: home,
-				env: { ...process.env, HOME: home, ATELIER_MEMORY: "off", NO_COLOR: "1", ATELIER_TUI: "off" },
-				stdio: ["pipe", "pipe", "pipe"],
-			});
+			const child = spawn(
+				process.execPath,
+				// anthropic-api with an inert key: nothing starts the real Claude Code, and no request goes out before a prompt.
+				[
+					"--import",
+					childGuard,
+					"--import",
+					`data:text/javascript,${fakeTerminal}`,
+					main,
+					"--backend",
+					"anthropic-api",
+				],
+				{
+					cwd: home,
+					env: {
+						...process.env,
+						HOME: home,
+						ATELIER_MEMORY: "off",
+						ATELIER_LOGIN_CHECK: "off",
+						ANTHROPIC_API_KEY: "inert-test-key",
+						NO_COLOR: "1",
+						ATELIER_TUI: "off",
+					},
+					stdio: ["pipe", "pipe", "pipe"],
+				},
+			);
 			let stdout = "";
 			child.stdout.on("data", (chunk) => {
 				stdout += String(chunk);

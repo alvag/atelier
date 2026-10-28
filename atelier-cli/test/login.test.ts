@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthStore, authFile } from "@atelier/core";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import { requireIsolatedHome } from "../../atelier-core/test/support/login-isolation.ts";
 import { type LoginOption, type LoginPorts, login, logout, parseLoginTarget } from "../src/login.ts";
+
+requireIsolatedHome();
 
 let home: string;
 let fake: string;

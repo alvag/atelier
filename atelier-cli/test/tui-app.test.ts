@@ -19,6 +19,7 @@ import type { CoreExit } from "@atelier/core/client";
 import { decodeServerMessage, encodeMessage, LineSplitter } from "@atelier/core/protocol";
 import { type ProgramStatus, resetCapabilitiesCache, type Terminal } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requireIsolatedHome } from "../../atelier-core/test/support/login-isolation.ts";
 import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
 import { HerdrStatusReporter } from "../src/tui/herdr-status.ts";
@@ -214,6 +215,9 @@ function harness(
 		home,
 		color: false,
 		tools,
+		// No test runs the real Claude Code or asks the real Keychain: a missing binary and an empty Keychain.
+		claudeCode: join(home, "no-claude-in-tests"),
+		runSecurity: async () => ({ code: 44, stdout: "", stderr: "" }),
 		tui: { terminal: screen.terminal, connect: core.connect, ...({ answerGuardMs: 0 } as { answerGuardMs?: number }) },
 		onTerminate: (handler: (signal: number) => void) => {
 			terminate = handler;
@@ -2842,6 +2846,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 });
 
 describe("TUI login", { timeout: 20_000 }, () => {
+	requireIsolatedHome();
 	/** A stand-in for Claude Code whose login and logout change what `auth status` prints. */
 	const fakeClaude = async () => {
 		const path = join(home, "claude");

@@ -18,6 +18,9 @@ import {
 } from "../src/credentials.ts";
 import { decodeServerMessage, FakeBackend, RpcServer, type ServerMessage } from "../src/index.ts";
 import { bashTool } from "../src/tools/index.ts";
+import { requireIsolatedHome } from "./support/login-isolation.ts";
+
+requireIsolatedHome();
 
 const KEY = "sk-ant-api-SECRET-xyz";
 
