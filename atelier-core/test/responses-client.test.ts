@@ -160,3 +160,18 @@ it("sends no tools or reasoning when none are asked, and adds the endpoint's own
 		text: { verbosity: "low" },
 	});
 });
+
+it("fails as the endpoint's headers fail, without sending or retrying the request", async () => {
+	const refused = new Error("not signed in");
+	let asked = 0;
+	const failing: ResponsesEndpoint = {
+		...endpoint,
+		headers: async () => {
+			asked++;
+			throw refused;
+		},
+	};
+	await expect(collect(streamResponse(failing, body))).rejects.toBe(refused);
+	expect(asked).toBe(1);
+	expect(api.requests).toHaveLength(0);
+});

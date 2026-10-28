@@ -223,6 +223,20 @@ it("refreshes a refused token once and retries, and asks to sign in again when t
 	expect((error as { message: string }).message).toContain("/login account openai-codex");
 });
 
+it("asks to sign in again, at once, when the token expired and OpenAI refuses its refresh", async () => {
+	await signInLegacy(Date.now() - 1);
+	auth.routes.set("/oauth/token", () => ({ status: 400, json: { error: "invalid_grant" } }));
+	const { session } = await start();
+	const events = await turn(session);
+	const error = events.find((event) => event.type === "error");
+	expect(error).toMatchObject({ code: "not_logged_in", recoverable: false });
+	expect((error as { message: string }).message).toContain("/login account openai-codex");
+	expect((error as { message: string }).message).not.toContain("Could not reach");
+	expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error", requests: 0 });
+	expect(auth.requests.filter((request) => request.path === "/oauth/token")).toHaveLength(1);
+	expect(api.requests).toHaveLength(0);
+});
+
 it("says how to sign in when there is no sign-in", async () => {
 	const { session } = await start();
 	const events = await turn(session);
