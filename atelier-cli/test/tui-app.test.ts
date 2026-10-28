@@ -889,6 +889,24 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(130);
 	});
 
+	it("denies an approval with Ctrl+C during a turn, and interrupts the turn only with the next one", async () => {
+		const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo hi" } } }, { waitForInterrupt: true }]]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Run this command?"));
+		h.screen.type("\x03");
+		await until(() => h.backend.toolResults.length === 1);
+		expect(h.backend.toolResults[0]?.output).toBe("The user denied this command.");
+		expect(h.backend.interrupts).toBe(0);
+		h.screen.type("\x03");
+		await until(() => h.backend.interrupts === 1);
+		await until(() => h.screen.screen().includes("interrupted"));
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
 	it("ignores the keys typed just as an approval appears", async () => {
 		const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo hi" } } }, { event: finished }]]);
 		h.io.tui = { ...h.io.tui, answerGuardMs: 300 };
@@ -1394,6 +1412,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(screen).toContain("(asked by wor␛[31mker)");
 		expect(screen).toContain("mo␛[31mdel");
 		expect(screen).toContain("to␛[31mol");
+		// The first Ctrl+C closes the question, the second quits.
+		h.screen.type("\x03");
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});
@@ -1544,6 +1564,19 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 							...change({ backend: command.backend, model: "api-model" }),
 							backendChange: { from: "claude-code", summarized: true },
 						};
+					case "sessions.list":
+						return {
+							sessions: ["old1", "old2"].map((id) => ({
+								id,
+								createdAt: new Date().toISOString(),
+								updatedAt: new Date().toISOString(),
+								turns: 1,
+								lastPrompt: `prompt of ${id}`,
+								resumable: true,
+							})),
+						};
+					case "session.resume":
+						return { sessionId: "s1", configuration, entries: [] };
 					default:
 						return {};
 				}
@@ -1743,9 +1776,10 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(h.screen.screen()).toContain(`sonnet high · ${basename(cwd)} · profile fast · normal`);
 
 		// Esc closes a list without changing anything.
+		const mark = h.screen.raw().length;
 		h.screen.type("/model");
 		h.screen.type("\r");
-		await until(() => sent("options.list").length === 4);
+		await until(() => plain(h.screen.raw().slice(mark)).includes("Model on claude-code"));
 		h.screen.type("\x1b");
 		await new Promise((resolve) => setTimeout(resolve, 30));
 		expect(sent("session.set_model")).toHaveLength(1);
@@ -2002,11 +2036,118 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
+	/** Each kind of question, opened while no turn runs, and what the core receives when it is answered or closed. */
+	const questionKinds: {
+		name: string;
+		title: string;
+		open: (type: (keys: string) => void, emit: (event: Record<string, unknown>) => void) => void;
+		/** True once Enter answered it, on its first answer. */
+		answered: (sent: (name: string) => ClientCommand[], screen: string) => boolean;
+		/** True once Ctrl+C or Ctrl+D closed it `times` times, as Esc would; the TUI's own lists send nothing. */
+		closed?: (sent: (name: string) => ClientCommand[], times: number) => boolean;
+	}[] = [
+		{
+			name: "/model's list",
+			title: "Model on claude-code",
+			open: (type) => type("/model"),
+			answered: (_sent, screen) => screen.includes("model: opus (unchanged)"),
+		},
+		{
+			name: "/resume's list",
+			title: "Resume a session",
+			open: (type) => type("/resume"),
+			answered: (sent) => sent("session.resume").length === 1,
+		},
+		{
+			name: "/backend's list",
+			title: "Backend",
+			open: (type) => type("/backend"),
+			answered: (_sent, screen) => screen.includes("backend: claude-code (unchanged)"),
+		},
+		{
+			name: "the review consent",
+			title: "Review this high-risk change?",
+			open: (_type, emit) =>
+				emit({ type: "review_consent_requested", reviewId: "r1", level: "high", reasons: [], lenses: ["risk"] }),
+			answered: (sent) =>
+				sent("session.review_consent").some((command) => "answer" in command && command.answer === "granted"),
+			closed: (sent, times) =>
+				sent("session.review_consent").filter((command) => "answer" in command && command.answer === "declined")
+					.length === times,
+		},
+		{
+			name: "an approval",
+			title: "Run this command?",
+			open: (_type, emit) => emit({ type: "approval_requested", tool: "bash", callId: "a1", command: "echo hi" }),
+			answered: (sent) => sent("session.approve").some((command) => "approved" in command && command.approved),
+			closed: (sent, times) =>
+				sent("session.approve").filter((command) => "approved" in command && !command.approved).length === times,
+		},
+	];
+
+	it.each(questionKinds)(
+		"gives every key to $name with no turn running, and Ctrl+C or Ctrl+D close it as Esc does",
+		async (kind) => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const sent = (name: string) => stub.log.commands.filter((command) => command.command === name);
+			const since = (mark: number) => plain(h.screen.raw().slice(mark));
+			/** Opens the question with `draft` in the editor: a list's command is sent first, and the draft typed as it loads. */
+			const open = async (draft: string) => {
+				const mark = h.screen.raw().length;
+				const local = kind.closed === undefined;
+				if (local) {
+					kind.open(h.screen.type, stub.emit);
+					h.screen.type("\r");
+				}
+				if (draft !== "") h.screen.type(draft);
+				if (!local) kind.open(h.screen.type, stub.emit);
+				await until(() => since(mark).includes(kind.title));
+				return h.screen.raw().length;
+			};
+
+			// Typing and Enter answer it, queue nothing, and the draft comes back without what was typed.
+			let shown = await open("draft");
+			h.screen.type("xyz");
+			h.screen.type("\r");
+			await until(() => kind.answered(sent, h.screen.screen()));
+			await until(() => since(shown).includes("draft"));
+			expect(since(shown)).not.toContain("xyz");
+			expect(sent("session.queue")).toEqual([]);
+			expect(sent("session.send")).toEqual([]);
+			// Ctrl+C with no question clears the editor.
+			h.screen.type("\x03");
+
+			// Ctrl+C closes it and leaves the draft alone.
+			shown = await open("draft");
+			h.screen.type("\x03");
+			await until(() => since(shown).includes("draft"));
+			if (kind.closed) await until(() => kind.closed?.(sent, 1) === true);
+			h.screen.type("\x03");
+
+			// Ctrl+D with an empty editor closes it and does not quit: the editor takes the next keys.
+			shown = await open("");
+			h.screen.type("\x04");
+			if (kind.closed) await until(() => kind.closed?.(sent, 2) === true);
+			h.screen.type("later");
+			await until(() => since(shown).includes("later"));
+			expect(sent("session.send")).toEqual([]);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		},
+	);
+
 	it("counts every line of the reason among the lines a folded approval leaves out", async () => {
 		const { h, code, ask, dialog } = await approvalCore();
 		ask("echo safe", "first\nsecond\nthird");
 		await until(() => dialog().includes("OUTSIDE the sandbox"));
 		expect(dialog()).toContain("echo safe … 3 more lines (Ctrl+O)");
+		h.screen.type("\x03");
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});
@@ -2016,6 +2157,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		ask("\n\necho concealed");
 		await until(() => dialog().includes("Run this command?"));
 		expect(dialog()).toContain("echo concealed … 2 more lines (Ctrl+O)");
+		h.screen.type("\x03");
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});
@@ -2095,6 +2237,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				atelier("blocked", { kind: "question", message: "Review this high-risk change?" }),
 			);
 			h.screen.type("\x03");
+			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
 
@@ -2108,6 +2251,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("yolo"));
 			expect(h.screen.statuses).toEqual([atelier("idle")]);
+			h.screen.type("\x03");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
@@ -2500,6 +2644,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				state: "blocked",
 				message: "Review consent awaiting input",
 			});
+			h.screen.type("\x03");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 			await herdr.close();
