@@ -8,6 +8,7 @@ import {
 	connectMemory,
 	createBackend as createNamedBackend,
 	describeError,
+	loginWarning,
 	MemoryUnavailableError,
 	memoryPromptsEnabled,
 	openMcp,
@@ -62,6 +63,7 @@ const exitCode = await run(
 		env: process.env,
 		...(process.getuid ? { uid: process.getuid() } : {}),
 		home: homedir(),
+		checkLogin: (backend) => loginWarning(backend),
 		color: Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined,
 		...(process.stdin.isTTY && process.stdout.isTTY
 			? { setRawMode: (on: boolean) => void process.stdin.setRawMode(on) }

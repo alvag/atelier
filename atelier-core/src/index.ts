@@ -39,6 +39,8 @@ export {
 	claudeCodeLogin,
 	claudeCodeLogout,
 	describeClaudeCodeAuth,
+	type LoginWarningOptions,
+	loginWarning,
 } from "./claude-code-auth.ts";
 export { type CoreExit, RpcClient, type RpcClientOptions, RpcError } from "./client/rpc-client.ts";
 export {

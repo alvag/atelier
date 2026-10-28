@@ -2918,3 +2918,23 @@ esac
 		expect(await code).toBe(130);
 	});
 });
+
+describe("TUI login warning", { timeout: 20_000 }, () => {
+	it("says at start, before any prompt, what the session's backend lacks", async () => {
+		const h = harness([]);
+		const asked: string[] = [];
+		Object.assign(h.io, {
+			checkLogin: async (backend: string) => {
+				asked.push(backend);
+				return "Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account.";
+			},
+		});
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(() => h.screen.screen().includes("warning: Claude Code is not logged in: use /login"));
+		expect(asked).toHaveLength(1);
+		expect(h.backend.prompts).toEqual([]);
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+});

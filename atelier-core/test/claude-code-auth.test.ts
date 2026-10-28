@@ -1,7 +1,8 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AuthStore } from "../src/auth-store.ts";
 import {
 	bundledClaudeCode,
 	ClaudeCodeAuthError,
@@ -9,7 +10,9 @@ import {
 	claudeCodeLogin,
 	claudeCodeLogout,
 	describeClaudeCodeAuth,
+	loginWarning,
 } from "../src/claude-code-auth.ts";
+import { MISSING_API_KEY_MESSAGE } from "../src/credentials.ts";
 
 let dir: string;
 let fake: string;
@@ -97,4 +100,34 @@ it("runs Claude Code's own login for a Claude subscription and says how it ended
 		"auth logout key=none",
 	]);
 	expect(await claudeCodeAuthStatus({ executable: fake, env: {} })).toEqual({ loggedIn: false, authMethod: "none" });
+});
+
+describe("loginWarning", () => {
+	const store = () => new AuthStore(join(dir, "auth.json"));
+	const check = (backend: string, env: Record<string, string> = {}) =>
+		loginWarning(backend, { executable: fake, env, store: store(), platform: "linux" });
+
+	it("says how to sign in when Claude Code is not logged in, and offers anthropic-api when there is a key", async () => {
+		await status({ loggedIn: false, authMethod: "none" });
+		expect(await check("claude-code")).toBe(
+			"Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account.",
+		);
+		await store().set("anthropic", { type: "api_key", key: "k" });
+		expect(await check("claude-code")).toBe(
+			"Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account, or --backend anthropic-api to use your Anthropic API key.",
+		);
+	});
+
+	it("says nothing when the backend has its login or its key", async () => {
+		await status({ loggedIn: true, authMethod: "claude.ai" });
+		expect(await check("claude-code")).toBeUndefined();
+		expect(await check("anthropic-api", { ANTHROPIC_API_KEY: "k" })).toBeUndefined();
+		expect(await check("fake")).toBeUndefined();
+	});
+
+	it("says what is missing for anthropic-api, and why Claude Code could not be asked", async () => {
+		expect(await check("anthropic-api")).toBe(MISSING_API_KEY_MESSAGE);
+		const missing = await loginWarning("claude-code", { executable: join(dir, "nope"), env: {}, store: store() });
+		expect(missing).toMatch(/^Claude Code's login could not be checked: Claude Code could not be run/);
+	});
 });

@@ -84,7 +84,7 @@ export function mapSdkMessage(message: SDKMessage, context: MapContext): Atelier
 					{
 						type: "error",
 						code: "not_logged_in",
-						message: "Claude Code is not logged in. Run `claude`, use /login, and try again.",
+						message: "Claude Code is not logged in. Use /login (or run atelier login) and try again.",
 						recoverable: false,
 					},
 				];

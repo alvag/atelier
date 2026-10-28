@@ -30,7 +30,8 @@ export function lineLoginPorts(options: LineLoginOptions): LoginPorts {
 		if (options.interactive) lines.discardTyped();
 		write(prompt);
 		const answer = await lines.next(prompt.length, { hidden });
-		if (options.interactive) write("\n");
+		// A raw terminal does not echo Enter, and a piped answer is not echoed at all: end the question's line here.
+		write("\n");
 		return answer;
 	};
 	return {

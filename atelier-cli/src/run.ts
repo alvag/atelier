@@ -87,6 +87,8 @@ export interface CliIO {
 	appRoot?: string;
 	/** The Claude Code binary `/login` runs; the one Atelier installs when absent. Tests pass a fake. */
 	claudeCode?: string;
+	/** What the session's backend lacks (a login, a key), said at start; nothing is checked when absent. */
+	checkLogin?: (backend: string) => Promise<string | undefined>;
 	/** Starts Electron for `atelier desktop` without waiting for it; tests pass their own, so none is launched. */
 	openDesktop?: (binary: string, args: string[]) => void;
 }
@@ -193,6 +195,7 @@ export async function run(
 			...(io.onTerminate === undefined ? {} : { onTerminate: io.onTerminate }),
 			...(io.onInterrupt === undefined ? {} : { onInterrupt: io.onInterrupt }),
 			...(io.claudeCode === undefined ? {} : { claudeCode: io.claudeCode }),
+			...(io.checkLogin === undefined ? {} : { checkLogin: io.checkLogin }),
 		});
 	}
 
@@ -264,6 +267,9 @@ export async function run(
 		);
 		return EXIT_FAILED;
 	}
+	// Before the first prompt, not at its failure: what the backend lacks, and how to get it.
+	const loginMissing = await io.checkLogin?.(kind).catch(() => undefined);
+	if (loginMissing !== undefined) io.stderr(`warning: ${loginMissing}\n`);
 
 	let memory: MemoryPort | undefined;
 	let memoryUnavailable: string | undefined;

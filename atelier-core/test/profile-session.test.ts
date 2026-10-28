@@ -434,7 +434,7 @@ describe("a profiled orchestrator whose backend refuses its credentials mid-turn
 		{
 			backend: "claude-code",
 			code: "not_logged_in",
-			message: "Claude Code is not logged in. Run `claude`, use /login, and try again.",
+			message: "Claude Code is not logged in. Use /login (or run atelier login) and try again.",
 		},
 		{ backend: "anthropic-api", code: "authentication_error", message: "invalid x-api-key" },
 	] as const;

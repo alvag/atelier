@@ -2110,3 +2110,25 @@ describe("login and logout", () => {
 		expect(h.backend.prompts).toEqual([]);
 	});
 });
+
+describe("login warning at start", () => {
+	it("warns before the first prompt when the session's backend has no login, and says nothing otherwise", async () => {
+		const asked: string[] = [];
+		const h = harness([[{ event: started }, { event: finished }]]);
+		Object.assign(h.io, {
+			checkLogin: async (backend: string) => {
+				asked.push(backend);
+				return "Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account.";
+			},
+		});
+		expect(await run(["--no-session", "hi"], h.io, h.createBackend)).toBe(0);
+		expect(asked).toEqual(["claude-code"]);
+		expect(h.err()).toContain(
+			"warning: Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account.\n",
+		);
+		const quiet = harness([[{ event: started }, { event: finished }]]);
+		Object.assign(quiet.io, { checkLogin: async () => undefined });
+		expect(await run(["--no-session", "hi"], quiet.io, quiet.createBackend)).toBe(0);
+		expect(quiet.err()).not.toContain("warning:");
+	});
+});
