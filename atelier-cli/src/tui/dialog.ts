@@ -217,6 +217,14 @@ export class SecretDialog implements Component, Focusable {
 		this.#input.handleInput(data);
 	}
 
+	/** As a question's: nothing to guard, since a key typed early only adds a character the frame counts. */
+	reveal(): void {}
+
+	/** Nothing is folded: Ctrl+O opens the cards instead. */
+	toggle(): boolean {
+		return false;
+	}
+
 	invalidate(): void {}
 
 	render(width: number): string[] {
