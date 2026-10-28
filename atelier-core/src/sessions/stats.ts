@@ -49,6 +49,8 @@ export interface StatsOptions {
 	since?: Date;
 	/** Only this working directory's sessions. */
 	project?: string;
+	/** Only the saved session with this id; it is looked for in `project`'s folder, so it goes with it. */
+	session?: string;
 }
 
 /** One part of a turn, ready to be counted under its phase, role and model. */
@@ -97,6 +99,7 @@ export async function readSessionStats(home: string, options: StatsOptions = {})
 		if (project !== undefined && folder !== folderKey(project)) continue;
 		for (const name of await namesIn(join(root, folder))) {
 			if (!name.endsWith(".jsonl")) continue;
+			if (options.session !== undefined && name !== `${options.session}.jsonl`) continue;
 			const path = join(root, folder, name);
 			// A file not written since the start of the period holds no turn in it.
 			if (options.since !== undefined && (await mtime(path)) < options.since.getTime()) continue;
