@@ -88,14 +88,20 @@ export function closestName(name: string, known: readonly string[]): string | un
 	return best;
 }
 
-/** The backend prefix split from the model, or why the text is not a model. */
-function parseModel(value: unknown): { ok: true; entry: RoleEntry } | { ok: false; why: string } {
+/**
+ * The backend prefix split from the model, or why the text is not a model: `openai-codex/gpt-6-luna` names the backend,
+ * `sonnet` leaves it to the session. Profiles, `--model` and `/model` read a model with it.
+ */
+export function parseModel(value: unknown): { ok: true; entry: RoleEntry } | { ok: false; why: string } {
 	if (typeof value !== "string" || !SAFE_MODEL.test(value)) return { ok: false, why: "unsafe or empty model" };
 	const backend = PROFILE_BACKENDS.find((name) => value.startsWith(`${name}/`));
 	const model = backend === undefined ? value : value.slice(backend.length + 1);
 	if (model === "") return { ok: false, why: `no model after the "${backend}/" prefix` };
 	return { ok: true, entry: { ...(backend === undefined ? {} : { backend }), model } };
 }
+
+/** `backend/model`, the text `parseModel` reads back. */
+export const formatModel = (backend: ProfileBackend, model: string): string => `${backend}/${model}`;
 
 const isLevel = (value: unknown): value is ThinkingLevel => THINKING_LEVELS.includes(value as ThinkingLevel);
 

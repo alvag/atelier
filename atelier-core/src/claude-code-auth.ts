@@ -10,6 +10,7 @@ import {
 	MISSING_OPENCODE_GO_KEY_MESSAGE,
 	openCodeGoKeySource,
 } from "./credentials.ts";
+import { BACKEND_NAMES, type BackendName } from "./protocol/types.ts";
 
 /** What `claude auth status --json` says; `authMethod` is `claude.ai` for a Claude subscription. */
 export interface ClaudeCodeAuthStatus {
@@ -195,4 +196,10 @@ export async function loginWarning(backend: string, options: LoginWarningOptions
 		...(codexWarning(store, {}) === undefined ? [", or --backend openai-codex to use your ChatGPT sign-in"] : []),
 	];
 	return `Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account${others.join("")}.`;
+}
+
+/** The backends a session could run on now: those `loginWarning` finds nothing missing for, in `BACKEND_NAMES` order. */
+export async function signedInBackends(options: LoginWarningOptions = {}): Promise<BackendName[]> {
+	const missing = await Promise.all(BACKEND_NAMES.map((backend) => loginWarning(backend, options)));
+	return BACKEND_NAMES.filter((_, index) => missing[index] === undefined);
 }
