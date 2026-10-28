@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ApprovalRequest, FakeBackend, type FakeStep, Session } from "../src/index.ts";
 import { createBashTool } from "../src/tools/bash.ts";
 import { createEditTool, createWriteTool } from "../src/tools/index.ts";
@@ -25,6 +25,11 @@ const exists = (path: string) =>
 		() => true,
 		() => false,
 	);
+
+// Slow by nature, not by waiting: each edit or write call works out the protected places 2 to 4 times, with 7 to
+// 37 git processes each, and each bash test starts the real sandbox and runs a git workflow of about 40 processes.
+// Up to about 220 processes per test take 4.5 s on a lightly loaded machine; under heavy load 5 s is not enough.
+vi.setConfig({ testTimeout: 30_000 });
 
 beforeEach(async () => {
 	base = await realpath(await mkdtemp(join(tmpdir(), "atelier-git-protections-")));
