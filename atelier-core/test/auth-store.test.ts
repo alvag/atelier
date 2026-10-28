@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir, uptime } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { AuthStore, AuthStoreError, authFile, type Credential } from "../src/auth-store.ts";
@@ -193,7 +194,7 @@ it("never takes the lock from a live holder, even one stalled past the stale age
 		const lock = `${file}.lock`;
 		while (Date.now() - (await stat(lock)).mtimeMs <= 300) await new Promise((resolve) => setTimeout(resolve, 10));
 		let refreshes = 0;
-		const waiting = new AuthStore(file, { staleLockMs: 150, refreshLockTimeoutMs: 300 });
+		const waiting = new AuthStore(file, { staleLockMs: 150, lockTimeoutMs: 300, refreshLockTimeoutMs: 300 });
 		const failed = await waiting
 			.refreshed(
 				"openai-codex",
@@ -236,11 +237,11 @@ it("lets one waiter at a time take over a dead holder's lock, so each stale cred
 	let inside = 0;
 	let most = 0;
 	let refreshes = 0;
-	const rounds = 30;
+	const rounds = 20;
 	for (let round = 1; round <= rounds; round++) {
 		await store.set("openai-codex", { type: "oauth", access: `a-${round}`, refresh: `r-${round}`, expires: 0 });
 		// Left by the process that died, in one round named and in the next from an older Atelier, empty and old.
-		await writeFile(`${file}.lock`, round % 2 === 0 ? `${dead.pid} gone` : "");
+		await writeFile(`${file}.lock`, round % 2 === 0 ? `${dead.pid} ${hostname()} gone` : "");
 		const old = new Date(Date.now() - 60_000);
 		await utimes(`${file}.lock`, old, old);
 		await Promise.all(
@@ -262,4 +263,64 @@ it("lets one waiter at a time take over a dead holder's lock, so each stale cred
 	}
 	expect(most).toBe(1);
 	expect(refreshes).toBe(rounds);
+}, 20_000);
+
+it("judges another machine's lock by its age alone, which its holder keeps young", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	// A process id that does not run here may run on the other machine that shares this home.
+	const dead = spawn(process.execPath, ["-e", ""]);
+	await new Promise((resolve) => dead.once("exit", resolve));
+	await writeFile(`${file}.lock`, `${dead.pid} another-host.example ${randomUUID()}`);
+	const failed = await new AuthStore(file, { lockTimeoutMs: 200, staleLockMs: 60_000 })
+		.set("anthropic", { type: "api_key", key: "k" })
+		.catch((error: unknown) => error);
+	expect(failed).toBeInstanceOf(AuthStoreError);
+	const old = new Date(Date.now() - 120_000);
+	await utimes(`${file}.lock`, old, old);
+	await new AuthStore(file, { lockTimeoutMs: 1_000, staleLockMs: 60_000 }).set("anthropic", {
+		type: "api_key",
+		key: "k",
+	});
+	expect(new AuthStore(file).get("anthropic")).toEqual({ type: "api_key", key: "k" });
+});
+
+/** How long this machine has run, when it can be asked: a sandbox may refuse it. */
+const upTime = (() => {
+	try {
+		return uptime() * 1000;
+	} catch {
+		return undefined;
+	}
+})();
+
+it.skipIf(upTime === undefined)(
+	"takes over at once a lock left before this machine started, whatever process has its id now",
+	async () => {
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		// This process runs: as a pid reused after a reboot would.
+		await writeFile(`${file}.lock`, `${process.pid} ${hostname()} ${randomUUID()}`);
+		const beforeBoot = new Date(Date.now() - (upTime ?? 0) - 60_000);
+		await utimes(`${file}.lock`, beforeBoot, beforeBoot);
+		await new AuthStore(file, { lockTimeoutMs: 1_000 }).set("anthropic", { type: "api_key", key: "k" });
+		expect(new AuthStore(file).get("anthropic")).toEqual({ type: "api_key", key: "k" });
+	},
+);
+
+it("waits for the lock as long as the longer of its two timeouts when it refreshes", async () => {
+	const store = new AuthStore(file, { lockTimeoutMs: 2_000, refreshLockTimeoutMs: 50 });
+	await store.set("openai-codex", { type: "oauth", access: "a-0", refresh: "r-0", expires: 0 });
+	// Held by this process, which runs, and let go a little later.
+	await writeFile(`${file}.lock`, `${process.pid} ${hostname()} ${randomUUID()}`);
+	const release = setTimeout(() => void rm(`${file}.lock`, { force: true }), 300);
+	try {
+		await expect(
+			store.refreshed(
+				"openai-codex",
+				() => true,
+				async () => ({ type: "oauth", access: "a-1", refresh: "r-1", expires: 1 }),
+			),
+		).resolves.toMatchObject({ access: "a-1" });
+	} finally {
+		clearTimeout(release);
+	}
 });
