@@ -1553,7 +1553,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 	});
 
 	/** A core on claude-code with two models and two profiles, which answers each change with the configuration it leaves. */
-	function listingCore() {
+	function listingCore(signedIn: string[] = ["claude-code", "openai-codex"]) {
 		let configuration: Record<string, unknown> = {
 			backend: "claude-code",
 			model: "opus",
@@ -1576,7 +1576,11 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 							backends: [
 								{ name: "claude-code", models: ["opus", "sonnet"] },
 								{ name: "anthropic-api", models: ["api-model"] },
+								{ name: "openai-codex", models: ["gpt-luna"] },
 							],
+							models: signedIn.flatMap((provider) =>
+								(provider === "claude-code" ? ["opus", "sonnet"] : ["gpt-luna"]).map((model) => ({ provider, model })),
+							),
 							efforts: ["low", "medium", "high"],
 							modes: ["normal", "auto", "yolo"],
 							profiles: ["cheap", "fast"],
@@ -1590,7 +1594,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 						return change({ profile: { name: command.profile, origin: "explicit" } });
 					case "session.set_backend":
 						return {
-							...change({ backend: command.backend, model: "api-model" }),
+							...change({ backend: command.backend, model: command.model ?? "api-model" }),
 							backendChange: { from: "claude-code", summarized: true },
 						};
 					case "sessions.list":
@@ -1781,8 +1785,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 
 		h.screen.type("/model");
 		h.screen.type("\r");
-		await until(() => h.screen.screen().includes("Model on claude-code"));
-		expect(h.screen.screen()).toMatch(/opus +current/);
+		await until(() => h.screen.screen().includes("gpt-luna [openai-codex]"));
+		expect(h.screen.screen()).toMatch(/opus \[claude-code\] +current/);
 		h.screen.type("\x1b[B");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("model: sonnet from the next turn"));
@@ -1808,7 +1812,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		const mark = h.screen.raw().length;
 		h.screen.type("/model");
 		h.screen.type("\r");
-		await until(() => plain(h.screen.raw().slice(mark)).includes("Model on claude-code"));
+		await until(() => plain(h.screen.raw().slice(mark)).includes("gpt-luna [openai-codex]"));
 		h.screen.type("\x1b");
 		await new Promise((resolve) => setTimeout(resolve, 30));
 		expect(sent("session.set_model")).toHaveLength(1);
@@ -1866,10 +1870,9 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 	});
 
 	it.each([
-		["/model a b", "usage: /model [name]"],
+		["/model a b", "usage: /model [provider/model]"],
 		["/effort high now", "usage: /effort [level]"],
 		["/profile a b", "usage: /profile [name]"],
-		["/backend a b", "usage: /backend [claude-code|anthropic-api|opencode-go|openai-codex]"],
 		["/new x", "usage: /new"],
 		["/resume a b", "usage: /resume [id]"],
 		["/undo-correction x", "usage: /undo-correction"],
@@ -1883,12 +1886,15 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		h.screen.type(line);
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes(usageLine));
-		expect(stub.log.commands.map((command) => command.command)).toEqual(["session.start"]);
+		// The models are asked for at start, whatever is typed.
+		expect(stub.log.commands.map((command) => command.command).filter((name) => name !== "options.list")).toEqual([
+			"session.start",
+		]);
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});
 
-	it("asks before moving to another backend, starting on Stay", async () => {
+	it("asks before moving to a model of another provider, starting on Stay, and moves with that model", async () => {
 		const h = harness([]);
 		const stub = listingCore();
 		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
@@ -1896,27 +1902,120 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		await until(h.screen.started);
 		const moves = () => stub.log.commands.filter((command) => command.command === "session.set_backend");
 
-		h.screen.type("/backend");
+		h.screen.type("/model");
 		h.screen.type("\r");
-		await until(() => h.screen.screen().includes("Backend"));
+		await until(() => h.screen.screen().includes("gpt-luna [openai-codex]"));
+		h.screen.type("\x1b[B");
 		h.screen.type("\x1b[B");
 		h.screen.type("\r");
-		await until(() => h.screen.screen().includes("Move this session to anthropic-api?"));
+		await until(() => h.screen.screen().includes("Move this session to openai-codex?"));
 		expect(h.screen.screen()).toContain("detail is lost, and the prompt cache starts over.");
 		h.screen.type("\r");
-		await until(() => h.screen.screen().includes("backend: claude-code (unchanged)"));
+		await until(() => h.screen.screen().includes("model: opus (unchanged)"));
 		expect(moves()).toEqual([]);
 
-		h.screen.type("/backend anthropic-api");
+		h.screen.type("/model openai-codex/gpt-luna");
 		h.screen.type("\r");
-		await until(() => h.screen.screen().split("Move this session to anthropic-api?").length === 3);
+		await until(() => h.screen.screen().split("Move this session to openai-codex?").length === 3);
 		h.screen.type("\x1b[A");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("with a summary of the conversation"));
-		expect(moves()).toEqual([{ command: "session.set_backend", sessionId: "s1", backend: "anthropic-api" }]);
-		expect(h.screen.screen()).toContain(`api-model medium · ${basename(cwd)} · profile cheap`);
+		expect(moves()).toEqual([
+			{ command: "session.set_backend", sessionId: "s1", backend: "openai-codex", model: "gpt-luna" },
+		]);
+		expect(h.screen.screen()).toContain("backend: openai-codex, model: gpt-luna from the next turn");
+		expect(h.screen.screen()).toContain(`gpt-luna medium · ${basename(cwd)} · profile cheap`);
+		expect(stub.log.commands.filter((command) => command.command === "session.set_model")).toEqual([]);
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
+	});
+
+	it("completes /model with the models of every provider signed in to, filtered as it is typed", async () => {
+		const h = harness([]);
+		const stub = listingCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(() => stub.log.commands.some((command) => command.command === "options.list"));
+		const mark = h.screen.raw().length;
+		const since = () => plain(h.screen.raw().slice(mark));
+		for (const key of "/model ") h.screen.type(key);
+		await until(() => /gpt-luna +openai-codex/.test(since()));
+		expect(since()).toMatch(/opus +claude-code · current/);
+		expect(since()).toMatch(/sonnet +claude-code/);
+		for (const key of "gpt") h.screen.type(key);
+		await until(() => /\/model gpt *─+→ gpt-luna +openai-codex *$/.test(since()));
+		h.screen.type("\t");
+		await until(() => h.screen.screen().includes("/model openai-codex/gpt-luna"));
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Move this session to openai-codex?"));
+		h.screen.type("\x1b");
+		await until(() => h.screen.screen().includes("model: opus (unchanged)"));
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
+	it("keeps the model in use marked current and signed out when its provider has no sign-in", async () => {
+		const h = harness([]);
+		const stub = listingCore(["openai-codex"]);
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/model");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("gpt-luna [openai-codex]"));
+		expect(h.screen.screen()).toMatch(/opus \[claude-code\] +current · signed out/);
+		expect(h.screen.screen()).not.toContain("sonnet [claude-code]");
+		h.screen.type("\x1b");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(stub.log.commands.map((command) => command.command)).not.toContain("session.set_model");
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
+	it("asks for the models at start, and again after /login and /logout, so a new sign-in is listed", async () => {
+		const h = harness([]);
+		const stub = listingCore();
+		Object.assign(h.io, { env: {} });
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		const lists = () => stub.log.commands.filter((command) => command.command === "options.list").length;
+		await until(() => lists() === 1);
+		h.screen.type("/login api-key opencode-go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("0 characters (hidden)"));
+		h.screen.type("test-key");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("API key stored"));
+		await until(() => lists() === 2);
+		h.screen.type("/logout api-key opencode-go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("API key removed"));
+		await until(() => lists() === 3);
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
+	it("says what is wrong with a model it cannot read, and has no /backend command", async () => {
+		const h = harness([]);
+		const stub = listingCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/model claude-code/");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes('error: no model after the "claude-code/" prefix'));
+		h.screen.type("/back");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(h.screen.screen()).not.toContain("Move the session to another backend");
+		h.screen.type("end anthropic-api");
+		h.screen.type("\r");
+		await until(() => stub.log.commands.some((command) => command.command === "session.send"));
+		expect(stub.log.commands.filter((command) => command.command === "session.send")).toEqual([
+			{ command: "session.send", sessionId: "s1", prompt: "/backend anthropic-api" },
+		]);
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
 	});
 
 	/** A TUI on a stub core that emits the approvals a test asks for, with no key guard. */
@@ -2077,7 +2176,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 	}[] = [
 		{
 			name: "/model's list",
-			title: "Model on claude-code",
+			title: "Select a model",
 			open: (type) => type("/model"),
 			answered: (_sent, screen) => screen.includes("model: opus (unchanged)"),
 		},
@@ -2086,12 +2185,6 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			title: "Resume a session",
 			open: (type) => type("/resume"),
 			answered: (sent) => sent("session.resume").length === 1,
-		},
-		{
-			name: "/backend's list",
-			title: "Backend",
-			open: (type) => type("/backend"),
-			answered: (_sent, screen) => screen.includes("backend: claude-code (unchanged)"),
 		},
 		{
 			name: "the review consent",
@@ -2619,7 +2712,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(h.err()).toBe("");
 		});
 
-		it("gives a saved session the command that resumes it, again after a backend change", async () => {
+		it("gives a saved session the command that resumes it, again after a move to another provider", async () => {
 			const herdr = await fakeHerdr();
 			const h = harness([]);
 			const stub = listingCore();
@@ -2636,9 +2729,9 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			};
 			const code = run([], h.io, () => h.backend);
 			await until(h.screen.started);
-			h.screen.type("/backend anthropic-api");
+			h.screen.type("/model openai-codex/gpt-luna");
 			h.screen.type("\r");
-			await until(() => h.screen.screen().includes("Move this session to anthropic-api?"));
+			await until(() => h.screen.screen().includes("Move this session to openai-codex?"));
 			h.screen.type("\x1b[A");
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("with a summary of the conversation"));

@@ -71,25 +71,24 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 ### Commands
 
-| Command                     | Effect                                                                 |
-| --------------------------- | ---------------------------------------------------------------------- |
-| `/model [name]`             | Change the model from the next turn; without a name, pick from a list. |
-| `/effort [level]`           | Change the thinking level (`off`, `minimal`, `low` … `max`).           |
-| `/profile [name]`           | Change the agent profile.                                              |
-| `/mode [mode]`              | Change the permission mode; `/mode default <mode>` saves the default.  |
-| `/backend [name]`           | Move the session to another backend (it continues from a summary).     |
-| `/new`                      | Start another session.                                                 |
-| `/resume [id]`              | Resume a saved session of this directory.                              |
-| `/feature`                  | Open or fold the active feature's tasks.                               |
-| `/mcp [login\|logout <s>]`  | Show the session's MCP servers, or sign one in or out.                 |
-| `/login`, `/logout`         | Sign in or out with an account or an API key, as `atelier login` does. |
-| `/permissions [remove <n>]` | List the commands and folders you allowed, or remove one.              |
-| `/review [ref]`             | Review the working tree now, against `HEAD` or a git ref.              |
-| `/undo-correction`          | Undo the latest escalated review correction.                           |
-| `/compact [instructions]`   | Summarize the older history now.                                       |
-| `/status`                   | Show the model, sandbox, instructions, skills, memory and cost.        |
-| `/stats [project]`          | Show this session's cost by model and role, or the directory's.        |
-| `/exit`                     | Quit.                                                                  |
+| Command                     | Effect                                                                                                                                                              |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/model [provider/model]`   | Change the model, of any provider you are signed in to; without a name, pick from a list. Another provider's moves the session there (it continues from a summary). |
+| `/effort [level]`           | Change the thinking level (`off`, `minimal`, `low` … `max`).                                                                                                        |
+| `/profile [name]`           | Change the agent profile.                                                                                                                                           |
+| `/mode [mode]`              | Change the permission mode; `/mode default <mode>` saves the default.                                                                                               |
+| `/new`                      | Start another session.                                                                                                                                              |
+| `/resume [id]`              | Resume a saved session of this directory.                                                                                                                           |
+| `/feature`                  | Open or fold the active feature's tasks.                                                                                                                            |
+| `/mcp [login\|logout <s>]`  | Show the session's MCP servers, or sign one in or out.                                                                                                              |
+| `/login`, `/logout`         | Sign in or out with an account or an API key, as `atelier login` does.                                                                                              |
+| `/permissions [remove <n>]` | List the commands and folders you allowed, or remove one.                                                                                                           |
+| `/review [ref]`             | Review the working tree now, against `HEAD` or a git ref.                                                                                                           |
+| `/undo-correction`          | Undo the latest escalated review correction.                                                                                                                        |
+| `/compact [instructions]`   | Summarize the older history now.                                                                                                                                    |
+| `/status`                   | Show the model, sandbox, instructions, skills, memory and cost.                                                                                                     |
+| `/stats [project]`          | Show this session's cost by model and role, or the directory's.                                                                                                     |
+| `/exit`                     | Quit.                                                                                                                                                               |
 
 ### Keys
 
