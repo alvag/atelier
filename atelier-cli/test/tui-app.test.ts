@@ -1844,7 +1844,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		["/model a b", "usage: /model [name]"],
 		["/effort high now", "usage: /effort [level]"],
 		["/profile a b", "usage: /profile [name]"],
-		["/backend a b", "usage: /backend [claude-code|anthropic-api]"],
+		["/backend a b", "usage: /backend [claude-code|anthropic-api|opencode-go]"],
 		["/new x", "usage: /new"],
 		["/resume a b", "usage: /resume [id]"],
 		["/undo-correction x", "usage: /undo-correction"],

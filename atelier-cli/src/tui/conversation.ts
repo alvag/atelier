@@ -1,6 +1,6 @@
 import { type AtelierEvent, visibleText } from "@atelier/core";
 import { type Component, Container, Markdown, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
+import { API_KEY_BACKENDS, phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
 import { ActivityBlock } from "./activity-block.ts";
 import { PromptBlock } from "./prompt.ts";
 import { ReviewBlock } from "./review-block.ts";
@@ -291,7 +291,7 @@ export class Conversation extends Container {
 		if (header !== this.#header && event.permissionMode === "yolo")
 			this.note("mode: yolo · what normal mode would ask runs without asking", true);
 		this.#header = header;
-		if (event.authSource !== "subscription" && event.backend !== "anthropic-api")
+		if (event.authSource !== "subscription" && !API_KEY_BACKENDS.has(event.backend))
 			this.note(
 				`warning: not using a Claude subscription (auth: ${event.authSource}); usage may be billed separately.`,
 				true,

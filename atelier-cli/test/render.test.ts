@@ -202,9 +202,10 @@ describe("Renderer", () => {
 		expect(stderr).toBe("warning: not using a Claude subscription (auth: api_key); usage may be billed separately.\n");
 	});
 
-	it("does not warn about billing on the anthropic-api backend, which is billed to the API key on purpose", () => {
+	it("does not warn about billing on anthropic-api or opencode-go, which are billed to their key on purpose", () => {
 		const { stderr } = render([
 			{ type: "session_started", backend: "anthropic-api", model: "claude-sonnet-5-5", authSource: "api_key" },
+			{ type: "session_started", backend: "opencode-go", model: "minimax-m3", authSource: "api_key" },
 		]);
 		expect(stderr).toBe("");
 	});

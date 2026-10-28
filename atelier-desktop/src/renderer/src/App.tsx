@@ -321,6 +321,8 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 				) : null}
 				{state.backend === "anthropic-api" ? (
 					<span>billed to your Anthropic API key</span>
+				) : state.backend === "opencode-go" ? (
+					<span>billed to your OpenCode Go plan</span>
 				) : state.authSource && state.authSource !== "subscription" ? (
 					<span className="warning">not using a Claude subscription ({state.authSource})</span>
 				) : null}

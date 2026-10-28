@@ -127,7 +127,7 @@ describe("parseCliArgs", () => {
 		[["--nope"], /Unknown option '--nope'/],
 		[["--model"], /--model/],
 		[["--model", ""], /--model needs a value/],
-		[["--backend", "openai"], /--backend must be claude-code or anthropic-api/],
+		[["--backend", "openai"], /--backend must be claude-code, anthropic-api or opencode-go/],
 		[["   "], /The prompt is empty/],
 	])("rejects %j", (argv, message) => {
 		expect(() => parseCliArgs(argv, "/h")).toThrow(UsageError);

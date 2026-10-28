@@ -11,6 +11,7 @@ Coding-agent orchestrator with two first-class clients, a terminal UI and a desk
 - Node 22.19+ and pnpm. TypeScript runs natively; there is no build step.
 - For the default `claude-code` backend: a Claude subscription. Atelier brings its own Claude Code; sign in once with `atelier login account anthropic` (or `/login` in a session), which runs Claude Code's sign-in in the browser. It shares the login of any Claude Code on this machine, so if `claude` is already logged in there is nothing to do.
 - For the `anthropic-api` backend: an Anthropic API key with credit. `atelier login api-key anthropic` asks for it without showing it and keeps it in `~/.atelier/auth.json`. `ANTHROPIC_API_KEY` set for a single command takes priority, and a key stored in the macOS Keychain (service `atelier-anthropic`) by earlier versions still works. Do not export `ANTHROPIC_API_KEY` in your shell profile: Claude Code would then bill the API instead of your subscription.
+- For the `opencode-go` backend: an [OpenCode Go](https://opencode.ai/docs/go) plan. `atelier login api-key opencode-go` keeps its key in `~/.atelier/auth.json`; `OPENCODE_API_KEY` set for a command takes priority. Then `atelier --backend opencode-go` runs `minimax-m3`, or `--model` another of its models (`/model` lists them).
 - Optional: [Engram](https://github.com/Gentleman-Programming/engram) 3.4.0 or newer for long-term memory.
 
 ## Install

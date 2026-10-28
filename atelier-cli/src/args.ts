@@ -74,8 +74,10 @@ Options:
                          anthropic-api: Atelier's own loop, billed to an API key:
                          ANTHROPIC_API_KEY, else the one atelier login stored, else
                          the macOS Keychain (service atelier-anthropic)
+                         opencode-go: the same loop on OpenCode Go's models:
+                         OPENCODE_API_KEY, else the one atelier login stored
       --model <name>     Model to use (default: opus on claude-code,
-                         claude-sonnet-5-5 on anthropic-api)
+                         claude-sonnet-5-5 on anthropic-api, minimax-m3 on opencode-go)
       --profile <name>   Agent profile from ~/.atelier/profiles.json for this session,
                          over the local pin, the repository's and the active one;
                          --model and --backend still replace the main agent's
@@ -172,7 +174,8 @@ export function parseCliArgs(
 	const mode = values.mode;
 	if (mode !== undefined && !isPermissionMode(mode)) throw new UsageError("--mode must be normal, auto or yolo.");
 	const backend = values.backend ?? DEFAULT_BACKEND;
-	if (!isBackendName(backend)) throw new UsageError(`--backend must be ${BACKEND_NAMES.join(" or ")}.`);
+	if (!isBackendName(backend))
+		throw new UsageError(`--backend must be ${BACKEND_NAMES.slice(0, -1).join(", ")} or ${BACKEND_NAMES.at(-1)}.`);
 	if (values.resume !== undefined && values.resume.trim() === "") throw new UsageError("--resume needs a value.");
 	if (values.continue && values.resume !== undefined)
 		throw new UsageError("--continue and --resume cannot be used together.");

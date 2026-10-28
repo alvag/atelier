@@ -61,7 +61,7 @@ import {
 	type PermissionRules,
 	PermissionRulesError,
 } from "./permission-rules.ts";
-import { thinkingToSend } from "./pricing.ts";
+import { type ThinkingBackend, thinkingToSend } from "./pricing.ts";
 import {
 	compactionSettings,
 	type FrozenProfile,
@@ -242,7 +242,7 @@ export class ConfigureError extends Error {
 	}
 }
 
-const THINKING_BACKENDS: ReadonlySet<string> = new Set(["claude-code", "anthropic-api"]);
+const THINKING_BACKENDS: ReadonlySet<string> = new Set(["claude-code", "anthropic-api", "opencode-go"]);
 
 export interface SubagentOptions {
 	agents: readonly SubagentDefinition[];
@@ -1167,7 +1167,7 @@ export class Session {
 		const next: PhaseAgent = { ...agent, ...(this.#model === undefined ? {} : { model: this.#model }) };
 		const backend = this.#options.backend.id;
 		if (this.#thinking !== undefined && THINKING_BACKENDS.has(backend)) {
-			const sent = thinkingToSend(next.model, this.#thinking, backend as "claude-code" | "anthropic-api");
+			const sent = thinkingToSend(next.model, this.#thinking, backend as ThinkingBackend);
 			if (sent !== undefined) {
 				next.effort = sent.report;
 				delete next.effectiveEffort;

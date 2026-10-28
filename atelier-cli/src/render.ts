@@ -22,6 +22,9 @@ export interface RendererOptions {
 type Style = Parameters<typeof styleText>[0];
 
 const numbers = new Intl.NumberFormat("en-US");
+
+/** The backends billed to an API key by choice: no warning that they do not use a Claude subscription. */
+export const API_KEY_BACKENDS: ReadonlySet<string> = new Set(["anthropic-api", "opencode-go"]);
 /** Starts every line a subagent produces, so its work reads as nested under the task call. */
 const CHILD = "  │ ";
 
@@ -422,8 +425,8 @@ export class Renderer {
 				this.#backend = event.backend;
 				this.#profile = event.profile ?? this.#profile;
 				if (this.#profile !== undefined) this.#line(this.#style("dim", profileLine(this.#profile)));
-				// anthropic-api is billed to the API key by choice; only an unexpected bill deserves a warning.
-				if (event.authSource !== "subscription" && event.backend !== "anthropic-api")
+				// anthropic-api and opencode-go are billed to their key by choice; only an unexpected bill deserves a warning.
+				if (event.authSource !== "subscription" && !API_KEY_BACKENDS.has(event.backend))
 					this.#warn(
 						`warning: not using a Claude subscription (auth: ${event.authSource}); usage may be billed separately.`,
 					);

@@ -121,6 +121,9 @@ describe("loginWarning", () => {
 		expect(await check("claude-code")).toBe(
 			"Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account, or --backend anthropic-api to use your Anthropic API key.",
 		);
+		expect(await check("claude-code", { OPENCODE_API_KEY: "k" })).toBe(
+			"Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account, or --backend anthropic-api to use your Anthropic API key, or --backend opencode-go to use your OpenCode Go key.",
+		);
 	});
 
 	it("says nothing when the backend has its login or its key", async () => {

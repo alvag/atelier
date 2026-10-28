@@ -1,3 +1,4 @@
+import { OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
 import type { Effort, Usage } from "./events.ts";
 import type { ThinkingLevel } from "./profiles/index.ts";
 
@@ -97,7 +98,7 @@ export function summarizesThinking(model: string, sent: ThinkingSend | undefined
 	return sent?.thinking === undefined && THINKING_ON_BY_DEFAULT.has(ALIASES[model] ?? model);
 }
 
-export type ThinkingBackend = "anthropic-api" | "claude-code";
+export type ThinkingBackend = "anthropic-api" | "claude-code" | "opencode-go";
 
 /** What a backend sends for a thinking level, and what `session_started.effort` says about it. */
 export interface ThinkingSend {
@@ -119,6 +120,12 @@ export function thinkingToSend(
 ): ThinkingSend | undefined {
 	if (level === undefined) return undefined;
 	const id = ALIASES[model] ?? model;
+	// OpenCode Go's Claude models take what Anthropic's do; the rest take the levels of its table.
+	if (backend === "opencode-go" && EFFORT_LEVELS[id] === undefined) {
+		if (level === "off") return { report: "unsupported" };
+		const effort = level === "minimal" ? "low" : level;
+		return OPENCODE_GO_MODELS[model]?.efforts.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
+	}
 	if (level === "off") {
 		const off = THINKING_OFF[id];
 		if (off === undefined || (off === "between_tools" && backend === "claude-code")) return { report: "unsupported" };
@@ -128,9 +135,9 @@ export function thinkingToSend(
 	return EFFORT_LEVELS[id]?.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
 }
 
-/** Cost of one API request, or undefined when the model is not in the table. */
+/** Cost of one API request, or undefined when the model is not in the table (Anthropic's, then OpenCode Go's). */
 export function costOfRequest(model: string, usage: Usage): number | undefined {
-	const tiers = PRICES[model];
+	const tiers = PRICES[model] ?? OPENCODE_GO_MODELS[model]?.prices;
 	if (!tiers) return undefined;
 	const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
 	const tier = tiers.find((t) => t.upToPromptTokens === undefined || promptTokens <= t.upToPromptTokens);
