@@ -752,6 +752,18 @@ describe("user prompts", () => {
 		]);
 	});
 
+	it("masks a long unspaced blob in linear time, and still masks the secret at its end", async () => {
+		const blobs = ["a-", "a.", "a_", "a+", "x://"].map((run) => `${run.repeat(30_000)} DB_PASSWORD=hunter2`);
+		const { memory, session: s, send } = await session(blobs.map(() => [{ event: finished }]));
+		const started = performance.now();
+		for (const blob of blobs) await send(blob);
+		const elapsed = performance.now() - started;
+		await s.close();
+		expect(elapsed).toBeLessThan(1000);
+		expect(memory.prompts).toHaveLength(5);
+		for (const kept of memory.prompts) expect(kept).not.toContain("hunter2");
+	});
+
 	it("masks a URL password up to the authority's last '@', with '@' or '/' inside it", async () => {
 		const prompts = [
 			"git clone https://ana:p@ss@host.example/x.git",

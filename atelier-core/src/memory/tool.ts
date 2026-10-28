@@ -39,9 +39,60 @@ export function findSecret(text: string): string | undefined {
 /** A private key block from its BEGIN line through its END line, or to the end of the text when it has none. */
 const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|[\s\S]*$)/g;
 
-/** Names whose value is a credential when one is assigned to them (`DB_PASSWORD=…`, `api_key: …`). */
-const SECRET_NAME =
-	"[A-Za-z0-9_.-]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIAL)[A-Za-z0-9_.-]*";
+/** Words that make a name's value a credential when one is assigned to it (`DB_PASSWORD=…`, `api_key: …`). */
+const SECRET_WORD = /PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIAL/i;
+/**
+ * A name followed by `=` or `:`. The lookbehind starts it only where a run of name characters starts, and the
+ * lookahead with its backreference takes the run whole, without giving characters back: linear on any text.
+ */
+const ASSIGNMENT = /(?<![A-Za-z0-9_.-])(?=([A-Za-z0-9_.-]+))\1["']?[ \t]*[:=][ \t]*/g;
+/** The value an assignment gives: quoted, or up to a space, a quote, a comma or a semicolon. */
+const ASSIGNED_VALUE = /"[^"\n]*"|'[^'\n]*'|[^\s"',;]+/y;
+
+/** The values assigned to names with a secret's word in them, replaced by `[REDACTED]`; the names stay. */
+function maskAssigned(text: string): string {
+	let masked = "";
+	let last = 0;
+	for (const assignment of text.matchAll(ASSIGNMENT)) {
+		const start = assignment.index + assignment[0].length;
+		if (start < last || !SECRET_WORD.test(assignment[1] as string)) continue;
+		ASSIGNED_VALUE.lastIndex = start;
+		const value = ASSIGNED_VALUE.exec(text);
+		if (!value) continue;
+		masked += `${text.slice(last, start)}[REDACTED]`;
+		last = start + value[0].length;
+	}
+	return masked + text.slice(last);
+}
+
+/** Where a URL's password starts: after `scheme://user:`, only where a scheme can start. */
+const URL_USER = /(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:/gi;
+
+/**
+ * The password of each `scheme://user:password@host` URL replaced by `[REDACTED]`, up to the authority's last '@':
+ * one that the next '@' follows without a '/', '?', '#' or space between them still belongs to the password. Each
+ * search resumes past what it read, so the work stays linear on any text.
+ */
+function maskUrlPasswords(text: string): string {
+	let masked = "";
+	let last = 0;
+	URL_USER.lastIndex = 0;
+	for (let user = URL_USER.exec(text); user !== null; user = URL_USER.exec(text)) {
+		const start = user.index + user[0].length;
+		let at = -1;
+		let i = start;
+		while (i < text.length && !/\s/.test(text[i] as string)) {
+			if (text[i] === "@") at = i;
+			else if (at !== -1 && "/?#".includes(text[i] as string)) break;
+			i++;
+		}
+		URL_USER.lastIndex = Math.max(URL_USER.lastIndex, at === -1 ? i : at);
+		if (at === -1) continue;
+		masked += `${text.slice(last, start)}[REDACTED]`;
+		last = at;
+	}
+	return masked + text.slice(last);
+}
 
 /** Credentials told by where they stand, not by their shape: group 1 (the name) stays, the value is replaced. */
 const VALUE_MASKS: RegExp[] = [
@@ -51,11 +102,6 @@ const VALUE_MASKS: RegExp[] = [
 	/\b((?:Proxy-)?Authorization["']?[ \t]*[:=][ \t]*')[^'\n]*/gi,
 	/\b((?:Proxy-)?Authorization["']?[ \t]*[:=][ \t]*)(?![ \t"'])[^\n"']+/gi,
 	/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi,
-	new RegExp(`\\b(${SECRET_NAME}["']?\\s*[:=]\\s*)(?:"[^"\\n]*"|'[^'\\n]*'|[^\\s"',;]+)`, "gi"),
-	// A password in a URL, scheme://user:password@host, up to the authority's last '@': one that the next '@' follows
-	// without a '/', '?' or '#' between them still belongs to the password. Starting only where a scheme can start
-	// keeps it linear on long runs of scheme characters.
-	/(?<![A-Za-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:)[^\s@]*(?:@[^\s@/?#]*(?=@))*(?=@)/gi,
 ];
 
 /** The private key blocks and the shapes `findSecret` knows, replaced by `[REDACTED]` where they stand whole. */
@@ -68,10 +114,11 @@ function maskShapes(text: string): string {
 
 /** The values the masks tell by where they stand (a header, a secret's name, a URL), replaced by `[REDACTED]`. */
 function maskPlaced(text: string): string {
-	return VALUE_MASKS.reduce(
+	const valued = VALUE_MASKS.reduce(
 		(masked, pattern) => masked.replace(pattern, (_match, name: string) => `${name}[REDACTED]`),
 		text,
 	);
+	return maskAssigned(maskUrlPasswords(valued));
 }
 
 /**
