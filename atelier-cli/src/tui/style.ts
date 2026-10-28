@@ -96,9 +96,28 @@ export class Shade {
 	}
 }
 
-/** How far a card's background moves from the terminal's, and how much red or green a diff's band takes, on a dark and a light terminal. */
-const CARD_MIX = { dark: 0.06, light: 0.03 };
-const BAND_MIX = { dark: 0.22, light: 0.15 };
+/**
+ * How far a card's background moves from the terminal's, and how much red or green a diff's band takes, on a dark and
+ * a light terminal: the first amount that still tells it apart from the colors before it, which 256 colors may need.
+ */
+const CARD_MIX = { dark: [0.06, 0.1, 0.15], light: [0.03, 0.06, 0.1] };
+const BAND_MIX = { dark: [0.22, 0.3, 0.4, 0.5, 0.65], light: [0.15, 0.22, 0.3, 0.4, 0.55] };
+
+/** The background of `base` mixed toward `toward` by the first of `amounts` the terminal shows apart from `taken`. */
+function distinct(
+	base: Color,
+	toward: Color,
+	amounts: readonly number[],
+	mode: TerminalColorMode,
+	taken: readonly string[],
+): string {
+	let ansi = "";
+	for (const amount of amounts) {
+		ansi = backgroundAnsi(mixColors(base, toward, amount), mode);
+		if (!taken.includes(ansi)) return ansi;
+	}
+	return ansi;
+}
 const RED = rgbColor(220, 50, 47);
 const GREEN = rgbColor(40, 160, 60);
 
@@ -132,11 +151,11 @@ export class Tones {
 		const dark = colorToOklch(base).l < 0.5;
 		const toward = dark ? rgbColor(255, 255, 255) : rgbColor(0, 0, 0);
 		const band = dark ? BAND_MIX.dark : BAND_MIX.light;
-		this.#ansi = {
-			card: backgroundAnsi(mixColors(base, toward, dark ? CARD_MIX.dark : CARD_MIX.light), mode),
-			removed: backgroundAnsi(mixColors(base, RED, band), mode),
-			added: backgroundAnsi(mixColors(base, GREEN, band), mode),
-		};
+		const terminal = backgroundAnsi(base, mode);
+		const card = distinct(base, toward, dark ? CARD_MIX.dark : CARD_MIX.light, mode, [terminal]);
+		const removed = distinct(base, RED, band, mode, [terminal, card]);
+		const added = distinct(base, GREEN, band, mode, [terminal, card, removed]);
+		this.#ansi = { card, removed, added };
 	}
 
 	/** `line` on the card's background, or as it is without one. */

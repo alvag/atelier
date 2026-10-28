@@ -1,7 +1,6 @@
 import { type AtelierEvent, type JsonValue, visibleText } from "@atelier/core";
 import { type Component, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { editView, writeView } from "./code-view.ts";
-import { highlightCode } from "./highlight.ts";
+import { clipLine, editView, highlightLines, writeView } from "./code-view.ts";
 import { hasColor, type Paint, type Style, Tones } from "./style.ts";
 
 /** Whether tool cards show their details, and whether the model's thinking shows; one switch each for the conversation. */
@@ -63,13 +62,16 @@ function cappedLines(lines: string[], max: number): string[] {
 	return [...lines.slice(0, max), `… ${plural(lines.length - max, "more line")}`];
 }
 
-/** At most `max` lines of `text`, then how many were left out. */
-const capped = (text: string, max: number) => cappedLines(text.split("\n"), max);
+/** At most `max` lines of `text`, each cut when too long, then how many were left out. */
+const capped = (text: string, max: number) => cappedLines(text.split("\n"), max).map(clipLine);
 
 /** `$ pnpm test`, the command highlighted as bash, its other lines under the first one's text. */
 function commandLines(command: string, paint: Paint): string[] {
-	const [first = "", ...rest] = highlightCode(paint, command, "bash");
-	return cappedLines([`${paint("dim", "$")} ${first}`, ...rest.map((line) => `  ${line}`)], MAX_DETAIL_LINES);
+	const lines = command.split("\n");
+	const [first = "", ...rest] = highlightLines(paint, lines.slice(0, MAX_DETAIL_LINES).map(clipLine), "bash");
+	const shown = [`${paint("dim", "$")} ${first}`, ...rest.map((line) => `  ${line}`)];
+	const left = lines.length - MAX_DETAIL_LINES;
+	return left > 0 ? [...shown, `… ${plural(left, "more line")}`] : shown;
 }
 
 /** `pattern mode  in src  glob *.ts`, what a search looks for and where. */
@@ -90,7 +92,7 @@ function fieldLines(input: JsonValue, paint: Paint): string[] {
 	const lines = Object.entries(input).flatMap(([key, value]) => {
 		const name = paint("dim", shown(key).padEnd(pad));
 		if (typeof value === "string") {
-			const [first = "", ...rest] = shown(value).split("\n");
+			const [first = "", ...rest] = shown(value).split("\n").map(clipLine);
 			return [`${name} ${first}`, ...rest.map((line) => `${" ".repeat(pad + 1)}${line}`)];
 		}
 		const text = shown(JSON.stringify(value));
