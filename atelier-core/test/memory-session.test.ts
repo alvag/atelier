@@ -836,6 +836,26 @@ describe("user prompts", () => {
 		]);
 	});
 
+	it("masks an unquoted Authorization value to the end of the line, quotes inside it included", async () => {
+		const prompts = [
+			'Authorization: Digest username="x", realm="r", response="abcdef123456"\nnext',
+			"Authorization: Foo it's secretvalue123",
+			'curl -H \'Authorization: Digest username="x", response="abc"\' https://api.test',
+			'curl -H "Authorization: Digest username=\\"x\\", response=\\"abc\\"" https://api.test',
+			"curl -H 'Proxy-Authorization: NTLM TlRMTVNT' https://api.test",
+		];
+		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
+		for (const prompt of prompts) await send(prompt);
+		await s.close();
+		expect(memory.prompts).toEqual([
+			"Authorization: [REDACTED]\nnext",
+			"Authorization: [REDACTED]",
+			"curl -H 'Authorization: [REDACTED]' https://api.test",
+			'curl -H "Authorization: [REDACTED]" https://api.test',
+			"curl -H 'Proxy-Authorization: [REDACTED]' https://api.test",
+		]);
+	});
+
 	it("keeps a prompt out when a known key is split across words, also after a name or header the masks know", async () => {
 		const prompts = [
 			"GITHUB_TOKEN=ghp_abcd\nefghijklmnopqrstuvwxyz0123456789",
