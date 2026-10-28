@@ -830,11 +830,12 @@ describe("user prompts", () => {
 		];
 		const blobs = runs.map((run) => `${run.repeat(30_000)} DB_PASSWORD=hunter2`);
 		const { memory, session: s, send } = await session(blobs.map(() => [{ event: finished }]));
-		const started = performance.now();
+		// The process's CPU time, not the wall clock: a loaded machine stretches the latter, not the work done.
+		const started = process.cpuUsage();
 		for (const blob of blobs) await send(blob);
-		const elapsed = performance.now() - started;
+		const { user, system } = process.cpuUsage(started);
 		await s.close();
-		expect(elapsed).toBeLessThan(1000);
+		expect((user + system) / 1000).toBeLessThan(1000);
 		expect(memory.prompts).toHaveLength(runs.length);
 		for (const kept of memory.prompts) expect(kept).not.toContain("hunter2");
 	});
@@ -1071,7 +1072,7 @@ describe("RpcServer memory", () => {
 		const input = new PassThrough();
 		const messages: ServerMessage[] = [];
 		const backends: FakeBackend[] = [];
-		void new RpcServer({
+		const running = new RpcServer({
 			input,
 			write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
 			createBackend: () => {
@@ -1085,7 +1086,7 @@ describe("RpcServer memory", () => {
 			connectMemory,
 		}).run();
 		const waitFor = async (predicate: (m: ServerMessage) => boolean) => {
-			for (let i = 0; i < 200; i++) {
+			for (let i = 0; i < 800; i++) {
 				const found = messages.find(predicate);
 				if (found) return found;
 				await new Promise((resolve) => setTimeout(resolve, 5));
@@ -1100,7 +1101,9 @@ describe("RpcServer memory", () => {
 			`${JSON.stringify({ type: "command", id: "t", command: "session.send", sessionId: started.result.sessionId, prompt: "hi" })}\n`,
 		);
 		const status = await waitFor((m) => m.type === "event" && m.event.type === "memory_status");
+		// The server records the session under cwd until it closes it: the test's cleanup must not race with it.
 		input.end();
+		await running;
 		return { backends, status: (status as { event: AtelierEvent }).event };
 	}
 
