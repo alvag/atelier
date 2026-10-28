@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { open, readFile, stat, unlink, utimes } from "node:fs/promises";
+import { hostname, uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ensureSecretFolder, readSecretFile, writeSecretFile } from "./secret-file.ts";
@@ -33,7 +34,7 @@ export interface AuthStoreOptions {
 	 * renews the lock's time three times within it while it holds it.
 	 */
 	staleLockMs?: number;
-	/** How long a refresh waits for another process's lock before it fails (default 30 s). */
+	/** How long a refresh waits for another process's lock at least (default 30 s); `lockTimeoutMs` when longer. */
 	refreshLockTimeoutMs?: number;
 }
 
@@ -46,6 +47,8 @@ const STALE_LOCK_MS = 10_000;
  * to another process, or the holder was stopped long enough that the sign-in it refreshes is better asked again.
  */
 const ABANDONED_LOCK_MS = 10 * 60_000;
+/** How much the clock's idea of when this machine started may be off. */
+const BOOT_MARGIN_MS = 5_000;
 const LOCK_RETRY_MS = 20;
 
 export function authFile(home: string): string {
@@ -123,7 +126,7 @@ export class AuthStore {
 		const current = this.get(provider);
 		if (current === undefined || !stale(current)) return current;
 		ensureSecretFolder(dirname(this.#file));
-		const release = await this.#lock(this.#refreshLockTimeoutMs);
+		const release = await this.#lock(Math.max(this.#lockTimeoutMs, this.#refreshLockTimeoutMs));
 		try {
 			const all = this.#read();
 			const entry = all[provider];
@@ -181,7 +184,8 @@ export class AuthStore {
 	async #lock(timeoutMs = this.#lockTimeoutMs): Promise<() => Promise<void>> {
 		const lock = `${this.#file}.lock`;
 		const deadline = Date.now() + timeoutMs;
-		const owner = `${process.pid} ${randomUUID()}`;
+		// The machine too: a home shared between machines (NFS) holds locks of processes this one cannot see.
+		const owner = `${process.pid} ${hostname()} ${randomUUID()}`;
 		for (;;) {
 			try {
 				const handle = await open(lock, "wx", 0o600);
@@ -228,9 +232,14 @@ export class AuthStore {
 		]);
 		// Gone meanwhile: the next try creates it.
 		if (content === undefined) return undefined;
-		const pid = Number.parseInt(content, 10);
-		// Empty or from an older Atelier; an empty one may also be a lock created a moment ago, which is not old.
-		if (!Number.isInteger(pid) || pid <= 0) return age > this.#staleLockMs ? content : undefined;
+		const [id, host] = content.split(" ");
+		const pid = Number.parseInt(id ?? "", 10);
+		// Empty, from an older Atelier, or another machine's, whose processes cannot be asked: its holder renews its time,
+		// so only its age tells. An empty one may also be a lock created a moment ago, which is not old.
+		if (!Number.isInteger(pid) || pid <= 0 || host !== hostname()) return age > this.#staleLockMs ? content : undefined;
+		// Older than this machine's start, its holder ended with it, whatever process has its id now.
+		const up = upTimeMs();
+		if (up !== undefined && age > up + BOOT_MARGIN_MS) return content;
 		return !isRunning(pid) || age > ABANDONED_LOCK_MS ? content : undefined;
 	}
 
@@ -261,6 +270,15 @@ export class AuthStore {
 		} finally {
 			await unlink(breaker).catch(() => {});
 		}
+	}
+}
+
+/** How long this machine has run; undefined where it cannot be asked (a sandbox may refuse it). */
+function upTimeMs(): number | undefined {
+	try {
+		return uptime() * 1000;
+	} catch {
+		return undefined;
 	}
 }
 
