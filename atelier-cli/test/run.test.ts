@@ -2130,7 +2130,7 @@ describe("login and logout", () => {
 		expect(h.err()).toContain("atelier login takes no session options (--model).");
 		const extra = harness([]);
 		expect(await run(["logout", "api-key", "anthropic", "more"], extra.io, extra.createBackend)).toBe(2);
-		expect(extra.err()).toContain("Usage: atelier logout [account|api-key] [anthropic]");
+		expect(extra.err()).toContain("Usage: atelier logout [account|api-key] [anthropic|opencode-go]");
 	});
 
 	it("/login in the line-by-line session reads the key without echoing it", async () => {

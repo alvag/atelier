@@ -49,8 +49,8 @@ export const USAGE = `Usage: atelier [options] [prompt]
        atelier update [vX.Y.Z | --main]
        atelier desktop
        atelier mcp list | login <server> | logout <server>
-       atelier login [account|api-key] [anthropic]
-       atelier logout [account|api-key] [anthropic]
+       atelier login [account|api-key] [anthropic|opencode-go]
+       atelier logout [account|api-key] [anthropic|opencode-go]
        atelier stats [--since 7d|30d|all|YYYY-MM-DD] [--project <dir>]
                      [--by day|project|model|phase|role] [--json]
 

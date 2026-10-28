@@ -90,7 +90,13 @@ it("asks the method, then the provider with its state, and stores an API key it 
 			title: "Select authentication method",
 			options: [{ label: "Sign in with an account" }, { label: "Sign in with an API key" }],
 		},
-		{ title: "Sign in with an API key", options: [{ label: "Anthropic", status: "not configured" }] },
+		{
+			title: "Sign in with an API key",
+			options: [
+				{ label: "Anthropic", status: "not configured" },
+				{ label: "OpenCode Go", status: "not configured" },
+			],
+		},
 	]);
 	expect(new AuthStore(authFile(home)).get("anthropic")).toEqual({ type: "api_key", key: "sk-ant-new" });
 	expect(p.shown).toEqual([
@@ -100,7 +106,37 @@ it("asks the method, then the provider with its state, and stores an API key it 
 	expect(JSON.stringify(p.shown)).not.toContain("sk-ant-new");
 	const again = ports({ choices: [0] });
 	await login(again.value, { method: "api-key" });
-	expect(again.lists[0]?.options).toEqual([{ label: "Anthropic", status: "✓ stored" }]);
+	expect(again.lists[0]?.options).toEqual([
+		{ label: "Anthropic", status: "✓ stored" },
+		{ label: "OpenCode Go", status: "not configured" },
+	]);
+});
+
+it("stores the OpenCode Go key apart from Anthropic's, says OPENCODE_API_KEY overrides it, and signs out of it", async () => {
+	const key = `oc-${"test"}-new`;
+	const p = ports({ secrets: [key] });
+	p.value.env = { OPENCODE_API_KEY: "from-env" };
+	// The provider alone is enough: only API keys have OpenCode Go.
+	expect(await login(p.value, { provider: "opencode-go" })).toBe(true);
+	expect(p.lists).toEqual([]);
+	expect(new AuthStore(authFile(home)).get("opencode-go")).toEqual({ type: "api_key", key });
+	expect(new AuthStore(authFile(home)).get("anthropic")).toBeUndefined();
+	expect(p.shown).toEqual([
+		"ask: OpenCode Go API key (hidden): ",
+		"✓ OpenCode Go: API key stored in ~/.atelier/auth.json; --backend opencode-go uses it.",
+		"OPENCODE_API_KEY is set here, and takes priority over the stored key.",
+	]);
+	const listed = ports({ choices: [] });
+	listed.value.env = { OPENCODE_API_KEY: "from-env", ANTHROPIC_API_KEY: "a" };
+	await login(listed.value, { method: "api-key" });
+	expect(listed.lists[0]?.options).toEqual([
+		{ label: "Anthropic", status: "from ANTHROPIC_API_KEY" },
+		{ label: "OpenCode Go", status: "✓ stored (OPENCODE_API_KEY overrides it)" },
+	]);
+	const out = ports();
+	expect(await logout(out.value, { provider: "opencode-go" })).toBe(true);
+	expect(out.shown).toEqual(["OpenCode Go API key removed from ~/.atelier/auth.json."]);
+	expect(new AuthStore(authFile(home)).providers()).toEqual([]);
 });
 
 it("changes nothing when no key is given or the list is cancelled", async () => {
@@ -112,7 +148,9 @@ it("changes nothing when no key is given or the list is cancelled", async () => 
 	expect(cancelled.shown).toEqual(["Nothing changed."]);
 	const unknown = ports();
 	expect(await login(unknown.value, { method: "api-key", provider: "nope" })).toBe(false);
-	expect(unknown.shown).toEqual(['error: unknown provider "nope" for an API key; the providers are: anthropic']);
+	expect(unknown.shown).toEqual([
+		'error: unknown provider "nope" for an API key; the providers are: anthropic, opencode-go',
+	]);
 	expect(new AuthStore(authFile(home)).providers()).toEqual([]);
 });
 
@@ -169,8 +207,8 @@ it("signs out of a stored key, and of Claude Code only once it is confirmed", as
 it("fails to sign out of a provider it does not know, instead of saying there is nothing", async () => {
 	const p = ports();
 	expect(await logout(p.value, { method: "api-key", provider: "nope" })).toBe(false);
-	expect(p.shown).toEqual(['error: unknown provider "nope" for an API key; the providers are: anthropic']);
+	expect(p.shown).toEqual(['error: unknown provider "nope" for an API key; the providers are: anthropic, opencode-go']);
 	const any = ports();
 	expect(await logout(any.value, { provider: "nope" })).toBe(false);
-	expect(any.shown).toEqual(['error: unknown provider "nope"; the providers are: anthropic']);
+	expect(any.shown).toEqual(['error: unknown provider "nope"; the providers are: anthropic, opencode-go']);
 });
