@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
+	formatModel,
 	PERMISSION_MODES,
 	type PermissionMode,
 	PROFILE_BACKENDS,
@@ -26,6 +27,8 @@ export interface CliArgs {
 	backend: BackendName;
 	/** Present only when --backend was given: it wins over the backend the orchestrator's profile entry names. */
 	explicitBackend?: BackendName;
+	/** `explicitBackend` came from the prefix of --model, with no --backend. */
+	backendFromModel?: true;
 	/** The profile chosen with --profile: the first layer of the resolution. */
 	profile?: string;
 	cwd: string;
@@ -107,8 +110,8 @@ Sessions are saved under ~/.atelier/sessions/, one folder per working directory:
 configuration, the prompts, the events and what the backend needs to resume. --continue
 and --resume print what was said (each prompt and the answer's final text), then go on as
 usual, interactive or with a prompt. The profile is frozen again from the files as they
-are now; --model, --backend (it must be the one saved), --mode and --profile win over
-the saved ones. The files hold what the agent saw, tool output included.
+are now; --model, --backend (it must be the one saved, as must a --model prefix), --mode
+and --profile win over the saved ones. The files hold what the agent saw, tool output included.
 
 atelier update [vX.Y.Z | --main] moves a copy installed with install.sh to the newest
 release, or to the one named (to go back), or with --main to the latest main of GitHub
@@ -229,6 +232,7 @@ export function parseCliArgs(
 		...(named.model === undefined ? {} : { model: named.model }),
 		backend,
 		...(chosenBackend === undefined ? {} : { explicitBackend: chosenBackend }),
+		...(values.backend === undefined && named.backend !== undefined ? { backendFromModel: true as const } : {}),
 		...(values.profile === undefined ? {} : { profile: values.profile }),
 		cwd: resolve(baseDir, values.cwd ?? "."),
 		help: values.help ?? false,
@@ -289,6 +293,18 @@ function parse(argv: readonly string[]) {
 export function readModel(value: string): ReturnType<typeof parseModel> {
 	const prefixed = PROFILE_BACKENDS.some((name) => value.startsWith(`${name}/`));
 	return prefixed ? parseModel(value) : { ok: true, entry: { model: value } };
+}
+
+/**
+ * Why the session `id`, saved on `saved`, cannot be resumed on the backend the arguments name, or undefined when it can.
+ * A prefixed --model is told how to move the session there instead; `where` says where its /model is.
+ */
+export function resumeRefusal(args: CliArgs, id: string, saved: string, where = ""): string | undefined {
+	const backend = args.explicitBackend;
+	if (backend === undefined || backend === saved) return undefined;
+	if (!args.backendFromModel) return `Session ${id} was saved on ${saved}; --backend ${backend} cannot resume it.`;
+	const model = formatModel(backend, args.model ?? "");
+	return `Session ${id} was saved on ${saved}, and --model ${model} names another backend: a resumed session keeps its backend. Resume it without that --model, then choose ${model} in /model${where} to move it there with a summary of the conversation.`;
 }
 
 function modelOption(value: string | undefined): { model?: string; backend?: BackendName } {

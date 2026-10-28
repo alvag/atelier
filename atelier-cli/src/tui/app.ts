@@ -31,7 +31,7 @@ import {
 	type TerminalColors,
 	Text,
 } from "@earendil-works/pi-tui";
-import { type CliArgs, readModel } from "../args.ts";
+import { type CliArgs, readModel, resumeRefusal } from "../args.ts";
 import {
 	LOGIN_USAGE,
 	LOGOUT_USAGE,
@@ -362,10 +362,8 @@ async function openSession(
 					? `No saved session to continue in ${args.cwd}.`
 					: `No saved session ${args.resume} in ${args.cwd}.`,
 		};
-	if (args.explicitBackend !== undefined && args.explicitBackend !== saved.backend)
-		return {
-			error: `Session ${saved.id} was saved on ${saved.backend}; --backend ${args.explicitBackend} cannot resume it.`,
-		};
+	const refused = resumeRefusal(args, saved.id, saved.backend);
+	if (refused !== undefined) return { error: refused };
 	const resumed = await resumeSession(link, args.cwd, saved.id, conversation);
 	const { sessionId } = resumed;
 	let { configuration } = resumed;
