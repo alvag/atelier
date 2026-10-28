@@ -681,10 +681,8 @@ export class Session {
 			this.#steerable = true;
 			try {
 				for await (const event of backendSession.send(sent)) {
-					if (!refusal(event)) {
-						this.#recoveryInFlight = undefined;
-						reviewNotice = undefined;
-					}
+					if (!refusal(event)) this.#recoveryInFlight = undefined;
+					if (answered(event)) reviewNotice = undefined;
 					if (event.type === "turn_finished") finish ??= event;
 					else {
 						if (event.type === "error") failed = true;
@@ -1912,6 +1910,15 @@ interface Recovery {
 /** An event that says the backend did not take the prompt: an error, or a turn that ended on one. */
 function refusal(event: AtelierEventBody): boolean {
 	return event.type === "error" || (event.type === "turn_finished" && event.stopReason === "error");
+}
+
+/**
+ * An event that shows the model took the prompt: it answered, or the turn ended on something other than an error or
+ * an interrupt. Metadata such as `session_started` comes before a backend may still refuse.
+ */
+function answered(event: AtelierEventBody): boolean {
+	if (event.type === "turn_finished") return event.stopReason !== "error" && event.stopReason !== "interrupted";
+	return event.type === "text_delta" || event.type === "thinking_delta" || event.type === "tool_call_started";
 }
 
 /** How steers reach the model with a tool result: as the user's words, apart from the tool's output. */
