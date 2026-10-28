@@ -122,9 +122,12 @@ export function thinkingToSend(
 	const id = ALIASES[model] ?? model;
 	// OpenCode Go's Claude models take what Anthropic's do; the rest take the levels of its table.
 	if (backend === "opencode-go" && EFFORT_LEVELS[id] === undefined) {
-		if (level === "off") return { report: "unsupported" };
+		const entry = OPENCODE_GO_MODELS[model];
+		// `disabled` stands for the model's own value, which Chat Completions sends as its reasoning_effort.
+		if (level === "off")
+			return entry?.off === undefined ? { report: "unsupported" } : { report: "off", thinking: "disabled" };
 		const effort = level === "minimal" ? "low" : level;
-		return OPENCODE_GO_MODELS[model]?.efforts.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
+		return entry?.efforts.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
 	}
 	if (level === "off") {
 		const off = THINKING_OFF[id];

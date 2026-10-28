@@ -20,13 +20,31 @@ export interface OpenCodeGoModel {
 	efforts: readonly Effort[];
 	/** The `reasoning_effort` that turns its thinking off, on Chat Completions; absent when it cannot. */
 	off?: string;
-	/** USD per million tokens, as OpenCode bills them against the plan; absent when the price depends on the hour. */
+	/** Every assistant message must carry `reasoning_content`, even empty (DeepSeek on Chat Completions). */
+	replaysReasoning?: true;
+	/** USD per million tokens, as OpenCode counts them against the plan; absent when the price depends on the hour. */
 	prices?: readonly PriceTier[];
 }
 
 const flat = (input: number, output: number, cacheRead: number, cacheWrite = 0): readonly PriceTier[] => [
 	{ input, output, cacheRead, cacheWrite },
 ];
+
+const LOW_HIGH_MAX: readonly Effort[] = ["low", "high", "max"];
+
+/** A Chat Completions model. */
+const chat = (
+	contextWindow: number,
+	efforts: readonly Effort[],
+	prices: readonly PriceTier[] | undefined,
+	extra: Partial<OpenCodeGoModel> = {},
+): OpenCodeGoModel => ({
+	protocol: "openai-completions",
+	contextWindow,
+	efforts,
+	...(prices === undefined ? {} : { prices }),
+	...extra,
+});
 
 /**
  * The models of https://opencode.ai/docs/go (2026-10-28), with their prices from its table, and the windows and
@@ -70,6 +88,24 @@ export const OPENCODE_GO_MODELS: Readonly<Record<string, OpenCodeGoModel>> = Obj
 			{ input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 },
 		],
 	},
+	"glm-5.3": chat(1_000_000, LOW_HIGH_MAX, flat(1.4, 4.4, 0.26)),
+	"glm-5.3-flash": chat(1_000_000, LOW_HIGH_MAX, flat(0.15, 0.5, 0.03)),
+	"glm-5.2": chat(1_000_000, ["high", "max"], flat(1.4, 4.4, 0.26)),
+	"kimi-k3": chat(1_048_576, ["max"], flat(3, 15, 0.3, 3)),
+	"kimi-k2.7-code": chat(262_144, [], flat(0.95, 4, 0.19)),
+	"minimax-m3.1-flash": chat(1_000_000, ["low", "medium", "high", "xhigh", "max"], flat(0.15, 0.6, 0.015)),
+	"mimo-v2.6-pro": chat(1_048_576, [], flat(0.435, 0.87, 0.003625)),
+	"mimo-v2.6-flash": chat(1_048_576, [], flat(0.14, 0.28, 0.0028)),
+	"mimo-v2.5-pro": chat(1_048_576, [], flat(0.435, 0.87, 0.003625)),
+	"mimo-v2.5": chat(1_000_000, [], flat(0.14, 0.28, 0.0028)),
+	"longcat-2.0": chat(1_000_000, [], flat(0.3, 1.2, 0.006)),
+	"step-5-preview": chat(1_000_000, ["low", "medium", "high"], flat(1, 2.7, 0.1)),
+	"hy4-preview": chat(1_024_000, ["high"], flat(0.834, 2.501, 0.042), { off: "none" }),
+	hy3: chat(256_000, ["low", "high"], flat(0.14, 0.58, 0.035), { off: "none" }),
+	// DeepSeek costs more at peak hours (OpenCode's page): no single price, so its cost is unknown.
+	"deepseek-v4.1-flash": chat(1_000_000, LOW_HIGH_MAX, undefined, { replaysReasoning: true }),
+	"deepseek-v4-pro": chat(1_000_000, ["high", "max"], undefined, { replaysReasoning: true }),
+	"beam-free": chat(1_048_576, ["low", "medium", "high", "xhigh", "max"], flat(0, 0, 0)),
 });
 
 /** A model OpenCode Go serves but the table does not know: the console translates Chat Completions for it. */
