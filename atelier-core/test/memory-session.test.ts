@@ -752,6 +752,24 @@ describe("user prompts", () => {
 		]);
 	});
 
+	it("masks an Authorization or Proxy-Authorization value whole, whatever its scheme", async () => {
+		const prompts = [
+			"Authorization: Negotiate YIIabcdefghijk lmnop",
+			"Authorization: AWS4-HMAC-SHA256 Credential=AKID/20260101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc123\nnext line",
+			"Proxy-Authorization: NTLM TlRMTVNTUAAB",
+			'{"Authorization": "Negotiate YIIabc def", "x": 1}',
+		];
+		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
+		for (const prompt of prompts) await send(prompt);
+		await s.close();
+		expect(memory.prompts).toEqual([
+			"Authorization: [REDACTED]",
+			"Authorization: [REDACTED]\nnext line",
+			"Proxy-Authorization: [REDACTED]",
+			'{"Authorization": "[REDACTED]", "x": 1}',
+		]);
+	});
+
 	it("keeps a prompt out when a known key is split across words, also after a name or header the masks know", async () => {
 		const prompts = [
 			"GITHUB_TOKEN=ghp_abcd\nefghijklmnopqrstuvwxyz0123456789",

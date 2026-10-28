@@ -45,8 +45,11 @@ const SECRET_NAME =
 
 /** Credentials told by where they stand, not by their shape: group 1 (the name) stays, the value is replaced. */
 const VALUE_MASKS: RegExp[] = [
-	// The whole value of an Authorization header, whatever its scheme (Bearer, Basic, Token...).
-	/\b(Authorization["']?\s*[:=]\s*["']?)(?:(?:Bearer|Basic|Token|Digest)\s+)?[^\s"',;]+/gi,
+	// The whole value of an Authorization or Proxy-Authorization header, whatever its scheme: up to its closing quote,
+	// or to the end of the line (or a quote) when it has none.
+	/\b((?:Proxy-)?Authorization["']?[ \t]*[:=][ \t]*")[^"\n]*/gi,
+	/\b((?:Proxy-)?Authorization["']?[ \t]*[:=][ \t]*')[^'\n]*/gi,
+	/\b((?:Proxy-)?Authorization["']?[ \t]*[:=][ \t]*)(?![ \t"'])[^\n"']+/gi,
 	/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi,
 	new RegExp(`\\b(${SECRET_NAME}["']?\\s*[:=]\\s*)(?:"[^"\\n]*"|'[^'\\n]*'|[^\\s"',;]+)`, "gi"),
 	// A password in a URL: scheme://user:password@host.
