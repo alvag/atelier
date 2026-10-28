@@ -634,6 +634,23 @@ const MAX_SOCKET_PATH = 103;
 /** How long the library may take to start in the short folder before it is given back. */
 const START_TIMEOUT_MS = 10_000;
 
+/** Whether `work` settles within `ms`; it goes on either way. */
+async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+	let timer: NodeJS.Timeout | undefined;
+	const late = new Promise<false>((resolve) => {
+		timer = setTimeout(() => resolve(false), ms);
+	});
+	const settled = work.then(
+		() => true as const,
+		() => true as const,
+	);
+	try {
+		return await Promise.race([settled, late]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 /**
  * Whether the socket the library makes in the temporary folder for its proxy
  * (`srt-mux-<pid>-<n>.sock`, with no option for another place) fits there.
@@ -676,6 +693,11 @@ export class Sandbox {
 	#manager: SandboxManagerLike | undefined;
 	/** Ends a start in the short folder that has not finished, so that `reset()` gives the folder back. */
 	#starting: AbortController | undefined;
+	/**
+	 * A start given up on (timed out or reset) until it settles and whatever it set
+	 * up is stopped; `settled` once the start itself has, and only its reset is left.
+	 */
+	#abandoned: { stopped: Promise<void>; settled: boolean } | undefined;
 
 	constructor(options: SandboxOptions = {}) {
 		this.#options = options;
@@ -693,6 +715,9 @@ export class Sandbox {
 		const inside = this.#options.insideSandbox ?? (this.#options.manager ? () => false : isInsideSandbox);
 		if (inside()) return { available: false, reason: INSIDE_SANDBOX };
 		try {
+			// The library is global to the process: a start given up on must be stopped before another one begins.
+			if (this.#abandoned !== undefined && !(await settlesWithin(this.#abandoned.stopped, this.#startTimeoutMs())))
+				return { available: false, reason: "an earlier start of the sandbox has not finished", failed: true };
 			const manager = this.#options.manager ?? (await defaultManager());
 			if (!manager.isSupportedPlatform()) return { available: false, reason: NOT_AVAILABLE_ON_PLATFORM };
 			const { errors } = manager.checkDependencies();
@@ -701,7 +726,7 @@ export class Sandbox {
 			const initialize = () => manager.initialize(SESSION_CONFIG, undefined, true);
 			// A socket that does not fit fails with EINVAL: the library starts with TMPDIR in a short folder instead.
 			if (socketFits(tmpdir())) await initialize();
-			else await this.#initializeInShortDir(initialize);
+			else await this.#initializeInShortDir(manager, initialize);
 			this.#manager = manager;
 			return { available: true };
 		} catch (error) {
@@ -713,29 +738,53 @@ export class Sandbox {
 	 * With `tmpdir()` in the short folder, checked again right before the library
 	 * starts, since a wait for the temporary directories can come in between. A
 	 * start that does not finish in time, or that `reset()` ends, gives the folder
-	 * back and fails; the library may go on alone, and later starts fail with it.
+	 * back and fails. The library goes on alone, but this sandbox keeps it: once it
+	 * settles, well or not, it is reset, so no proxy is left running without an owner.
 	 */
-	async #initializeInShortDir(initialize: () => Promise<void>): Promise<void> {
+	async #initializeInShortDir(manager: SandboxManagerLike, initialize: () => Promise<void>): Promise<void> {
 		const dir = ownShortDir(this.#options.socketRoot ?? "/tmp");
 		const starting = new AbortController();
 		this.#starting = starting;
-		const timeoutMs = this.#options.startTimeoutMs ?? START_TIMEOUT_MS;
+		const timeoutMs = this.#startTimeoutMs();
+		let started: Promise<void> | undefined;
 		try {
 			await borrowTmpdir(
 				dir,
 				() => {
 					checkOwnDir(dir);
-					return initialize();
+					started = initialize();
+					return started;
 				},
 				{ timeoutMs, signal: starting.signal },
 			);
 		} catch (error) {
+			if (started !== undefined) this.#abandon(manager, started);
 			if (error instanceof BorrowTimeoutError)
 				throw new Error(`the sandbox did not start within ${timeoutMs / 1000} s`);
 			throw error;
 		} finally {
 			if (this.#starting === starting) this.#starting = undefined;
 		}
+	}
+
+	#startTimeoutMs(): number {
+		return this.#options.startTimeoutMs ?? START_TIMEOUT_MS;
+	}
+
+	/** Resets the library once a start this sandbox gave up on settles, whether it started or failed. */
+	#abandon(manager: SandboxManagerLike, started: Promise<void>): void {
+		const abandoned = { stopped: Promise.resolve(), settled: false };
+		const settle = () => {
+			abandoned.settled = true;
+		};
+		abandoned.stopped = started
+			.then(settle, settle)
+			.then(() => manager.reset())
+			.catch(() => {})
+			.finally(() => {
+				if (this.#abandoned === abandoned) this.#abandoned = undefined;
+			});
+		this.#abandoned = abandoned;
 	}
 
 	/** The command line that runs `command` under the policy; throws when the sandbox is unavailable. */
@@ -833,11 +882,19 @@ export class Sandbox {
 
 	/** Stops the library's proxies; the next command starts it again. */
 	async reset(): Promise<void> {
-		this.#starting?.abort(new Error("the sandbox was reset while it was starting"));
+		const starting = this.#starting;
+		const ready = this.#ready;
+		starting?.abort(new Error("the sandbox was reset while it was starting"));
 		const manager = this.#manager;
 		this.#ready = undefined;
 		this.#manager = undefined;
+		// An aborted start answers at once, and hands what it began to `#abandoned`.
+		if (starting !== undefined) await ready;
 		await manager?.reset();
+		// What a start given up on set up is stopped when it settles: reset waits for that stop once the start has
+		// settled, and leaves one still hanging to stop itself whenever it settles.
+		const abandoned = this.#abandoned;
+		if (abandoned?.settled) await settlesWithin(abandoned.stopped, this.#startTimeoutMs());
 	}
 }
 
