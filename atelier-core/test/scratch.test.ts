@@ -187,8 +187,31 @@ describe("sweepStaleScratch", () => {
 		} finally {
 			await chmod(locked, 0o700);
 		}
+		expect(await readdir(root)).toEqual(["atelier-verify-rrrrrr"]);
 		expect(await sweepStaleScratch({ tmpRoot: root, processes: processes({}) })).toEqual([dir]);
-		expect(await exists(dir)).toBe(false);
+		expect(await readdir(root)).toEqual([]);
+	});
+
+	it("lets two sweeps run at once over the same folder, each directory deleted by one of them", async () => {
+		const dirs: string[] = [];
+		for (const letter of "abcdefgh")
+			dirs.push(await fakeScratch(`atelier-session-${letter.repeat(6)}`, { pid: DEAD, startedAt: T }));
+		const live = await fakeScratch("atelier-session-zzzzzz", { pid: LIVE, startedAt: T });
+
+		const [first, second] = await Promise.all([
+			sweepStaleScratch({ tmpRoot: root, processes: processes({ [LIVE]: T }) }),
+			sweepStaleScratch({ tmpRoot: root, processes: processes({ [LIVE]: T }) }),
+		]);
+
+		expect([...first, ...second].sort()).toEqual(dirs.sort());
+		expect(await readdir(root)).toEqual(["atelier-session-zzzzzz"]);
+		expect(await exists(join(live, "work", "output.log"))).toBe(true);
+	});
+
+	it("deletes a directory moved aside by a sweep that could not finish", async () => {
+		const trash = await fakeScratch("atelier-trash-uuuuuu", { pid: DEAD, startedAt: T });
+		expect(await sweepStaleScratch({ tmpRoot: root, processes: processes({}) })).toEqual([trash]);
+		expect(await readdir(root)).toEqual([]);
 	});
 
 	it("keeps a directory without an owner while a file in it is recent, even if the directory is old", async () => {

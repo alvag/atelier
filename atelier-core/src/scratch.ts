@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
+import type { Stats } from "node:fs";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,7 +14,8 @@ import { join } from "node:path";
  */
 export type ScratchKind = "session" | "verify" | "freeze" | "bash";
 
-const NAME = /^atelier-(session|verify|freeze|bash)-[A-Za-z0-9]{6}$/;
+/** `trash` is a stale directory moved aside to be deleted, left there only when its deletion failed. */
+const NAME = /^atelier-(session|verify|freeze|bash|trash)-[A-Za-z0-9]{6}$/;
 const OWNER_FILE = ".atelier-owner";
 const WORK = "work";
 /** `ps` counts whole seconds, and Node starts a little after its process: a later start within this is the same process. */
@@ -90,7 +92,8 @@ function sweepOnce(tmpRoot: string | undefined): void {
 
 /** What the sweep asks about the owners' processes. */
 export interface ProcessReader {
-	isAlive(pid: number): boolean;
+	/** Undefined when it cannot be told: the directory is kept. */
+	isAlive(pid: number): boolean | undefined;
 	/** When a live process started, in milliseconds since the epoch; undefined when it cannot be told. */
 	startedAt(pid: number): Promise<number | undefined>;
 }
@@ -110,7 +113,7 @@ const systemProcesses: ProcessReader = {
  * Deletes the directories in the folder whose owner is dead, and returns them.
  * Only Atelier's names are looked at, and only real directories of this user;
  * whatever cannot be told for sure is kept, and a failed deletion is left for
- * the next sweep.
+ * the next sweep, with its owner file.
  */
 export async function sweepStaleScratch(options: SweepOptions = {}): Promise<string[]> {
 	const root = options.tmpRoot ?? tmpdir();
@@ -120,11 +123,8 @@ export async function sweepStaleScratch(options: SweepOptions = {}): Promise<str
 		if (!NAME.test(name)) continue;
 		const dir = join(root, name);
 		try {
-			if (!(await isStale(dir, options.processes ?? systemProcesses))) continue;
-			// The owner file goes last: a deletion that fails part-way still tells the next sweep whose it was.
-			await rm(join(dir, WORK), { recursive: true, force: true });
-			await rm(dir, { recursive: true, force: true });
-			removed.push(dir);
+			const checked = await staleEvidence(dir, options.processes ?? systemProcesses);
+			if (checked !== undefined && (await removeChecked(root, dir, checked))) removed.push(dir);
 		} catch {
 			// Kept for the next sweep.
 		}
@@ -132,24 +132,90 @@ export async function sweepStaleScratch(options: SweepOptions = {}): Promise<str
 	return removed;
 }
 
-async function isStale(dir: string, processes: ProcessReader): Promise<boolean> {
+/** What a directory was when it was found stale: the deletion goes ahead only on that same directory. */
+interface Checked {
+	info: Stats;
+	/** The owner file's text; undefined when it had none. */
+	owner: string | undefined;
+}
+
+/** The directory and its owner file as they are now, when it is stale; undefined when it is to be kept. */
+async function staleEvidence(dir: string, processes: ProcessReader): Promise<Checked | undefined> {
 	const info = await lstat(dir);
-	if (!info.isDirectory()) return false;
+	if (!info.isDirectory()) return undefined;
 	const uid = process.getuid?.();
-	if (uid !== undefined && info.uid !== uid) return false;
-	let text: string;
-	try {
-		text = await readFile(join(dir, OWNER_FILE), "utf8");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
-		return Date.now() - (await lastChange(dir, info.mtimeMs)) > OWNERLESS_AGE_MS;
-	}
+	if (uid !== undefined && info.uid !== uid) return undefined;
+	const text = await ownerText(dir);
+	if (text === null) return undefined;
+	if (text === undefined)
+		return Date.now() - (await lastChange(dir, info.mtimeMs)) > OWNERLESS_AGE_MS
+			? { info, owner: undefined }
+			: undefined;
 	const owner = parseOwner(text);
-	if (owner === undefined) return false;
-	if (!processes.isAlive(owner.pid)) return true;
+	if (owner === undefined) return undefined;
+	const alive = processes.isAlive(owner.pid);
+	if (alive === undefined) return undefined;
+	if (!alive) return { info, owner: text };
 	const started = await processes.startedAt(owner.pid);
 	// A process that started after the directory was made reuses the pid of its dead owner.
-	return started !== undefined && started > owner.startedAt + REUSED_PID_MARGIN_MS;
+	return started !== undefined && started > owner.startedAt + REUSED_PID_MARGIN_MS ? { info, owner: text } : undefined;
+}
+
+/** The owner file's text; undefined when there is none, null when it cannot be read. */
+async function ownerText(dir: string): Promise<string | undefined | null> {
+	try {
+		return await readFile(join(dir, OWNER_FILE), "utf8");
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null;
+	}
+}
+
+/**
+ * Moves the directory aside with one rename, so that what is deleted cannot be
+ * swapped in after the check, makes sure what moved is the real directory that
+ * was checked, with the same owner file, and only then deletes it, the owner
+ * file last. Anything else goes back where it was. A deletion that fails
+ * part-way goes back too, owner file included, for the next sweep to judge again.
+ */
+async function removeChecked(root: string, dir: string, checked: Checked): Promise<boolean> {
+	// An empty directory of its own, which the rename replaces: no other directory can be taken for it.
+	const trash = await mkdtemp(join(root, "atelier-trash-"));
+	try {
+		await rename(dir, trash);
+	} catch {
+		await rmdir(trash).catch(() => {});
+		return false;
+	}
+	if (!(await isChecked(trash, checked))) {
+		await putBack(trash, dir);
+		return false;
+	}
+	try {
+		for (const name of await readdir(trash))
+			if (name !== OWNER_FILE) await rm(join(trash, name), { recursive: true, force: true });
+		await rm(join(trash, OWNER_FILE), { force: true });
+		await rmdir(trash);
+		return true;
+	} catch {
+		await putBack(trash, dir);
+		return false;
+	}
+}
+
+async function isChecked(path: string, checked: Checked): Promise<boolean> {
+	const info = await lstat(path).catch(() => undefined);
+	if (info === undefined || !info.isDirectory()) return false;
+	if (info.dev !== checked.info.dev || info.ino !== checked.info.ino || info.uid !== checked.info.uid) return false;
+	return (await ownerText(path)) === checked.owner;
+}
+
+/** Back to its name unless something took it; otherwise it stays as trash, which the next sweep judges by its owner file. */
+async function putBack(trash: string, dir: string): Promise<void> {
+	const taken = await lstat(dir).then(
+		() => true,
+		(error: NodeJS.ErrnoException) => error.code !== "ENOENT",
+	);
+	if (!taken) await rename(trash, dir).catch(() => {});
 }
 
 /** The newest change of the directory or of what is right inside it: a file written into keeps the directory's own time. */
@@ -173,13 +239,18 @@ function parseOwner(text: string): Owner | undefined {
 	}
 }
 
-/** Signal 0 only asks: a process of another user answers EPERM, and is alive. */
-function isAlive(pid: number): boolean {
+/**
+ * Signal 0 only asks. Only ESRCH means the process is gone; EPERM (a process
+ * of another user) and any other answer cannot be told, nor can anything on
+ * Windows, where the pid cannot be checked against a start time.
+ */
+function isAlive(pid: number): boolean | undefined {
+	if (process.platform === "win32") return undefined;
 	try {
 		process.kill(pid, 0);
 		return true;
 	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+		return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : undefined;
 	}
 }
 
