@@ -69,6 +69,11 @@ export interface CliIO {
 	 * The CLI then edits lines itself and reads a bracketed paste as one prompt.
 	 */
 	setRawMode?: (on: boolean) => void;
+	/**
+	 * Puts stdin alone in raw mode or back; given whenever stdin is a terminal, whatever stdout is. What decides whether
+	 * a secret is echoed is stdin: `atelier login` reads a key with it even when stdout is redirected.
+	 */
+	setInputRaw?: (on: boolean) => void;
 	/** Registers a Ctrl+C handler; returns a function that removes it. */
 	onInterrupt?: (handler: () => void) => () => void;
 	/** Registers a handler for SIGTERM and SIGHUP, given the signal's number; returns a function that removes it. */
@@ -562,8 +567,11 @@ export async function run(
 			home,
 			env: io.env ?? process.env,
 			...(io.claudeCode === undefined ? {} : { claudeCode: io.claudeCode }),
+			...(io.runSecurity === undefined ? {} : { runSecurity: io.runSecurity }),
 			interactive: io.isTTY,
 			lines,
+			// Without the session's raw mode (stdout is not a terminal), only the key's line goes raw, so it is not echoed.
+			...(rawMode || !io.isTTY || io.setInputRaw === undefined ? {} : { hideInput: io.setInputRaw }),
 			write: (text) => renderer.write(text),
 			stderr: io.stderr,
 			handOver: async (task) => {
@@ -664,7 +672,8 @@ async function loadSaved(store: SessionStore, cwd: string, id: string | undefine
 
 /** `atelier login` and `atelier logout` in a shell: questions on the terminal, or a key piped to stdin. */
 async function runLoginSubcommand(io: CliIO, action: "login" | "logout", target: LoginTarget): Promise<number> {
-	const setRawMode = io.isTTY ? io.setRawMode : undefined;
+	// Stdin decides: a terminal reads the key without echo even when stdout goes to a file.
+	const setRawMode = io.isTTY ? (io.setRawMode ?? io.setInputRaw) : undefined;
 	let raw = false;
 	const setRaw = (on: boolean) => {
 		if (setRawMode === undefined || raw === on) return;
@@ -689,6 +698,7 @@ async function runLoginSubcommand(io: CliIO, action: "login" | "logout", target:
 		...(io.home === undefined ? {} : { home: io.home }),
 		env: io.env ?? process.env,
 		...(io.claudeCode === undefined ? {} : { claudeCode: io.claudeCode }),
+		...(io.runSecurity === undefined ? {} : { runSecurity: io.runSecurity }),
 		interactive: io.isTTY,
 		lines,
 		write: io.stdout,

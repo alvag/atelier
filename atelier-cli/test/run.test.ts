@@ -2081,6 +2081,38 @@ describe("login and logout", () => {
 		expect((await stored(home)).anthropic).toBeUndefined();
 	});
 
+	it("reads the key without echo when stdin is a terminal, even with stdout redirected", async () => {
+		const home = dirname(cwd);
+		const h = harness([], { isTTY: true, keepStdinOpen: true, home });
+		const modes: boolean[] = [];
+		// stdout is not a terminal: no session raw mode, only the input's.
+		Object.assign(h.io, { setInputRaw: (on: boolean) => modes.push(on) });
+		const pending = run(["login", "api-key", "anthropic"], h.io, h.createBackend);
+		await vi.waitFor(() => expect(h.out()).toContain("Anthropic API key (hidden): "), { timeout: 5000 });
+		expect(modes).toEqual([true]);
+		(h.io.stdin as PassThrough).write("sk-ant-typed\r");
+		expect(await pending).toBe(0);
+		expect(modes).toEqual([true, false]);
+		expect(h.out()).not.toContain("sk-ant-typed");
+		expect(JSON.parse(await readFile(join(home, ".atelier", "auth.json"), "utf8")).anthropic.key).toBe("sk-ant-typed");
+	});
+
+	it("/login in a line session with stdout redirected hides only the key's line", async () => {
+		const home = dirname(cwd);
+		const h = harness([], { isTTY: true, input: ["/login api-key anthropic"], keepStdinOpen: true, home });
+		const modes: boolean[] = [];
+		Object.assign(h.io, { setInputRaw: (on: boolean) => modes.push(on) });
+		const pending = run(["--no-session"], h.io, h.createBackend);
+		await vi.waitFor(() => expect(h.out()).toContain("Anthropic API key (hidden): "), { timeout: 5000 });
+		await vi.waitFor(() => expect(modes).toEqual([true]), { timeout: 5000 });
+		(h.io.stdin as PassThrough).write("sk-ant-typed\r");
+		await vi.waitFor(() => expect(h.out()).toContain("✓ Anthropic: API key stored"), { timeout: 5000 });
+		expect(modes).toEqual([true, false]);
+		(h.io.stdin as PassThrough).end();
+		expect(await pending).toBe(0);
+		expect(h.backend.prompts).toEqual([]);
+	});
+
 	it("atelier login without a terminal says what to give, and signing in with an account needs one", async () => {
 		const h = harness([], { home: dirname(cwd) });
 		expect(await run(["login"], h.io, h.createBackend)).toBe(1);

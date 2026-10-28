@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import type { SecurityRunner } from "@atelier/core";
 import type { LoginOption, LoginPorts } from "./login.ts";
 import type { LineReader } from "./terminal-input.ts";
 
@@ -6,9 +7,13 @@ export interface LineLoginOptions {
 	home?: string;
 	env?: Record<string, string | undefined>;
 	claudeCode?: string;
+	/** What asks the macOS Keychain whether it has a key; tests pass a fake. */
+	runSecurity?: SecurityRunner;
 	/** Whether a person types the answers (a terminal); otherwise a piped key is read and nothing is chosen. */
 	interactive: boolean;
 	lines: LineReader;
+	/** Turns the terminal's echo off for a secret, when `lines` reads a terminal that echoes by itself. */
+	hideInput?: (on: boolean) => void;
 	write: (text: string) => void;
 	stderr: (text: string) => void;
 	/** Gives the terminal to `task` (Claude Code's sign-in) and takes it back. */
@@ -29,7 +34,14 @@ export function lineLoginPorts(options: LineLoginOptions): LoginPorts {
 	const ask = async (prompt: string, hidden = false): Promise<string | undefined> => {
 		if (options.interactive) lines.discardTyped();
 		write(prompt);
-		const answer = await lines.next(prompt.length, { hidden });
+		const hide = hidden ? options.hideInput : undefined;
+		hide?.(true);
+		let answer: string | undefined;
+		try {
+			answer = await lines.next(prompt.length, { hidden });
+		} finally {
+			hide?.(false);
+		}
 		// A raw terminal does not echo Enter, and a piped answer is not echoed at all: end the question's line here.
 		write("\n");
 		return answer;
@@ -38,6 +50,7 @@ export function lineLoginPorts(options: LineLoginOptions): LoginPorts {
 		home: options.home ?? homedir(),
 		env: options.env ?? process.env,
 		...(options.claudeCode === undefined ? {} : { claudeCode: options.claudeCode }),
+		...(options.runSecurity === undefined ? {} : { runSecurity: options.runSecurity }),
 		interactive: options.interactive,
 		async choose(title, list) {
 			if (!options.interactive) {
