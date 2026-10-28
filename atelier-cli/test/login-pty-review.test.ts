@@ -78,6 +78,11 @@ finally:
 
 const childGuard = new URL("../../atelier-core/test/support/child-guard.ts", import.meta.url).href;
 
+/** Whether this environment can open a pseudo-terminal (a sandbox may have none); the probes need one. */
+const ptyAvailable =
+	process.platform !== "win32" &&
+	spawnSync("python3", ["-c", "import pty; pty.openpty()"], { stdio: "ignore", timeout: 10_000 }).status === 0;
+
 async function probe(mode: "redirect" | "cancel" | "handoff") {
 	const folder = await mkdtemp(join(tmpdir(), "login-pty-"));
 	const home = join(folder, "home");
@@ -119,15 +124,33 @@ async function probe(mode: "redirect" | "cancel" | "handoff") {
 	return JSON.parse(result.stdout);
 }
 
-it("(e) hides a key even when stdout is redirected but stdin is a terminal", async () => {
-	const result = await probe("redirect");
-	expect(result).toEqual({ echo_disabled: true, exit: 0, echo_leaked: false, restored: true });
-}, 30000);
-it("(e) pasting then Ctrl+C never echoes and restores the actual terminal", async () => {
-	const result = await probe("cancel");
-	expect(result).toEqual({ echo_disabled: true, exit: 130, echo_leaked: false, restored: true });
-}, 30000);
-it("(d) fake child gets a cooked terminal, Ctrl+C stops only it, line session resumes raw", async () => {
-	const result = await probe("handoff");
-	expect(result).toEqual({ child_cooked: true, parent_resumed_raw: true, exit: 0, echo_leaked: false, restored: true });
-}, 30000);
+it.skipIf(!ptyAvailable)(
+	"(e) hides a key even when stdout is redirected but stdin is a terminal",
+	async () => {
+		const result = await probe("redirect");
+		expect(result).toEqual({ echo_disabled: true, exit: 0, echo_leaked: false, restored: true });
+	},
+	30000,
+);
+it.skipIf(!ptyAvailable)(
+	"(e) pasting then Ctrl+C never echoes and restores the actual terminal",
+	async () => {
+		const result = await probe("cancel");
+		expect(result).toEqual({ echo_disabled: true, exit: 130, echo_leaked: false, restored: true });
+	},
+	30000,
+);
+it.skipIf(!ptyAvailable)(
+	"(d) fake child gets a cooked terminal, Ctrl+C stops only it, line session resumes raw",
+	async () => {
+		const result = await probe("handoff");
+		expect(result).toEqual({
+			child_cooked: true,
+			parent_resumed_raw: true,
+			exit: 0,
+			echo_leaked: false,
+			restored: true,
+		});
+	},
+	30000,
+);
