@@ -163,3 +163,66 @@ process.stdout.write(got.access);`;
 	expect(await Promise.all([refresher(), refresher(), refresher()])).toEqual(["a-1", "a-1", "a-1"]);
 	expect(await readFile(count, "utf8")).toBe("r-0\n");
 });
+
+/** A refresher in another process whose refresh never ends: says `ready` once it holds the lock, then waits. */
+function stuckRefresher(staleLockMs: number) {
+	const module = new URL("../src/auth-store.ts", import.meta.url).href;
+	const script = `const { AuthStore } = await import(${JSON.stringify(module)});
+const store = new AuthStore(${JSON.stringify(file)}, { staleLockMs: ${staleLockMs} });
+await store.refreshed("openai-codex", () => true, async () => {
+	process.stdout.write("ready");
+	await new Promise((r) => setTimeout(r, 60000));
+	throw new Error("unreachable");
+});`;
+	const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+		stdio: ["ignore", "pipe", "inherit"],
+	});
+	const ready = new Promise<void>((resolve) => child.stdout.once("data", () => resolve()));
+	const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+	return { child, ready, exited };
+}
+
+it("never takes the lock from a live holder, even one stalled past the stale age, so a refresh token is sent once", async () => {
+	await new AuthStore(file).set("openai-codex", { type: "oauth", access: "a-0", refresh: "r-0", expires: 0 });
+	const before = await readFile(file);
+	const holder = stuckRefresher(150);
+	try {
+		await holder.ready;
+		// Stopped, it renews nothing: the lock only grows old.
+		holder.child.kill("SIGSTOP");
+		const lock = `${file}.lock`;
+		while (Date.now() - (await stat(lock)).mtimeMs <= 300) await new Promise((resolve) => setTimeout(resolve, 10));
+		let refreshes = 0;
+		const waiting = new AuthStore(file, { staleLockMs: 150, refreshLockTimeoutMs: 300 });
+		const failed = await waiting
+			.refreshed(
+				"openai-codex",
+				() => true,
+				async () => {
+					refreshes++;
+					return { type: "oauth", access: "a-1", refresh: "r-1", expires: Date.now() + 3_600_000 };
+				},
+			)
+			.catch((error: unknown) => error);
+		expect(failed).toBeInstanceOf(AuthStoreError);
+		expect(refreshes).toBe(0);
+		expect(await readFile(file)).toEqual(before);
+	} finally {
+		holder.child.kill("SIGKILL");
+		await holder.exited;
+	}
+});
+
+it("takes the lock of a holder that died at once, and leaves the credential as it was", async () => {
+	await new AuthStore(file).set("openai-codex", { type: "oauth", access: "a-0", refresh: "r-0", expires: 0 });
+	const before = await readFile(file);
+	// A stale age far longer than the test: only the dead process's id lets the lock go.
+	const holder = stuckRefresher(60_000);
+	await holder.ready;
+	holder.child.kill("SIGKILL");
+	await holder.exited;
+	expect(await readFile(file)).toEqual(before);
+	const store = new AuthStore(file, { staleLockMs: 60_000, lockTimeoutMs: 1_000 });
+	await store.set("anthropic", { type: "api_key", key: "k" });
+	expect(store.get("openai-codex")).toEqual({ type: "oauth", access: "a-0", refresh: "r-0", expires: 0 });
+});
