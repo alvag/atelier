@@ -174,30 +174,51 @@ function passwordAfterColon(text: string, start: number, end: number): [number, 
 	return undefined;
 }
 
+/**
+ * Just past an option's value from `from`: to the first blank outside quotes. Unlike a word, a value runs over the
+ * characters that end a command (`pa&ss`, `pa;ss`) and over a line continuation, which the shell joins into it.
+ */
+function valueEnd(text: string, from: number): number {
+	let i = from;
+	while (i < text.length) {
+		const c = text[i] as string;
+		if (c === " " || c === "\t" || c === "\n") break;
+		if (c === "\\") i += 2;
+		else if (c === "'" || c === '"') i = pastQuote(text, c, i + 1);
+		else i++;
+	}
+	return Math.min(i, text.length);
+}
+
 /** Where the passwords of one curl or wget command lie, from its first word at `from` to where the command ends. */
 function commandPasswords(text: string, command: string, from: number): { spans: [number, number][]; end: number } {
 	const spans: [number, number][] = [];
 	let valueNext: "user" | "password" | undefined;
 	let end = from;
-	for (let word = shellWord(text, from); word; word = shellWord(text, word.end)) {
+	for (let word = shellWord(text, from); word; word = shellWord(text, end)) {
 		end = word.end;
 		const raw = text.slice(word.start, word.end);
 		// The word after an option that takes its value apart: a password whole, or a user:password.
 		const valued = valueNext;
 		valueNext = undefined;
-		if (valued === "password") spans.push([word.start, word.end]);
-		const found = valued === "user" ? passwordAfterColon(text, word.start, word.end) : undefined;
-		if (found) spans.push(found);
-		if (valued) continue;
+		if (valued) {
+			end = valueEnd(text, word.start);
+			if (valued === "password") spans.push([word.start, end]);
+			const found = valued === "user" ? passwordAfterColon(text, word.start, end) : undefined;
+			if (found) spans.push(found);
+			continue;
+		}
 		const user = command === "curl" ? CURL_USER.exec(raw) : null;
 		const password = command === "wget" ? WGET_PASSWORD.exec(raw) : null;
 		if (user?.[1]) valueNext = "user";
 		else if (user) {
-			const found = passwordAfterColon(text, word.start + user[0].length, word.end);
+			end = valueEnd(text, word.start);
+			const found = passwordAfterColon(text, word.start + user[0].length, end);
 			if (found) spans.push(found);
 		} else if (password?.[1] === "") valueNext = "password";
-		else if (password && word.start + password[0].length < word.end) {
-			spans.push([word.start + password[0].length, word.end]);
+		else if (password) {
+			end = valueEnd(text, word.start);
+			if (word.start + password[0].length < end) spans.push([word.start + password[0].length, end]);
 		}
 	}
 	return { spans, end };

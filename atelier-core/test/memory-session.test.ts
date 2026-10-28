@@ -932,6 +932,9 @@ describe("user prompts", () => {
 			"wget --user=ana --password 'p w' x; wget --http-password=pw y",
 			"docker run -u 1000:1000 img; docker run --user node:node img | curl -s x",
 			"sudo -u ana:pw ls; then curl the API with -u ana:pw",
+			"curl -u ana:pa&ss https://x; curl -u ana:pa;ss y; curl -u ana:pa|ss z",
+			"curl -u ana:pa(ss) x && curl --user=ana:pw&x",
+			"curl -u ana:pass\\\nword x; wget --password pa&ss y; curl -u a:b; curl -u c:d",
 		];
 		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
 		for (const prompt of prompts) await send(prompt);
@@ -946,6 +949,9 @@ describe("user prompts", () => {
 			"wget --user=ana --password [REDACTED] x; wget --http-password=[REDACTED] y",
 			"docker run -u 1000:1000 img; docker run --user node:node img | curl -s x",
 			"sudo -u ana:pw ls; then curl the API with -u ana:[REDACTED]",
+			"curl -u ana:[REDACTED] https://x; curl -u ana:[REDACTED] y; curl -u ana:[REDACTED] z",
+			"curl -u ana:[REDACTED] x && curl --user=ana:[REDACTED]",
+			"curl -u ana:[REDACTED] x; wget --password [REDACTED] y; curl -u a:[REDACTED] curl -u c:[REDACTED]",
 		]);
 	});
 
