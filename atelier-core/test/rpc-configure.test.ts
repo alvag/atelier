@@ -255,6 +255,13 @@ describe("options.list", () => {
 		await h.close();
 	});
 
+	it("lists no models, and the rest as always, when the sign-ins cannot be read", async () => {
+		const h = serve(undefined, true, { signedIn: () => Promise.reject(new Error("auth.json is not JSON")) });
+		const response = await h.ask({ command: "options.list" });
+		expect(response).toMatchObject({ ok: true, result: { models: [], modes: ["normal", "auto", "yolo"] } });
+		await h.close();
+	});
+
 	it("says the profile a session in cwd would take, like profiles.list", async () => {
 		const h = serve();
 		const listed = await h.ask({ command: "profiles.list", cwd: home });

@@ -488,7 +488,10 @@ export class RpcServer {
 		const catalog = this.#options.catalog ?? BASE_CATALOG;
 		const [lists, signedIn] = await Promise.all([
 			Promise.all(BACKEND_NAMES.map((name) => catalog.models(name))),
-			this.#options.signedIn?.() ?? Promise.resolve<readonly BackendName[]>([]),
+			// The sign-ins only narrow the models offered: when they cannot be read, the rest of the answer still serves.
+			(this.#options.signedIn?.() ?? Promise.resolve<readonly BackendName[]>([])).catch(
+				(): readonly BackendName[] => [],
+			),
 		]);
 		const backends = BACKEND_NAMES.map((name, index) => ({ name, models: [...(lists[index] ?? [])] }));
 		return {
