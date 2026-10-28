@@ -27,8 +27,9 @@ export interface ChatCompletionsOptions {
 
 const RETRY_BASE_MS = 500;
 
-/** What OpenCode says when the plan's usage, not the request rate, is spent. */
-export const USAGE_LIMIT = /usage limit|quota|allowance|balance|credits|monthly|weekly/i;
+/** What OpenCode says when the plan's usage, not the request rate, is spent: its 5-hour, weekly or monthly limit. */
+export const USAGE_LIMIT =
+	/usage limit|quota|allowance|balance|credits|monthly|weekly|\b(?:5|five)[\s-]?h(?:ours?|r)?\b|hourly limit/i;
 
 /** Whether trying again later may work: load and lost connections, never a spent plan or a refused request. */
 function worthRetrying(error: unknown): boolean {
