@@ -150,6 +150,7 @@ A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent
 | `ATELIER_MEMORY=off`         | No long-term memory.                                                                                                |
 | `ATELIER_MEMORY_PROMPTS=off` | Your prompts are not saved to long-term memory.                                                                     |
 | `ATELIER_MCP=off`            | No MCP servers.                                                                                                     |
+| `ATELIER_LOGIN_CHECK=off`    | Do not check at start whether the backend has its login or key.                                                     |
 | `ATELIER_SCRATCH_SWEEP=off`  | No cleanup of the temporary directories that crashed sessions left ([temporary directories](docs/architecture.md)). |
 
 ## Inspiration

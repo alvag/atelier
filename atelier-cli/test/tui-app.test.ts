@@ -2943,3 +2943,84 @@ describe("TUI login warning", { timeout: 20_000 }, () => {
 		expect(await code).toBe(130);
 	});
 });
+
+describe("independent authentication security probes", { timeout: 20_000 }, () => {
+	it("keeps a successful TUI key out of every protocol command and saved session", async () => {
+		const h = harness([], { saveSessions: true, backendId: "claude-code" });
+		const canary = "REVIEW_CANARY_NOT_A_CREDENTIAL";
+		const code = run([], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/login api-key anthropic");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("API key (hidden)"));
+		h.screen.type(`\x1b[200~${canary}\x1b[201~`);
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("API key stored"));
+		expect(h.screen.raw().includes(canary)).toBe(false);
+		expect(JSON.stringify(h.core.commands).includes(canary)).toBe(false);
+		expect(h.backend.prompts).toEqual([]);
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+		const fs = await import("node:fs/promises");
+		for (const entry of await fs.readdir(join(home, ".atelier", "sessions"), {
+			recursive: true,
+			withFileTypes: true,
+		})) {
+			if (entry.isFile())
+				expect((await readFile(join(entry.parentPath, entry.name), "utf8")).includes(canary)).toBe(false);
+		}
+	});
+	it("restarts the TUI after a fake child receives SIGINT without quitting Atelier", async () => {
+		const h = harness([]);
+		const fake = join(home, "claude.cjs");
+		const startedFile = join(home, "fake-started");
+		await writeFile(
+			fake,
+			`#!${process.execPath}\nconst fs=require('node:fs');if(process.argv[3]==='status'){console.log('{"loggedIn":false,"authMethod":"none"}');process.exit(1);}fs.writeFileSync(${JSON.stringify(startedFile)},String(process.pid));process.on('SIGINT',()=>process.exit(130));process.stdin.resume();`,
+		);
+		await chmod(fake, 0o755);
+		let interrupt: (() => void) | undefined;
+		let starts = 0;
+		let stops = 0;
+		const terminal = h.screen.terminal;
+		const start = terminal.start.bind(terminal),
+			stop = terminal.stop.bind(terminal);
+		terminal.start = (...args) => {
+			starts++;
+			start(...args);
+		};
+		terminal.stop = () => {
+			stops++;
+			stop();
+		};
+		Object.assign(h.io, {
+			claudeCode: fake,
+			env: process.env,
+			onInterrupt: (handler: () => void) => {
+				interrupt = handler;
+				return () => {
+					interrupt = undefined;
+				};
+			},
+		});
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/login account anthropic");
+		h.screen.type("\r");
+		let pid = 0;
+		await vi.waitFor(async () => {
+			pid = Number(await readFile(startedFile, "utf8"));
+			expect(pid > 0).toBe(true);
+		});
+		expect(stops).toBe(1);
+		expect(starts).toBe(1);
+		interrupt?.();
+		process.kill(pid, "SIGINT");
+		await until(() => h.screen.screen().includes("Claude Code is still not logged in"));
+		expect(starts).toBe(2);
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+});

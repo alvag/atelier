@@ -63,11 +63,13 @@ const exitCode = await run(
 		env: process.env,
 		...(process.getuid ? { uid: process.getuid() } : {}),
 		home: homedir(),
-		checkLogin: (backend) => loginWarning(backend),
+		// ATELIER_LOGIN_CHECK=off skips asking Claude Code or the Keychain at start.
+		...(process.env.ATELIER_LOGIN_CHECK === "off" ? {} : { checkLogin: (backend: string) => loginWarning(backend) }),
 		color: Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined,
 		...(process.stdin.isTTY && process.stdout.isTTY
 			? { setRawMode: (on: boolean) => void process.stdin.setRawMode(on) }
 			: {}),
+		...(process.stdin.isTTY ? { setInputRaw: (on: boolean) => void process.stdin.setRawMode(on) } : {}),
 		onInterrupt: (handler) => {
 			process.on("SIGINT", handler);
 			return () => process.off("SIGINT", handler);
