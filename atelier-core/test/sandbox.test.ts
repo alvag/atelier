@@ -186,7 +186,7 @@ describe("agentPolicy", () => {
 		expect(agentPolicy(SESSION).filesystem.denyWrite).toContain("/work/project/.atelier");
 	});
 
-	it("denies writing .env, .env.*, *.pem and *.key anywhere in the working directory", () => {
+	it("denies writing .env, .env.*, *.pem and *.key anywhere in the working directory, and other tools' credential files", () => {
 		expect(agentPolicy(SESSION).filesystem.denyWrite).toEqual([
 			"/work/project/.env",
 			"/work/project/.env.*",
@@ -199,6 +199,11 @@ describe("agentPolicy", () => {
 			"/work/project/.git/rebase-apply",
 			"/work/project/.git/sequencer",
 			"/work/project/.atelier",
+			"/home/ana/.codex/auth.json",
+			"/home/ana/.local/share/opencode/auth.json",
+			"/home/ana/.netrc",
+			"/home/ana/.git-credentials",
+			"/home/ana/.config/git/credentials",
 		]);
 	});
 

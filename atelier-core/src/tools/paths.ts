@@ -1,7 +1,7 @@
 import { lstat, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { loadSandboxAdditions, protectedWritePaths } from "./sandbox-config.ts";
+import { loadSandboxAdditions, protectedWriteFiles, protectedWritePaths } from "./sandbox-config.ts";
 import { secretReadPaths } from "./sandbox-paths.ts";
 
 export class PathOutsideError extends Error {
@@ -158,7 +158,10 @@ export function isSecretFileFolded(path: string): boolean {
 	return isSecretFile(foldPath(path));
 }
 
-/** The places `edit` never writes, approved or not: the home's secret directories and the user's `.atelier`. Real paths. */
-export function protectedWriteDirectories(home: string = homedir()): string[] {
-	return protectedWritePaths(home).inside;
+/**
+ * The places `edit` and `write` never write, approved or not: the home's secret directories, the user's `.atelier`
+ * and other tools' credential files. Real paths.
+ */
+export function protectedWritePlaces(home: string = homedir()): string[] {
+	return [...protectedWritePaths(home).inside, ...protectedWriteFiles(home)];
 }

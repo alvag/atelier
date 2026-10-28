@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import { secretDirectories } from "./sandbox-paths.ts";
+import { cliCredentialFiles, secretDirectories } from "./sandbox-paths.ts";
 
 /**
  * The user's and the project's additions to the agent's sandbox policy:
@@ -124,6 +124,14 @@ function canonical(path: string): string {
 export function protectedWritePaths(home: string): { whole: string[]; inside: string[] } {
 	const inside = [...secretDirectories(home), join(home, ".atelier")].map(canonical);
 	return { whole: [canonical(home), ...inside], inside };
+}
+
+/**
+ * Other tools' credential files, which no tool writes either. Kept apart from `protectedWritePaths`: an entry that
+ * contains one (`~/.local/share`) stays valid, and the sandbox denies the file itself instead. Real paths.
+ */
+export function protectedWriteFiles(home: string): string[] {
+	return cliCredentialFiles(home).map(canonical);
 }
 
 const isWithin = (path: string, parent: string) =>

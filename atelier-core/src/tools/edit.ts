@@ -9,7 +9,7 @@ import {
 	isProtectedFolded,
 	isSecretFileFolded,
 	PathProtectedError,
-	protectedWriteDirectories,
+	protectedWritePlaces,
 	realpathAllowMissing,
 } from "./paths.ts";
 import { approvalMismatch, projectRefusal, rememberApproval } from "./protection.ts";
@@ -58,8 +58,8 @@ export interface Location {
 export async function locate(cwd: string, path: string, context: ToolContext, home: string): Promise<Location> {
 	const absolute = resolve(cwd, path);
 	const real = await realpathAllowMissing(absolute);
-	const secretDirectories = protectedWriteDirectories(home);
-	if (isProtectedFolded(absolute, secretDirectories) || isProtectedFolded(real, secretDirectories))
+	const protectedPlaces = protectedWritePlaces(home);
+	if (isProtectedFolded(absolute, protectedPlaces) || isProtectedFolded(real, protectedPlaces))
 		throw new PathProtectedError(path);
 	if (isInside(cwd, absolute) && isInside(await realpath(cwd), real)) return { real, allowed: true };
 	if (isSecretFileFolded(absolute) || isSecretFileFolded(real)) throw new PathProtectedError(path);
