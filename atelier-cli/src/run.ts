@@ -455,7 +455,10 @@ export async function run(
 					io.stderr(
 						why
 							? `bash command asks to run outside the sandbox and needs your approval, but there is no terminal to ask (--mode yolo allows it): ${shown.text}\n  reason: ${why.text}\n`
-							: `bash command needs approval and there is no terminal to ask; the sandbox is off or unavailable (--mode yolo allows it): ${shown.text}\n`,
+							: // yolo asks about such a command only when its sandbox failed to start.
+								mode === "yolo"
+								? `bash command needs approval and there is no terminal to ask; the sandbox failed to start (yolo does not run commands without it unasked): ${shown.text}\n`
+								: `bash command needs approval and there is no terminal to ask; the sandbox is off or unavailable (--mode yolo allows it): ${shown.text}\n`,
 					);
 				return false;
 			}

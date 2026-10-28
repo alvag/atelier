@@ -1387,7 +1387,7 @@ export class Session {
 			// reversible delivery (a plain push or rebase) the gate marks.
 			const confirmed = approval?.confirm !== undefined;
 			const skipped =
-				(mode === "yolo" && (!confirmed || approval?.yoloWaived === true)) ||
+				(mode === "yolo" && approval?.askInYolo !== true && (!confirmed || approval?.yoloWaived === true)) ||
 				(approval?.classifyOnly === true && mode !== "auto");
 			const verdict =
 				approval && mode === "auto" && !confirmed ? await this.#classify(callId, call.tool, approval, emit) : undefined;

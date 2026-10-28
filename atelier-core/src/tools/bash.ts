@@ -262,7 +262,12 @@ export function createBashTool({
 			// The sandbox contains the command, so no mode asks about it, unless the guard's confirm category does.
 			if (status.available) return confirmed.confirm === undefined ? {} : { approval: { command, ...confirmed } };
 			return {
-				approval: { command, ...confirmed, ...rememberOffer(command, confirmed.confirm, sandbox) },
+				approval: {
+					command,
+					...confirmed,
+					...rememberOffer(command, confirmed.confirm, sandbox),
+					...(status.failed ? { askInYolo: true } : {}),
+				},
 				warning: status.reason,
 			};
 		},

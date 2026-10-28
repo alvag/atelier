@@ -316,7 +316,7 @@ describe("Sandbox status", () => {
 			checkDependencies: () => ({ errors: ["sandbox-exec not found"], warnings: [] }),
 		});
 		const sandbox = new Sandbox({ platform: "darwin", manager });
-		expect(await sandbox.status()).toEqual({ available: false, reason: "sandbox-exec not found" });
+		expect(await sandbox.status()).toEqual({ available: false, reason: "sandbox-exec not found", failed: true });
 		expect(calls.initialize).toEqual([]);
 	});
 
@@ -327,8 +327,8 @@ describe("Sandbox status", () => {
 			},
 		});
 		const sandbox = new Sandbox({ platform: "darwin", manager });
-		expect(await sandbox.status()).toEqual({ available: false, reason: "proxy could not start" });
-		expect(await sandbox.status()).toEqual({ available: false, reason: "proxy could not start" });
+		expect(await sandbox.status()).toEqual({ available: false, reason: "proxy could not start", failed: true });
+		expect(await sandbox.status()).toEqual({ available: false, reason: "proxy could not start", failed: true });
 		expect(calls.wrap).toEqual([]);
 	});
 

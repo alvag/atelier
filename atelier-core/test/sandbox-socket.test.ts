@@ -108,7 +108,7 @@ describe("the library's socket with a long TMPDIR", () => {
 			throw new Error("proxy could not start");
 		};
 		const sandbox = new Sandbox({ platform: "darwin", manager, socketRoot });
-		expect(await sandbox.status()).toEqual({ available: false, reason: "proxy could not start" });
+		expect(await sandbox.status()).toEqual({ available: false, reason: "proxy could not start", failed: true });
 		expect(process.env.TMPDIR).toBe(longTemp);
 	});
 
@@ -123,6 +123,7 @@ describe("the library's socket with a long TMPDIR", () => {
 		expect(status).toEqual({
 			available: false,
 			reason: `${join(socketRoot, `atelier-${uid}`)} is not a directory of this user's own (mode 0700)`,
+			failed: true,
 		});
 		expect(seen).toEqual([]);
 	});
@@ -138,6 +139,7 @@ describe("the library's socket with a long TMPDIR", () => {
 		expect(status).toEqual({
 			available: false,
 			reason: `${short} is not a directory of this user's own (mode 0700)`,
+			failed: true,
 		});
 	});
 });

@@ -33,6 +33,21 @@ function sandboxed() {
 
 const unavailable = () => new Sandbox({ platform: "linux" });
 
+/** A sandbox on macOS whose library fails to start, the way a socket path too long for macOS did. */
+function failed(how: "initialize" | "dependencies" = "initialize") {
+	const manager: SandboxManagerLike = {
+		isSupportedPlatform: () => true,
+		checkDependencies: () => ({ errors: how === "dependencies" ? ["sandbox-exec not found"] : [], warnings: [] }),
+		initialize: async () => {
+			throw new Error("listen EINVAL: invalid argument /a/long/path/srt-mux-1-0.sock");
+		},
+		wrapWithSandbox: async (command) => command,
+		cleanupAfterCommand: () => {},
+		reset: async () => {},
+	};
+	return new Sandbox({ platform: "darwin", manager });
+}
+
 const bashCall = (input: Record<string, string | boolean>, callId = "c1"): FakeStep => ({
 	toolCall: { tool: "bash", input, callId },
 });
@@ -219,6 +234,43 @@ describe("without a sandbox", () => {
 		expect(questions).toEqual([]);
 		expect(results[0]).toMatchObject({ ok: true });
 		expect(ofType(events[0] ?? [], "sandbox_warning")).toHaveLength(1);
+	});
+
+	it.each(["initialize", "dependencies"] as const)(
+		"asks in yolo too when the sandbox failed to start (%s), and runs nothing the user denies",
+		async (how) => {
+			const denied = await run(
+				[[bashCall({ command: "echo hi" }), finished]],
+				createBashTool({ sandbox: failed(how) }),
+				{
+					permissionMode: "yolo",
+					answer: false,
+				},
+			);
+			expect(denied.questions).toEqual([{ callId: "c1", command: "echo hi" }]);
+			expect(denied.results).toEqual([{ ok: false, output: "The user denied this command." }]);
+			expect(ofType(denied.events[0] ?? [], "sandbox_warning")).toHaveLength(1);
+
+			const allowed = await run(
+				[[bashCall({ command: "echo hi" }), finished]],
+				createBashTool({ sandbox: failed(how) }),
+				{
+					permissionMode: "yolo",
+				},
+			);
+			expect(allowed.questions).toEqual([{ callId: "c1", command: "echo hi" }]);
+			expect(allowed.results[0]?.output).toContain("hi");
+		},
+	);
+
+	it("runs without a question in yolo when the sandbox was turned off", async () => {
+		const { questions, results } = await run(
+			[[bashCall({ command: "echo hi" }), finished]],
+			createBashTool({ sandbox: failed() }),
+			{ permissionMode: "yolo", noSandbox: true, answer: false },
+		);
+		expect(questions).toEqual([]);
+		expect(results[0]).toMatchObject({ ok: true });
 	});
 
 	it("warns again in every turn that runs a command", async () => {

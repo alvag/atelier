@@ -53,7 +53,8 @@ export function sandboxEnabled(env: Record<string, string | undefined>): boolean
 	return env.ATELIER_SANDBOX !== "off";
 }
 
-export type SandboxStatus = { available: true } | { available: false; reason: string };
+/** `failed`: the sandbox should have started and did not, which `yolo` does not take as leave to run without it. */
+export type SandboxStatus = { available: true } | { available: false; reason: string; failed?: true };
 
 /** The two kinds of caller: the main agent and its workers, or the independent verifier. */
 export type SandboxPolicyName = "agent" | "verifier";
@@ -682,7 +683,7 @@ export class Sandbox {
 			const manager = this.#options.manager ?? (await defaultManager());
 			if (!manager.isSupportedPlatform()) return { available: false, reason: NOT_AVAILABLE_ON_PLATFORM };
 			const { errors } = manager.checkDependencies();
-			if (errors.length > 0) return { available: false, reason: errors.join(", ") };
+			if (errors.length > 0) return { available: false, reason: errors.join(", "), failed: true };
 			// The log monitor is what reports the file denials; the proxy reports the network ones on its own.
 			const initialize = () => manager.initialize(SESSION_CONFIG, undefined, true);
 			// A socket that does not fit fails with EINVAL: the library starts with TMPDIR in a short folder instead.
@@ -691,7 +692,7 @@ export class Sandbox {
 			this.#manager = manager;
 			return { available: true };
 		} catch (error) {
-			return { available: false, reason: errorMessage(error) };
+			return { available: false, reason: errorMessage(error), failed: true };
 		}
 	}
 

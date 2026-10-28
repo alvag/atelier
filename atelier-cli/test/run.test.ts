@@ -71,6 +71,22 @@ const unsandboxedTools = (() => {
 	return coreTools.map((tool) => (tool.name === "bash" ? bash : tool));
 })();
 
+/** The core's tools with a `bash` whose sandbox failed to start: every command asks, in yolo too. */
+const failedSandboxTools = (() => {
+	const manager: SandboxManagerLike = {
+		isSupportedPlatform: () => true,
+		checkDependencies: () => ({ errors: [], warnings: [] }),
+		initialize: async () => {
+			throw new Error("proxy could not start");
+		},
+		wrapWithSandbox: async (command) => command,
+		cleanupAfterCommand: () => {},
+		reset: async () => {},
+	};
+	const bash = createBashTool({ sandbox: new Sandbox({ platform: "darwin", manager, outside: () => false }) });
+	return coreTools.map((tool) => (tool.name === "bash" ? bash : tool));
+})();
+
 function harness(
 	turns: FakeStep[][],
 	options: {
@@ -85,8 +101,8 @@ function harness(
 		raw?: boolean;
 		/** The user id the process runs as; unknown when absent. */
 		uid?: number;
-		/** false: `bash` has no sandbox, so every command asks. */
-		sandbox?: boolean;
+		/** false: `bash` has no sandbox, so every command asks; "failed": its sandbox failed to start. */
+		sandbox?: boolean | "failed";
 		/** The name the backend answers to; a saved session needs a real one. */
 		backendId?: string;
 		/** Tools the session gets besides the usual ones. */
@@ -123,7 +139,10 @@ function harness(
 			stderr += s;
 		},
 		cwd,
-		tools: [...(options.sandbox === false ? unsandboxedTools : tools), ...(options.extraTools ?? [])],
+		tools: [
+			...(options.sandbox === false ? unsandboxedTools : options.sandbox === "failed" ? failedSandboxTools : tools),
+			...(options.extraTools ?? []),
+		],
 		...(options.uid === undefined ? {} : { uid: options.uid }),
 		...(options.home === undefined ? {} : { home: options.home }),
 		color: false,
@@ -924,6 +943,17 @@ describe("bash outside the sandbox", () => {
 		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
 		expect(h.err()).toContain(
 			"bash command needs approval and there is no terminal to ask; the sandbox is off or unavailable (--mode yolo allows it): rm marker\n",
+		);
+		expect(await readFile(join(cwd, "marker"), "utf8")).toBe("");
+	});
+
+	it("denies a command in yolo when the sandbox failed to start and there is no terminal, and says why", async () => {
+		await writeFile(join(cwd, "marker"), "");
+		const h = harness([[bash({ command: "rm marker" }), { event: finished }]], { sandbox: "failed" });
+		await run(["--mode", "yolo", "--no-review", "x"], h.io, h.createBackend);
+		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+		expect(h.err()).toContain(
+			"bash command needs approval and there is no terminal to ask; the sandbox failed to start (yolo does not run commands without it unasked): rm marker\n",
 		);
 		expect(await readFile(join(cwd, "marker"), "utf8")).toBe("");
 	});
