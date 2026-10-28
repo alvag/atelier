@@ -1,4 +1,4 @@
-import { open, stat, unlink } from "node:fs/promises";
+import { open, stat, unlink, utimes } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ensureSecretFolder, readSecretFile, writeSecretFile } from "./secret-file.ts";
@@ -32,6 +32,8 @@ export interface AuthStoreOptions {
 }
 
 const LOCK_TIMEOUT_MS = 5_000;
+/** A refresh waits longer: another process may be refreshing, which takes a request to the provider. */
+const REFRESH_LOCK_TIMEOUT_MS = 30_000;
 const STALE_LOCK_MS = 10_000;
 const LOCK_RETRY_MS = 20;
 
@@ -95,6 +97,33 @@ export class AuthStore {
 		});
 	}
 
+	/**
+	 * The provider's credential, refreshed first when `stale` says it must be. The refresh runs holding the lock, after
+	 * reading the file again: a process that finds it refreshed by another one takes that credential instead, so a
+	 * refresh token that the provider replaces on each use is used once. A failed refresh leaves the file as it was.
+	 */
+	async refreshed(
+		provider: string,
+		stale: (credential: Credential) => boolean,
+		refresh: (credential: Credential) => Promise<Credential>,
+	): Promise<Credential | undefined> {
+		const current = this.get(provider);
+		if (current === undefined || !stale(current)) return current;
+		ensureSecretFolder(dirname(this.#file));
+		const release = await this.#lock(Math.max(this.#lockTimeoutMs, REFRESH_LOCK_TIMEOUT_MS));
+		try {
+			const all = this.#read();
+			const entry = all[provider];
+			if (!isCredential(entry) || !stale(entry)) return isCredential(entry) ? entry : undefined;
+			const next = await refresh(entry);
+			all[provider] = next;
+			writeSecretFile(this.#file, `${JSON.stringify(all, null, "\t")}\n`);
+			return next;
+		} finally {
+			await release();
+		}
+	}
+
 	/** Deletes the provider's credential; says whether there was one. */
 	async remove(provider: string): Promise<boolean> {
 		let had = false;
@@ -130,15 +159,26 @@ export class AuthStore {
 		}
 	}
 
-	/** Creates `<file>.lock`, which only one process can create; waits while another holds it. */
-	async #lock(): Promise<() => Promise<void>> {
+	/**
+	 * Creates `<file>.lock`, which only one process can create; waits while another holds it. While held, the lock's
+	 * time is renewed, so a slow holder (a refresh waiting on the provider) is not taken for a dead one.
+	 */
+	async #lock(timeoutMs = this.#lockTimeoutMs): Promise<() => Promise<void>> {
 		const lock = `${this.#file}.lock`;
-		const deadline = Date.now() + this.#lockTimeoutMs;
+		const deadline = Date.now() + timeoutMs;
 		for (;;) {
 			try {
 				const handle = await open(lock, "wx", 0o600);
 				await handle.close();
-				return () => unlink(lock).catch(() => {});
+				const heartbeat = setInterval(() => {
+					const now = new Date();
+					utimes(lock, now, now).catch(() => {});
+				}, this.#staleLockMs / 3);
+				heartbeat.unref();
+				return () => {
+					clearInterval(heartbeat);
+					return unlink(lock).catch(() => {});
+				};
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			}

@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { AuthStore, AuthStoreError, authFile } from "../src/auth-store.ts";
+import { AuthStore, AuthStoreError, authFile, type Credential } from "../src/auth-store.ts";
 import { requireIsolatedHome } from "./support/login-isolation.ts";
 
 requireIsolatedHome();
@@ -107,4 +107,59 @@ it("lists every stored key and token, to hide them, and nothing of an entry it d
 	await store.set("anthropic", { type: "api_key", key: "sk-ant-test-1" });
 	await store.set("openai-codex", { type: "oauth", access: "a-1", refresh: "r-1", expires: 1 });
 	expect(store.secrets()).toEqual(["sk-ant-test-1", "a-1", "r-1"]);
+});
+
+it("refreshes a stale credential under the lock, and leaves a fresh one alone", async () => {
+	const store = new AuthStore(file);
+	await store.set("openai-codex", { type: "oauth", access: "a-1", refresh: "r-1", expires: Date.now() + 3_600_000 });
+	const refresh = async () => ({
+		type: "oauth" as const,
+		access: "a-2",
+		refresh: "r-2",
+		expires: Date.now() + 7_200_000,
+	});
+	const stale = (credential: Credential) => credential.type === "oauth" && credential.expires < Date.now() + 60_000;
+	expect(await store.refreshed("openai-codex", stale, refresh)).toMatchObject({ access: "a-1" });
+	expect(await store.refreshed("openai-codex", () => true, refresh)).toMatchObject({ access: "a-2", refresh: "r-2" });
+	expect(store.get("openai-codex")).toMatchObject({ access: "a-2", refresh: "r-2" });
+	expect(await store.refreshed("missing", () => true, refresh)).toBeUndefined();
+	await expect(
+		store.refreshed(
+			"openai-codex",
+			() => true,
+			async () => Promise.reject(new Error("refused")),
+		),
+	).rejects.toThrow("refused");
+	expect(store.get("openai-codex")).toMatchObject({ access: "a-2" });
+	expect(await readdir(join(home, ".atelier"))).not.toContain("auth.json.lock");
+});
+
+it("refreshes once when several processes find the credential stale at the same time", async () => {
+	const store = new AuthStore(file);
+	await store.set("openai-codex", { type: "oauth", access: "a-0", refresh: "r-0", expires: 0 });
+	const module = new URL("../src/auth-store.ts", import.meta.url).href;
+	const count = join(home, "refreshes");
+	const refresher = () =>
+		new Promise<string>((resolve) => {
+			// The refresh outlasts the stale-lock age: the heartbeat keeps the others from taking the lock over.
+			const script = `const { AuthStore } = await import(${JSON.stringify(module)});
+const { appendFileSync } = await import("node:fs");
+const store = new AuthStore(${JSON.stringify(file)}, { staleLockMs: 300 });
+const got = await store.refreshed("openai-codex", (c) => c.expires < Date.now(), async (c) => {
+	appendFileSync(${JSON.stringify(count)}, c.refresh + "\\n");
+	await new Promise((r) => setTimeout(r, 900));
+	return { type: "oauth", access: "a-1", refresh: "r-1", expires: Date.now() + 3600000 };
+});
+process.stdout.write(got.access);`;
+			let out = "";
+			const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+				stdio: ["ignore", "pipe", "inherit"],
+			});
+			child.stdout.on("data", (chunk: Buffer) => {
+				out += chunk.toString();
+			});
+			child.on("exit", () => resolve(out));
+		});
+	expect(await Promise.all([refresher(), refresher(), refresher()])).toEqual(["a-1", "a-1", "a-1"]);
+	expect(await readFile(count, "utf8")).toBe("r-0\n");
 });
