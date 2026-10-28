@@ -1,6 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import type { AuthStore } from "./auth-store.ts";
+import { apiKeySource, MISSING_API_KEY_MESSAGE } from "./credentials.ts";
 
 /** What `claude auth status --json` says; `authMethod` is `claude.ai` for a Claude subscription. */
 export interface ClaudeCodeAuthStatus {
@@ -134,4 +136,35 @@ export function claudeCodeLogin(options: ClaudeCodeInteractiveOptions = {}): Pro
 /** Signs Claude Code out: the same login as the Claude Code installed on this machine, which is signed out too. */
 export function claudeCodeLogout(options: ClaudeCodeInteractiveOptions = {}): Promise<number> {
 	return runInteractive(["auth", "logout"], options);
+}
+
+export interface LoginWarningOptions extends ClaudeCodeRunOptions {
+	/** Where `atelier login` keeps keys; `~/.atelier/auth.json` when absent. */
+	store?: AuthStore;
+	platform?: NodeJS.Platform;
+}
+
+/**
+ * What a session on `backend` lacks to start working, said before the first prompt: Claude Code's login for
+ * `claude-code`, an API key for `anthropic-api`. Undefined when nothing is missing or the backend needs neither.
+ */
+export async function loginWarning(backend: string, options: LoginWarningOptions = {}): Promise<string | undefined> {
+	const keys = {
+		env: options.env ?? process.env,
+		...(options.store === undefined ? {} : { store: options.store }),
+		...(options.platform === undefined ? {} : { platform: options.platform }),
+	};
+	if (backend === "anthropic-api")
+		return (await apiKeySource(keys)) === undefined ? MISSING_API_KEY_MESSAGE : undefined;
+	if (backend !== "claude-code") return undefined;
+	let status: ClaudeCodeAuthStatus;
+	try {
+		status = await claudeCodeAuthStatus(options);
+	} catch (error) {
+		return `Claude Code's login could not be checked: ${(error as Error).message}`;
+	}
+	if (status.loggedIn) return undefined;
+	const withKey =
+		(await apiKeySource(keys)) === undefined ? "" : ", or --backend anthropic-api to use your Anthropic API key";
+	return `Claude Code is not logged in: use /login (or atelier login) to sign in with your Claude account${withKey}.`;
 }

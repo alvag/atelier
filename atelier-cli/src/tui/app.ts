@@ -97,6 +97,8 @@ export interface TuiOptions {
 	onInterrupt?: (handler: () => void) => () => void;
 	/** The Claude Code binary `/login` runs; the one Atelier installs when absent. Tests pass a fake. */
 	claudeCode?: string;
+	/** What the session's backend lacks (a login, a key), said at start; nothing is checked when absent. */
+	checkLogin?: (backend: string) => Promise<string | undefined>;
 	/** How long closing the session may take before the core is closed anyway (default 3000 ms). */
 	closeTimeoutMs?: number;
 	/** How long an approval ignores keys after it appears, so one typed before it does not answer it (default 400 ms). */
@@ -1264,6 +1266,19 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			.catch(() => {});
 	}
 	options.terminal.setTitle(`Atelier - ${basename(args.cwd)}`);
+	// Before the first prompt, not at its failure: what the backend lacks, and how to get it.
+	const startedOn = footer.state.backend;
+	if (startedOn !== undefined && options.checkLogin !== undefined) {
+		const shownIn = conversation;
+		void options
+			.checkLogin(startedOn)
+			.catch(() => undefined)
+			.then((missing) => {
+				if (missing === undefined || quitting) return;
+				shownIn.note(`warning: ${missing}`, true);
+				tui.requestRender();
+			});
+	}
 	// The state first: Herdr takes a resume command only from a reporter that holds the pane.
 	reportState("idle");
 	reportSession();
