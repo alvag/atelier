@@ -20,7 +20,8 @@ const SECRETS: { name: string; pattern: RegExp }[] = [
 	{ name: "a Google API key", pattern: /\bAIza[0-9A-Za-z_-]{35}/ },
 	{ name: "an AWS access key", pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
 	{ name: "a Slack token", pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}/ },
-	{ name: "an npm token", pattern: /\bnpm_[A-Za-z0-9]{36}\b/ },
+	// No word boundary at the end: a key joined with the next words, or followed by `_` or more of a word, is still one.
+	{ name: "an npm token", pattern: /\bnpm_[A-Za-z0-9]{36,}/ },
 	{ name: "a Stripe live key", pattern: /\b[rs]k_live_[A-Za-z0-9]{24,}/ },
 	{ name: "a private key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
 ];

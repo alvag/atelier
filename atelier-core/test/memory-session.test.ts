@@ -354,6 +354,20 @@ describe("feature mirror", () => {
 	});
 });
 
+/**
+ * npm and Stripe live keys, whole, split across words before another word, or followed by more of a word. Built at
+ * run time, so no literal in the repository looks like a real key to secret scanners.
+ */
+const NPM_BODY = "abcdefghijklmnopqrstuvwxyz0123456789";
+const SHAPED_KEYS = [
+	`${"npm"}_${NPM_BODY}`,
+	`${"npm"}_abcd\n${NPM_BODY.slice(4)} and more words`,
+	`${"npm"}_${NPM_BODY}_suffix`,
+	`${"npm"}_${NPM_BODY}XYZ`,
+	`${"sk"}_${"live"}_${NPM_BODY}`,
+	`${"rk"}_${"live"}_abcd ${NPM_BODY.slice(4)} and more words`,
+];
+
 describe("compaction summary", () => {
 	const SUMMARY = "## Goal\n- refactor the parser";
 	const today = () => {
@@ -455,6 +469,17 @@ describe("compaction summary", () => {
 			}),
 		]);
 		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+	});
+
+	it.each(SHAPED_KEYS)("does not save a summary with an npm or Stripe live key: %s", async (key) => {
+		const memory = new FakeMemory("proj");
+		const s = await Session.start({ backend: summarizing([`${SUMMARY}\n${key}`]), cwd, tools, memory });
+		const events = await run(s.compact());
+		await s.close();
+		expect(memory.saved).toEqual([]);
+		expect(events.filter((e) => e.type === "error")).toEqual([
+			expect.objectContaining({ code: "memory_summary_skipped", recoverable: true }),
+		]);
 	});
 
 	it("warns once when memory fails or saves with a warning, without retrying, and the turn goes on", async () => {
@@ -842,6 +867,7 @@ describe("user prompts", () => {
 		const live = (kind: string) => `${kind}_${"live"}_51Habcdefghijklmnopqrstuv`;
 		const prompts = [
 			`npm config set //registry/:_authToken ${"npm"}_abcdefghijklmnopqrstuvwxyz0123456789 now`,
+			`tokens ${"npm"}_abcdefghijklmnopqrstuvwxyz0123456789XYZ_suffix end`,
 			`stripe ${live("sk")} and ${live("rk")}`,
 			"curl -u ana:hunter2 https://api.test",
 			"curl --user=ana:hunter2 x; curl --user 'ana:p w' y",
@@ -851,6 +877,7 @@ describe("user prompts", () => {
 		await s.close();
 		expect(memory.prompts).toEqual([
 			"npm config set //registry/:_authToken [REDACTED] now",
+			"tokens [REDACTED]_suffix end",
 			"stripe [REDACTED] and [REDACTED]",
 			"curl -u ana:[REDACTED] https://api.test",
 			"curl --user=ana:[REDACTED] x; curl --user 'ana:[REDACTED]' y",
@@ -1069,6 +1096,7 @@ describe("independent U2 regressions (S4, S1)", () => {
 		`sk-proj-${"A1b2c3".repeat(20)}`,
 		`github_pat_${"A1b2c3".repeat(13)}_abcdef`,
 		`sk-ant-api03-\n${"x".repeat(40)}`,
+		...SHAPED_KEYS,
 	];
 	it.each(keys)("rejects credentials through every save field and mirror: %s", async (key) => {
 		for (const field of ["title", "content", "topicKey"]) {
