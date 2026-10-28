@@ -566,6 +566,44 @@ describe("compaction summary", () => {
 			);
 		});
 
+		it("sends the memory from start when a compaction before the first prompt could not fetch it again", async () => {
+			let options: BackendStartOptions | undefined;
+			const prompts: string[] = [];
+			const states: (string | undefined)[] = [];
+			const backend: AgentBackend = {
+				id: "fake",
+				start: async (start) => {
+					options = start;
+					return {
+						async *send(prompt) {
+							prompts.push(prompt);
+							states.push(options?.compactionState?.());
+							yield finished;
+						},
+						async *compact() {
+							options?.compacted?.(SUMMARY);
+							yield finished;
+						},
+						interrupt: async () => {},
+						close: async () => {},
+					};
+				},
+			};
+			const memory = new FakeMemory("proj");
+			await memory.save({ title: "Old decision", type: "decision", content: "x" });
+			const s = await Session.start({ backend, cwd, tools, memory });
+			memory.context = async () => {
+				throw new MemoryError("Engram mem_context failed: closed");
+			};
+			await run(s.compact());
+			await run(s.send("first"));
+			await s.close();
+			expect(prompts[0]).toBe(
+				`<memory-recovery>\nThe conversation was compacted.\n${SAVED}\n</memory-recovery>\n\n<memory>\n- [decision] Old decision\n</memory>\n\nfirst`,
+			);
+			expect(states[0]).toContain("memory:\n- [decision] Old decision");
+		});
+
 		it("keeps the notice for the next prompt when the backend answers only with an error", async () => {
 			let options: BackendStartOptions | undefined;
 			const prompts: string[] = [];

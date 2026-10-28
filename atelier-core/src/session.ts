@@ -306,13 +306,16 @@ export class Session {
 	readonly #review: SessionReview | undefined;
 	/** Recent memory, fetched at start and given with the first prompt only; fetched again after each compaction. */
 	#memoryContext = "";
-	/** What the agent is told after a compaction, with the recent memory; it goes before the next prompt, once. */
-	#recovery: string | undefined;
+	/**
+	 * What the agent is told after a compaction, with the recent memory when it came (`fetched`); it goes before the
+	 * next prompt, once.
+	 */
+	#recovery: Recovery | undefined;
 	/**
 	 * The recovery notice in the prompt the backend is taking now, until the backend answers with something other than
 	 * an error; a backend that fails before that gets it back as pending, for the next prompt.
 	 */
-	#recoveryInFlight: string | undefined;
+	#recoveryInFlight: Recovery | undefined;
 	/** The instruction files read at start; reported with the first turn. */
 	#instructions: ProjectInstructions | undefined;
 	/** The skills found at start; reported with the first turn. */
@@ -512,8 +515,7 @@ export class Session {
 		if (odd?.phase !== undefined) lines.push(`phase: ${odd.phase}`);
 		// The recovery notice brings the memory with the same prompt; said twice, it would only cost context.
 		const memory = this.#memoryContext.trim();
-		if (memory !== "" && this.#recovery === undefined && this.#recoveryInFlight === undefined)
-			lines.push(`memory:\n${memory}`);
+		if (memory !== "" && !this.#recovery?.fetched && !this.#recoveryInFlight?.fetched) lines.push(`memory:\n${memory}`);
 		return lines.length === 0 ? undefined : `<state>\n${lines.join("\n")}\n</state>`;
 	}
 
@@ -646,12 +648,12 @@ export class Session {
 				this.#sayProfileNotices(turn);
 				if (this.#options.permissionModeProblem !== undefined)
 					turn.push(errorEvent("permission_mode_invalid", this.#options.permissionModeProblem, true));
-				// A compaction before the first prompt left a recovery notice that already brings the memory.
-				if (this.#memoryContext.trim() !== "" && this.#recovery === undefined)
+				// Left out only when a compaction before the first prompt fetched the memory again for its notice.
+				if (this.#memoryContext.trim() !== "" && !this.#recovery?.fetched)
 					sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
 			}
 			if (this.#recovery !== undefined) {
-				sent = `${this.#recovery}\n\n${sent}`;
+				sent = `${this.#recovery.text}\n\n${sent}`;
 				this.#recoveryInFlight = this.#recovery;
 				this.#recovery = undefined;
 			}
@@ -1776,9 +1778,11 @@ export class Session {
 		if (!memory) return;
 		const outcome = await this.#storeSummary(memory, summary);
 		let context = "";
+		let fetched = false;
 		try {
 			context = await memory.context(CONTEXT_BYTES);
 			this.#memoryContext = context;
+			fetched = true;
 		} catch (error) {
 			this.#say(
 				errorEvent(
@@ -1788,7 +1792,7 @@ export class Session {
 				),
 			);
 		}
-		this.#recovery = recoveryNotice(memory.project, context, outcome, this.#summaryKey);
+		this.#recovery = { text: recoveryNotice(memory.project, context, outcome, this.#summaryKey), fetched };
 	}
 
 	/** Saves the summary once, under the session's key, and says how it went; a failure is a recoverable error. */
@@ -1891,6 +1895,12 @@ function localDate(date: Date): string {
 const NOT_REVIEWED = new Set(["error", "interrupted", "incomplete"]);
 /** Ends after which the queue goes back to the user instead of running. */
 const UNCLEAN_ENDS: ReadonlySet<string> = new Set(["error", "interrupted"]);
+
+/** A recovery notice, and whether it brings the recent memory (fetched again after the compaction). */
+interface Recovery {
+	text: string;
+	fetched: boolean;
+}
 
 /** An event that says the backend did not take the prompt: an error, or a turn that ended on one. */
 function refusal(event: AtelierEventBody): boolean {
