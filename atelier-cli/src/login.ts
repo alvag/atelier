@@ -51,8 +51,11 @@ export interface LoginPorts {
 	choose(title: string, options: readonly LoginOption[]): Promise<number | undefined>;
 	/** A line read without showing it. */
 	askSecret(prompt: string): Promise<string | undefined>;
-	/** A line that `signal` stops waiting for (the browser answered first); undefined when cancelled or stopped. */
-	askUntil(prompt: string, signal: AbortSignal): Promise<string | undefined>;
+	/**
+	 * A line that `signal` stops waiting for (the browser answered first); undefined when cancelled or stopped. `hint`
+	 * replaces the TUI's line under the question.
+	 */
+	askUntil(prompt: string, signal: AbortSignal, hint?: string): Promise<string | undefined>;
 	/** Opens a sign-in page; the system's browser when absent. */
 	openBrowser?: (url: string) => Promise<void>;
 	/** Where the OpenAI sign-ins go, for tests: a fake auth server and a free port instead of 1455. */
@@ -235,6 +238,10 @@ async function loginOpenAi(ports: LoginPorts, provider: Provider): Promise<boole
 		show: (text) => ports.say(text),
 		// An empty line cancels, as Esc does in the TUI.
 		askPasted: async (prompt, signal) => (await ports.askUntil(`${prompt}: `, signal))?.trim() || undefined,
+		// Any answer cancels: there is nothing to type while the code is entered elsewhere.
+		waitOrCancel: async (prompt, signal) => {
+			await ports.askUntil(`${prompt} (Enter cancels): `, signal, "Enter the code on the other device · Esc cancels");
+		},
 	};
 	const settings = ports.openai ?? {};
 	let credential: Credential;

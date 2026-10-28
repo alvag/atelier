@@ -247,18 +247,32 @@ export class SecretDialog implements Component, Focusable {
 	}
 }
 
+/** What the paste question shows of the text: the URL without its authorization code, never a bare code. */
+export function withoutCode(text: string): string {
+	if (text !== "" && !text.includes("=") && !text.includes("://"))
+		return `[hidden code, ${Array.from(text).length} characters]`;
+	return text.replace(/(code=)[^&#\s]*/g, "$1[hidden]");
+}
+
 /**
- * A line to paste: the URL a browser sign-in ended on. Unlike a secret, it shows what was typed; it closes by itself
- * when the browser finishes first.
+ * A line to paste: the URL a browser sign-in ended on, shown without its code. It closes by itself when the browser
+ * finishes first.
  */
 export class PasteDialog implements Component, Focusable {
 	focused = false;
 	readonly #title: string;
+	readonly #hint: string;
 	readonly #paint: Paint;
 	readonly #input = new Input();
 
-	constructor(title: string, paint: Paint, answer: (value: string | undefined) => void) {
+	constructor(
+		title: string,
+		paint: Paint,
+		answer: (value: string | undefined) => void,
+		hint = "Finish in the browser, or paste the URL it ends on · Enter sends · Esc cancels",
+	) {
 		this.#title = title;
+		this.#hint = hint;
 		this.#paint = paint;
 		this.#input.onSubmit = (value) => answer(value);
 		this.#input.onEscape = () => answer(undefined);
@@ -281,11 +295,8 @@ export class PasteDialog implements Component, Focusable {
 		const inner = Math.max(1, width - 4);
 		const title = truncateToWidth(` ${this.#title} `, inner);
 		const fill = Math.max(0, width - 2 - visibleWidth(title));
-		const hint = truncateToWidth(
-			"Finish in the browser, or paste the URL it ends on · Enter sends · Esc cancels",
-			inner,
-		);
-		const typed = this.#input.getValue();
+		const hint = truncateToWidth(this.#hint, inner);
+		const typed = withoutCode(this.#input.getValue());
 		// The end of a long URL is what changes as it is typed or pasted.
 		const shown = typed.length > inner - 2 ? `…${typed.slice(typed.length - (inner - 3))}` : typed;
 		const line = (text: string) =>

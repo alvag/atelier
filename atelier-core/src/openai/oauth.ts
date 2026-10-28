@@ -17,6 +17,11 @@ export interface OAuthInteraction {
 	 * answered first. Undefined when the user cancelled.
 	 */
 	askPasted(prompt: string, signal: AbortSignal): Promise<string | undefined>;
+	/**
+	 * Offers to cancel while a device code waits: resolves when the user cancels; `signal` aborts the offer when the
+	 * sign-in ended first. Without it, only `signal` cancels.
+	 */
+	waitOrCancel?(prompt: string, signal: AbortSignal): Promise<void>;
 	/** Cancels the sign-in. */
 	signal?: AbortSignal;
 }
@@ -68,19 +73,33 @@ export interface Authorization {
 export function parsePasted(input: string, state: string): Authorization {
 	const value = input.trim();
 	let params: URLSearchParams;
+	let bare = false;
 	try {
 		params = new URL(value).searchParams;
 	} catch {
-		params = value.includes("code=") ? new URLSearchParams(value) : new URLSearchParams({ code: value });
+		bare = !value.includes("=");
+		params = bare ? new URLSearchParams({ code: value }) : new URLSearchParams(value);
 	}
 	const error = params.get("error");
-	if (error !== null) throw new OpenAiAuthError(`the sign-in failed: ${params.get("error_description") ?? error}`);
+	if (error !== null) throw new OpenAiAuthError(`the sign-in failed: ${redirectError(params)}`);
+	// A redirect says which sign-in it answers: one without the state could be another's, so only a bare code may lack it.
 	const given = params.get("state");
-	if (given !== null && given !== state)
-		throw new OpenAiAuthError("the pasted URL belongs to another sign-in (state mismatch)");
+	if (!bare && given !== state)
+		throw new OpenAiAuthError(
+			given === null
+				? "the pasted URL has no state: paste the whole URL the browser ended on"
+				: "the pasted URL belongs to another sign-in (state mismatch)",
+		);
 	const code = params.get("code");
 	if (!code) throw new OpenAiAuthError("the pasted text has no authorization code");
 	return { code, params };
+}
+
+/** A redirect's error and its description, with the code it carried hidden: a description may repeat it. */
+function redirectError(params: URLSearchParams): string {
+	const said = [params.get("error"), params.get("error_description")].filter((part) => part !== null).join(": ");
+	const code = params.get("code");
+	return code ? said.replaceAll(code, "[code]") : said;
 }
 
 interface Callback {
@@ -106,8 +125,9 @@ async function listenForCallback(host: string, port: number, state: string): Pro
 		if (url.searchParams.get("state") !== state)
 			return void reply(400, "Atelier: this is not the sign-in it waits for.");
 		if (error !== null || !code) {
-			reply(400, `Atelier: the sign-in failed (${error ?? "no code"}).`);
-			return fail(new OpenAiAuthError(`the sign-in failed: ${url.searchParams.get("error_description") ?? error}`));
+			const said = error === null ? "no code" : redirectError(url.searchParams);
+			reply(400, `Atelier: the sign-in failed (${said}).`);
+			return fail(new OpenAiAuthError(`the sign-in failed: ${said}`));
 		}
 		reply(200, "Atelier: signed in. You can close this tab.");
 		settle({ code, params: url.searchParams });

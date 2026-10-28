@@ -996,7 +996,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			if (questions.length === 1) showQuestion();
 		});
 	/** A line to paste, in a question that closes by itself when `signal` aborts (the browser finished first). */
-	const askUntil = (title: string, signal: AbortSignal) =>
+	const askUntil = (title: string, signal: AbortSignal, hint?: string) =>
 		new Promise<string | undefined>((resolve) => {
 			let answered = false;
 			const settle = (value: string | undefined) => {
@@ -1010,7 +1010,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				reportRunning();
 			};
 			const stop = () => settle(undefined);
-			const entry = { dialog: new PasteDialog(title, paint, settle), cancel: stop, local: true };
+			const entry = { dialog: new PasteDialog(title, paint, settle, hint), cancel: stop, local: true };
 			if (signal.aborted) return resolve(undefined);
 			signal.addEventListener("abort", stop, { once: true });
 			questions.push(entry);
@@ -1037,7 +1037,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				return chosen === undefined ? undefined : Number(chosen);
 			},
 			askSecret: (prompt) => askSecret(prompt.replace(/:\s*$/, "")),
-			askUntil: (prompt, signal) => askUntil(prompt.replace(/:\s*$/, ""), signal),
+			askUntil: (prompt, signal, hint) => askUntil(prompt.replace(/:\s*$/, ""), signal, hint),
 			...options.openaiLogin,
 			confirm: (question) =>
 				new Promise((resolve) =>
