@@ -170,7 +170,7 @@ describe("ToolCard", () => {
 					},
 				],
 			},
-			{ summary: "src/style.ts (1 edit)", startLines: [21] },
+			{ summary: "src/style.ts (1 edit)", startLines: [21], newStartLines: [21] },
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
 			" ✓ edit src/style.ts · 1 edit
@@ -191,7 +191,7 @@ describe("ToolCard", () => {
 					{ oldText: "a", newText: "a1\na2" },
 				],
 			},
-			{ summary: "a.txt (2 edits)", startLines: [10, 1] },
+			{ summary: "a.txt (2 edits)", startLines: [10, 1], newStartLines: [11, 1] },
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
 			" ✓ edit a.txt · 2 edits
@@ -204,7 +204,7 @@ describe("ToolCard", () => {
 		`);
 	});
 
-	it("moves none of the edits that start on the same line by each other", () => {
+	it("numbers what each edit adds where the call says it starts after the edits before it, on the same line too", () => {
 		const { lines } = card(
 			"edit",
 			{
@@ -215,10 +215,24 @@ describe("ToolCard", () => {
 					{ oldText: "z", newText: "Z" },
 				],
 			},
-			{ summary: "a.txt (3 edits)", startLines: [1, 1, 5] },
+			// The file was `a b` on line 1: `B` lands on line 2, after the `A` the first edit added.
+			{ summary: "a.txt (3 edits)", startLines: [1, 1, 5], newStartLines: [1, 2, 6] },
 		);
-		expect(lines.join("\n")).toContain("   │ 1 - b\n   │ 1 + B");
+		expect(lines.join("\n")).toContain("   │ 1 - b\n   │ 2 + B");
 		expect(lines.join("\n")).toContain("   │ 5 - z\n   │ 6 + Z");
+	});
+
+	it("keeps a change past the cut of a long line as a removed and an added line", () => {
+		const long = "a".repeat(600);
+		const { lines } = card(
+			"edit",
+			{ path: "a.txt", edits: [{ oldText: long, newText: `${long}b` }] },
+			{ summary: "a.txt (1 edit)", startLines: [1], newStartLines: [1] },
+		);
+		const rows = lines.slice(1);
+		expect(rows.some((line) => line.startsWith("   │ 1 - aaa"))).toBe(true);
+		expect(rows.some((line) => line.startsWith("   │ 1 + aaa"))).toBe(true);
+		expect(rows.join("\n")).toContain("…");
 	});
 
 	it("shows an edit without numbers when the call does not say where it starts", () => {
@@ -230,7 +244,7 @@ describe("ToolCard", () => {
 		const { lines } = card(
 			"edit",
 			{ path: "a.txt", edits: [{ oldText: "x", newText: "word ".repeat(10).trim() }] },
-			{ summary: "a.txt (1 edit)", startLines: [7] },
+			{ summary: "a.txt (1 edit)", startLines: [7], newStartLines: [7] },
 			{ width: 30 },
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
@@ -254,7 +268,7 @@ describe("ToolCard", () => {
 		const edit = card(
 			"edit",
 			{ path: "a.ts", edits: [{ oldText: "keep\nold", newText: "keep\nnew" }] },
-			{ summary: "a.ts (1 edit)", startLines: [3] },
+			{ summary: "a.ts (1 edit)", startLines: [3], newStartLines: [3] },
 			{ paint: tagged },
 		).lines.join("\n");
 		expect(edit).toContain("<dim>3</>   <dim>keep</>");
@@ -277,7 +291,7 @@ describe("ToolCard backgrounds", () => {
 		path: "a.ts",
 		edits: [{ oldText: "const a = 1;\nkeep();", newText: "const a = 2;\nkeep();" }],
 	};
-	const done = { summary: "a.ts (1 edit)", startLines: [1] };
+	const done = { summary: "a.ts (1 edit)", startLines: [1], newStartLines: [1] };
 
 	function tones(background: typeof DARK | undefined, mode: "truecolor" | "256color" = "truecolor") {
 		const t = new Tones(true);
@@ -413,7 +427,7 @@ describe("ToolCard with large input", () => {
 				card(
 					"edit",
 					{ path: "a.ts", edits: [{ oldText: long, newText: `${long}b` }] },
-					{ summary: "a.ts (1 edit)", startLines: [1] },
+					{ summary: "a.ts (1 edit)", startLines: [1], newStartLines: [1] },
 					{ paint: colored, tones },
 				).lines,
 		);
@@ -442,8 +456,11 @@ describe("ToolCard with large input", () => {
 		const edits = Array.from({ length: count }, (_, i) => ({ oldText: `l${i}`, newText: `L${i}\n${extra}` }));
 		// The file's order is the reverse of the call's.
 		const startLines = edits.map((_, i) => 2 * (count - i));
+		// Each edit before it in the file added 39 lines.
+		const newStartLines = startLines.map((start, i) => start + 39 * (count - 1 - i));
 		const lines = quickly(
-			() => card("edit", { path: "a.txt", edits }, { summary: `a.txt (${count} edits)`, startLines }).lines,
+			() =>
+				card("edit", { path: "a.txt", edits }, { summary: `a.txt (${count} edits)`, startLines, newStartLines }).lines,
 		);
 		const text = lines.join("\n");
 		// The first in the file moves nothing; the last moves by 39 lines for each edit before it.

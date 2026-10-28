@@ -283,6 +283,8 @@ export type AtelierEventBody =
 			blocked?: string[];
 			/** For `edit`: the line each edit starts at in the file before it, in the order of the edits; absent for other tools. */
 			startLines?: number[];
+			/** For `edit`: the line each edit's new text starts at in the file after it, in the order of the edits; absent for other tools. */
+			newStartLines?: number[];
 	  }
 	/** Sent first in a session's first turn when `bash` exists: whether its commands run in the sandbox, with what, or why not. */
 	| { type: "sandbox_status"; sandboxed: boolean; mechanism?: string; reason?: string }

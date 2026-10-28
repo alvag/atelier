@@ -74,6 +74,8 @@ export interface ToolOutcome {
 	blocked?: string[];
 	/** For `edit`: the line each edit starts at in the file before it, in the order of the edits. */
 	startLines?: number[];
+	/** For `edit`: the line each edit's new text starts at in the file after it, in the order of the edits. */
+	newStartLines?: number[];
 }
 
 /** A tool as the core and every backend see it: input is validated before it reaches `execute`. */
