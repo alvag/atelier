@@ -294,6 +294,42 @@ describe("opencode-go on Chat Completions", () => {
 		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
 	});
 
+	/** An answer that says "Calling." and starts an echo call, then half of the event that carries its arguments. */
+	const halfCall = (() => {
+		const start = chunk({
+			role: "assistant",
+			content: "Calling.",
+			tool_calls: [{ index: 0, id: "call_a", type: "function", function: { name: "echo", arguments: "" } }],
+		});
+		const rest = `data: ${JSON.stringify(chunk({ tool_calls: [{ index: 0, function: { arguments: '{"text":"over"}' } }] }))}`;
+		return sse([start]) + rest.slice(0, rest.indexOf("over"));
+	})();
+
+	/** The turn of a cut answer: an error, no tool run, nothing of the answer kept for the next request. */
+	async function cutTurn(answer: { sse: string; cut?: boolean }): Promise<AtelierEventBody | undefined> {
+		provider.answer(answer);
+		const calls: ToolCall[] = [];
+		const session = await start(calls);
+		const events = await collect(session.send("hi"));
+		expect(events).toContainEqual({ type: "text_delta", text: "Calling." });
+		expect(calls).toEqual([]);
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
+		expect(JSON.stringify(session.resumeState?.())).not.toContain("Calling.");
+		return events.find((event) => event.type === "error");
+	}
+
+	it("fails a stream whose body ends in the middle of an event, inside a tool call's arguments", async () => {
+		expect(await cutTurn({ sse: halfCall })).toMatchObject({
+			code: "api_error",
+			message: "The Chat Completions stream ended before the answer was complete.",
+			recoverable: true,
+		});
+	});
+
+	it("fails a stream whose connection drops in the middle of a tool call", async () => {
+		expect(await cutTurn({ sse: halfCall, cut: true })).toMatchObject({ code: "api_error", recoverable: true });
+	});
+
 	it("takes a stream that ends with its finish_reason, even without [DONE]", async () => {
 		provider.answer({ sse: sse([chunk({ content: "Whole." }), chunk({}, "stop")]) });
 		const events = await collect((await start()).send("hi"));

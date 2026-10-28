@@ -9,9 +9,12 @@ export interface Received {
 	body: Record<string, unknown>;
 }
 
-/** What the fake answers: an event stream (left open after its events with `keepOpen`), or a status with a JSON body. */
+/**
+ * What the fake answers: an event stream (left open after its events with `keepOpen`, or its connection dropped right
+ * after them with `cut`, before the body ends), or a status with a JSON body.
+ */
 export type Answer =
-	| { sse: string; keepOpen?: boolean }
+	| { sse: string; keepOpen?: boolean; cut?: boolean }
 	| { status: number; json: unknown; headers?: Record<string, string> };
 
 /** Server-sent events, one `data:` line each, with the `event:` line the Messages API adds. */
@@ -61,6 +64,8 @@ export class FakeProvider {
 					});
 					// A stream left open: only the client can close it.
 					if (answer.keepOpen) response.write(answer.sse);
+					// The events reach the client, then the connection goes without the end of the body.
+					else if (answer.cut) response.write(answer.sse, () => response.socket?.destroy());
 					else response.end(answer.sse);
 					return;
 				}
