@@ -5,6 +5,7 @@ import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { AuthStore } from "../src/auth-store.ts";
 import { type HttpServerConfig, loadMcpConfig } from "../src/mcp/config.ts";
 import { McpManager } from "../src/mcp/manager.ts";
 import { loginMcpServer, McpAuthStore, type McpOAuthProvider } from "../src/mcp/oauth.ts";
@@ -261,4 +262,21 @@ it("cuts the final check when the sign-in times out, and saves nothing from its 
 	expect(check?.signal?.aborted).toBe(true);
 	check?.provider?.saveTokens({ access_token: secret, token_type: "Bearer" });
 	expect(store.get(server)?.tokens).toBeUndefined();
+});
+
+it("hides the providers' stored keys and ANTHROPIC_API_KEY in what the servers answer", async () => {
+	const providers = new AuthStore(join(dir, "auth.json"));
+	await providers.set("anthropic", { type: "api_key", key: "stored-provider-key-123" });
+	const manager = new McpManager(
+		{ file: join(dir, "mcp.json"), servers: [], problems: [], secrets: [] },
+		{ providers, env: { ANTHROPIC_API_KEY: "env-provider-key-456" } },
+	);
+	expect(manager.hide("a stored-provider-key-123 and env-provider-key-456")).toBe("a *** and ***");
+	const byDefault = new McpManager(
+		{ file: join(dir, "mcp.json"), servers: [], problems: [], secrets: [] },
+		{ env: {} },
+	);
+	expect(byDefault.hide("stored-provider-key-123")).toBe("***");
+	await manager.close();
+	await byDefault.close();
 });

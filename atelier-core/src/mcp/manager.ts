@@ -1,8 +1,10 @@
+import { dirname, join } from "node:path";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { type CallToolResult, type Tool, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { AuthStore } from "../auth-store.ts";
 import { describeError, type McpServerStatus } from "../events.ts";
 import { VERSION } from "../version.ts";
 import { type HttpServerConfig, type McpConfig, type McpServerConfig, redact } from "./config.ts";
@@ -45,6 +47,8 @@ export class McpManager {
 	readonly #fileProblems: string[];
 	readonly #secrets: readonly string[];
 	readonly #auth: McpAuthStore | undefined;
+	readonly #providers: AuthStore;
+	readonly #env: Record<string, string | undefined>;
 	readonly #openBrowser: (url: URL) => void | Promise<void>;
 	/** Aborted on close: a sign-in waiting for the browser stops. */
 	readonly #closing = new AbortController();
@@ -55,9 +59,18 @@ export class McpManager {
 	/** `auth` holds the OAuth credentials of HTTP servers; without it no server signs in. `openBrowser` opens a sign-in page. */
 	constructor(
 		config: McpConfig,
-		options: { auth?: McpAuthStore; openBrowser?: (url: URL) => void | Promise<void> } = {},
+		options: {
+			auth?: McpAuthStore;
+			openBrowser?: (url: URL) => void | Promise<void>;
+			/** The providers' keys `atelier login` stored; `auth.json` next to the configuration file by default. */
+			providers?: AuthStore;
+			/** Where ANTHROPIC_API_KEY is read from, to hide it too; this process's environment by default. */
+			env?: Record<string, string | undefined>;
+		} = {},
 	) {
 		this.#auth = options.auth;
+		this.#providers = options.providers ?? new AuthStore(join(dirname(config.file), "auth.json"));
+		this.#env = options.env ?? process.env;
 		this.#openBrowser = options.openBrowser ?? openInBrowser;
 		this.file = config.file;
 		this.#secrets = config.secrets;
@@ -258,13 +271,22 @@ export class McpManager {
 		return httpTransport(config, signedIn && this.#auth ? new McpOAuthProvider(config, this.#auth) : undefined);
 	}
 
-	/** The text with every secret of the configuration and of the OAuth sign-ins replaced by `***`. */
+	/**
+	 * The text with every secret of the configuration, of the OAuth sign-ins and of the providers' credentials (the keys
+	 * of `auth.json` and ANTHROPIC_API_KEY) replaced by `***`: a server's own file tool must not hand them to the agent.
+	 */
 	hide(text: string): string {
 		return this.#hide(text);
 	}
 
 	#hide(text: string): string {
-		return redact(text, [...this.#secrets, ...(this.#auth?.secrets() ?? [])]);
+		const fromEnv = this.#env.ANTHROPIC_API_KEY?.trim();
+		return redact(text, [
+			...this.#secrets,
+			...(this.#auth?.secrets() ?? []),
+			...this.#providers.secrets(),
+			...(fromEnv ? [fromEnv] : []),
+		]);
 	}
 }
 

@@ -101,3 +101,10 @@ for (let i = 0; i < 10; i++) await store.set(${JSON.stringify(name)} + "-" + i, 
 	expect(await Promise.all(["a", "b", "c"].map(writer))).toEqual([0, 0, 0]);
 	expect(new AuthStore(file).providers()).toHaveLength(30);
 });
+
+it("lists every stored key and token, to hide them, and nothing of an entry it does not know", async () => {
+	const store = new AuthStore(file);
+	await store.set("anthropic", { type: "api_key", key: "sk-ant-test-1" });
+	await store.set("openai-codex", { type: "oauth", access: "a-1", refresh: "r-1", expires: 1 });
+	expect(store.secrets()).toEqual(["sk-ant-test-1", "a-1", "r-1"]);
+});
