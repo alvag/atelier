@@ -69,7 +69,15 @@ export interface Authorization {
 	params: URLSearchParams;
 }
 
-/** A pasted redirect URL, query string or bare code, checked against the sign-in's `state` when it carries one. */
+/**
+ * Whether pasted text is a redirect (a URL, or its query) rather than a bare code: a redirect names its sign-in's state,
+ * or its error. A bare code may hold `=` (base64 padding), so `=` alone does not make a query.
+ */
+export function isPastedRedirect(text: string): boolean {
+	return ["code=", "state=", "error=", "://"].some((mark) => text.includes(mark));
+}
+
+/** A pasted redirect URL, query string or bare code; a redirect must carry the sign-in's `state`. */
 export function parsePasted(input: string, state: string): Authorization {
 	const value = input.trim();
 	let params: URLSearchParams;
@@ -77,8 +85,7 @@ export function parsePasted(input: string, state: string): Authorization {
 	try {
 		params = new URL(value).searchParams;
 	} catch {
-		// A bare code may hold `=` (base64 padding): only `code=` makes it a query.
-		bare = !value.includes("code=") && !value.includes("://");
+		bare = !isPastedRedirect(value);
 		params = bare ? new URLSearchParams({ code: value }) : new URLSearchParams(value);
 	}
 	const error = params.get("error");

@@ -129,6 +129,12 @@ it("refuses a pasted URL or query without the sign-in's state, and never repeats
 	expect(parsePasted("bare-code", "expected").code).toBe("bare-code");
 	// A bare code may hold `=` (base64 padding): only `code=` or `://` make it a redirect.
 	expect(parsePasted("YmFyZS1jb2Rl==", "expected").code).toBe("YmFyZS1jb2Rl==");
+	// A query with `state=` or `error=` is a redirect, even without a code: its error, or the missing code, is said.
+	expect(() => parsePasted("error=access_denied&error_description=denied&state=expected", "expected")).toThrow(
+		"the sign-in failed: access_denied: denied",
+	);
+	expect(() => parsePasted("state=expected", "expected")).toThrow("the pasted text has no authorization code");
+	expect(() => parsePasted("state=other", "expected")).toThrow(/state mismatch/);
 	expect(() => parsePasted("http://127.0.0.1:1455/auth/callback?code=other-login", "expected")).toThrow(/state/);
 	expect(() => parsePasted("code=other-login", "expected")).toThrow(/state/);
 	const code = `test-code-${randomUUID()}`;
