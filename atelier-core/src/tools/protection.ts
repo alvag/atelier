@@ -51,35 +51,42 @@ async function isProjectConfig(cwd: string, lexical: string, real: string): Prom
  * cherry-pick, and what git reports for the working directory's repository
  * (the effective hooks directory, the configuration of the git directories,
  * the `.git` file of a linked worktree), wherever the git directory is. Built
- * from the sandbox's own lists.
+ * from the sandbox's own lists; `gitPaths` is what `gitProtectedPaths` found.
  */
-function gitExecutionPaths(cwd: string, home: string): string[] {
+function gitExecutionPaths(cwd: string, home: string, gitPaths: string[]): string[] {
 	const directories = [cwd, ...loadSandboxAdditions({ cwd, home }).allowWrite];
 	return [
 		...directories
 			.flatMap(libraryProtectedPaths)
 			.filter((path) => basename(path).startsWith(".git") || basename(dirname(path)) === ".git"),
 		...directories.flatMap((dir) => operationStatePaths(join(dir, ".git"))),
-		...gitProtectedPaths(cwd, home),
+		...gitPaths,
 	];
 }
 
-async function isGitState(cwd: string, home: string, lexical: string, real: string): Promise<boolean> {
-	for (const place of gitExecutionPaths(cwd, home)) if (await isUnder(place, lexical, real)) return true;
+async function isGitState(
+	cwd: string,
+	home: string,
+	gitPaths: string[],
+	lexical: string,
+	real: string,
+): Promise<boolean> {
+	for (const place of gitExecutionPaths(cwd, home, gitPaths)) if (await isUnder(place, lexical, real)) return true;
 	return false;
 }
 
 /** Under `<git common dir>/atelier`, where the local profile pin lives; a part of `gitExecutionPaths`. */
-async function isProfilePin(cwd: string, home: string, lexical: string, real: string): Promise<boolean> {
-	for (const place of gitProtectedPaths(cwd, home))
-		if (basename(place) === "atelier" && (await isUnder(place, lexical, real))) return true;
+async function isProfilePin(gitPaths: string[], lexical: string, real: string): Promise<boolean> {
+	for (const place of gitPaths) if (basename(place) === "atelier" && (await isUnder(place, lexical, real))) return true;
 	return false;
 }
 
 /**
  * Why `edit` and `write` never touch the file, approved or not; undefined when
  * they may. `real` is the file as it is on disk. Compares real paths as well
- * as names, so a link or a move cannot give the file another name.
+ * as names, so a link or a move cannot give the file another name. Asks git
+ * once per call of its own: `gate` and `execute` each call it, so what changed
+ * while the user was asked is looked at again before the write.
  */
 export async function projectRefusal(
 	tool: "edit" | "write",
@@ -97,9 +104,10 @@ export async function projectRefusal(
 		return `${path} is a feature document: change it with the feature tool, not ${tool}.`;
 	if (await isProjectConfig(cwd, lexical, real))
 		return `${path} is project configuration: the agent does not write .atelier/.`;
-	if (await isProfilePin(cwd, home, lexical, real))
+	const gitPaths = gitProtectedPaths(cwd, home);
+	if (await isProfilePin(gitPaths, lexical, real))
 		return `${path} is Atelier profile configuration: the agent does not write it.`;
-	if (await isGitState(cwd, home, lexical, real))
+	if (await isGitState(cwd, home, gitPaths, lexical, real))
 		return `${path} is git state that runs code: the agent does not write it.`;
 	return undefined;
 }

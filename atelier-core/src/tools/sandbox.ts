@@ -228,7 +228,10 @@ function repositoryPaths(
 	home: string,
 	cwd: string,
 ): string[] {
-	const configs = [gitDir, commonDir].flatMap((dir) => [join(dir, "config"), join(dir, "config.worktree")]);
+	// Outside a linked worktree the git directory is the shared one: its files are read once.
+	const configs = [
+		...new Set([gitDir, commonDir].flatMap((dir) => [join(dir, "config"), join(dir, "config.worktree")])),
+	];
 	return [
 		...hooks,
 		...[gitDir, commonDir].flatMap((dir) => [join(dir, "hooks"), join(dir, "info", "attributes")]),
