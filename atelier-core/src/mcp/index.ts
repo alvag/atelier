@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { AuthStore, authFile } from "../auth-store.ts";
 import { type LoadMcpOptions, loadMcpConfig } from "./config.ts";
 import { McpManager } from "./manager.ts";
 import { McpAuthStore, mcpAuthFile } from "./oauth.ts";
@@ -21,6 +22,7 @@ export { MCP_CALL_TOOL, MCP_SEARCH_TOOL } from "./tools.ts";
 export function openMcp(options: LoadMcpOptions): McpManager {
 	const manager = new McpManager(loadMcpConfig(options), {
 		auth: new McpAuthStore(mcpAuthFile(options.home ?? homedir())),
+		providers: new AuthStore(authFile(options.home ?? homedir())),
 	});
 	manager.start();
 	return manager;

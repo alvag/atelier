@@ -74,6 +74,11 @@ it("(a) does not chmod or read a symlinked auth.json target", async () => {
 	const before = await hash(target);
 	await symlink(target, file);
 	new AuthStore(file).get("anthropic");
+	const rejected = await new AuthStore(file).set("anthropic", { type: "api_key", key: canary }).then(
+		() => false,
+		() => true,
+	);
+	expect(rejected).toBe(true);
 	expect(await hash(target)).toBe(before);
 	expect((await stat(target)).mode & 0o777).toBe(0o644);
 });
@@ -152,28 +157,52 @@ it("(a/b) a killed writer preserves auth.json but never exposes a credential-bea
  const { AuthStore } = await import(${JSON.stringify(module)});
  await new AuthStore(${JSON.stringify(file)}).set('other', { type: 'api_key', key: 'inert' });`;
 	const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "ignore" });
-	await new Promise((resolve) => child.once("exit", resolve));
+	const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+		child.once("exit", (code, signal) => resolve({ code, signal })),
+	);
+	expect(exit.signal).toBe("SIGKILL");
 	expect(await hash(file)).toBe(before);
-	const temporary = (await readdir(join(home, ".atelier"))).find((name) => name.endsWith(".tmp"));
-	if (temporary === undefined) return;
-	const target = join(home, ".atelier", temporary);
-	const read = await createReadTool({ outside: true, home }).execute({ path: target }, { cwd });
-	const grep = await createGrepTool({ outside: true, home }).execute(
-		{ pattern: "REVIEW_CANARY", path: join(home, ".atelier"), glob: "**/*.tmp" },
-		{ cwd },
+	const folder = join(home, ".atelier", ".credentials-tmp");
+	const temporaries = await readdir(folder);
+	expect(temporaries.length).toBe(1);
+	const target = join(folder, temporaries[0] as string);
+	expect((await readFile(target, "utf8")).includes(canary)).toBe(true);
+	const alias = join(cwd, "temporary-alias");
+	await symlink(target, alias);
+	const outcomes = [];
+	for (const path of [target, alias]) {
+		outcomes.push(await createReadTool({ outside: true, home }).execute({ path }, { cwd }));
+		outcomes.push(
+			await createGrepTool({ outside: true, home }).execute({ pattern: "REVIEW_CANARY", path, glob: "**/*" }, { cwd }),
+		);
+	}
+	outcomes.push(
+		await createGrepTool({ outside: true, home }).execute(
+			{ pattern: "REVIEW_CANARY", path: folder, glob: "**/*" },
+			{ cwd },
+		),
+	);
+	outcomes.push(
+		await createGrepTool({ outside: true, home, useRipgrep: false }).execute(
+			{ pattern: "REVIEW_CANARY", path: target },
+			{ cwd },
+		),
 	);
 	const sandbox = new Sandbox({ home, tempDir: base });
 	try {
-		const bash = await createBashTool({ sandbox }).execute({ command: `cat '${target}'` }, { cwd });
-		expect([read, grep, bash].map((result) => result.output.includes(canary))).toEqual([false, false, false]);
+		// Bash is checked only where Seatbelt can start (not inside another sandbox), as in the other sandbox tests.
+		if ((await sandbox.status()).available)
+			outcomes.push(await createBashTool({ sandbox }).execute({ command: `cat '${target}'` }, { cwd }));
+		expect(outcomes.map((result) => result.output.includes(canary))).toEqual(outcomes.map(() => false));
+		expect(await hash(file)).toBe(before);
 	} finally {
 		await sandbox.reset();
 	}
 });
 
-// Pending (known, not fixed in this stage): a stdio MCP server runs outside the sandbox with the user's rights, so
-// a file tool of its own can return the stored key; the general MCP bypass predates auth.json (see the PR).
-it.skip("(b) an MCP filesystem tool cannot return the stored key", async () => {
+// A stdio MCP server runs outside the sandbox with the user's rights, so its file tool can read auth.json: what it
+// answers must come back with the stored keys hidden.
+it("(b) an MCP filesystem tool cannot return the stored key", async () => {
 	await new AuthStore(file).set("anthropic", { type: "api_key", key: canary });
 	const script = `import { createInterface } from 'node:readline'; import { readFileSync } from 'node:fs';
  const lines = createInterface({input:process.stdin});

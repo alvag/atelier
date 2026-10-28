@@ -79,6 +79,15 @@ export class AuthStore {
 		return Object.entries(this.#read()).flatMap(([provider, entry]) => (isCredential(entry) ? [provider] : []));
 	}
 
+	/** Every key and token stored, to hide wherever it could show (what MCP servers answer). */
+	secrets(): string[] {
+		return Object.values(this.#read()).flatMap((entry) => {
+			if (!isCredential(entry)) return [];
+			const values = entry.type === "api_key" ? [entry.key] : [entry.access, entry.refresh];
+			return values.filter((value) => value.trim() !== "");
+		});
+	}
+
 	async set(provider: string, credential: Credential): Promise<void> {
 		await this.#change((all) => {
 			all[provider] = credential;
