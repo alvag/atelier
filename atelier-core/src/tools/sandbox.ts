@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "no
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
+import { borrowTmpdir } from "../scratch.ts";
 import { describeViolations } from "./sandbox-blocks.ts";
 import { loadSandboxAdditions, type SandboxAdditions } from "./sandbox-config.ts";
 import {
@@ -520,6 +521,8 @@ export interface SandboxOptions {
 	home?: string;
 	/** Defaults to the system temporary directory. */
 	tempDir?: string;
+	/** Where the short folder for the library's socket goes when TMPDIR is too long; `/tmp` by default. */
+	socketRoot?: string;
 	/** Defaults to the Node installation that runs this process. */
 	nodePrefix?: string;
 	/**
@@ -622,6 +625,34 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/** What macOS allows for the path of a Unix socket, without its final NUL. */
+const MAX_SOCKET_PATH = 103;
+
+/**
+ * Whether the socket the library makes in the temporary folder for its proxy
+ * (`srt-mux-<pid>-<n>.sock`, with no option for another place) fits there.
+ */
+function socketFits(dir: string): boolean {
+	return Buffer.byteLength(join(dir, `srt-mux-${process.pid}-zzzz.sock`)) <= MAX_SOCKET_PATH;
+}
+
+/**
+ * `<root>/atelier-<uid>`, made 0700 if it is missing; anything else there (a
+ * link, a file, a directory of another user or that others can open) is refused.
+ */
+function ownShortDir(root: string): string {
+	const dir = join(root, `atelier-${process.getuid?.() ?? 0}`);
+	try {
+		mkdirSync(dir, { mode: 0o700 });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	}
+	const info = lstatSync(dir);
+	if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)
+		throw new Error(`${dir} is not a directory of this user's own (mode 0700)`);
+	return dir;
+}
+
 /**
  * Starts the library once, on first use, and wraps commands with the policy of
  * their caller. A failure to start is remembered: the sandbox stays
@@ -653,7 +684,10 @@ export class Sandbox {
 			const { errors } = manager.checkDependencies();
 			if (errors.length > 0) return { available: false, reason: errors.join(", ") };
 			// The log monitor is what reports the file denials; the proxy reports the network ones on its own.
-			await manager.initialize(SESSION_CONFIG, undefined, true);
+			const initialize = () => manager.initialize(SESSION_CONFIG, undefined, true);
+			// A socket that does not fit fails with EINVAL: the library starts with TMPDIR in a short folder instead.
+			if (socketFits(tmpdir())) await initialize();
+			else await borrowTmpdir(ownShortDir(this.#options.socketRoot ?? "/tmp"), initialize);
 			this.#manager = manager;
 			return { available: true };
 		} catch (error) {

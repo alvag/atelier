@@ -44,22 +44,87 @@ interface Owner {
 
 const self: Owner = { pid: process.pid, startedAt: Date.now() - process.uptime() * 1000 };
 
-export async function createScratchDir(kind: ScratchKind, options: ScratchOptions = {}): Promise<ScratchDir> {
-	const root = await mkdtemp(join(options.tmpRoot ?? tmpdir(), `atelier-${kind}-`));
+/** The system's temporary folder as the user set it, also while `borrowTmpdir` points TMPDIR elsewhere. */
+function systemTmpdir(): string {
+	return borrowed?.original ?? tmpdir();
+}
+
+/** The borrowing in progress, and what TMPDIR said before it. */
+let borrowed: { original: string; done: Promise<void> } | undefined;
+/** Directories being made and sweeps running in the system's temporary folder; a borrowing waits for them. */
+let users = 0;
+let idle: (() => void) | undefined;
+
+/**
+ * Runs `use` with the system's temporary folder, never while TMPDIR is borrowed:
+ * it waits for a borrowing to end, and one that starts meanwhile waits for it.
+ */
+async function inSystemTmpdir<T>(use: (root: string) => Promise<T>): Promise<T> {
+	while (borrowed !== undefined) await borrowed.done;
+	users++;
 	try {
-		await writeFile(join(root, OWNER_FILE), JSON.stringify(self));
-		await mkdir(join(root, WORK));
-	} catch (error) {
-		await rm(root, { recursive: true, force: true });
-		throw error;
+		return await use(tmpdir());
+	} finally {
+		users--;
+		if (users === 0) idle?.();
 	}
-	sweepOnce(options.tmpRoot);
-	return scratchAt(root);
+}
+
+/**
+ * Points TMPDIR at `dir` while `run` runs, and back after it, even when it
+ * fails: for a library that puts what it makes in the temporary folder, with no
+ * option for another place. It starts once no directory is being made and no
+ * sweep is running there, and those asked for meanwhile wait for it to end, so
+ * none lands in `dir`, where the sweep of a later process would never look.
+ * A synchronous one cannot wait: it goes in the folder TMPDIR said before.
+ */
+export async function borrowTmpdir<T>(dir: string, run: () => Promise<T>): Promise<T> {
+	while (borrowed !== undefined) await borrowed.done;
+	let end!: () => void;
+	const current = {
+		original: tmpdir(),
+		done: new Promise<void>((resolve) => {
+			end = resolve;
+		}),
+	};
+	borrowed = current;
+	const previous = process.env.TMPDIR;
+	try {
+		if (users > 0)
+			await new Promise<void>((resolve) => {
+				idle = resolve;
+			});
+		idle = undefined;
+		process.env.TMPDIR = dir;
+		return await run();
+	} finally {
+		if (previous === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = previous;
+		borrowed = undefined;
+		end();
+	}
+}
+
+export async function createScratchDir(kind: ScratchKind, options: ScratchOptions = {}): Promise<ScratchDir> {
+	const make = async (base: string) => {
+		const root = await mkdtemp(join(base, `atelier-${kind}-`));
+		try {
+			await writeFile(join(root, OWNER_FILE), JSON.stringify(self));
+			await mkdir(join(root, WORK));
+		} catch (error) {
+			await rm(root, { recursive: true, force: true });
+			throw error;
+		}
+		sweepOnce(base);
+		return scratchAt(root);
+	};
+	return options.tmpRoot === undefined ? inSystemTmpdir(make) : make(options.tmpRoot);
 }
 
 /** The same, for callers that cannot wait. */
 export function createScratchDirSync(kind: ScratchKind, options: ScratchOptions = {}): ScratchDir {
-	const root = mkdtempSync(join(options.tmpRoot ?? tmpdir(), `atelier-${kind}-`));
+	const base = options.tmpRoot ?? systemTmpdir();
+	const root = mkdtempSync(join(base, `atelier-${kind}-`));
 	try {
 		writeFileSync(join(root, OWNER_FILE), JSON.stringify(self));
 		mkdirSync(join(root, WORK));
@@ -67,7 +132,7 @@ export function createScratchDirSync(kind: ScratchKind, options: ScratchOptions 
 		rmSync(root, { recursive: true, force: true });
 		throw error;
 	}
-	sweepOnce(options.tmpRoot);
+	sweepOnce(base);
 	return scratchAt(root);
 }
 
@@ -82,11 +147,11 @@ let swept = false;
  * caller goes on: the sweep never delays it, and its failures are left for the
  * next process. `ATELIER_SCRATCH_SWEEP=off` stops it.
  */
-function sweepOnce(tmpRoot: string | undefined): void {
+function sweepOnce(tmpRoot: string): void {
 	if (swept || process.env.ATELIER_SCRATCH_SWEEP === "off") return;
 	swept = true;
 	setImmediate(() => {
-		sweepStaleScratch(tmpRoot === undefined ? {} : { tmpRoot }).catch(() => {});
+		sweepStaleScratch({ tmpRoot }).catch(() => {});
 	}).unref();
 }
 
@@ -116,7 +181,10 @@ const systemProcesses: ProcessReader = {
  * the next sweep, with its owner file.
  */
 export async function sweepStaleScratch(options: SweepOptions = {}): Promise<string[]> {
-	const root = options.tmpRoot ?? tmpdir();
+	return inSystemTmpdir((root) => sweepIn(options.tmpRoot ?? root, options));
+}
+
+async function sweepIn(root: string, options: SweepOptions): Promise<string[]> {
 	const names = await readdir(root).catch(() => []);
 	const removed: string[] = [];
 	for (const name of names) {
