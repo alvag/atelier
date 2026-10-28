@@ -51,9 +51,24 @@ export function secretFiles(home: string): string[] {
 	);
 }
 
-/** Everything no tool or command of the main agent may read: the secret directories and Atelier's credentials. */
+/**
+ * The credentials other command-line tools keep in the home: the Codex CLI's sign-in, OpenCode's API keys, and the
+ * passwords curl and git read (`~/.netrc`, and git's `store` helper in both its places). Only the files: the rest of
+ * their folders stays readable. The tool that owns one still uses it from a command run outside the sandbox.
+ */
+export function cliCredentialFiles(home: string): string[] {
+	return [
+		".codex/auth.json",
+		".local/share/opencode/auth.json",
+		".netrc",
+		".git-credentials",
+		".config/git/credentials",
+	].map((path) => join(home, path));
+}
+
+/** Everything no tool or command of the main agent may read: the secret directories and every credential file. */
 export function secretReadPaths(home: string): string[] {
-	return [...secretDirectories(home), ...secretFiles(home)];
+	return [...secretDirectories(home), ...secretFiles(home), ...cliCredentialFiles(home)];
 }
 
 /**

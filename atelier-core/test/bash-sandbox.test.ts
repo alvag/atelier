@@ -99,6 +99,28 @@ describe.skipIf(!onMac)("the agent's bash in the sandbox", () => {
 		expect(ordinary.output).toContain("ordinary file");
 	});
 
+	it("cannot read other tools' credential files, but reads the rest of their folders", async () => {
+		const files = [
+			".codex/auth.json",
+			".local/share/opencode/auth.json",
+			".netrc",
+			".git-credentials",
+			".config/git/credentials",
+		];
+		for (const file of files) {
+			await mkdir(join(home, file, ".."), { recursive: true });
+			await writeFile(join(home, file), "TOY-CLI-CREDENTIAL\n");
+		}
+		await writeFile(join(home, ".codex", "config.toml"), "model = 'toy'\n");
+		const secret = await run(files.map((file) => `cat ${home}/${file}`).join("; "));
+		expect(secret.ok).toBe(false);
+		expect(secret.output).not.toContain("TOY-CLI-CREDENTIAL");
+		expect(secret.output.match(/Operation not permitted/g)).toHaveLength(files.length);
+		expect((await run(`cp ${home}/.codex/auth.json copy.txt`)).ok).toBe(false);
+		expect(await exists(join(cwd, "copy.txt"))).toBe(false);
+		expect((await run(`cat ${home}/.codex/config.toml`)).output).toContain("model = 'toy'");
+	});
+
 	it("writes the package managers' caches under the user's home, and still not the home itself", async () => {
 		const caches = [
 			".npm",

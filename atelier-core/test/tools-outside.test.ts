@@ -13,6 +13,23 @@ import {
 
 const PROTECTED = "Path is a protected secret location:";
 
+/** Other tools' credential files, as the home holds them; each gets toy content and a readable sibling where it has a folder. */
+const CLI_CREDENTIALS = [
+	".codex/auth.json",
+	".local/share/opencode/auth.json",
+	".netrc",
+	".git-credentials",
+	".config/git/credentials",
+];
+
+async function writeCliCredentials(home: string): Promise<void> {
+	for (const path of CLI_CREDENTIALS) {
+		await mkdir(join(home, path, ".."), { recursive: true });
+		await writeFile(join(home, path), "TOY-CLI-CREDENTIAL\n");
+	}
+	await writeFile(join(home, ".codex", "config.toml"), "model = 'toy'\n");
+}
+
 let base: string;
 let cwd: string;
 let outside: string;
@@ -62,6 +79,16 @@ describe("read outside the working directory", () => {
 		}
 		await writeFile(join(home, ".atelier", "profiles.json"), "{}");
 		expect(await read(join(home, ".atelier", "profiles.json"))).toMatchObject({ ok: true });
+	});
+
+	it("refuses other tools' credential files, and reads the rest of their folders", async () => {
+		await writeCliCredentials(home);
+		for (const path of CLI_CREDENTIALS) {
+			const result = await read(join(home, path));
+			expect(result).toMatchObject({ ok: false, output: `${PROTECTED} ${join(home, path)}` });
+			expect(JSON.stringify(result)).not.toContain("TOY-CLI-CREDENTIAL");
+		}
+		expect(await read(join(home, ".codex", "config.toml"))).toMatchObject({ ok: true });
 	});
 
 	it("refuses a symlink in the working directory that leads into a secret directory", async () => {
@@ -125,6 +152,13 @@ describe.each([
 		expect(result.output).not.toContain("PRIVATE-STORED");
 		const direct = await grep("PRIVATE", join(home, ".atelier", "auth.json"));
 		expect(direct.output).not.toContain("PRIVATE-STORED");
+	});
+
+	it("returns nothing of other tools' credential files, and searches the rest of their folders", async () => {
+		await writeCliCredentials(home);
+		expect((await grep("toy", join(home, ".codex", "config.toml"))).output).toContain("model = 'toy'");
+		for (const path of CLI_CREDENTIALS)
+			expect((await grep("TOY", join(home, path))).output, path).not.toContain("TOY-CLI-CREDENTIAL");
 	});
 
 	it("skips what the configuration's denyRead lists", async () => {

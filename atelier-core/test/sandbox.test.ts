@@ -120,6 +120,11 @@ describe("agentPolicy", () => {
 			"/home/ana/.atelier/auth.json",
 			"/home/ana/.atelier/mcp-auth.json",
 			"/home/ana/.atelier/.credentials-tmp",
+			"/home/ana/.codex/auth.json",
+			"/home/ana/.local/share/opencode/auth.json",
+			"/home/ana/.netrc",
+			"/home/ana/.git-credentials",
+			"/home/ana/.config/git/credentials",
 			"/home/ana/Documents",
 		]);
 		expect(policy.filesystem.denyWrite).toEqual(
@@ -197,7 +202,7 @@ describe("agentPolicy", () => {
 		]);
 	});
 
-	it("denies reading the user's credential directories, keychains and Atelier's credential files", () => {
+	it("denies reading the user's credential directories, keychains, Atelier's credential files and other tools' ones", () => {
 		expect(agentPolicy(SESSION).filesystem.denyRead).toEqual([
 			"/home/ana/.ssh",
 			"/home/ana/.aws",
@@ -208,6 +213,11 @@ describe("agentPolicy", () => {
 			"/home/ana/.atelier/auth.json",
 			"/home/ana/.atelier/mcp-auth.json",
 			"/home/ana/.atelier/.credentials-tmp",
+			"/home/ana/.codex/auth.json",
+			"/home/ana/.local/share/opencode/auth.json",
+			"/home/ana/.netrc",
+			"/home/ana/.git-credentials",
+			"/home/ana/.config/git/credentials",
 		]);
 	});
 
