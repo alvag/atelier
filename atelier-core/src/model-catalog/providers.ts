@@ -128,6 +128,24 @@ function codexModel(value: unknown): (CatalogModel & { priority: number }) | und
 	return model;
 }
 
+/**
+ * The models Claude Code offers the subscription, as `supportedModels()` of a running session lists them: the aliases
+ * too, each with its levels. Claude Code says nothing of windows or prices: it counts them itself.
+ */
+export function claudeCodeModelsSource(list: () => Promise<readonly unknown[]>): CatalogSource {
+	return {
+		name: "claude-code",
+		async fetch() {
+			const models = (await list()).flatMap((entry): CatalogModel[] => {
+				if (!isRecord(entry) || typeof entry.value !== "string" || entry.value === "") return [];
+				const levels = entry.supportedEffortLevels;
+				return [{ id: entry.value, ...(Array.isArray(levels) ? { efforts: levels.filter(isEffort) } : {}) }];
+			});
+			return listing("claude-code", models);
+		},
+	};
+}
+
 export interface CodexModelsOptions {
 	/** The signed-in account's headers; without them the source is not asked. */
 	headers: () => Promise<Record<string, string> | undefined>;

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { AuthStore, authFile } from "../src/auth-store.ts";
 import type { BackendSession, BackendStartOptions, ToolCall } from "../src/backend.ts";
 import { createBackend } from "../src/backend-factory.ts";
-import type { CodexVariant } from "../src/backends/openai-codex/access.ts";
+import { CodexAccess, type CodexVariant } from "../src/backends/openai-codex/access.ts";
 import { OpenAiCodexBackend } from "../src/backends/openai-codex/backend.ts";
 import type { AtelierEventBody } from "../src/events.ts";
 import { defineTool } from "../src/tools/types.ts";
@@ -81,6 +81,19 @@ async function start(options: Partial<BackendStartOptions> = {}, variant?: Codex
 	});
 	return { session, calls };
 }
+
+it("gives the Codex catalog the account's token and id, and nothing when nobody is signed in", async () => {
+	const access = () => new CodexAccess({ store, authUrl: auth.url });
+	expect(await access().catalogHeaders()).toBeUndefined();
+	await signInLegacy();
+	expect(await access().catalogHeaders()).toEqual({
+		authorization: `Bearer ${legacy.access}`,
+		"chatgpt-account-id": accountId,
+	});
+	await store.remove("openai-codex");
+	await signInChatGpt();
+	expect(await access().catalogHeaders()).toEqual({ authorization: `Bearer ${chatgpt.access}` });
+});
 
 async function turn(session: BackendSession, prompt = "hi"): Promise<AtelierEventBody[]> {
 	const events: AtelierEventBody[] = [];

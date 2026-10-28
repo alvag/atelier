@@ -14,6 +14,7 @@ export {
 	anthropicModelsSource,
 	CODEX_CLIENT_VERSION,
 	type CodexModelsOptions,
+	claudeCodeModelsSource,
 	codexModelsSource,
 	type OpenCodeGoModelsOptions,
 	openCodeGoModelsSource,

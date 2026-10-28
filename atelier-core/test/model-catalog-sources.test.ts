@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import {
 	anthropicModelsSource,
 	catalogFile,
+	claudeCodeModelsSource,
 	codexModelsSource,
 	modelDataOf,
 	modelsDevSource,
@@ -161,6 +162,19 @@ it("lists the Codex models the account's picker shows, in its order, with their 
 		contextWindow: 400_000,
 		efforts: ["low", "high"],
 	});
+});
+
+it("lists the models Claude Code offers the subscription, aliases included, with their levels", async () => {
+	const models = async () => [
+		{ value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus", description: "" },
+		{ value: "claude-fable-5-1", displayName: "Fable", description: "", supportedEffortLevels: ["low", "max"] },
+		{ value: "", displayName: "", description: "" },
+	];
+	await refreshCatalog(file, [claudeCodeModelsSource(models)]);
+	const data = modelDataOf(await readCatalog(file));
+	expect(data.listed("claude-code")).toEqual(["opus", "claude-fable-5-1"]);
+	expect(data.model("claude-code", "claude-fable-5-1")).toEqual({ id: "claude-fable-5-1", efforts: ["low", "max"] });
+	expect(data.model("claude-code", "opus")).toEqual({ id: "opus" });
 });
 
 it("keeps the last list when a provider fails, and each source apart from the others", async () => {

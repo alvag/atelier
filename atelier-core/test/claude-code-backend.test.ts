@@ -121,6 +121,10 @@ function fakeQuery(
 			async accountInfo() {
 				return account;
 			},
+			async supportedModels() {
+				calls.order.push("supportedModels");
+				return SUPPORTED_MODELS;
+			},
 			async setModel(model?: string) {
 				calls.order.push(`setModel:${model}`);
 			},
@@ -173,7 +177,23 @@ const plainStart = {
 	executeTool: async () => ({ ok: true, output: "" }),
 };
 
+const SUPPORTED_MODELS = [
+	{ value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus", description: "" },
+	{ value: "claude-fable-5-1", displayName: "Fable 5.1", description: "", supportedEffortLevels: ["low", "max"] },
+];
+
 describe("ClaudeCodeBackend options", () => {
+	it("lends each session's model list to listModels, and asks Claude Code for it only when it is called", async () => {
+		const { query, calls } = fakeQuery([], []);
+		const lent: (() => Promise<readonly unknown[]>)[] = [];
+		const backend = new ClaudeCodeBackend({ query, env: {}, listModels: (list) => lent.push(list) });
+		await backend.start(plainStart);
+		expect(lent).toHaveLength(1);
+		expect(calls.order).toEqual([]);
+		expect(await lent[0]?.()).toEqual(SUPPORTED_MODELS);
+		expect(calls.order).toEqual(["supportedModels"]);
+	});
+
 	it("runs only Atelier tools, isolated from the user's Claude Code configuration", async () => {
 		const { query, calls } = fakeQuery([], []);
 		const backend = new ClaudeCodeBackend({ query, env: { PATH: "/bin", HOME: "/home/me" } });
