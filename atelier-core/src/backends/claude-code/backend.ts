@@ -3,6 +3,7 @@ import {
 	createSdkMcpServer,
 	getSessionInfo,
 	type HookCallback,
+	type ModelInfo,
 	type Options,
 	type SDKMessage,
 	type SDKUserMessage,
@@ -43,6 +44,8 @@ export interface SdkQuery extends AsyncIterable<SDKMessage> {
 	interrupt(): Promise<unknown>;
 	close(): void;
 	accountInfo?(): Promise<AccountInfo>;
+	/** The models Claude Code offers this account: a control request to the running process, no API call. */
+	supportedModels?(): Promise<ModelInfo[]>;
 	/** Changes the model of the open query for the next turns. */
 	setModel?(model?: string): Promise<void>;
 	/** Merges settings into the open query; `effortLevel: null` goes back to the model's default effort. */
@@ -63,6 +66,11 @@ export interface ClaudeCodeBackendOptions {
 	interruptGraceMs?: number;
 	/** Receives every raw SDK message; used to record fixtures. */
 	onSdkMessage?: (message: SDKMessage) => void;
+	/**
+	 * Given, at each session start, a way to ask that session's Claude Code for its models: the catalog calls it when
+	 * its list is old, so no process is started only to list them.
+	 */
+	listModels?: (list: () => Promise<readonly ModelInfo[]>) => void;
 	/** Whether Claude Code still has the session `sessionId` for the folder; injected in tests, the SDK's lookup by default. */
 	sessionExists?: (sessionId: string, cwd: string) => Promise<boolean>;
 }
@@ -182,6 +190,8 @@ export class ClaudeCodeBackend implements AgentBackend {
 					: { pathToClaudeCodeExecutable: this.#options.pathToClaudeCodeExecutable }),
 			},
 		});
+		const { supportedModels } = query;
+		if (supportedModels) this.#options.listModels?.(() => supportedModels.call(query));
 		const record = this.#options.onSdkMessage;
 		const observe = (message: SDKMessage) => {
 			record?.(message);

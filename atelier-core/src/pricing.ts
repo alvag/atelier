@@ -140,10 +140,10 @@ export function thinkingToSend(
 	return levels?.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
 }
 
-/** What the model catalog says of a model Anthropic's tables lack, on Anthropic's API. */
+/** What the model catalog says of a model Anthropic's tables lack, on Anthropic's API or Claude Code. */
 function catalogModel(id: string, backend: ThinkingBackend) {
-	if (EFFORT_LEVELS[id] !== undefined || backend !== "anthropic-api") return undefined;
-	return currentModelData().model("anthropic-api", id);
+	if (EFFORT_LEVELS[id] !== undefined || backend === "opencode-go") return undefined;
+	return currentModelData().model(backend, id);
 }
 
 /**

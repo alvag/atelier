@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from "vitest";
+import { codexContextWindow, codexReasoning } from "../src/backends/openai-codex/models.ts";
 import { openCodeGoModel } from "../src/backends/opencode-go/models.ts";
 import { ModelData, useModelData } from "../src/model-catalog/index.ts";
 import { costOfRequest, thinkingToSend } from "../src/pricing.ts";
@@ -26,6 +27,14 @@ const catalog = new ModelData({
 		{ id: "bare-model" },
 		{ id: "minimax-m3", contextWindow: 10 },
 	],
+	"claude-code": [
+		{ id: "claude-fable-5-2", efforts: ["low", "max"] },
+		{ id: "opus", efforts: ["low"] },
+	],
+	"openai-codex": [
+		{ id: "gpt-6.1-terra", contextWindow: 400_000, efforts: ["low", "high"] },
+		{ id: "gpt-6-sol", contextWindow: 10, efforts: ["low"] },
+	],
 });
 
 it("prices a model only the catalog knows, and keeps the code's prices for the ones it knows", () => {
@@ -52,6 +61,27 @@ it("sends the levels the catalog gives a model the code does not know, and only 
 	expect(thinkingToSend("grok-4.7", "off", "opencode-go")).toEqual({ report: "off", thinking: "disabled" });
 	expect(thinkingToSend("bare-model", "high", "opencode-go")).toEqual({ report: "unsupported" });
 	expect(thinkingToSend("bare-model", "off", "opencode-go")).toEqual({ report: "unsupported" });
+});
+
+it("sends Claude Code the levels the catalog gives a model its tables lack, and the tables' for an alias", () => {
+	expect(thinkingToSend("claude-fable-5-2", "max", "claude-code")).toEqual({ report: "unsupported" });
+	useModelData(catalog);
+	expect(thinkingToSend("claude-fable-5-2", "max", "claude-code")).toEqual({ report: "max", effort: "max" });
+	expect(thinkingToSend("claude-fable-5-2", "high", "claude-code")).toEqual({ report: "unsupported" });
+	expect(thinkingToSend("opus", "high", "claude-code")).toEqual({ report: "high", effort: "high" });
+});
+
+it("gives a Codex model the catalog doesn't know Codex's window and levels; the ones it knows keep the code's", () => {
+	expect(codexContextWindow("gpt-6.1-terra")).toBe(272_000);
+	expect(codexReasoning("gpt-6.1-terra", "max")).toEqual({ report: "max", effort: "max" });
+	useModelData(catalog);
+	expect(codexContextWindow("gpt-6.1-terra")).toBe(400_000);
+	expect(codexReasoning("gpt-6.1-terra", "max")).toEqual({ report: "unsupported" });
+	expect(codexReasoning("gpt-6.1-terra", "minimal")).toEqual({ report: "low", effort: "low" });
+	expect(codexReasoning("gpt-6.1-terra", "off")).toEqual({ report: "off", effort: "none" });
+	expect(codexContextWindow("gpt-6-sol")).toBe(272_000);
+	expect(codexReasoning("gpt-6-sol", "max")).toEqual({ report: "max", effort: "max" });
+	expect(codexContextWindow("unknown-model")).toBe(272_000);
 });
 
 it("gives an OpenCode Go model the catalog's window, through Chat Completions, and the table's to the ones it has", () => {

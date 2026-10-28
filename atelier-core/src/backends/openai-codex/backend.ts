@@ -48,7 +48,7 @@ import {
 	turnPromptBeforeItem,
 	withInstruction,
 } from "./compaction.ts";
-import { CODEX_CONTEXT_WINDOW, type CodexReasoning, codexReasoning, DEFAULT_CODEX_MODEL } from "./models.ts";
+import { type CodexReasoning, codexContextWindow, codexReasoning, DEFAULT_CODEX_MODEL } from "./models.ts";
 
 export const BACKEND_ID = "openai-codex";
 export const DEFAULT_MAX_REQUESTS_PER_TURN = 50;
@@ -84,10 +84,11 @@ export class OpenAiCodexBackend implements AgentBackend {
 	}
 
 	async start(start: BackendStartOptions): Promise<BackendSession> {
-		const window = this.#options.contextWindow ?? CODEX_CONTEXT_WINDOW;
+		const model = start.model ?? this.#options.model ?? DEFAULT_CODEX_MODEL;
+		const window = this.#options.contextWindow ?? codexContextWindow(model);
 		return new OpenAiCodexSession({
 			access: new CodexAccess(this.#options),
-			model: start.model ?? this.#options.model ?? DEFAULT_CODEX_MODEL,
+			model,
 			thinking: start.thinking,
 			instructions: systemPrompt(start.cwd, start.systemPromptAppend),
 			tools: responsesTools(start),
