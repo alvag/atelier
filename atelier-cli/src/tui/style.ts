@@ -23,6 +23,9 @@ export const painter =
 	(style, text) =>
 		color ? styleText(style, text) : text;
 
+/** Whether `paint` styles anything: without color, it gives text back as it is. */
+export const hasColor = (paint: Paint): boolean => paint("bold", "x") !== "x";
+
 export function markdownTheme(paint: Paint): MarkdownTheme {
 	return {
 		heading: (text) => paint(["bold", "cyan"], text),

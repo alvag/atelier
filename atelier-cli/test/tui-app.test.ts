@@ -690,7 +690,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 			h.screen.type(`\x1b[<0;5;${row}M`);
 			h.screen.type(`\x1b[<0;5;${row}m`);
 			await until(() => h.screen.screen().includes("│ $ echo one"));
-			expect(h.screen.screen()).toContain("▾ bash echo one · exit 0 ✓");
+			expect(h.screen.screen()).toContain("✓ bash echo one · exit 0");
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
 		});
@@ -1273,7 +1273,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(h.screen.screen()).not.toContain("│ $ echo one");
 		h.screen.type("\x0f");
 		await until(() => h.screen.screen().includes("│ $ echo one"));
-		expect(h.screen.screen()).toContain("▾ bash echo one · exit 0 ✓");
+		expect(h.screen.screen()).toContain("✓ bash echo one · exit 0");
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
 	});

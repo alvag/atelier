@@ -92,9 +92,7 @@ describe("Conversation", () => {
 		expect(text).toContain(" ✻ Checking the alias.\n ✻ It is right.\n ⎿ Ran 1 command\n\n ● Done.");
 		conversation.toggleCards();
 		text = conversation.render(80).join("\n");
-		expect(text).toMatch(
-			/⎿ ▾ Ran 1 command\n ✻ Checking the alias\.\n.*▾ bash ls · exit 0 ✓\n(.*\n)*.*✻ It is right\./,
-		);
+		expect(text).toMatch(/⎿ ▾ Ran 1 command\n ✻ Checking the alias\.\n.*✓ bash ls · exit 0\n(.*\n)*.*✻ It is right\./);
 		conversation.toggleCards();
 		conversation.toggleThinking();
 		text = conversation.render(80).join("\n");
@@ -161,20 +159,20 @@ describe("Conversation", () => {
 		text = conversation.render(80).join("\n");
 		expect(text).not.toContain("Checking.");
 		text = click("⎿ Ran 1 command");
-		expect(text).toContain("▾ bash ls · exit 0 ✓");
-		expect(text).not.toContain("▾ bash pwd");
+		expect(text).toContain("✓ bash ls · exit 0");
+		expect(text).not.toContain("✓ bash pwd");
 		// Opened by hand once it ended, it stays open while more comes.
 		text = click("✻ Thinking…");
 		expect(text).toContain("✻ Checking.");
 		send([{ type: "text_delta", text: " More." }]);
 		expect(conversation.render(80).join("\n")).toContain("✻ Checking.");
-		text = click("▾ bash ls");
-		expect(text).not.toContain("▾ bash ls");
+		text = click("✓ bash ls");
+		expect(text).not.toContain("✓ bash ls");
 		click("⎿ Ran 1 command");
 		conversation.toggleCards();
 		text = conversation.render(80).join("\n");
-		expect(text).toContain("▾ bash ls · exit 0 ✓");
-		expect(text).toContain("▾ bash pwd · exit 0 ✓");
+		expect(text).toContain("✓ bash ls · exit 0");
+		expect(text).toContain("✓ bash pwd · exit 0");
 		conversation.toggleCards();
 		conversation.toggleThinking();
 		conversation.toggleThinking();
@@ -272,10 +270,10 @@ describe("Conversation", () => {
 			true,
 		);
 		expect(text).toContain("⎿ ▾ Ran 1 command · edited 1 file");
-		expect(text).toContain("▾ bash pnpm test · exit 0 ✓");
-		expect(text).toContain("│ $ pnpm test\n     │ --run");
+		expect(text).toContain("✓ bash pnpm test · exit 0");
+		expect(text).toContain("│ $ pnpm test\n   │   --run");
 		expect(text).toContain("│ full output: /tmp/out.txt");
-		expect(text).toContain("│ - old\n     │ + new");
+		expect(text).toContain("│ - old\n   │ + new");
 	});
 
 	it("groups a subagent's work under its task call, with its tools and cost", () => {
@@ -308,8 +306,8 @@ describe("Conversation", () => {
 		expect(folded).not.toContain("child text");
 		expect(folded).not.toContain("b.ts");
 		const open = shown(bodies, 80, true).text;
-		expect(open).toContain("▾ task worker · done ✓\n     └ worker · claude-sonnet-5-5 · 1 tool");
-		expect(open).toContain("▸ read b.ts · 3 lines ✓");
+		expect(open).toContain("✓ task worker · done\n     └ worker · claude-sonnet-5-5 · 1 tool");
+		expect(open).toContain("✓ read b.ts · 3 lines");
 		expect(open).toContain("child text");
 	});
 
