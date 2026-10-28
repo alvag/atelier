@@ -836,6 +836,26 @@ describe("user prompts", () => {
 		]);
 	});
 
+	it("masks npm and Stripe live keys and the password of curl -u", async () => {
+		// Built at run time, so no literal in the repository looks like a real key to secret scanners.
+		const live = (kind: string) => `${kind}_${"live"}_51Habcdefghijklmnopqrstuv`;
+		const prompts = [
+			`npm config set //registry/:_authToken ${"npm"}_abcdefghijklmnopqrstuvwxyz0123456789 now`,
+			`stripe ${live("sk")} and ${live("rk")}`,
+			"curl -u ana:hunter2 https://api.test",
+			"curl --user=ana:hunter2 x; curl --user 'ana:p w' y",
+		];
+		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
+		for (const prompt of prompts) await send(prompt);
+		await s.close();
+		expect(memory.prompts).toEqual([
+			"npm config set //registry/:_authToken [REDACTED] now",
+			"stripe [REDACTED] and [REDACTED]",
+			"curl -u ana:[REDACTED] https://api.test",
+			"curl --user=ana:[REDACTED] x; curl --user 'ana:[REDACTED]' y",
+		]);
+	});
+
 	it("masks an unquoted Authorization value to the end of the line, quotes inside it included", async () => {
 		const prompts = [
 			'Authorization: Digest username="x", realm="r", response="abcdef123456"\nnext',
