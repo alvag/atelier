@@ -1,4 +1,5 @@
-import { dirname, join } from "node:path";
+import { lstatSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -47,7 +48,9 @@ export class McpManager {
 	readonly #fileProblems: string[];
 	readonly #secrets: readonly string[];
 	readonly #auth: McpAuthStore | undefined;
-	readonly #providers: AuthStore;
+	readonly #providers: AuthStore | undefined;
+	/** The providers' secrets as last read, kept while `auth.json` is the same file with the same size and time. */
+	#providerSecrets: { stamp: string; secrets: string[] } | undefined;
 	readonly #env: Record<string, string | undefined>;
 	readonly #openBrowser: (url: URL) => void | Promise<void>;
 	/** Aborted on close: a sign-in waiting for the browser stops. */
@@ -62,14 +65,19 @@ export class McpManager {
 		options: {
 			auth?: McpAuthStore;
 			openBrowser?: (url: URL) => void | Promise<void>;
-			/** The providers' keys `atelier login` stored; `auth.json` next to the configuration file by default. */
+			/**
+			 * The providers' keys `atelier login` stored; by default `auth.json` next to the configuration file when its
+			 * path is absolute, and none otherwise (a relative path would name the working directory).
+			 */
 			providers?: AuthStore;
-			/** Where ANTHROPIC_API_KEY is read from, to hide it too; this process's environment by default. */
+			/** Where ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN are read from, to hide them too; this process's by default. */
 			env?: Record<string, string | undefined>;
 		} = {},
 	) {
 		this.#auth = options.auth;
-		this.#providers = options.providers ?? new AuthStore(join(dirname(config.file), "auth.json"));
+		this.#providers =
+			options.providers ??
+			(isAbsolute(config.file) ? new AuthStore(join(dirname(config.file), "auth.json")) : undefined);
 		this.#env = options.env ?? process.env;
 		this.#openBrowser = options.openBrowser ?? openInBrowser;
 		this.file = config.file;
@@ -280,15 +288,28 @@ export class McpManager {
 	}
 
 	#hide(text: string): string {
-		const fromEnv = this.#env.ANTHROPIC_API_KEY?.trim();
-		return redact(text, [
-			...this.#secrets,
-			...(this.#auth?.secrets() ?? []),
-			...this.#providers.secrets(),
-			...(fromEnv ? [fromEnv] : []),
-		]);
+		const fromEnv = ENV_CREDENTIALS.flatMap((name) => this.#env[name]?.trim() || []);
+		return redact(text, [...this.#secrets, ...(this.#auth?.secrets() ?? []), ...this.#storedSecrets(), ...fromEnv]);
+	}
+
+	/** The keys of `auth.json`, read again only when the file changed (another inode, size or time), not at every answer. */
+	#storedSecrets(): string[] {
+		if (this.#providers === undefined) return [];
+		let stamp = "none";
+		try {
+			const stats = lstatSync(this.#providers.file);
+			stamp = `${stats.ino}:${stats.size}:${stats.mtimeMs}`;
+		} catch {
+			// No file: no keys, unless one appears.
+		}
+		if (this.#providerSecrets?.stamp !== stamp)
+			this.#providerSecrets = { stamp, secrets: stamp === "none" ? [] : this.#providers.secrets() };
+		return this.#providerSecrets.secrets;
 	}
 }
+
+/** The environment's Anthropic credentials, which every stdio server inherits: hidden in what servers answer. */
+const ENV_CREDENTIALS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
 
 /** The server wants a sign-in: its tokens are gone or refused, or it answers 401 and has no Authorization header of its own. */
 function needsSignIn(config: McpServerConfig, error: unknown): boolean {

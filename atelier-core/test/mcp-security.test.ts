@@ -1,6 +1,6 @@
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -279,4 +279,42 @@ it("hides the providers' stored keys and ANTHROPIC_API_KEY in what the servers a
 	expect(byDefault.hide("stored-provider-key-123")).toBe("***");
 	await manager.close();
 	await byDefault.close();
+});
+
+it("hides the stored OAuth tokens and ANTHROPIC_AUTH_TOKEN, trims stored keys, and skips blank or broken entries", async () => {
+	const file = join(dir, "auth.json");
+	const providers = new AuthStore(file);
+	await providers.set("openai-codex", {
+		type: "oauth",
+		access: "access-token-123",
+		refresh: "refresh-token-456",
+		expires: 1,
+	});
+	await providers.set("anthropic", { type: "api_key", key: "  padded-provider-key-789  " });
+	await providers.set("blank", { type: "api_key", key: "   " });
+	const manager = new McpManager(
+		{ file: join(dir, "mcp.json"), servers: [], problems: [], secrets: [] },
+		{ providers, env: { ANTHROPIC_AUTH_TOKEN: "auth-token-env-321" } },
+	);
+	expect(manager.hide("access-token-123 refresh-token-456 padded-provider-key-789 auth-token-env-321 kept")).toBe(
+		"*** *** *** *** kept",
+	);
+	await writeFile(file, "{not json");
+	expect(manager.hide("access-token-123 kept")).toBe("access-token-123 kept");
+	await rm(file);
+	expect(manager.hide("plain text")).toBe("plain text");
+	await manager.close();
+});
+
+it("reads the providers' keys from beside an absolute configuration only, never through a relative path", async () => {
+	const folder = join(dir, "relative");
+	await mkdir(folder, { mode: 0o755 });
+	await chmod(folder, 0o755);
+	await new AuthStore(join(folder, "auth.json")).set("anthropic", { type: "api_key", key: "relative-folder-key-1" });
+	await chmod(folder, 0o755);
+	const file = relative(process.cwd(), join(folder, "mcp.json"));
+	const manager = new McpManager({ file, servers: [], problems: [], secrets: [] }, { env: {} });
+	expect(manager.hide("relative-folder-key-1")).toBe("relative-folder-key-1");
+	expect((await stat(folder)).mode & 0o777).toBe(0o755);
+	await manager.close();
 });
