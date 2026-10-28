@@ -226,3 +226,40 @@ it("takes the lock of a holder that died at once, and leaves the credential as i
 	await store.set("anthropic", { type: "api_key", key: "k" });
 	expect(store.get("openai-codex")).toEqual({ type: "oauth", access: "a-0", refresh: "r-0", expires: 0 });
 });
+
+it("lets one waiter at a time take over a dead holder's lock, so each stale credential is refreshed once", async () => {
+	// The id of a process that has just ended: no process runs with it.
+	const dead = spawn(process.execPath, ["-e", ""]);
+	await new Promise((resolve) => dead.once("exit", resolve));
+	const store = new AuthStore(file);
+	await store.set("openai-codex", { type: "oauth", access: "a-0", refresh: "r-0", expires: 0 });
+	let inside = 0;
+	let most = 0;
+	let refreshes = 0;
+	const rounds = 30;
+	for (let round = 1; round <= rounds; round++) {
+		await store.set("openai-codex", { type: "oauth", access: `a-${round}`, refresh: `r-${round}`, expires: 0 });
+		// Left by the process that died, in one round named and in the next from an older Atelier, empty and old.
+		await writeFile(`${file}.lock`, round % 2 === 0 ? `${dead.pid} gone` : "");
+		const old = new Date(Date.now() - 60_000);
+		await utimes(`${file}.lock`, old, old);
+		await Promise.all(
+			Array.from({ length: 8 }, () =>
+				new AuthStore(file).refreshed(
+					"openai-codex",
+					(credential) => credential.type === "oauth" && credential.expires < Date.now(),
+					async () => {
+						inside++;
+						most = Math.max(most, inside);
+						refreshes++;
+						await new Promise((resolve) => setTimeout(resolve, 5));
+						inside--;
+						return { type: "oauth", access: "fresh", refresh: "fresh", expires: Date.now() + 3_600_000 };
+					},
+				),
+			),
+		);
+	}
+	expect(most).toBe(1);
+	expect(refreshes).toBe(rounds);
+});

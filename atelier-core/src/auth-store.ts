@@ -203,8 +203,9 @@ export class AuthStore {
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			}
-			if (await this.#abandoned(lock)) {
-				await unlink(lock).catch(() => {});
+			const seen = await this.#abandoned(lock);
+			if (seen !== undefined) {
+				await this.#takeOver(lock, seen, owner);
 				continue;
 			}
 			if (Date.now() >= deadline)
@@ -213,8 +214,11 @@ export class AuthStore {
 		}
 	}
 
-	/** Whether the lock's holder is gone: a process that no longer runs, or no process named and an old lock. */
-	async #abandoned(lock: string): Promise<boolean> {
+	/**
+	 * What an abandoned lock holds, or undefined while its holder may still run: a process that no longer runs, or no
+	 * process named and an old lock.
+	 */
+	async #abandoned(lock: string): Promise<string | undefined> {
 		const [content, age] = await Promise.all([
 			readFile(lock, "utf8").catch(() => undefined),
 			stat(lock).then(
@@ -223,11 +227,40 @@ export class AuthStore {
 			),
 		]);
 		// Gone meanwhile: the next try creates it.
-		if (content === undefined) return false;
+		if (content === undefined) return undefined;
 		const pid = Number.parseInt(content, 10);
 		// Empty or from an older Atelier; an empty one may also be a lock created a moment ago, which is not old.
-		if (!Number.isInteger(pid) || pid <= 0) return age > this.#staleLockMs;
-		return !isRunning(pid) || age > ABANDONED_LOCK_MS;
+		if (!Number.isInteger(pid) || pid <= 0) return age > this.#staleLockMs ? content : undefined;
+		return !isRunning(pid) || age > ABANDONED_LOCK_MS ? content : undefined;
+	}
+
+	/**
+	 * Removes the abandoned lock that held `seen`, one waiter at a time: without that, a waiter that judged the old lock
+	 * could remove the new one another waiter just took, and both would hold it. `<lock>.break` lets one waiter remove
+	 * it, and only while the lock still holds what was judged; the others try again. A breaker that died leaves its
+	 * own file, which is judged the same way.
+	 */
+	async #takeOver(lock: string, seen: string, owner: string): Promise<void> {
+		const breaker = `${lock}.break`;
+		try {
+			const handle = await open(breaker, "wx", 0o600);
+			try {
+				await handle.writeFile(owner);
+			} finally {
+				await handle.close();
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			const stuck = await this.#abandoned(breaker);
+			if (stuck !== undefined && (await readFile(breaker, "utf8").catch(() => undefined)) === stuck)
+				await unlink(breaker).catch(() => {});
+			return;
+		}
+		try {
+			if ((await this.#abandoned(lock)) === seen) await unlink(lock).catch(() => {});
+		} finally {
+			await unlink(breaker).catch(() => {});
+		}
 	}
 }
 
