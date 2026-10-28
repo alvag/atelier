@@ -752,6 +752,17 @@ describe("user prompts", () => {
 		]);
 	});
 
+	it("keeps a prompt out when a known key is split across words, also after a name or header the masks know", async () => {
+		const prompts = [
+			"GITHUB_TOKEN=ghp_abcd\nefghijklmnopqrstuvwxyz0123456789",
+			"Authorization: Bearer sk-ant-api03-abcd\nefghijklmnopqrstuvwx",
+		];
+		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
+		for (const prompt of prompts) await send(prompt);
+		await s.close();
+		expect(memory.prompts).toEqual([]);
+	});
+
 	it("masks the whole prompt before cutting it, and never cuts inside a mask", async () => {
 		const { memory, session: s, send } = await session([[{ event: finished }]]);
 		await send(`${"x".repeat(1995)} sk-ant-api03-abcdefghijklmnopqrstuvwx and more`);

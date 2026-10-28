@@ -53,6 +53,22 @@ const VALUE_MASKS: RegExp[] = [
 	/\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:)[^\s@/]+(?=@)/gi,
 ];
 
+/** The private key blocks and the shapes `findSecret` knows, replaced by `[REDACTED]` where they stand whole. */
+function maskShapes(text: string): string {
+	return SECRETS.reduce(
+		(masked, secret) => masked.replace(new RegExp(secret.pattern.source, "g"), "[REDACTED]"),
+		text.replace(PRIVATE_KEY_BLOCK, "[REDACTED]"),
+	);
+}
+
+/** The values the masks tell by where they stand (a header, a secret's name, a URL), replaced by `[REDACTED]`. */
+function maskPlaced(text: string): string {
+	return VALUE_MASKS.reduce(
+		(masked, pattern) => masked.replace(pattern, (_match, name: string) => `${name}[REDACTED]`),
+		text,
+	);
+}
+
 /**
  * The text with every credential it can tell replaced by `[REDACTED]`, best effort: a private key whole, body
  * included; the value of an Authorization header, of a bearer token, of a name like `*PASSWORD*`, `*SECRET*` or
@@ -60,14 +76,7 @@ const VALUE_MASKS: RegExp[] = [
  * `findSecret` knows. One still found across words is left to `findSecret`.
  */
 export function maskSecrets(text: string): string {
-	const unkeyed = VALUE_MASKS.reduce(
-		(masked, pattern) => masked.replace(pattern, (_match, name: string) => `${name}[REDACTED]`),
-		text.replace(PRIVATE_KEY_BLOCK, "[REDACTED]"),
-	);
-	return SECRETS.reduce(
-		(masked, secret) => masked.replace(new RegExp(secret.pattern.source, "g"), "[REDACTED]"),
-		unkeyed,
-	);
+	return maskPlaced(maskShapes(text));
 }
 
 const MASK = "[REDACTED]";
@@ -78,8 +87,11 @@ const MASK = "[REDACTED]";
  * found across words (then the prompt is not kept at all).
  */
 export function promptForMemory(text: string): string | undefined {
-	const masked = maskSecrets(text);
-	if (masked.trim() === "" || findSecret(masked)) return undefined;
+	// A key split across words is looked for before the masks by place, which would hide its known prefix.
+	const shaped = maskShapes(text);
+	if (findSecret(shaped)) return undefined;
+	const masked = maskPlaced(shaped);
+	if (masked.trim() === "") return undefined;
 	const chars = Array.from(masked);
 	if (chars.length <= PROMPT_CHARS) return masked;
 	let cut = chars.slice(0, PROMPT_CHARS).join("");
