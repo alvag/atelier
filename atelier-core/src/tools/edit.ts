@@ -22,11 +22,11 @@ function occurrences(content: string, text: string): number[] {
 	return found;
 }
 
-/** The 1-based line of `content` that `offset` is on. */
-function lineAt(content: string, offset: number): number {
-	let line = 1;
-	for (let i = content.indexOf("\n"); i !== -1 && i < offset; i = content.indexOf("\n", i + 1)) line++;
-	return line;
+/** How many line breaks `text` has. */
+function breaks(text: string): number {
+	let count = 0;
+	for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) count++;
+	return count;
 }
 
 /** Writes through a temporary file in the same directory and renames it, so readers never see a partial file. */
@@ -179,22 +179,34 @@ export function createEditTool(options: EditOptions = {}): ToolDefinition {
 
 				let result = "";
 				let cursor = 0;
+				// Where each edit starts in the file before and after the edits, counted once in the file's order.
+				const startLines: number[] = [];
+				const newStartLines: number[] = [];
+				let oldLine = 1;
+				let newLine = 1;
 				for (const { start, end, index } of ranges) {
-					result += content.slice(cursor, start) + (edits[index] as { newText: string }).newText;
+					const kept = content.slice(cursor, start);
+					const { newText } = edits[index] as { newText: string };
+					oldLine += breaks(kept);
+					newLine += breaks(kept);
+					startLines[index] = oldLine;
+					newStartLines[index] = newLine;
+					oldLine += breaks(content.slice(start, end));
+					newLine += breaks(newText);
+					result += kept + newText;
 					cursor = end;
 				}
 				result += content.slice(cursor);
 
 				await writeAtomic(target, result, info.mode & 0o7777);
 				const count = `${edits.length} ${edits.length === 1 ? "edit" : "edits"}`;
-				const startLines: number[] = [];
-				for (const { start, index } of ranges) startLines[index] = lineAt(content, start);
 				return {
 					ok: true,
 					output: `Edited ${path}: ${count} applied.`,
 					summary: `${path} (${count})`,
 					truncated: false,
 					startLines,
+					newStartLines,
 				};
 			} catch (error) {
 				return failure(errorMessage(error));

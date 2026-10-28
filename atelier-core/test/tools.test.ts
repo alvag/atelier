@@ -185,7 +185,23 @@ describe("edit", () => {
 			},
 			ctx,
 		);
-		expect(result).toMatchObject({ ok: true, startLines: [4, 2, 1] });
+		expect(result).toMatchObject({ ok: true, startLines: [4, 2, 1], newStartLines: [5, 3, 1] });
+	});
+
+	it("says where each edit's new text starts after the edits before it, on the same line too", async () => {
+		await writeFile(join(cwd, "f.txt"), "a b\n");
+		const result = await editTool.execute(
+			{
+				path: "f.txt",
+				edits: [
+					{ oldText: "b", newText: "B" },
+					{ oldText: "a", newText: "a\nA" },
+				],
+			},
+			ctx,
+		);
+		expect(await readFile(join(cwd, "f.txt"), "utf8")).toBe("a\nA B\n");
+		expect(result).toMatchObject({ ok: true, startLines: [1, 1], newStartLines: [2, 1] });
 	});
 
 	it("treats replacement text literally", async () => {

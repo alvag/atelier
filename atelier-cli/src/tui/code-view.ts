@@ -125,14 +125,16 @@ interface Edit {
 
 /**
  * An edit as a diff, each of its edits up to `max` rows: removed lines in red, added in green, the lines both sides
- * share dimmed. On `tones`' bands, the removed and added lines are highlighted by the file's extension instead. With
- * `startLines`, the edits go in the file's order with each line's number, before the edit for what it removes and
- * keeps, after it for what it adds; without them, in the call's order, unnumbered.
+ * share dimmed, each line compared whole and cut only to be shown. On `tones`' bands, the removed and added lines are
+ * highlighted by the file's extension instead. With `startLines` and `newStartLines`, where each edit starts in the
+ * file before and after the edits, they go in the file's order with each line's number, in the file before for what
+ * an edit removes and keeps, in the file after for what it adds; without them, in the call's order, unnumbered.
  */
 export function editView(
 	path: string,
 	edits: readonly Edit[],
 	startLines: readonly number[] | undefined,
+	newStartLines: readonly number[] | undefined,
 	paint: Paint,
 	room: number,
 	max: number,
@@ -140,38 +142,30 @@ export function editView(
 ): string[] {
 	const banded = tones?.on === true;
 	const lang = languageOf(path);
-	const numbered = startLines !== undefined && startLines.length === edits.length;
-	const lineCount = (text: string) => text.split("\n").length;
+	const numbered =
+		startLines !== undefined &&
+		newStartLines !== undefined &&
+		startLines.length === edits.length &&
+		newStartLines.length === edits.length;
 	const placed = edits.map((edit, index) => ({
 		edit,
-		start: numbered ? (startLines[index] as number) : undefined,
-		shift: 0,
+		start: numbered ? startLines[index] : undefined,
+		newStart: numbered ? newStartLines[index] : undefined,
 	}));
-	if (numbered) {
-		placed.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
-		// What the edits before it in the file added or removed moves its new lines; one starting on the same line moves none.
-		let moved = 0;
-		for (let i = 0; i < placed.length; ) {
-			let next = i;
-			while (next < placed.length && placed[next]?.start === placed[i]?.start) next++;
-			const shift = moved;
-			for (const one of placed.slice(i, next)) {
-				one.shift = shift;
-				moved += lineCount(one.edit.newText) - lineCount(one.edit.oldText);
-			}
-			i = next;
-		}
-	}
-	const rows = placed.flatMap(({ edit, start, shift }, index) => {
-		const before = edit.oldText.split("\n").map(clipLine);
-		const after = edit.newText.split("\n").map(clipLine);
+	if (numbered) placed.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+	const rows = placed.flatMap(({ edit, start, newStart }, index) => {
+		// Compared whole, so a change past where a long line is cut still shows; cut only to be shown.
+		const before = edit.oldText.split("\n");
+		const after = edit.newText.split("\n");
+		const shown = { before: before.map(clipLine), after: after.map(clipLine) };
 		const highlighted = banded
-			? { before: highlightLines(paint, before, lang), after: highlightLines(paint, after, lang) }
+			? { before: highlightLines(paint, shown.before, lang), after: highlightLines(paint, shown.after, lang) }
 			: undefined;
 		const diff = lineDiff(before, after).map(({ kind, before: b, after: a }): Row => {
 			const line = kind === "added" ? (a as number) : (b as number);
-			const text = (kind === "added" ? after[line] : before[line]) ?? "";
-			const number = start === undefined ? undefined : start + line + (kind === "added" ? shift : 0);
+			const text = (kind === "added" ? shown.after[line] : shown.before[line]) ?? "";
+			const first = kind === "added" ? newStart : start;
+			const number = first === undefined ? undefined : first + line;
 			const row = { ...(number === undefined ? {} : { number }), mark: kind };
 			if (kind === "same") return { ...row, text: paint("dim", text) };
 			if (highlighted === undefined) return { ...row, text: paint(MARK_STYLES[kind], text) };

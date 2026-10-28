@@ -1440,6 +1440,7 @@ export class Session {
 				...(outcome.fullOutputPath === undefined ? {} : { fullOutputPath: outcome.fullOutputPath }),
 				...(outcome.blocked === undefined ? {} : { blocked: outcome.blocked }),
 				...(outcome.startLines === undefined ? {} : { startLines: outcome.startLines }),
+				...(outcome.newStartLines === undefined ? {} : { newStartLines: outcome.newStartLines }),
 			});
 			return { ok: outcome.ok, output: outcome.output };
 		} catch (error) {

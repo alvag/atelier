@@ -81,7 +81,11 @@ describe("edit where the agent could always write", () => {
 
 	it("tells the client the line each edit starts at", async () => {
 		const { events } = await run(["inside.txt"]);
-		expect(events.find((event) => event.type === "tool_call_finished")).toMatchObject({ ok: true, startLines: [1] });
+		expect(events.find((event) => event.type === "tool_call_finished")).toMatchObject({
+			ok: true,
+			startLines: [1],
+			newStartLines: [1],
+		});
 	});
 
 	it("does not ask inside a directory the configuration allows writing", async () => {
