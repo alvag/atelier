@@ -1,6 +1,10 @@
+import { type LoginTarget, parseLoginTarget } from "./login.ts";
+
 /** A subcommand is chosen by the first positional word, exactly; anything else is a prompt. */
 export interface Subcommand {
-	name: "update" | "desktop" | "mcp" | "stats";
+	name: "update" | "desktop" | "mcp" | "stats" | "login" | "logout";
+	/** What `atelier login` and `atelier logout` were given. */
+	target?: LoginTarget;
 	/** What `atelier mcp` does, and to which server for `login` and `logout`. */
 	action?: "list" | "login" | "logout";
 	server?: string;
@@ -43,6 +47,28 @@ const SPECS: Record<Subcommand["name"], SubcommandSpec> = {
 			if ((action === "login" || action === "logout") && server !== undefined && extra.length === 0)
 				return { name: "mcp", action, server };
 			throw new Error(`Usage: ${this.usage}. To give a prompt that starts with "mcp", quote it: atelier "${prompt}"`);
+		},
+	},
+	login: {
+		usage: "atelier login [account|api-key] [anthropic]",
+		parse(words, prompt) {
+			const target = parseLoginTarget(words);
+			if (target === undefined)
+				throw new Error(
+					`Usage: ${this.usage}. To give a prompt that starts with "login", quote it: atelier "${prompt}"`,
+				);
+			return { name: "login", target };
+		},
+	},
+	logout: {
+		usage: "atelier logout [account|api-key] [anthropic]",
+		parse(words, prompt) {
+			const target = parseLoginTarget(words);
+			if (target === undefined)
+				throw new Error(
+					`Usage: ${this.usage}. To give a prompt that starts with "logout", quote it: atelier "${prompt}"`,
+				);
+			return { name: "logout", target };
 		},
 	},
 	stats: {

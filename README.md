@@ -9,14 +9,8 @@ Coding-agent orchestrator with two first-class clients, a terminal UI and a desk
 ## Requirements
 
 - Node 22.19+ and pnpm. TypeScript runs natively; there is no build step.
-- For the default `claude-code` backend: Claude Code logged in with your Claude subscription (run `claude` and use `/login`).
-- For the `anthropic-api` backend: an Anthropic API key with credit, stored once in the macOS Keychain. The command asks for the key, so it stays out of your shell history:
-
-  ```bash
-  security add-generic-password -U -s atelier-anthropic -a "$USER" -w
-  ```
-
-  `ANTHROPIC_API_KEY` set for a single command takes priority. Do not export it in your shell profile: Claude Code would then bill the API instead of your subscription.
+- For the default `claude-code` backend: a Claude subscription. Atelier brings its own Claude Code; sign in once with `atelier login account anthropic` (or `/login` in a session), which runs Claude Code's sign-in in the browser. It shares the login of any Claude Code on this machine, so if `claude` is already logged in there is nothing to do.
+- For the `anthropic-api` backend: an Anthropic API key with credit. `atelier login api-key anthropic` asks for it without showing it and keeps it in `~/.atelier/auth.json`. `ANTHROPIC_API_KEY` set for a single command takes priority, and a key stored in the macOS Keychain (service `atelier-anthropic`) by earlier versions still works. Do not export `ANTHROPIC_API_KEY` in your shell profile: Claude Code would then bill the API instead of your subscription.
 - Optional: [Engram](https://github.com/Gentleman-Programming/engram) 3.4.0 or newer for long-term memory.
 
 ## Install
@@ -39,6 +33,8 @@ curl -fsSL https://raw.githubusercontent.com/alvag/atelier/main/install.sh | sh 
 | `atelier desktop`       | Open the desktop app of the same version; the first time it installs and builds it.                            |
 | `atelier mcp list`      | Connect to the MCP servers of `~/.atelier/mcp.json` and show their state, tools and errors.                    |
 | `atelier mcp login <s>` | Sign a remote MCP server in with OAuth, in the browser; `atelier mcp logout <s>` signs it out.                 |
+| `atelier login`         | Sign in with an account or an API key, choosing the provider; shows each one's state.                          |
+| `atelier logout`        | Sign out of what is signed in: a stored API key, or the Claude Code login.                                     |
 | `atelier stats`         | Show what the saved sessions cost: totals and by day, project, model, phase and role (`--since 7d`, `--json`). |
 
 `atelier update` only touches a copy installed this way, and refuses one with local changes. To work on Atelier itself, clone the repository and run it with `pnpm install` and `pnpm atelier` (see [development](docs/development.md)).
@@ -140,6 +136,7 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 | `sandbox.json`         | Extra writable paths and hidden paths for `bash` ([sandbox](docs/sandbox.md#configuration-files)).                                                      |
 | `mcp.json`             | MCP servers the agent can use, in the `mcpServers` format of Claude Code ([MCP](docs/mcp.md)).                                                          |
 | `mcp-auth.json`        | OAuth sign-ins of MCP servers (`0600`), written by `atelier mcp login`.                                                                                 |
+| `auth.json`            | API keys stored by `atelier login` (`0600`); the agent cannot read it.                                                                                  |
 | `sessions/`            | Saved sessions ([saved sessions](docs/sessions.md)).                                                                                                    |
 
 A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent reads `AGENTS.md` (or `CLAUDE.md`) from the working directory and its parents, and `~/.agents/AGENTS.md`. It also lists the skills in `.agents/skills/` (from the working directory up to the repository root) and in `~/.agents/skills/`, each a folder with a `SKILL.md`, and reads one when a task matches it; the first turn says which skills were loaded.

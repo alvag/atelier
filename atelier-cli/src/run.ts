@@ -38,6 +38,8 @@ import {
 import { parseCliArgs, USAGE, UsageError } from "./args.ts";
 import { runDesktop } from "./desktop.ts";
 import { OWN_ROOT, versionLabel } from "./install-marker.ts";
+import { LOGIN_USAGE, LOGOUT_USAGE, type LoginTarget, login, logout, parseLoginTarget } from "./login.ts";
+import { lineLoginPorts } from "./login-cli.ts";
 import { mcpFailed, mcpReport } from "./mcp-report.ts";
 import { PERMISSIONS_USAGE, parsePermissions, removedText, rulesListing, ruleText } from "./permission-text.ts";
 import { Renderer } from "./render.ts";
@@ -83,6 +85,8 @@ export interface CliIO {
 	tui?: Pick<TuiOptions, "terminal" | "connect" | "answerGuardMs">;
 	/** The repository the CLI runs from, which `atelier update` updates; derived from the CLI's own location when absent. */
 	appRoot?: string;
+	/** The Claude Code binary `/login` runs; the one Atelier installs when absent. Tests pass a fake. */
+	claudeCode?: string;
 	/** Starts Electron for `atelier desktop` without waiting for it; tests pass their own, so none is launched. */
 	openDesktop?: (binary: string, args: string[]) => void;
 }
@@ -141,6 +145,8 @@ export async function run(
 		return args.subcommand.action === "list" || args.subcommand.server === undefined
 			? runMcpList(io, args.cwd, connectMcp)
 			: runMcpSignIn(io, args.cwd, connectMcp, args.subcommand.action ?? "login", args.subcommand.server);
+	if (args.subcommand?.name === "login" || args.subcommand?.name === "logout")
+		return runLoginSubcommand(io, args.subcommand.name, args.subcommand.target ?? {});
 	if (args.subcommand?.name === "stats") return runStats(args.stats ?? {}, { ...io, home: io.home ?? homedir() });
 	if (args.subcommand?.name === "desktop")
 		return runDesktop({
@@ -512,7 +518,10 @@ export async function run(
 		void session.close();
 		if (io.exit) forceExit = setTimeout(() => exit(code), io.forceExitMs ?? FORCE_EXIT_MS).unref();
 	};
+	/** Claude Code's sign-in has the terminal: Ctrl+C is its own, and the session waits for it to end. */
+	let handedOver = false;
 	const interrupt = () => {
+		if (handedOver) return;
 		renderer.endLine();
 		if (!session.busy || interrupted) return quit();
 		interrupted = true;
@@ -530,6 +539,40 @@ export async function run(
 		interrupted = false;
 		for await (const event of events) renderer.render(event);
 		renderer.endLine();
+	};
+
+	/** `/login` and `/logout`: not a turn; Claude Code's sign-in gets the terminal while it runs. */
+	const runLogin = async (words: readonly string[]) => {
+		const action = words[0] === "/login" ? "login" : "logout";
+		const target = parseLoginTarget(words.slice(1));
+		if (target === undefined) return io.stderr(`usage: ${action === "login" ? LOGIN_USAGE : LOGOUT_USAGE}\n`);
+		const ports = lineLoginPorts({
+			home,
+			env: io.env ?? process.env,
+			...(io.claudeCode === undefined ? {} : { claudeCode: io.claudeCode }),
+			interactive: io.isTTY,
+			lines,
+			write: (text) => renderer.write(text),
+			stderr: io.stderr,
+			handOver: async (task) => {
+				const wasRaw = rawMode;
+				restoreTerminal();
+				lines.pause();
+				handedOver = true;
+				try {
+					return await task();
+				} finally {
+					handedOver = false;
+					lines.resume();
+					if (wasRaw) {
+						setRawMode?.(true);
+						rawMode = true;
+						io.stdout(BRACKETED_PASTE_ON);
+					}
+				}
+			},
+		});
+		await (action === "login" ? login(ports, target) : logout(ports, target));
 	};
 
 	const runModeCommand = async (command: ModeCommand) => {
@@ -569,6 +612,11 @@ export async function run(
 				await runMcpCommand(io, session, mcpWords.slice(1));
 				continue;
 			}
+			if (mcpWords[0] === "/login" || mcpWords[0] === "/logout") {
+				renderer.endLine();
+				await runLogin(mcpWords);
+				continue;
+			}
 			if (mcpWords[0] === "/permissions") {
 				renderer.endLine();
 				await runPermissionsCommand(io, session, mcpWords.slice(1));
@@ -600,6 +648,57 @@ async function loadSaved(store: SessionStore, cwd: string, id: string | undefine
 	const newest = (await store.list(cwd)).find((info) => info.resumable);
 	if (newest === undefined) throw new SessionFileError("not_found", `No saved session to continue in ${cwd}.`);
 	return store.load(cwd, newest.id);
+}
+
+/** `atelier login` and `atelier logout` in a shell: questions on the terminal, or a key piped to stdin. */
+async function runLoginSubcommand(io: CliIO, action: "login" | "logout", target: LoginTarget): Promise<number> {
+	const setRawMode = io.isTTY ? io.setRawMode : undefined;
+	let raw = false;
+	const setRaw = (on: boolean) => {
+		if (setRawMode === undefined || raw === on) return;
+		setRawMode(on);
+		raw = on;
+		io.stdout(on ? BRACKETED_PASTE_ON : BRACKETED_PASTE_OFF);
+	};
+	const lines: LineReader = setRawMode
+		? createTerminalReader({
+				stdin: io.stdin,
+				write: io.stdout,
+				onInterrupt: () => {
+					setRaw(false);
+					io.exit?.(EXIT_INTERRUPTED);
+				},
+			})
+		: createLineReader(io.stdin);
+	setRaw(true);
+	// While Claude Code's sign-in has the terminal, Ctrl+C is a signal for it: wait for it to end and say how it went.
+	const removeInterrupt = io.onInterrupt?.(() => {});
+	const ports = lineLoginPorts({
+		...(io.home === undefined ? {} : { home: io.home }),
+		env: io.env ?? process.env,
+		...(io.claudeCode === undefined ? {} : { claudeCode: io.claudeCode }),
+		interactive: io.isTTY,
+		lines,
+		write: io.stdout,
+		stderr: io.stderr,
+		handOver: async (task) => {
+			setRaw(false);
+			lines.pause();
+			try {
+				return await task();
+			} finally {
+				lines.resume();
+				setRaw(true);
+			}
+		},
+	});
+	try {
+		return (await (action === "login" ? login(ports, target) : logout(ports, target))) ? EXIT_OK : EXIT_FAILED;
+	} finally {
+		removeInterrupt?.();
+		lines.close();
+		setRaw(false);
+	}
 }
 
 /** Reads stdin line by line on demand; opened lazily so a one-shot run without prompts never touches stdin. */
@@ -647,6 +746,8 @@ function createLineReader(stdin: Readable): LineReader {
 			waiting = undefined;
 			handed = undefined;
 		},
+		pause: () => rl?.pause(),
+		resume: () => rl?.resume(),
 		/** Nothing read without a terminal is pasted. */
 		pasted: () => false,
 		/** Drops the lines typed so far and says how many. */

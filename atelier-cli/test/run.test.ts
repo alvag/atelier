@@ -2056,3 +2056,57 @@ describe("remembered answers", () => {
 		expect(JSON.parse(await readFile(rulesFile(), "utf8")).allow).toEqual([]);
 	});
 });
+
+describe("login and logout", () => {
+	const stored = async (home: string) =>
+		JSON.parse(await readFile(join(home, ".atelier", "auth.json"), "utf8").catch(() => "{}"));
+
+	it("atelier login api-key anthropic stores the key read from stdin, and never prints it", async () => {
+		const home = dirname(cwd);
+		const h = harness([], { input: ["sk-ant-piped"], home });
+		expect(await run(["login", "api-key", "anthropic"], h.io, h.createBackend)).toBe(0);
+		expect((await stored(home)).anthropic).toEqual({ type: "api_key", key: "sk-ant-piped" });
+		expect(h.out()).toContain(
+			"✓ Anthropic: API key stored in ~/.atelier/auth.json; --backend anthropic-api uses it.\n",
+		);
+		expect(h.out() + h.err()).not.toContain("sk-ant-piped");
+		const out = harness([], { home });
+		expect(await run(["logout", "api-key"], out.io, out.createBackend)).toBe(0);
+		expect(out.out()).toContain("Anthropic API key removed from ~/.atelier/auth.json.\n");
+		expect((await stored(home)).anthropic).toBeUndefined();
+	});
+
+	it("atelier login without a terminal says what to give, and signing in with an account needs one", async () => {
+		const h = harness([], { home: dirname(cwd) });
+		expect(await run(["login"], h.io, h.createBackend)).toBe(1);
+		expect(h.err()).toBe(
+			"error: choosing needs a terminal; give the method and the provider: atelier login api-key anthropic\n",
+		);
+		const account = harness([], { home: dirname(cwd) });
+		expect(await run(["login", "account", "anthropic"], account.io, account.createBackend)).toBe(1);
+		expect(account.err()).toBe("error: signing in with an account needs a terminal: run atelier login in one\n");
+	});
+
+	it("takes no session options and at most a method and a provider", async () => {
+		const h = harness([]);
+		expect(await run(["login", "--model", "x"], h.io, h.createBackend)).toBe(2);
+		expect(h.err()).toContain("atelier login takes no session options (--model).");
+		const extra = harness([]);
+		expect(await run(["logout", "api-key", "anthropic", "more"], extra.io, extra.createBackend)).toBe(2);
+		expect(extra.err()).toContain("Usage: atelier logout [account|api-key] [anthropic]");
+	});
+
+	it("/login in the line-by-line session reads the key without echoing it", async () => {
+		const home = dirname(cwd);
+		const h = harness([], { raw: true, input: ["/login api-key anthropic"], keepStdinOpen: true, home });
+		const pending = run(["--no-session"], h.io, h.createBackend);
+		await vi.waitFor(() => expect(h.out()).toContain("Anthropic API key (hidden): "), { timeout: 5000 });
+		(h.io.stdin as PassThrough).write("sk-ant-typed\r");
+		await vi.waitFor(() => expect(h.out()).toContain("✓ Anthropic: API key stored"), { timeout: 5000 });
+		(h.io.stdin as PassThrough).end();
+		expect(await pending).toBe(0);
+		expect((await stored(home)).anthropic).toEqual({ type: "api_key", key: "sk-ant-typed" });
+		expect(h.out()).not.toContain("sk-ant-typed");
+		expect(h.backend.prompts).toEqual([]);
+	});
+});
