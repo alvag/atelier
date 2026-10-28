@@ -276,6 +276,29 @@ describe("options.list", () => {
 		await h.close();
 	});
 
+	it("offers a backend's list in the code when the catalog fails for it", async () => {
+		const h = serve(undefined, true, {
+			signedIn: async () => ["claude-code"],
+			catalog: {
+				models: async (backend) => {
+					if (backend === "claude-code") throw new Error("broken cache");
+					return ["x"];
+				},
+			},
+		});
+		const response = await h.ask({ command: "options.list" });
+		expect(response.ok && response.result.backends).toContainEqual({
+			name: "claude-code",
+			models: ["opus", "sonnet", "haiku"],
+		});
+		expect(response.ok && response.result.models).toEqual([
+			{ provider: "claude-code", model: "opus" },
+			{ provider: "claude-code", model: "sonnet" },
+			{ provider: "claude-code", model: "haiku" },
+		]);
+		await h.close();
+	});
+
 	it("lists no models, and the rest as always, when the sign-ins cannot be read", async () => {
 		const h = serve(undefined, true, { signedIn: () => Promise.reject(new Error("auth.json is not JSON")) });
 		const response = await h.ask({ command: "options.list" });

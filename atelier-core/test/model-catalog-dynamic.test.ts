@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -97,6 +97,59 @@ it("lists Claude Code's models from a session it is lent, unless the network is 
 		return [];
 	});
 	expect(asked).toBe(0);
+});
+
+it("offers the code's lists when the cache cannot be read or makes no sense, and recovers at the next read", async () => {
+	for (const read of [
+		async () => {
+			throw new Error("disk");
+		},
+		async () => ({ sources: { "models.dev": { checkedAt: 1, models: null } } }) as never,
+		async () => ({ sources: { "anthropic-api": { checkedAt: 1, models: { "anthropic-api": "x" } } } }) as never,
+	]) {
+		const catalog = new DynamicModelCatalog({ file, sources: [], network: false, read });
+		expect(await catalog.models("anthropic-api")).toEqual(BACKEND_MODELS["anthropic-api"]);
+	}
+});
+
+it("keeps offering the last lists while a new read of the cache is under way", async () => {
+	await new DynamicModelCatalog({ file, sources: [anthropic(["claude-new-6"])] }).refresh();
+	let release: () => void = () => {};
+	let reads = 0;
+	const catalog = new DynamicModelCatalog({
+		file,
+		sources: [anthropic(["claude-newer-7"])],
+		refresh: { force: true },
+		read: async (path) => {
+			if (reads++ > 0) await new Promise<void>((resolve) => (release = resolve));
+			return readCatalog(path);
+		},
+	});
+	expect(await catalog.models("anthropic-api")).toContain("claude-new-6");
+	const refreshed = catalog.refresh();
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	expect(reads).toBe(2);
+	expect(await catalog.models("anthropic-api")).toContain("claude-new-6");
+	release();
+	await refreshed;
+	expect(await catalog.models("anthropic-api")).toContain("claude-newer-7");
+});
+
+it("drops an odd entry of the cache file alone", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	const listed = { checkedAt: 1, models: { "anthropic-api": [{ id: "claude-new-6" }, { id: "__proto__" }, 7] } };
+	await writeFile(
+		file,
+		`{"version":1,"sources":{"__proto__":{"checkedAt":1,"models":{}},"opencode-go":[],"anthropic-api":${JSON.stringify(listed)}}}`,
+	);
+	const catalog = new DynamicModelCatalog({ file, sources: [], network: false });
+	expect(await catalog.models("anthropic-api")).toEqual([
+		...BACKEND_MODELS["anthropic-api"],
+		"claude-new-6",
+		"__proto__",
+	]);
+	expect(await catalog.models("opencode-go")).toEqual(BACKEND_MODELS["opencode-go"]);
+	expect(Object.getPrototypeOf((await readCatalog(file)).sources)).toBe(Object.prototype);
 });
 
 it("does not ask the network when it is off, and still offers what the cache holds", async () => {

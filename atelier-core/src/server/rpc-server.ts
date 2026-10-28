@@ -8,7 +8,7 @@ import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { McpManager } from "../mcp/index.ts";
 import type { MemoryPort } from "../memory/index.ts";
 import { PERMISSION_MODES } from "../modes.ts";
-import { BASE_CATALOG, type ModelCatalog } from "../options.ts";
+import { BACKEND_MODELS, BASE_CATALOG, type ModelCatalog } from "../options.ts";
 import { type DefaultPermissionMode, readDefaultPermissionMode } from "../permission-mode.ts";
 import { PermissionRules } from "../permission-rules.ts";
 import {
@@ -487,7 +487,14 @@ export class RpcServer {
 	async #optionsList(cwd: string | undefined): Promise<Result> {
 		const catalog = this.#options.catalog ?? BASE_CATALOG;
 		const [lists, signedIn] = await Promise.all([
-			Promise.all(BACKEND_NAMES.map((name) => catalog.models(name))),
+			// A catalog that fails for a backend leaves it its list in the code: options.list never fails for it.
+			Promise.all(
+				BACKEND_NAMES.map((name) =>
+					Promise.resolve()
+						.then(() => catalog.models(name))
+						.catch(() => BACKEND_MODELS[name]),
+				),
+			),
 			// The sign-ins only narrow the models offered: when they cannot be read, the rest of the answer still serves.
 			(this.#options.signedIn?.() ?? Promise.resolve<readonly BackendName[]>([])).catch(
 				(): readonly BackendName[] => [],
