@@ -24,6 +24,7 @@ export const CLASSIFIER_INSTRUCTION = [
 	"Earlier approvals are not precedent: judge only this action against this request.",
 	"Never allow an action that destroys data, publishes anything, or touches credentials unless the user's request clearly asks for exactly that.",
 	'Your final message is only this JSON object, no other text: {"decision":"allow|deny","reason":"one sentence why"}.',
+	'The user reads the reason. Write the reason in the language of the user\'s request; keep "allow" and "deny" as they are.',
 ].join("\n");
 
 /** The session's previous turn, as the classifier sees it: the user's request verbatim and the end of the agent's last message. */

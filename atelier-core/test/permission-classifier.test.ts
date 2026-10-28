@@ -198,6 +198,14 @@ describe("the permission classifier in auto", () => {
 		expect(instruction).toMatch(/destroys data/i);
 	});
 
+	it("tells the classifier to write its reason, which the user reads, in the language of the user's request", async () => {
+		const { made, permissionClassifier } = classifier(reply("allow"));
+		await run([[outside("c1"), finished]], { permissionClassifier });
+		expect(made[0]?.startOptions?.systemPromptAppend).toContain(
+			'Write the reason in the language of the user\'s request; keep "allow" and "deny" as they are.',
+		);
+	});
+
 	it("gives the classifier no previous turn in the first one", async () => {
 		const { made, permissionClassifier } = classifier(reply("allow"));
 		await run([[outside("c1"), finished]], { permissionClassifier });
