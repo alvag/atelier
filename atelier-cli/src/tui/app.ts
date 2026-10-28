@@ -67,6 +67,7 @@ import {
 	sessionChoices,
 } from "./selectors.ts";
 import { readTuiSettings } from "./settings.ts";
+import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
 import { editorTheme, type Paint, painter, Shade } from "./style.ts";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
@@ -123,6 +124,7 @@ const COMMANDS = [
 	{ name: "undo-correction", description: "Undo the latest escalated review's correction" },
 	{ name: "compact", description: "Summarize the older history now [instructions]" },
 	{ name: "status", description: "Show what the session runs with, what it loaded and its cost" },
+	{ name: "stats", description: "Show what this session spent; project: this folder's sessions [--since 7d]" },
 	{ name: "exit", description: "Close the session" },
 ];
 
@@ -688,6 +690,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const enqueue = (line: string, kind: QueueKind) => {
 		const text = line.trim();
 		if (text === "") return;
+		if (isStatsCommand(text)) return void submit(line);
 		if (text.startsWith("/")) {
 			editor.setText(line);
 			return conversation.note("commands run when the turn ends; it stays in the editor");
@@ -954,6 +957,26 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		conversation.note([...setup, cost].join("\n"));
 	};
 
+	/** Whether a `/stats` is reading the saved sessions; one reads at a time. */
+	let readingStats = false;
+	/** Reads the saved sessions in the background, so the editor and a running turn go on; it says when it is done. */
+	const runStats = (words: readonly string[]) => {
+		const asked = parseStatsCommand(words);
+		if (asked === undefined) return conversation.note(`usage: ${STATS_USAGE}`, true);
+		if (readingStats) return conversation.note("stats: still reading the saved sessions");
+		readingStats = true;
+		conversation.note("reading saved sessions…");
+		void statsNote(asked, { home: options.home, cwd: args.cwd, savedId }, Date.now())
+			.then(
+				({ text, warn }) => conversation.note(text, warn),
+				(error: unknown) => conversation.note(`error: ${describeError(error)}`, true),
+			)
+			.finally(() => {
+				readingStats = false;
+				tui.requestRender();
+			});
+	};
+
 	/** Starts a new session with what was chosen and the mode in use; the one before stays on screen. */
 	const runNew = async () => {
 		const mode = isMode(footer.state.mode) ? footer.state.mode : undefined;
@@ -998,6 +1021,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const submit = async (line: string) => {
 		const text = line.trim();
+		// It only reads the saved sessions, so it runs at any time, a turn or a command running or not.
+		if (isStatsCommand(text)) {
+			editor.addToHistory(line);
+			editor.setText("");
+			conversation.prompt(line);
+			runStats(text.split(/\s+/).slice(1));
+			return tui.requestRender();
+		}
 		if (busy && !commanding) return enqueue(line, "steer");
 		if (text === "" || busy || commanding) return;
 		editor.addToHistory(line);
