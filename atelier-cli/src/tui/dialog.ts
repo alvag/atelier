@@ -1,6 +1,7 @@
 import {
 	type Component,
 	type Focusable,
+	Input,
 	SelectList,
 	truncateToWidth,
 	visibleWidth,
@@ -193,4 +194,47 @@ function foldedRows(folded: Folded, width: number): string[] {
 		if (index !== folded.lines.length - 1 || note === "") return truncateToWidth(line, width, "…");
 		return truncateToWidth(line, Math.max(1, width - visibleWidth(note)), "…") + note;
 	});
+}
+
+/**
+ * A secret typed without showing it, in a frame like a question's: only how many characters it has so far. Typing,
+ * pasting and editing are the input line's; Enter answers what was typed, Esc answers nothing.
+ */
+export class SecretDialog implements Component, Focusable {
+	focused = false;
+	readonly #title: string;
+	readonly #paint: Paint;
+	readonly #input = new Input();
+
+	constructor(title: string, paint: Paint, answer: (value: string | undefined) => void) {
+		this.#title = title;
+		this.#paint = paint;
+		this.#input.onSubmit = (value) => answer(value);
+		this.#input.onEscape = () => answer(undefined);
+	}
+
+	handleInput(data: string): void {
+		this.#input.handleInput(data);
+	}
+
+	invalidate(): void {}
+
+	render(width: number): string[] {
+		const paint = this.#paint;
+		const inner = Math.max(1, width - 4);
+		const title = truncateToWidth(` ${this.#title} `, inner);
+		const fill = Math.max(0, width - 2 - visibleWidth(title));
+		const typed = Array.from(this.#input.getValue()).length;
+		const line = truncateToWidth(
+			`${typed} ${typed === 1 ? "character" : "characters"} (hidden) · Enter saves · Esc cancels`,
+			inner,
+			"…",
+			true,
+		);
+		return [
+			truncateToWidth(paint("yellow", `┌${title}${"─".repeat(fill)}┐`), width),
+			`${paint("yellow", "│")} ${line} ${paint("yellow", "│")}`,
+			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
+		];
+	}
 }

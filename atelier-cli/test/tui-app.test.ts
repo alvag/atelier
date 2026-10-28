@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -2838,5 +2838,83 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(metadata().at(-1)).toEqual({ method: "pane.report_metadata", ...cleared });
 			expect(herdr.calls.at(-1)?.method).toBe("pane.release_agent");
 		});
+	});
+});
+
+describe("TUI login", { timeout: 20_000 }, () => {
+	/** A stand-in for Claude Code whose login and logout change what `auth status` prints. */
+	const fakeClaude = async () => {
+		const path = join(home, "claude");
+		await writeFile(join(home, "status.json"), '{"loggedIn":false,"authMethod":"none"}');
+		await writeFile(
+			path,
+			`#!/bin/sh
+case "$1 $2" in
+"auth status") cat "${home}/status.json"; grep -q '"loggedIn":true' "${home}/status.json" ;;
+"auth login") echo '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"pro"}' > "${home}/status.json" ;;
+"auth logout") echo '{"loggedIn":false,"authMethod":"none"}' > "${home}/status.json" ;;
+esac
+`,
+		);
+		await chmod(path, 0o755);
+		return path;
+	};
+	const authJson = async () =>
+		JSON.parse(await readFile(join(home, ".atelier", "auth.json"), "utf8").catch(() => "{}"));
+
+	it("asks the method and the provider in lists, and reads the API key without showing it", async () => {
+		const h = harness([]);
+		Object.assign(h.io, { claudeCode: await fakeClaude(), env: {} });
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/login");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Select authentication method"));
+		expect(h.screen.screen()).toContain("Sign in with an API key");
+		h.screen.type("\x1b[B");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("not configured"));
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Anthropic API key"));
+		h.screen.type("sk-ant-");
+		h.screen.type("\x1b[200~tui-secret\x1b[201~");
+		await until(() => h.screen.screen().includes("17 characters"));
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("✓ Anthropic: API key stored"));
+		expect((await authJson()).anthropic).toEqual({ type: "api_key", key: "sk-ant-tui-secret" });
+		expect(h.screen.screen()).not.toContain("tui-secret");
+		expect(h.backend.prompts).toEqual([]);
+		h.screen.type("/logout api-key");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Anthropic API key removed"));
+		expect((await authJson()).anthropic).toBeUndefined();
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("hands the terminal to Claude Code's sign-in and takes it back, then signs out only once confirmed", async () => {
+		const h = harness([]);
+		Object.assign(h.io, { claudeCode: await fakeClaude(), env: {} });
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/login account anthropic");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("✓ Anthropic: subscription configured (pro)"));
+		expect(h.screen.stopped()).toBe(true);
+		h.screen.type("/logout");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("signs out Claude Code on this machine too"));
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Nothing changed."));
+		h.screen.type("/logout account");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().split("signs out Claude Code on this machine too").length === 3);
+		h.screen.type("\x1b[A");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Signed out of Claude Code."));
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
 	});
 });

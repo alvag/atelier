@@ -191,6 +191,8 @@ export async function run(
 			env: io.env ?? {},
 			...(io.home === undefined ? {} : { home: io.home }),
 			...(io.onTerminate === undefined ? {} : { onTerminate: io.onTerminate }),
+			...(io.onInterrupt === undefined ? {} : { onInterrupt: io.onInterrupt }),
+			...(io.claudeCode === undefined ? {} : { claudeCode: io.claudeCode }),
 		});
 	}
 
