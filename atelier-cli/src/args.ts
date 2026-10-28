@@ -1,6 +1,13 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { PERMISSION_MODES, type PermissionMode, reviewEnabled, sandboxEnabled } from "@atelier/core";
+import {
+	PERMISSION_MODES,
+	type PermissionMode,
+	PROFILE_BACKENDS,
+	parseModel,
+	reviewEnabled,
+	sandboxEnabled,
+} from "@atelier/core";
 import { BACKEND_NAMES, type BackendName, DEFAULT_BACKEND } from "@atelier/core/protocol";
 import { parseSubcommand, type Subcommand } from "./subcommands.ts";
 
@@ -77,7 +84,9 @@ Options:
                          opencode-go: the same loop on OpenCode Go's models:
                          OPENCODE_API_KEY, else the one atelier login stored
       --model <name>     Model to use (default: opus on claude-code,
-                         claude-sonnet-5-5 on anthropic-api, minimax-m3 on opencode-go)
+                         claude-sonnet-5-5 on anthropic-api, minimax-m3 on opencode-go);
+                         with a backend prefix, as in profiles (openai-codex/gpt-6-luna),
+                         it also picks that backend, like --backend
       --profile <name>   Agent profile from ~/.atelier/profiles.json for this session,
                          over the local pin, the repository's and the active one;
                          --model and --backend still replace the main agent's
@@ -173,9 +182,13 @@ export function parseCliArgs(
 	if (values.profile !== undefined && values.profile.trim() === "") throw new UsageError("--profile needs a value.");
 	const mode = values.mode;
 	if (mode !== undefined && !isPermissionMode(mode)) throw new UsageError("--mode must be normal, auto or yolo.");
-	const backend = values.backend ?? DEFAULT_BACKEND;
-	if (!isBackendName(backend))
+	if (values.backend !== undefined && !isBackendName(values.backend))
 		throw new UsageError(`--backend must be ${BACKEND_NAMES.slice(0, -1).join(", ")} or ${BACKEND_NAMES.at(-1)}.`);
+	const named = modelOption(values.model);
+	if (named.backend !== undefined && values.backend !== undefined && named.backend !== values.backend)
+		throw new UsageError(`--model names the ${named.backend} backend, but --backend is ${values.backend}.`);
+	const chosenBackend = values.backend ?? named.backend;
+	const backend = chosenBackend ?? DEFAULT_BACKEND;
 	if (values.resume !== undefined && values.resume.trim() === "") throw new UsageError("--resume needs a value.");
 	if (values.continue && values.resume !== undefined)
 		throw new UsageError("--continue and --resume cannot be used together.");
@@ -212,9 +225,9 @@ export function parseCliArgs(
 		...(prompt === undefined ? {} : { prompt }),
 		yes: values.yes ?? false,
 		...(mode === undefined ? {} : { mode }),
-		...(values.model === undefined ? {} : { model: values.model }),
+		...(named.model === undefined ? {} : { model: named.model }),
 		backend,
-		...(values.backend === undefined ? {} : { explicitBackend: backend }),
+		...(chosenBackend === undefined ? {} : { explicitBackend: chosenBackend }),
 		...(values.profile === undefined ? {} : { profile: values.profile }),
 		cwd: resolve(baseDir, values.cwd ?? "."),
 		help: values.help ?? false,
@@ -266,6 +279,20 @@ function parse(argv: readonly string[]) {
 			json: { type: "boolean" },
 		},
 	});
+}
+
+/**
+ * `--model` read as profiles read a model: `openai-codex/gpt-6-luna` names its backend too, a name without one of their
+ * prefixes is taken as it is.
+ */
+function modelOption(value: string | undefined): { model?: string; backend?: BackendName } {
+	if (value === undefined) return {};
+	const prefixed = PROFILE_BACKENDS.some((name) => value.startsWith(`${name}/`));
+	if (!prefixed) return { model: value };
+	const parsed = parseModel(value);
+	if (!parsed.ok) throw new UsageError(`--model: ${parsed.why}.`);
+	const { backend, model } = parsed.entry;
+	return { ...(model === undefined ? {} : { model }), ...(backend === undefined ? {} : { backend }) };
 }
 
 function isPermissionMode(name: string): name is PermissionMode {

@@ -1408,6 +1408,14 @@ describe("agent profiles", () => {
 		expect(h.backend.startOptions).toMatchObject({ model: "sonnet", thinking: "high" });
 	});
 
+	it("starts the backend a prefixed --model names, over the orchestrator's", async () => {
+		const { h, names } = await start(["--model", "openai-codex/gpt-6-luna", "x"], {
+			orchestrator: { model: "anthropic-api/claude-opus-5-5" },
+		});
+		expect(names).toEqual(["openai-codex"]);
+		expect(h.backend.startOptions).toMatchObject({ model: "gpt-6-luna" });
+	});
+
 	it("takes --profile over the active one, with --model still replacing the orchestrator's model", async () => {
 		const home = await mkdtemp(join(tmpdir(), "atelier-cli-home-"));
 		try {
