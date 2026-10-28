@@ -28,7 +28,7 @@ export const SUMMARY_HEADINGS = [
 
 export const COMPACTED_HEADER = "The conversation history before this point was compacted into the following summary:";
 
-const SUMMARY_INSTRUCTION = `Summarize the conversation above so that work can continue from the summary alone. Do not continue the conversation and do not call tools: output only the summary, in exactly this format:
+export const SUMMARY_INSTRUCTION = `Summarize the conversation above so that work can continue from the summary alone. Do not continue the conversation and do not call tools: output only the summary, in exactly this format:
 
 ## Goal
 ## Constraints & Preferences
@@ -107,6 +107,13 @@ function blocksOf(message: Anthropic.MessageParam): Anthropic.ContentBlockParam[
 	return typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
 }
 
+/** The instruction that asks for the summary, with the user's own `/compact` instructions after it. */
+export function summaryInstruction(instructions?: string): string {
+	if (instructions !== undefined && Buffer.byteLength(instructions, "utf8") > MAX_INSTRUCTIONS_BYTES)
+		throw new Error(`Compaction instructions must be at most ${MAX_INSTRUCTIONS_BYTES} bytes.`);
+	return instructions?.trim() ? `${SUMMARY_INSTRUCTION}\n\n${instructions.trim()}` : SUMMARY_INSTRUCTION;
+}
+
 /**
  * The summary request: the session's own prefix up to the cut, so it reads the
  * cache written by the request that ended there, plus the instruction as an
@@ -118,11 +125,9 @@ export function buildSummaryRequest(
 	instructions?: string,
 ): Anthropic.MessageCreateParamsNonStreaming {
 	assertCut(state.messages, cut);
-	if (instructions !== undefined && Buffer.byteLength(instructions, "utf8") > MAX_INSTRUCTIONS_BYTES)
-		throw new Error(`Compaction instructions must be at most ${MAX_INSTRUCTIONS_BYTES} bytes.`);
+	const instruction = summaryInstruction(instructions);
 	const { diagnostics: _none, ...request } = buildRequest({ ...state, messages: state.messages.slice(0, cut) });
 	const last = request.messages.at(-1) as Anthropic.MessageParam;
-	const instruction = instructions?.trim() ? `${SUMMARY_INSTRUCTION}\n\n${instructions.trim()}` : SUMMARY_INSTRUCTION;
 	return {
 		...request,
 		messages: [
@@ -155,10 +160,12 @@ export type SummaryCheck = { ok: true; text: string } | { ok: false; reason: str
 export function validateSummary(message: Pick<Anthropic.Message, "content" | "stop_reason">): SummaryCheck {
 	if (message.stop_reason !== "end_turn")
 		return { ok: false, reason: `The summary stopped with ${message.stop_reason ?? "no stop reason"}.` };
-	const text = message.content
-		.map((block) => (block.type === "text" ? block.text : ""))
-		.join("")
-		.trim();
+	return checkSummaryText(message.content.map((block) => (block.type === "text" ? block.text : "")).join(""));
+}
+
+/** A finished summary's text, checked for every section. */
+export function checkSummaryText(raw: string): SummaryCheck {
+	const text = raw.trim();
 	if (text === "") return { ok: false, reason: "The summary is empty." };
 	const missing = SUMMARY_HEADINGS.filter((heading) => !new RegExp(`^${escapeRegExp(heading)}\\s*$`, "m").test(text));
 	if (missing.length > 0) return { ok: false, reason: `The summary lacks ${missing.join(", ")}.` };
@@ -213,12 +220,24 @@ export function filesSection(files: FileActivity): string {
 export function replaceHistory(
 	messages: readonly Anthropic.MessageParam[],
 	cut: number,
-	options: { summary: string; files: FileActivity; turnPrompt?: string | undefined; state?: string | undefined },
+	options: CompactedParts,
 ): Anthropic.MessageParam[] {
 	assertCut(messages, cut);
+	return [{ role: "user", content: [{ type: "text", text: compactedText(options) }] }, ...messages.slice(cut)];
+}
+
+export interface CompactedParts {
+	summary: string;
+	files: FileActivity;
+	turnPrompt?: string | undefined;
+	state?: string | undefined;
+}
+
+/** The message that replaces the history before the cut: the summary, the files, the turn's request, the core's state. */
+export function compactedText(options: CompactedParts): string {
 	const parts = [`${COMPACTED_HEADER}\n\n<summary>\n${options.summary}\n</summary>`, filesSection(options.files)];
 	if (options.turnPrompt !== undefined)
 		parts.push(`The user's request for the current turn, verbatim:\n<request>\n${options.turnPrompt}\n</request>`);
 	if (options.state !== undefined) parts.push(options.state);
-	return [{ role: "user", content: [{ type: "text", text: parts.join("\n\n") }] }, ...messages.slice(cut)];
+	return parts.join("\n\n");
 }

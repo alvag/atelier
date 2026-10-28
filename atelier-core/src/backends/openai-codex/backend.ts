@@ -3,13 +3,23 @@ import type {
 	AgentBackend,
 	BackendSession,
 	BackendStartOptions,
+	BackendSummary,
 	ResumeState,
 	SessionChange,
 	ToolExecutor,
 } from "../../backend.ts";
-import { compactThreshold, KEEP_RECENT_TOKENS } from "../../compaction/compactor.ts";
+import {
+	checkSummaryText,
+	compactThreshold,
+	type FileActivity,
+	filesSection,
+	KEEP_RECENT_TOKENS,
+	SUMMARY_INSTRUCTION,
+	summaryInstruction,
+} from "../../compaction/compactor.ts";
 import {
 	type AtelierEventBody,
+	type CompactionReason,
 	type ContextUsage,
 	describeError,
 	errorEvent,
@@ -29,6 +39,15 @@ import {
 import { systemPrompt } from "../anthropic-api/system-prompt.ts";
 import { toAnthropicTools } from "../anthropic-api/tool-schema.ts";
 import { CodexAccess, type CodexAccessOptions, NotSignedInError } from "./access.ts";
+import {
+	estimateItem,
+	findItemCut,
+	itemFileActivity,
+	outputText,
+	replaceItems,
+	turnPromptBeforeItem,
+	withInstruction,
+} from "./compaction.ts";
 import { CODEX_CONTEXT_WINDOW, type CodexReasoning, codexReasoning, DEFAULT_CODEX_MODEL } from "./models.ts";
 
 export const BACKEND_ID = "openai-codex";
@@ -75,6 +94,9 @@ export class OpenAiCodexBackend implements AgentBackend {
 			executeTool: start.executeTool,
 			maxRequests: start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN,
 			history: savedHistory(start.resume),
+			compactionState: start.compactionState,
+			compacted: start.compacted,
+			summary: start.compaction,
 			compaction: {
 				window,
 				compactAt: compactThreshold({ window, maxTokens: OUTPUT_RESERVE, override: this.#options.compactAt }),
@@ -154,6 +176,17 @@ export interface SessionSetup {
 	maxRequests: number;
 	history: ResponsesItem[];
 	compaction: CompactionConfig;
+	compactionState: (() => string | undefined) | undefined;
+	compacted: ((summary: string) => void) | undefined;
+	/** The model and level of the summary request, when the profile's compaction entry sets them. */
+	summary: { model?: string; thinking?: ThinkingLevel } | undefined;
+}
+
+/** What one request gave: its items, why it stopped short, and its usage. */
+interface Answer {
+	output: ResponsesItem[];
+	incomplete: string | undefined;
+	usage: Usage;
 }
 
 class OpenAiCodexSession implements BackendSession {
@@ -168,8 +201,16 @@ class OpenAiCodexSession implements BackendSession {
 	#abort: AbortController | undefined;
 	#announced = false;
 	#closed = false;
-	/** Context size the last response reported. */
-	#tokens = 0;
+	/** Context size the last response reported, and the history length it covered. */
+	#measured = { tokens: 0, length: 0 };
+	/** A compaction ran and no response has measured the new history yet. */
+	#unmeasured = false;
+	#files: FileActivity = { read: [], edited: [] };
+	#summary: SessionSetup["summary"];
+	/** Index of the user message that started the current turn; -1 between turns or once a summary holds it. */
+	#turnStart = -1;
+	/** The current turn's request, verbatim, once a summary had to carry it. */
+	#turnPrompt: string | undefined;
 
 	constructor(setup: SessionSetup) {
 		this.#setup = setup;
@@ -178,6 +219,7 @@ class OpenAiCodexSession implements BackendSession {
 		this.#thinking = setup.thinking;
 		this.#reasoning = codexReasoning(setup.model, setup.thinking);
 		this.#history = setup.history;
+		this.#summary = setup.summary;
 	}
 
 	resumeState(): ResumeState | undefined {
@@ -188,6 +230,7 @@ class OpenAiCodexSession implements BackendSession {
 		this.#model = change.model ?? this.#model;
 		this.#thinking = change.thinking ?? this.#thinking;
 		this.#reasoning = codexReasoning(this.#model, this.#thinking);
+		if (change.compaction !== undefined) this.#summary = change.compaction ?? undefined;
 	}
 
 	async *send(prompt: string): AsyncIterable<AtelierEventBody> {
@@ -208,7 +251,13 @@ class OpenAiCodexSession implements BackendSession {
 		let requests = 0;
 		let stopReason = "error";
 		this.#history.push({ type: "message", role: "user", content: [{ type: "input_text", text: prompt }] });
+		this.#turnStart = this.#history.length - 1;
+		this.#turnPrompt = undefined;
+		const meter = { usage: { ...ZERO_USAGE }, requests: 0 };
 		let renewed = false;
+		// A compaction that fails is not tried again in the same turn; an overflow gets one compaction.
+		let thresholdFailed = false;
+		let overflowTried = false;
 		try {
 			for (;;) {
 				if (requests >= this.#setup.maxRequests) {
@@ -220,22 +269,16 @@ class OpenAiCodexSession implements BackendSession {
 					stopReason = "turn_limit";
 					break;
 				}
-				let output: ResponsesItem[];
-				let incomplete: string | undefined;
-				try {
-					const endpoint = this.#access.endpoint(this.#id);
-					output = [];
-					for await (const event of streamResponse(endpoint, this.#body(), abort.signal)) {
-						if (event.type === "text_delta") yield { type: "text_delta", text: event.text };
-						else if (event.type === "reasoning_delta") yield { type: "thinking_delta", text: event.text };
-						else {
-							output = event.output;
-							incomplete = event.status === "incomplete" ? (event.incompleteReason ?? "incomplete") : undefined;
-							const used = toUsage(event.usage);
-							usage = addUsage(usage, used);
-							this.#tokens = used.input + used.cacheRead + used.output;
-						}
+				if (!thresholdFailed && !this.#unmeasured && this.#contextTokens() >= this.#setup.compaction.compactAt) {
+					thresholdFailed = !(yield* this.#compact("threshold", abort.signal, meter));
+					if (abort.signal.aborted) {
+						stopReason = "interrupted";
+						break;
 					}
+				}
+				let answer: Answer;
+				try {
+					answer = yield* this.#ask(this.#body(), abort.signal, true);
 					requests++;
 				} catch (error) {
 					if (abort.signal.aborted) throw error;
@@ -253,13 +296,29 @@ class OpenAiCodexSession implements BackendSession {
 						);
 						continue;
 					}
+					if (kind === "overflow" && !overflowTried) {
+						overflowTried = true;
+						const compacted = yield* this.#compact("overflow", abort.signal, meter);
+						if (abort.signal.aborted) {
+							stopReason = "interrupted";
+							break;
+						}
+						if (compacted) continue;
+					}
 					throw error;
 				}
 				renewed = false;
-				const kept = output.flatMap((item) => forHistory(item) ?? []);
+				usage = addUsage(usage, answer.usage);
+				const kept = answer.output.flatMap((item) => forHistory(item) ?? []);
 				this.#history.push(...kept);
+				this.#measured = {
+					tokens: answer.usage.input + answer.usage.cacheRead + answer.usage.output,
+					length: this.#history.length,
+				};
+				this.#unmeasured = false;
 				const calls = kept.filter((item) => item.type === "function_call");
 				if (calls.length === 0) {
+					const incomplete = answer.incomplete;
 					stopReason =
 						incomplete === undefined ? "end_turn" : incomplete === "max_output_tokens" ? "max_tokens" : incomplete;
 					break;
@@ -275,26 +334,191 @@ class OpenAiCodexSession implements BackendSession {
 			else yield this.#error(error);
 		} finally {
 			if (this.#abort === abort) this.#abort = undefined;
+			// Between turns there is no request for a summary to carry.
+			this.#turnStart = -1;
+			this.#turnPrompt = undefined;
 		}
+		usage = addUsage(usage, meter.usage);
+		requests += meter.requests;
 		yield { type: "turn_finished", stopReason, usage, requests, context: this.#context() };
 	}
 
-	#body(): Record<string, unknown> {
-		const effort = this.#reasoning?.effort;
+	/** A request over `input` (the history by default) with the session's model and reasoning, or the summary's. */
+	#body(options: { input?: ResponsesItem[]; summary?: boolean } = {}): Record<string, unknown> {
+		const model = options.summary ? (this.#summary?.model ?? this.#model) : this.#model;
+		const reasoning = options.summary
+			? codexReasoning(model, this.#summary?.thinking ?? this.#thinking)
+			: this.#reasoning;
+		const effort = reasoning?.effort;
 		return buildResponsesBody({
-			model: this.#model,
+			model,
 			instructions: this.#setup.instructions,
-			input: this.#history,
+			input: options.input ?? this.#history,
 			tools: this.#setup.tools,
+			...(options.summary ? { toolChoice: "none" as const } : {}),
 			// Always asked, so each response's reasoning comes back encrypted and the next request can carry it.
 			reasoning: { ...(effort === undefined ? {} : { effort }), summary: "auto" },
 			promptCacheKey: this.#id,
 		});
 	}
 
+	/** Sends one request; with `show`, its text and reasoning are yielded as they come. */
+	async *#ask(
+		body: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+		show: boolean,
+	): AsyncGenerator<AtelierEventBody, Answer> {
+		let answer: Answer | undefined;
+		for await (const event of streamResponse(this.#access.endpoint(this.#id), body, signal)) {
+			if (event.type === "text_delta") {
+				if (show) yield { type: "text_delta", text: event.text };
+			} else if (event.type === "reasoning_delta") {
+				if (show) yield { type: "thinking_delta", text: event.text };
+			} else
+				answer = {
+					output: event.output,
+					incomplete: event.status === "incomplete" ? (event.incompleteReason ?? "incomplete") : undefined,
+					usage: toUsage(event.usage),
+				};
+		}
+		if (answer === undefined) throw new Error("The response ended without an answer.");
+		return answer;
+	}
+
+	/** The summary's text, or why it cannot replace the history. */
+	#checkSummary(answer: Answer): { ok: true; text: string } | { ok: false; reason: string } {
+		if (answer.incomplete !== undefined) return { ok: false, reason: `The summary stopped with ${answer.incomplete}.` };
+		return checkSummaryText(outputText(answer.output));
+	}
+
 	#context(): ContextUsage {
 		const { window, compactAt } = this.#setup.compaction;
-		return { tokens: this.#tokens, window, compactAt };
+		return { tokens: this.#contextTokens(), window, compactAt };
+	}
+
+	/** The last measured size plus an estimate of what was appended since. */
+	#contextTokens(): number {
+		return this.#history
+			.slice(this.#measured.length)
+			.reduce((sum, item) => sum + estimateItem(item), this.#measured.tokens);
+	}
+
+	/** Replaces the history before a cut with its summary; resolves to whether it did. A failure leaves it as it was. */
+	async *#compact(
+		reason: CompactionReason,
+		signal: AbortSignal,
+		meter: { usage: Usage; requests: number },
+		instructions?: string,
+	): AsyncGenerator<AtelierEventBody, boolean> {
+		const tokensBefore = this.#contextTokens();
+		yield { type: "compaction_started", reason, tokens: tokensBefore };
+		const failed = (error: string, usage: Usage = { ...ZERO_USAGE }): AtelierEventBody => ({
+			type: "compaction_finished",
+			ok: false,
+			reason,
+			tokensBefore,
+			kept: 0,
+			usage,
+			error,
+		});
+		const items = this.#history;
+		const cut = findItemCut(items, this.#setup.compaction.keepRecent);
+		if (cut === undefined) {
+			yield failed("There is not enough history to compact.");
+			return false;
+		}
+		let answer: Answer;
+		try {
+			const input = withInstruction(items.slice(0, cut), summaryInstruction(instructions));
+			answer = yield* this.#ask(this.#body({ input, summary: true }), signal, false);
+		} catch (error) {
+			yield failed(signal.aborted ? "Interrupted by the user." : this.#redact(describeError(error)));
+			return false;
+		}
+		meter.usage = addUsage(meter.usage, answer.usage);
+		meter.requests++;
+		const summary = this.#checkSummary(answer);
+		if (!summary.ok) {
+			yield failed(summary.reason, answer.usage);
+			return false;
+		}
+		const carried = this.#turnStart < 0 ? this.#turnPrompt : turnPromptBeforeItem(items, this.#turnStart, cut);
+		const files = itemFileActivity(items.slice(0, cut), this.#files);
+		const next = replaceItems(items, cut, {
+			summary: summary.text,
+			files,
+			turnPrompt: carried,
+			state: this.#setup.compactionState?.(),
+		});
+		const removed = items.slice(0, cut).reduce((sum, item) => sum + estimateItem(item), 0);
+		const tokensAfter = Math.max(0, tokensBefore - removed + estimateItem(next[0] as ResponsesItem));
+		this.#history = next;
+		this.#files = files;
+		this.#measured = { tokens: tokensAfter, length: next.length };
+		this.#unmeasured = true;
+		if (this.#turnStart >= cut) this.#turnStart -= cut - 1;
+		else {
+			this.#turnStart = -1;
+			this.#turnPrompt = carried;
+		}
+		this.#setup.compacted?.(summary.text);
+		yield {
+			type: "compaction_finished",
+			ok: true,
+			reason,
+			tokensBefore,
+			tokensAfter,
+			kept: next.length - 1,
+			usage: answer.usage,
+		};
+		return true;
+	}
+
+	async *compact(instructions?: string): AsyncIterable<AtelierEventBody> {
+		if (this.#closed) throw new Error("The openai-codex session is closed.");
+		const abort = new AbortController();
+		this.#abort = abort;
+		const meter = { usage: { ...ZERO_USAGE }, requests: 0 };
+		let ok = false;
+		try {
+			ok = yield* this.#compact("manual", abort.signal, meter, instructions);
+		} finally {
+			if (this.#abort === abort) this.#abort = undefined;
+		}
+		yield {
+			type: "turn_finished",
+			stopReason: abort.signal.aborted ? "interrupted" : ok ? "end_turn" : "error",
+			usage: meter.usage,
+			requests: meter.requests,
+			context: this.#context(),
+		};
+	}
+
+	/** One summary request over the whole history, for a session that leaves this backend; the history stays as it is. */
+	async summarize(): Promise<BackendSummary> {
+		if (this.#closed) throw new Error("The openai-codex session is closed.");
+		if (this.#history.length === 0) throw new Error("There is no conversation to summarize.");
+		const input = withInstruction(this.#history, SUMMARY_INSTRUCTION);
+		let answer: Answer;
+		try {
+			const asking = this.#ask(this.#body({ input, summary: true }), undefined, false);
+			for (;;) {
+				const next = await asking.next();
+				if (next.done) {
+					answer = next.value;
+					break;
+				}
+			}
+		} catch (error) {
+			throw new Error(this.#redact(describeError(error)));
+		}
+		const summary = this.#checkSummary(answer);
+		if (!summary.ok) throw new Error(summary.reason);
+		return {
+			text: `${summary.text}\n\n${filesSection(itemFileActivity(this.#history, this.#files))}`,
+			usage: answer.usage,
+			requests: 1,
+		};
 	}
 
 	/** Runs the calls in order; once interrupted, the rest get an error output so every call keeps its answer. */
@@ -354,10 +578,6 @@ class OpenAiCodexSession implements BackendSession {
 			default:
 				return errorEvent("api_error", message, false);
 		}
-	}
-
-	effectiveEffort(): undefined {
-		return undefined;
 	}
 
 	async interrupt(): Promise<void> {
