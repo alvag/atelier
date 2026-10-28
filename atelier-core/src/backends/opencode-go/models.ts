@@ -18,6 +18,8 @@ export interface OpenCodeGoModel {
 	contextWindow: number;
 	/** The levels the model takes; any other level is not sent. */
 	efforts: readonly Effort[];
+	/** The `reasoning_effort` that turns its thinking off, on Chat Completions; absent when it cannot. */
+	off?: string;
 	/** USD per million tokens, as OpenCode bills them against the plan; absent when the price depends on the hour. */
 	prices?: readonly PriceTier[];
 }
