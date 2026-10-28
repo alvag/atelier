@@ -2,7 +2,7 @@ import { type LoginTarget, parseLoginTarget } from "./login.ts";
 
 /** A subcommand is chosen by the first positional word, exactly; anything else is a prompt. */
 export interface Subcommand {
-	name: "update" | "desktop" | "mcp" | "stats" | "login" | "logout";
+	name: "update" | "desktop" | "mcp" | "stats" | "login" | "logout" | "models";
 	/** What `atelier login` and `atelier logout` were given. */
 	target?: LoginTarget;
 	/** What `atelier mcp` does, and to which server for `login` and `logout`. */
@@ -80,6 +80,16 @@ const SPECS: Record<Subcommand["name"], SubcommandSpec> = {
 					`Usage: ${this.usage}. To give a prompt that starts with "stats", quote it: atelier "${prompt}"`,
 				);
 			return { name: "stats" };
+		},
+	},
+	models: {
+		usage: "atelier models [--refresh]",
+		parse(words, prompt) {
+			if (words.length > 0)
+				throw new Error(
+					`Usage: ${this.usage}. To give a prompt that starts with "models", quote it: atelier "${prompt}"`,
+				);
+			return { name: "models" };
 		},
 	},
 	desktop: {

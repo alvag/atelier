@@ -50,6 +50,7 @@ import {
 } from "./login.ts";
 import { lineLoginPorts } from "./login-cli.ts";
 import { mcpFailed, mcpReport } from "./mcp-report.ts";
+import { runModels } from "./models.ts";
 import { PERMISSIONS_USAGE, parsePermissions, removedText, rulesListing, ruleText } from "./permission-text.ts";
 import { Renderer } from "./render.ts";
 import { runStats } from "./stats.ts";
@@ -168,6 +169,12 @@ export async function run(
 	if (args.subcommand?.name === "login" || args.subcommand?.name === "logout")
 		return runLoginSubcommand(io, args.subcommand.name, args.subcommand.target ?? {});
 	if (args.subcommand?.name === "stats") return runStats(args.stats ?? {}, { ...io, home: io.home ?? homedir() });
+	if (args.subcommand?.name === "models")
+		return runModels(args.refreshModels ? { refresh: true } : {}, {
+			home: io.home ?? homedir(),
+			env: io.env ?? process.env,
+			stdout: io.stdout,
+		});
 	if (args.subcommand?.name === "desktop")
 		return runDesktop({
 			...(io.appRoot === undefined ? {} : { root: io.appRoot }),
