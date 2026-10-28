@@ -1954,6 +1954,43 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(0);
 	});
 
+	it("filters /model's list by what is typed, with a counter and the model selected under it", async () => {
+		const h = harness([]);
+		const stub = listingCore();
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/model");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Select a model"));
+		const dialog = () => h.screen.screen().slice(h.screen.screen().lastIndexOf("Select a model"));
+		await until(() => dialog().includes("(1/3)"));
+		expect(dialog()).toContain("claude-code/opus");
+		expect(dialog()).toContain("Only showing models from configured providers. Use /login to add providers.");
+		h.screen.type("\x1b[B");
+		await until(() => dialog().includes("(2/3)") && dialog().includes("claude-code/sonnet"));
+		for (const key of "gpt") h.screen.type(key);
+		await until(() => dialog().includes("> gpt") && dialog().includes("(1/1)"));
+		expect(dialog()).toContain("openai-codex/gpt-luna");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("Move this session to openai-codex?"));
+		h.screen.type("\x1b");
+		await until(() => h.screen.screen().includes("model: opus (unchanged)"));
+		const mark = h.screen.raw().length;
+		h.screen.type("/model");
+		h.screen.type("\r");
+		await until(() => plain(h.screen.raw().slice(mark)).includes("Select a model"));
+		for (const key of "zzz") h.screen.type(key);
+		await until(() => dialog().includes("no model matches") && dialog().includes("(0/0)"));
+		h.screen.type("\r");
+		h.screen.type("\x1b");
+		await until(() => !h.screen.screen().endsWith("│"));
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(stub.log.commands.map((command) => command.command)).not.toContain("session.set_model");
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
 	it("keeps the model in use marked current and signed out when its provider has no sign-in", async () => {
 		const h = harness([]);
 		const stub = listingCore(["openai-codex"]);
@@ -2169,6 +2206,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		name: string;
 		title: string;
 		open: (type: (keys: string) => void, emit: (event: Record<string, unknown>) => void) => void;
+		/** What is typed before Enter answers it; a list with a search line takes it as the search. */
+		typed?: string;
 		/** True once Enter answered it, on its first answer. */
 		answered: (sent: (name: string) => ClientCommand[], screen: string) => boolean;
 		/** True once Ctrl+C or Ctrl+D closed it `times` times, as Esc would; the TUI's own lists send nothing. */
@@ -2177,6 +2216,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		{
 			name: "/model's list",
 			title: "Select a model",
+			typed: "opus",
 			open: (type) => type("/model"),
 			answered: (_sent, screen) => screen.includes("model: opus (unchanged)"),
 		},
@@ -2234,11 +2274,12 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 
 			// Typing and Enter answer it, queue nothing, and the draft comes back without what was typed.
 			let shown = await open("draft");
-			h.screen.type("xyz");
+			const typed = kind.typed ?? "xyz";
+			h.screen.type(typed);
 			h.screen.type("\r");
 			await until(() => kind.answered(sent, h.screen.screen()));
 			await until(() => since(shown).includes("draft"));
-			expect(since(shown)).not.toContain("xyz");
+			expect(since(shown)).not.toContain(`draft${typed}`);
 			expect(sent("session.queue")).toEqual([]);
 			expect(sent("session.send")).toEqual([]);
 			// Ctrl+C with no question clears the editor.

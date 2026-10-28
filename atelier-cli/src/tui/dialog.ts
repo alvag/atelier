@@ -2,7 +2,9 @@ import { isPastedRedirect } from "@atelier/core";
 import {
 	type Component,
 	type Focusable,
+	fuzzyFilter,
 	Input,
+	matchesKey,
 	SelectList,
 	truncateToWidth,
 	visibleWidth,
@@ -195,6 +197,122 @@ function foldedRows(folded: Folded, width: number): string[] {
 		if (index !== folded.lines.length - 1 || note === "") return truncateToWidth(line, width, "…");
 		return truncateToWidth(line, Math.max(1, width - visibleWidth(note)), "…") + note;
 	});
+}
+
+/** The keys a search list gives its list rather than its search line. */
+const LIST_KEYS = ["up", "down", "pageUp", "pageDown"] as const;
+
+/**
+ * A list with a search line over it, in a frame: what is typed filters the choices (fuzzy, over each value) and Up/Down
+ * move among them, with `(2/14)` saying where. Under the list, the value selected and `note`. Enter answers the value
+ * selected, nothing while none matches; Esc answers nothing. It starts on `initial`.
+ */
+export class SearchDialog implements Component, Focusable {
+	focused = false;
+	readonly #title: string;
+	readonly #note: string;
+	readonly #empty: string;
+	readonly #paint: Paint;
+	readonly #choices: readonly Choice<string>[];
+	readonly #rows: number;
+	readonly #answer: (value: string | undefined) => void;
+	readonly #input = new Input();
+	#list: SelectList;
+	#matches: readonly Choice<string>[];
+
+	constructor(
+		options: {
+			title: string;
+			note: string;
+			/** Said instead of the list while nothing matches. */
+			empty: string;
+			choices: readonly Choice<string>[];
+			initial?: string | undefined;
+			rows: number;
+		},
+		paint: Paint,
+		answer: (value: string | undefined) => void,
+	) {
+		this.#title = options.title;
+		this.#note = options.note;
+		this.#empty = options.empty;
+		this.#paint = paint;
+		this.#choices = options.choices;
+		this.#rows = options.rows;
+		this.#answer = answer;
+		this.#matches = options.choices;
+		this.#list = this.#listOf(options.choices);
+		this.#list.setSelectedIndex(
+			Math.max(
+				0,
+				options.choices.findIndex((choice) => choice.value === options.initial),
+			),
+		);
+	}
+
+	/** A list of `choices`, without its own scroll line: the dialog says where the selection is. */
+	#listOf(choices: readonly Choice<string>[]): SelectList {
+		const theme = { ...selectListTheme(this.#paint), scrollInfo: () => "" };
+		return new SelectList([...choices], Math.max(1, Math.min(choices.length, this.#rows)), theme);
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, "escape")) {
+			this.#answer(undefined);
+			return;
+		}
+		if (matchesKey(data, "enter")) {
+			const selected = this.#list.getSelectedItem();
+			if (selected !== null && this.#matches.length > 0) this.#answer(selected.value);
+			return;
+		}
+		if (LIST_KEYS.some((key) => matchesKey(data, key))) {
+			this.#list.handleInput(data);
+			return;
+		}
+		const before = this.#input.getValue();
+		this.#input.handleInput(data);
+		const query = this.#input.getValue();
+		if (query === before) return;
+		this.#matches = fuzzyFilter([...this.#choices], query.trim(), (choice) => choice.value);
+		this.#list = this.#listOf(this.#matches);
+	}
+
+	reveal(): void {}
+
+	toggle(): boolean {
+		return false;
+	}
+
+	invalidate(): void {
+		this.#list.invalidate();
+	}
+
+	render(width: number): string[] {
+		const paint = this.#paint;
+		const inner = Math.max(1, width - 4);
+		const title = truncateToWidth(` ${this.#title} `, inner);
+		const fill = Math.max(0, width - 2 - visibleWidth(title));
+		const line = (text: string) => {
+			const cut = truncateToWidth(text, inner, "…");
+			return `${paint("yellow", "│")} ${cut}${" ".repeat(Math.max(0, inner - visibleWidth(cut)))} ${paint("yellow", "│")}`;
+		};
+		const selected = this.#matches.length === 0 ? undefined : this.#list.getSelectedItem();
+		const at = selected === undefined || selected === null ? 0 : this.#matches.indexOf(selected as Choice<string>) + 1;
+		const rows =
+			this.#matches.length === 0
+				? [paint("dim", `  ${this.#empty}`)]
+				: this.#list.render(inner).filter((row) => row !== "");
+		return [
+			truncateToWidth(paint("yellow", `┌${title}${"─".repeat(fill)}┐`), width),
+			line(`> ${this.#input.getValue()}`),
+			...rows.map(line),
+			line(paint("dim", `  (${at}/${this.#matches.length})`)),
+			line(selected === undefined || selected === null ? "" : `  ${selected.value}`),
+			line(paint("dim", this.#note)),
+			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
+		];
+	}
 }
 
 /**

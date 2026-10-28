@@ -53,7 +53,15 @@ import {
 import { savedTranscript } from "../transcript.ts";
 import { Attention } from "./attention.ts";
 import { Conversation } from "./conversation.ts";
-import { type Choice, ChoiceDialog, type Folded, PasteDialog, PasteFilter, SecretDialog } from "./dialog.ts";
+import {
+	type Choice,
+	ChoiceDialog,
+	type Folded,
+	PasteDialog,
+	PasteFilter,
+	SearchDialog,
+	SecretDialog,
+} from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
 import {
 	type FooterState,
@@ -152,6 +160,9 @@ const COMMANDS = [
 	{ name: "stats", description: "Show what this session spent; project: this folder's sessions [--since 7d]" },
 	{ name: "exit", description: "Close the session" },
 ];
+
+/** Under `/model`'s list: why a provider may be missing from it. */
+const MODEL_NOTE = "Only showing models from configured providers. Use /login to add providers.";
 
 /** The answer a list gives when Esc closes it. */
 const CANCELLED = "\0";
@@ -466,7 +477,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const dialogs = new Container();
 	/** Questions waiting for an answer, the first one on screen. */
 	const questions: {
-		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog;
+		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog | SearchDialog;
 		cancel: () => void;
 		local: boolean;
 		blocked?: Blocked | undefined;
@@ -836,7 +847,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			const choices = modelChoices(options, on, now);
 			if (choices.length === 0) return conversation.note("no provider signed in: use /login to add one", true);
 			const current = choices.find((choice) => choice.description?.startsWith("current"))?.value;
-			value = await pick("Select a model", [], choices, current);
+			value = await search("Select a model", MODEL_NOTE, "no model matches", choices, current);
 			if (value === undefined) return;
 		}
 		const read = readModel(value);
@@ -1016,6 +1027,24 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				reportRunning();
 			};
 			const entry = { dialog: new SecretDialog(title, paint, settle), cancel: () => settle(undefined), local: true };
+			questions.push(entry);
+			if (questions.length === 1) showQuestion();
+		});
+	/** Chooses from `choices` through a search line, as a question of the TUI's own; nothing when Esc closes it. */
+	const search = (title: string, note: string, empty: string, choices: Choice<string>[], initial?: string) =>
+		new Promise<string | undefined>((resolve) => {
+			let answered = false;
+			const settle = (value: string | undefined) => {
+				if (answered) return;
+				answered = true;
+				const at = questions.indexOf(entry);
+				if (at !== -1) questions.splice(at, 1);
+				resolve(value);
+				showQuestion();
+				reportRunning();
+			};
+			const options = { title, note, empty, choices, initial, rows: LIST_ROWS };
+			const entry = { dialog: new SearchDialog(options, paint, settle), cancel: () => settle(undefined), local: true };
 			questions.push(entry);
 			if (questions.length === 1) showQuestion();
 		});
