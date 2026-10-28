@@ -1,11 +1,12 @@
 import { readdirSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createScratchDir, sweepStaleScratch } from "../src/scratch.ts";
 import { createBashTool } from "../src/tools/bash.ts";
 import { isInsideSandbox, Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
+import { removeShortRoots, shortRoot } from "./short-root.ts";
 
 const onMac = process.platform === "darwin" && !isInsideSandbox();
 const uid = process.getuid?.() ?? 0;
@@ -19,7 +20,8 @@ let socketRoot: string;
 
 beforeEach(async () => {
 	original = process.env.TMPDIR;
-	base = await realpath(await mkdtemp(join(tmpdir(), "atelier-socket-")));
+	// A short root of its own, not under TMPDIR: the 103-byte socket path below must fit whatever TMPDIR the run has.
+	base = await realpath(await shortRoot("atelier-socket-"));
 	longTemp = join(base, "a-temporary-folder-path-long-enough", "that-the-socket-path-cannot-fit-in-it");
 	await mkdir(longTemp, { recursive: true });
 	socketRoot = join(base, "s");
@@ -29,7 +31,7 @@ beforeEach(async () => {
 afterEach(async () => {
 	if (original === undefined) delete process.env.TMPDIR;
 	else process.env.TMPDIR = original;
-	await rm(base, { recursive: true, force: true });
+	expect(await removeShortRoots()).toEqual([]);
 });
 
 /** A library whose initialize records the temporary folder it sees and waits until `release` is called. */

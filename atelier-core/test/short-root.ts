@@ -3,25 +3,35 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Where the tests of the sandbox's socket make their folders: a Unix socket path
- * fits in 104 bytes, so the folder must be short. `ATELIER_TEST_SOCKET_ROOT`
- * picks it (a verifier keeps its runs in its own scratch folder that way);
- * otherwise the system's temporary folder when it is short (`/tmp/claude` inside
- * a sandbox), and `/tmp` when it is not.
+ * Where the tests of the sandbox's socket may make their folders, in order: a
+ * Unix socket path fits in 104 bytes, so the folder must be short, whatever
+ * TMPDIR the run has. `ATELIER_TEST_SOCKET_ROOT` picks it (a verifier keeps its
+ * runs in its own scratch folder that way); otherwise the system's temporary
+ * folder when it is short, then `/tmp`, then `/tmp/claude`, the folder the
+ * sandbox library gives its commands (the only short one writable inside
+ * Atelier's own sandbox).
  */
-export function shortBase(): string {
+function shortBases(): string[] {
 	const chosen = process.env.ATELIER_TEST_SOCKET_ROOT;
-	if (chosen !== undefined && chosen !== "") return chosen;
-	return tmpdir().length <= 20 ? tmpdir() : "/tmp";
+	if (chosen !== undefined && chosen !== "") return [chosen];
+	return [...(tmpdir().length <= 20 ? [tmpdir()] : []), "/tmp", "/tmp/claude"];
 }
 
 const made = new Set<string>();
 
-/** A new folder under `shortBase()`, removed by `removeShortRoots`. */
+/** A new folder in the first short base that takes one, removed by `removeShortRoots`. */
 export async function shortRoot(prefix: string): Promise<string> {
-	const root = await mkdtemp(join(shortBase(), prefix));
-	made.add(root);
-	return root;
+	let failure: unknown;
+	for (const base of shortBases()) {
+		try {
+			const root = await mkdtemp(join(base, prefix));
+			made.add(root);
+			return root;
+		} catch (error) {
+			failure = error;
+		}
+	}
+	throw failure;
 }
 
 /** Removes every folder `shortRoot` made, and returns those still there: none, when all went well. */
