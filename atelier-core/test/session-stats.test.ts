@@ -285,6 +285,18 @@ describe("readSessionStats", () => {
 		expect(stats.total.usage).toEqual(usage(2));
 	});
 
+	it("reads one saved session of a project only, by its id", async () => {
+		await save("/work/a", "s1", [header("s1", "/work/a", "2026-10-20T10:00:00.000Z"), finished({ usage: usage(1) })]);
+		await save("/work/a", "s2", [header("s2", "/work/a", "2026-10-20T10:00:00.000Z"), finished({ usage: usage(2) })]);
+		await save("/work/b", "s2", [header("s2", "/work/b", "2026-10-20T10:00:00.000Z"), finished({ usage: usage(4) })]);
+
+		const stats = await readSessionStats(home, { project: "/work/a", session: "s2" });
+		const missing = await readSessionStats(home, { project: "/work/a", session: "s3" });
+
+		expect(stats).toMatchObject({ sessions: 1, total: { turns: 1, usage: usage(2) } });
+		expect(missing).toMatchObject({ sessions: 0, total: { turns: 0 } });
+	});
+
 	it("skips corrupt files and other versions, says why, and keeps a turn torn by a crash out", async () => {
 		await save("/work/a", "bad", [
 			header("bad", "/work/a", "2026-10-20T10:00:00.000Z"),
