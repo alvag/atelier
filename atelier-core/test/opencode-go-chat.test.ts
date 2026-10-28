@@ -270,6 +270,36 @@ describe("opencode-go on Chat Completions", () => {
 		expect(provider.received).toHaveLength(2);
 	});
 
+	it("fails a stream that ends before it says it is complete, and runs none of its tool calls", async () => {
+		provider.answer({
+			// Cut at a chunk boundary: no finish_reason and no [DONE].
+			sse: sse([
+				chunk({
+					role: "assistant",
+					content: "Calling.",
+					tool_calls: [
+						{ index: 0, id: "call_a", type: "function", function: { name: "echo", arguments: '{"text":"o' } },
+					],
+				}),
+			]),
+		});
+		const calls: ToolCall[] = [];
+		const events = await collect((await start(calls)).send("hi"));
+		expect(calls).toEqual([]);
+		expect(events.find((event) => event.type === "error")).toMatchObject({
+			code: "api_error",
+			message: "The Chat Completions stream ended before the answer was complete.",
+			recoverable: true,
+		});
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
+	});
+
+	it("takes a stream that ends with its finish_reason, even without [DONE]", async () => {
+		provider.answer({ sse: sse([chunk({ content: "Whole." }), chunk({}, "stop")]) });
+		const events = await collect((await start()).send("hi"));
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+	});
+
 	it("tells a rate limit apart from the usage limit", async () => {
 		provider.answer({ status: 429, json: { error: { message: "Too many requests" } } });
 		const events = await collect((await start()).send("hi"));
@@ -291,6 +321,13 @@ describe("toChatRequest", () => {
 			reasoning_effort: "none",
 		});
 		expect(toChatRequest({ ...base, model: "glm-5.3" })).not.toHaveProperty("reasoning_effort");
+	});
+
+	it("keeps the tools out of reach when the request says none, as a summary does", () => {
+		const tools = [{ name: "echo", input_schema: { type: "object" as const } }];
+		const none = toChatRequest({ ...base, model: "glm-5.3", tools, tool_choice: { type: "none" } });
+		expect(none).toMatchObject({ tool_choice: "none" });
+		expect(toChatRequest({ ...base, model: "glm-5.3", tools })).not.toHaveProperty("tool_choice");
 	});
 
 	it("gives DeepSeek's assistant messages a reasoning_content, which it requires, and no one else's", () => {
