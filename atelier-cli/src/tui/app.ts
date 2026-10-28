@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { basename } from "node:path";
 import {
 	type AtelierEvent,
@@ -28,6 +29,7 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import type { CliArgs } from "../args.ts";
+import { LOGIN_USAGE, LOGOUT_USAGE, type LoginPorts, login, logout, parseLoginTarget } from "../login.ts";
 import { mcpReport } from "../mcp-report.ts";
 import {
 	PERMISSIONS_USAGE,
@@ -40,7 +42,7 @@ import {
 import { savedTranscript } from "../transcript.ts";
 import { Attention } from "./attention.ts";
 import { Conversation } from "./conversation.ts";
-import { type Choice, ChoiceDialog, type Folded, PasteFilter } from "./dialog.ts";
+import { type Choice, ChoiceDialog, type Folded, PasteFilter, SecretDialog } from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
 import {
 	type FooterState,
@@ -91,6 +93,10 @@ export interface TuiOptions {
 	env?: Record<string, string | undefined>;
 	/** Registers a handler for SIGTERM and SIGHUP, given the signal's number; returns a function that removes it. */
 	onTerminate?: (handler: (signal: number) => void) => () => void;
+	/** Registers a Ctrl+C (SIGINT) handler; returns a function that removes it. Used while Claude Code has the terminal. */
+	onInterrupt?: (handler: () => void) => () => void;
+	/** The Claude Code binary `/login` runs; the one Atelier installs when absent. Tests pass a fake. */
+	claudeCode?: string;
 	/** How long closing the session may take before the core is closed anyway (default 3000 ms). */
 	closeTimeoutMs?: number;
 	/** How long an approval ignores keys after it appears, so one typed before it does not answer it (default 400 ms). */
@@ -118,6 +124,8 @@ const COMMANDS = [
 	{ name: "feature", description: "Open or fold the ODD feature's tasks (Ctrl+T)" },
 	{ name: "mcp", description: "Show the MCP servers; login|logout <server> signs one in or out" },
 	{ name: "permissions", description: "List the permission rules you allowed; remove <number> removes one" },
+	{ name: "login", description: "Sign in with an account or an API key [account|api-key] [provider]" },
+	{ name: "logout", description: "Sign out of a stored API key or an account [account|api-key] [provider]" },
 	{ name: "new", description: "Start a new session" },
 	{ name: "resume", description: "Resume a saved session of this folder [id]" },
 	{ name: "review", description: "Review the current changes, against HEAD or a git ref" },
@@ -950,6 +958,74 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 	};
 
+	/** Reads a secret in a dialog over the editor, never on screen; undefined when Esc closes it. */
+	const askSecret = (title: string) =>
+		new Promise<string | undefined>((resolve) => {
+			const secret = new SecretDialog(title, paint, (value) => {
+				dialogs.clear();
+				showQuestion();
+				resolve(value);
+			});
+			dialogs.clear();
+			dialogs.addChild(secret);
+			tui.setFocus(secret);
+			tui.requestRender();
+		});
+	/** `/login` and `/logout`, as `atelier login` and `atelier logout` do, with lists and dialogs. Not a turn. */
+	const runLogin = async (command: string, words: string[]) => {
+		const target = parseLoginTarget(words);
+		if (target === undefined)
+			return conversation.note(`usage: ${command === "/login" ? LOGIN_USAGE : LOGOUT_USAGE}`, true);
+		const ports: LoginPorts = {
+			home: options.home ?? homedir(),
+			env: options.env ?? {},
+			...(options.claudeCode === undefined ? {} : { claudeCode: options.claudeCode }),
+			interactive: true,
+			choose: async (title, list) => {
+				const choices = list.map(({ label, status }, index) => ({
+					value: String(index),
+					label,
+					...(status === undefined ? {} : { description: status }),
+				}));
+				const chosen = await pick(title, [], choices);
+				return chosen === undefined ? undefined : Number(chosen);
+			},
+			askSecret: (prompt) => askSecret(prompt.replace(/:\s*$/, "")),
+			confirm: (question) =>
+				new Promise((resolve) =>
+					ask(
+						{
+							title: "Sign out?",
+							lines: [question],
+							choices: [
+								{ value: "yes", label: "Sign out" },
+								{ value: "no", label: "Cancel" },
+							],
+							initial: "no",
+							cancel: "no",
+						},
+						(value) => resolve(value === "yes"),
+						true,
+					),
+				),
+			// Claude Code's sign-in gets the real terminal; Ctrl+C is its own until it ends, then the TUI draws itself again.
+			handOver: async (task) => {
+				tui.stop();
+				const removeInterrupt = options.onInterrupt?.(() => {});
+				try {
+					return await task();
+				} finally {
+					removeInterrupt?.();
+					tui.start();
+					tui.requestRender(true);
+				}
+			},
+			say: (text) => conversation.note(text),
+			fail: (text) => conversation.note(`error: ${text}`, true),
+		};
+		await (command === "/login" ? login(ports, target) : logout(ports, target));
+	};
+
 	/** What the session runs with and loaded, which the transcript leaves out, and what it has cost so far. */
 	const runStatus = () => {
 		const lines = conversation.status();
@@ -1078,6 +1154,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (text === "/feature") toggleFeature();
 		else if (command === "/mcp") await runMcp(words.slice(1));
 		else if (command === "/permissions") await runPermissions(words.slice(1));
+		else if (command === "/login" || command === "/logout") await runLogin(command, words.slice(1));
 		else if (text === "/status") runStatus();
 		else if (command === "/resume" && single) await runResume(argument);
 		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });

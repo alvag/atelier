@@ -80,6 +80,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | `/resume [id]`              | Resume a saved session of this directory.                              |
 | `/feature`                  | Open or fold the active feature's tasks.                               |
 | `/mcp [login\|logout <s>]`  | Show the session's MCP servers, or sign one in or out.                 |
+| `/login`, `/logout`         | Sign in or out with an account or an API key, as `atelier login` does. |
 | `/permissions [remove <n>]` | List the commands and folders you allowed, or remove one.              |
 | `/review [ref]`             | Review the working tree now, against `HEAD` or a git ref.              |
 | `/undo-correction`          | Undo the latest escalated review correction.                           |
