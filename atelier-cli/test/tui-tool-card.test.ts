@@ -52,8 +52,8 @@ describe("ToolCard", () => {
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
 			" ✓ bash pnpm test --run · exit 0 · 4.2s
-			 │ $ pnpm test --run
-			 │     --reporter=dot"
+			   │ $ pnpm test --run
+			   │     --reporter=dot"
 		`);
 	});
 
@@ -72,7 +72,7 @@ describe("ToolCard", () => {
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
 			" ✗ bash pnpm check · exit 1 · 12.0s
-			 │ $ pnpm check"
+			   │ $ pnpm check"
 		`);
 	});
 
@@ -84,7 +84,7 @@ describe("ToolCard", () => {
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
 			" ✓ grep toolCard: 3 matches
-			 │ pattern toolCard  in atelier-cli/src  glob *.ts"
+			   │ pattern toolCard  in atelier-cli/src  glob *.ts"
 		`);
 	});
 
@@ -101,10 +101,10 @@ describe("ToolCard", () => {
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
 			" ✓ memory search · 1 result
-			 │ action search
-			 │ query  TUI tool rendering colors
-			 │ limit  5
-			 │ tags   ["a","b"]"
+			   │ action search
+			   │ query  TUI tool rendering colors
+			   │ limit  5
+			   │ tags   ["a","b"]"
 		`);
 	});
 
@@ -126,10 +126,10 @@ describe("ToolCard", () => {
 	it("colors the mark, the name, the details and the bar by the call's state", () => {
 		const ok = card("bash", { command: "ls" }, { summary: "ls (exit 0)" }, { paint: tagged }).lines;
 		expect(ok[0]).toBe(" <green>✓</> <bold>bash</> ls <dim>· exit 0</>");
-		expect(ok[1]).toMatch(/^ <green>▎<\/> <dim>\$<\/> /);
+		expect(ok[1]).toMatch(/^ {3}<green>▎<\/> <dim>\$<\/> /);
 		const failed = card("bash", { command: "ls" }, { ok: false, summary: "ls (exit 1)" }, { paint: tagged });
 		expect(failed.lines[0]).toBe(" <red>✗</> <bold>bash</> ls <red>· exit 1</>");
-		expect(failed.lines[1]).toMatch(/^ <red>▎<\/>/);
+		expect(failed.lines[1]).toMatch(/^ {3}<red>▎<\/>/);
 		expect(failed.card.alerts()).toEqual(["<red>✗</> <bold>bash</> <red>ls · exit 1</>"]);
 		const grep = card("grep", { pattern: "mode" }, { summary: "mode: 1 match" }, { paint: tagged }).lines;
 		expect(grep[1]).toContain("<dim>pattern</> <yellow>mode</>");
@@ -142,19 +142,19 @@ describe("ToolCard", () => {
 		const { lines } = card("write", { path: "a.ts", content }, { summary: "a.ts (1.2 KB)" });
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
 			" ✓ write a.ts · 1.2 KB
-			 │  1 const v1 = 1;
-			 │  2 const v2 = 2;
-			 │  3 const v3 = 3;
-			 │  4 const v4 = 4;
-			 │  5 const v5 = 5;
-			 │  6 const v6 = 6;
-			 │  7 const v7 = 7;
-			 │  8 const v8 = 8;
-			 │  9 const v9 = 9;
-			 │ 10 const v10 = 10;
-			 │ 11 const v11 = 11;
-			 │ 12 const v12 = 12;
-			 │    … 2 more lines"
+			   │  1 const v1 = 1;
+			   │  2 const v2 = 2;
+			   │  3 const v3 = 3;
+			   │  4 const v4 = 4;
+			   │  5 const v5 = 5;
+			   │  6 const v6 = 6;
+			   │  7 const v7 = 7;
+			   │  8 const v8 = 8;
+			   │  9 const v9 = 9;
+			   │ 10 const v10 = 10;
+			   │ 11 const v11 = 11;
+			   │ 12 const v12 = 12;
+			   │    … 2 more lines"
 		`);
 	});
 
@@ -174,10 +174,10 @@ describe("ToolCard", () => {
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
 			" ✓ edit src/style.ts · 1 edit
-			 │ 21   export const painter =
-			 │ 22 -   (color: boolean): Paint =>
-			 │ 22 +   (color: boolean, tones?: Tones): Paint =>
-			 │ 23       (style, text) =>"
+			   │ 21   export const painter =
+			   │ 22 -   (color: boolean): Paint =>
+			   │ 22 +   (color: boolean, tones?: Tones): Paint =>
+			   │ 23       (style, text) =>"
 		`);
 	});
 
@@ -195,18 +195,18 @@ describe("ToolCard", () => {
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
 			" ✓ edit a.txt · 2 edits
-			 │  1 - a
-			 │  1 + a1
-			 │  2 + a2
-			 │    ⋮
-			 │ 10 - z
-			 │ 11 + Z"
+			   │  1 - a
+			   │  1 + a1
+			   │  2 + a2
+			   │    ⋮
+			   │ 10 - z
+			   │ 11 + Z"
 		`);
 	});
 
 	it("shows an edit without numbers when the call does not say where it starts", () => {
 		const { lines } = card("edit", { path: "a.ts", edits: [{ oldText: "old", newText: "new" }] });
-		expect(lines.slice(1)).toEqual([" │ - old", " │ + new"]);
+		expect(lines.slice(1)).toEqual(["   │ - old", "   │ + new"]);
 	});
 
 	it("wraps a long line of a diff under its text, not under its number", () => {
@@ -218,10 +218,10 @@ describe("ToolCard", () => {
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
 			" ✓ edit a.txt · 1 edit
-			 │ 7 - x
-			 │ 7 + word word word word
-			 │     word word word word
-			 │     word word"
+			   │ 7 - x
+			   │ 7 + word word word word
+			   │     word word word word
+			   │     word word"
 		`);
 		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(30);
 	});
@@ -295,26 +295,44 @@ describe("ToolCard backgrounds", () => {
 		for (const channel of card0 ?? []) expect(channel).toBeLessThan(255);
 	});
 
-	it("bands a diff's removed lines in red and added lines in green, highlighting their code over the band", () => {
-		const { lines } = card("edit", edit, done, { paint: colored, tones: tones(DARK) });
-		const find = (text: string) => lines.find((line) => stripTerminalSequences(line).includes(text)) ?? "";
-		const removed = find("1 - const");
-		const added = find("1 + const");
-		const kept = find("keep");
-		const [, removedBand] = backgrounds(removed);
-		const [, addedBand] = backgrounds(added);
-		expect(removedBand?.[0]).toBeGreaterThan(removedBand?.[1] ?? 0);
-		expect(addedBand?.[1]).toBeGreaterThan(addedBand?.[0] ?? 0);
-		expect(new Set(backgrounds(kept).map(String)).size).toBe(1);
-		expect(removed).toContain("\x1b[35mconst\x1b[39m");
-		expect(added).toContain("\x1b[35mconst\x1b[39m");
-		for (const line of [removed, added]) expect(visibleWidth(line)).toBe(80);
+	it("bands a diff's removed lines in dark red and added lines in dark green, highlighting their code over the band", () => {
+		const bands = (background: typeof DARK) => {
+			const { lines } = card("edit", edit, done, { paint: colored, tones: tones(background) });
+			const find = (text: string) => lines.find((line) => stripTerminalSequences(line).includes(text)) ?? "";
+			const removed = find("1 - const");
+			const added = find("1 + const");
+			const kept = find("keep");
+			expect(new Set(backgrounds(kept).map(String)).size).toBe(1);
+			expect(removed).toContain("\x1b[35mconst\x1b[39m");
+			expect(added).toContain("\x1b[35mconst\x1b[39m");
+			for (const line of [removed, added]) expect(visibleWidth(line)).toBe(80);
+			return { removed: backgrounds(removed)[1], added: backgrounds(added)[1] };
+		};
+		const dark = bands(DARK);
+		expect(dark).toEqual({ removed: [122, 41, 54], added: [34, 92, 43] });
+		// The same red and green whatever the terminal's hue: never mixed into a violet or a teal.
+		expect(bands({ r: 40, g: 44, b: 52 })).toEqual(dark);
+		expect(bands({ r: 0, g: 43, b: 54 })).toEqual(dark);
 	});
 
-	it("uses the terminal's 256 colors when it has no more", () => {
+	it("bands a diff in light red and light green on a light terminal", () => {
+		const { lines } = card("edit", edit, done, { paint: colored, tones: tones(LIGHT) });
+		const find = (text: string) => lines.find((line) => stripTerminalSequences(line).includes(text)) ?? "";
+		expect(backgrounds(find("1 - const"))[1]).toEqual([255, 205, 210]);
+		expect(backgrounds(find("1 + const"))[1]).toEqual([205, 240, 205]);
+	});
+
+	it("uses the terminal's 256 colors when it has no more, a fixed red and green for a diff", () => {
 		const { lines } = card("edit", edit, done, { paint: colored, tones: tones(DARK, "256color") });
-		expect(lines.join("\n")).toContain("\x1b[48;5;");
-		expect(lines.join("\n")).not.toContain("\x1b[48;2;");
+		const text = lines.join("\n");
+		expect(text).toContain("\x1b[48;5;");
+		expect(text).not.toContain("\x1b[48;2;");
+		const find = (line: string) => lines.find((l) => stripTerminalSequences(l).includes(line)) ?? "";
+		expect(find("1 - const")).toContain("\x1b[48;5;52m");
+		expect(find("1 + const")).toContain("\x1b[48;5;22m");
+		const light = card("edit", edit, done, { paint: colored, tones: tones(LIGHT, "256color") }).lines;
+		expect(light.find((l) => stripTerminalSequences(l).includes("1 - const"))).toContain("\x1b[48;5;224m");
+		expect(light.find((l) => stripTerminalSequences(l).includes("1 + const"))).toContain("\x1b[48;5;194m");
 	});
 
 	it("adds no background until the terminal says its own, and colors a diff's text instead", () => {

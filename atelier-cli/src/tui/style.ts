@@ -97,11 +97,19 @@ export class Shade {
 }
 
 /**
- * How far a card's background moves from the terminal's, and how much red or green a diff's band takes, on a dark and
- * a light terminal: the first amount that still tells it apart from the colors before it, which 256 colors may need.
+ * How far a card's background moves from the terminal's on a dark and a light terminal: the first amount that still
+ * tells it apart from the terminal's, which 256 colors may need.
  */
 const CARD_MIX = { dark: [0.06, 0.1, 0.15], light: [0.03, 0.06, 0.1] };
-const BAND_MIX = { dark: [0.22, 0.3, 0.4, 0.5, 0.65], light: [0.15, 0.22, 0.3, 0.4, 0.55] };
+
+/**
+ * A diff's bands, the same red and green whatever the terminal's hue, as Claude Code shows them: dark on a dark
+ * terminal and light on a light one, with the text readable over them; in 256 colors, fixed entries of the palette.
+ */
+const BANDS = {
+	dark: { removed: rgbColor(122, 41, 54), added: rgbColor(34, 92, 43), palette: { removed: 52, added: 22 } },
+	light: { removed: rgbColor(255, 205, 210), added: rgbColor(205, 240, 205), palette: { removed: 224, added: 194 } },
+};
 
 /** The background of `base` mixed toward `toward` by the first of `amounts` the terminal shows apart from `taken`. */
 function distinct(
@@ -118,8 +126,6 @@ function distinct(
 	}
 	return ansi;
 }
-const RED = rgbColor(220, 50, 47);
-const GREEN = rgbColor(40, 160, 60);
 
 /** `line` on the background `ansi`, kept after every reset inside it. */
 const onBackground = (ansi: string, line: string) =>
@@ -129,7 +135,7 @@ export type Band = "removed" | "added";
 
 /**
  * The backgrounds of the tool cards, made from the terminal's own once it says it: the card's, a little lighter (or
- * darker on a light terminal) and subtler than the prompt's shade, and a diff's bands, red and green. Until then, when
+ * darker on a light terminal) and subtler than the prompt's shade, and a diff's bands, a fixed red and green. Until then, when
  * the terminal never says it, and without color, there are none.
  */
 export class Tones {
@@ -150,12 +156,12 @@ export class Tones {
 		const base = rgbColor(background.r, background.g, background.b);
 		const dark = colorToOklch(base).l < 0.5;
 		const toward = dark ? rgbColor(255, 255, 255) : rgbColor(0, 0, 0);
-		const band = dark ? BAND_MIX.dark : BAND_MIX.light;
+		const bands = dark ? BANDS.dark : BANDS.light;
+		const band = (kind: Band) =>
+			mode === "256color" ? `\x1b[48;5;${bands.palette[kind]}m` : backgroundAnsi(bands[kind], mode);
 		const terminal = backgroundAnsi(base, mode);
 		const card = distinct(base, toward, dark ? CARD_MIX.dark : CARD_MIX.light, mode, [terminal]);
-		const removed = distinct(base, RED, band, mode, [terminal, card]);
-		const added = distinct(base, GREEN, band, mode, [terminal, card, removed]);
-		this.#ansi = { card, removed, added };
+		this.#ansi = { card, removed: band("removed"), added: band("added") };
 	}
 
 	/** `line` on the card's background, or as it is without one. */
