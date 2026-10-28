@@ -3,11 +3,25 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir, uptime } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AuthStore, AuthStoreError, authFile, type Credential } from "../src/auth-store.ts";
 import { requireIsolatedHome } from "./support/login-isolation.ts";
 
 requireIsolatedHome();
+
+/** Every path the store tried to remove, in order. */
+const unlinked: string[] = [];
+
+vi.mock("node:fs/promises", async (original) => {
+	const actual = await original<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		unlink: (...args: Parameters<typeof actual.unlink>) => {
+			unlinked.push(String(args[0]));
+			return actual.unlink(...args);
+		},
+	};
+});
 
 let home: string;
 
@@ -362,7 +376,7 @@ it("keeps waiting for a lock it fails to read for another reason than its permis
 
 // Root reads any file, so it never meets a lock it cannot read.
 it.skipIf(process.getuid?.() === 0)(
-	"gives up on time on an old lock it cannot read when it fails to remove it",
+	"gives up on time on an old lock it cannot read when it fails to remove it, trying again only as often as it waits",
 	async () => {
 		const store = new AuthStore(file, { lockTimeoutMs: 200, staleLockMs: 10_000 });
 		await store.set("anthropic", { type: "api_key", key: "before" });
@@ -371,6 +385,7 @@ it.skipIf(process.getuid?.() === 0)(
 		await mkdir(lock, { mode: 0o000 });
 		const old = new Date(Date.now() - 30_000);
 		await utimes(lock, old, old);
+		unlinked.length = 0;
 		try {
 			await expect(store.set("anthropic", { type: "api_key", key: "after" })).rejects.toThrow(
 				/locked by another Atelier/,
@@ -378,6 +393,8 @@ it.skipIf(process.getuid?.() === 0)(
 		} finally {
 			await chmod(lock, 0o700).catch(() => {});
 		}
+		// Once per wait of 20 ms at most: about 10 in 200 ms, not one after another.
+		expect(unlinked.filter((path) => path === lock).length).toBeLessThan(20);
 	},
 	3_000,
 );
