@@ -3087,3 +3087,32 @@ describe("the length of the notice", () => {
 		expect(prompt.length).toBeLessThan(2000);
 	});
 });
+
+// Independent probes of the approved follow-up notice contract; public Session only.
+const NEXT: FakeStep[] = [text("ok"), { event: finished }];
+const w = (claim: string, over: Record<string, unknown> = {}) => ({
+	...severe,
+	lens: "reliability",
+	severity: "warning",
+	claim,
+	...over,
+});
+const report = (...findings: unknown[]) =>
+	new RoleBackend((role, prompt) => (role === "reliability" ? JSON.stringify({ findings }) : clean(role, prompt)));
+
+describe("independent review follow-up contract", () => {
+	it("resends after session metadata followed by refusal, without an answer", async () => {
+		const refused: FakeStep[] = [
+			{ event: { type: "session_started", backend: "fake", model: "fake", authSource: "none" } },
+			{ event: errorEvent("authentication_error", "refused") },
+			{ event: { ...finished, stopReason: "error" } },
+		];
+		const s = await start({ turns: [HIGH_TURN, refused, NEXT], roles: report(w("Keep this follow-up")) });
+		await s.send("edit");
+		await s.send("refused");
+		await s.send("retry");
+		expect(s.main.prompts[1]).toContain("<review-followups>");
+		expect(s.main.prompts[2]).toContain("<review-followups>");
+		await s.session.close();
+	});
+});
