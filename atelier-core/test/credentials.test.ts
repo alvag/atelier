@@ -3,12 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AuthStore } from "../src/auth-store.ts";
 import { createBackend } from "../src/backend-factory.ts";
 import { AnthropicApiBackend } from "../src/backends/anthropic-api/backend.ts";
 import { ClaudeCodeBackend } from "../src/backends/claude-code/backend.ts";
 import {
+	apiKeySource,
 	KEYCHAIN_SERVICE,
 	KeychainError,
+	MISSING_API_KEY_MESSAGE,
 	MissingApiKeyError,
 	resolveApiKey,
 	type SecurityResult,
@@ -29,10 +32,68 @@ function security(result: SecurityResult) {
 	};
 }
 
+let dir: string;
+
+beforeEach(async () => {
+	dir = await mkdtemp(join(tmpdir(), "atelier-credentials-"));
+});
+
+afterEach(async () => {
+	await rm(dir, { recursive: true, force: true });
+});
+
+/** A store with nothing in it, so no test reads the real ~/.atelier/auth.json. */
+const emptyStore = () => new AuthStore(join(dir, "empty", "auth.json"));
+
 describe("resolveApiKey", () => {
+	it("takes the key stored by atelier login when ANTHROPIC_API_KEY is not set, before the Keychain", async () => {
+		const store = new AuthStore(join(dir, "auth.json"));
+		await store.set("anthropic", { type: "api_key", key: KEY });
+		const keychain = security({ code: 0, stdout: "keychain-key", stderr: "" });
+		await expect(resolveApiKey({ store, env: {}, platform: "darwin", runSecurity: keychain.run })).resolves.toBe(KEY);
+		expect(keychain.calls).toEqual([]);
+		await expect(
+			resolveApiKey({ store, env: { ANTHROPIC_API_KEY: "env-key" }, platform: "darwin", runSecurity: keychain.run }),
+		).resolves.toBe("env-key");
+		expect(await apiKeySource({ store, env: {}, platform: "darwin", runSecurity: keychain.run })).toBe("stored");
+		expect(await apiKeySource({ store, env: { ANTHROPIC_API_KEY: "x" }, platform: "darwin" })).toBe("env");
+	});
+
+	it("says where the key would come from without reading it from the Keychain", async () => {
+		const found = security({ code: 0, stdout: "", stderr: "" });
+		expect(await apiKeySource({ store: emptyStore(), env: {}, platform: "darwin", runSecurity: found.run })).toBe(
+			"keychain",
+		);
+		expect(found.calls).toEqual([["find-generic-password", "-s", KEYCHAIN_SERVICE]]);
+		const missing = security({ code: 44, stdout: "", stderr: "" });
+		expect(
+			await apiKeySource({ store: emptyStore(), env: {}, platform: "darwin", runSecurity: missing.run }),
+		).toBeUndefined();
+		expect(await apiKeySource({ store: emptyStore(), env: {}, platform: "linux", runSecurity: found.run })).toBe(
+			undefined,
+		);
+	});
+
+	it("tells how to store a key when there is none anywhere", async () => {
+		const keychain = security({ code: 44, stdout: "", stderr: "" });
+		const error = await resolveApiKey({
+			store: emptyStore(),
+			env: {},
+			platform: "darwin",
+			runSecurity: keychain.run,
+		}).catch((e) => e);
+		expect(error).toBeInstanceOf(MissingApiKeyError);
+		expect(error.message).toBe(MISSING_API_KEY_MESSAGE);
+		expect(MISSING_API_KEY_MESSAGE).toBe(
+			"No Anthropic API key. Store one with `atelier login api-key anthropic` (/login in a session), or set ANTHROPIC_API_KEY.",
+		);
+	});
+
 	it("reads the key from the macOS Keychain, trimming the trailing newline", async () => {
 		const keychain = security({ code: 0, stdout: `${KEY}\n`, stderr: "" });
-		await expect(resolveApiKey({ env: {}, platform: "darwin", runSecurity: keychain.run })).resolves.toBe(KEY);
+		await expect(
+			resolveApiKey({ store: emptyStore(), env: {}, platform: "darwin", runSecurity: keychain.run }),
+		).resolves.toBe(KEY);
 		expect(keychain.calls).toEqual([["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"]]);
 		expect(KEYCHAIN_SERVICE).toBe("atelier-anthropic");
 	});
@@ -40,7 +101,12 @@ describe("resolveApiKey", () => {
 	it("prefers ANTHROPIC_API_KEY set for the command and then skips the Keychain", async () => {
 		const keychain = security({ code: 0, stdout: "other", stderr: "" });
 		await expect(
-			resolveApiKey({ env: { ANTHROPIC_API_KEY: ` ${KEY} ` }, platform: "darwin", runSecurity: keychain.run }),
+			resolveApiKey({
+				store: emptyStore(),
+				env: { ANTHROPIC_API_KEY: ` ${KEY} ` },
+				platform: "darwin",
+				runSecurity: keychain.run,
+			}),
 		).resolves.toBe(KEY);
 		expect(keychain.calls).toEqual([]);
 	});
@@ -48,7 +114,12 @@ describe("resolveApiKey", () => {
 	it("ignores an empty ANTHROPIC_API_KEY", async () => {
 		const keychain = security({ code: 0, stdout: KEY, stderr: "" });
 		await expect(
-			resolveApiKey({ env: { ANTHROPIC_API_KEY: "  " }, platform: "darwin", runSecurity: keychain.run }),
+			resolveApiKey({
+				store: emptyStore(),
+				env: { ANTHROPIC_API_KEY: "  " },
+				platform: "darwin",
+				runSecurity: keychain.run,
+			}),
 		).resolves.toBe(KEY);
 	});
 
@@ -58,36 +129,48 @@ describe("resolveApiKey", () => {
 			stdout: "",
 			stderr: "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.",
 		});
-		const error = await resolveApiKey({ env: {}, platform: "darwin", runSecurity: keychain.run }).catch((e) => e);
+		const error = await resolveApiKey({
+			store: emptyStore(),
+			env: {},
+			platform: "darwin",
+			runSecurity: keychain.run,
+		}).catch((e) => e);
 		expect(error).toBeInstanceOf(MissingApiKeyError);
 		expect(error.code).toBe("missing_api_key");
-		expect(error.message).toContain(`security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a "$USER" -w`);
+		expect(error.message).toBe(MISSING_API_KEY_MESSAGE);
 	});
 
 	it("treats an empty Keychain entry as missing", async () => {
 		const keychain = security({ code: 0, stdout: "\n", stderr: "" });
-		await expect(resolveApiKey({ env: {}, platform: "darwin", runSecurity: keychain.run })).rejects.toBeInstanceOf(
-			MissingApiKeyError,
-		);
+		await expect(
+			resolveApiKey({ store: emptyStore(), env: {}, platform: "darwin", runSecurity: keychain.run }),
+		).rejects.toBeInstanceOf(MissingApiKeyError);
 	});
 
 	it("never puts stdout in the message, whether the key is missing or the Keychain fails", async () => {
 		for (const [code, expected] of [
-			[
-				44,
-				`No Anthropic API key in the Keychain. Store it with: security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a "$USER" -w`,
-			],
+			[44, MISSING_API_KEY_MESSAGE],
 			[51, "The Keychain could not be read (security exit 51): denied"],
 		] as const) {
 			const keychain = security({ code, stdout: KEY, stderr: "denied" });
-			const error = await resolveApiKey({ env: {}, platform: "darwin", runSecurity: keychain.run }).catch((e) => e);
+			const error = await resolveApiKey({
+				store: emptyStore(),
+				env: {},
+				platform: "darwin",
+				runSecurity: keychain.run,
+			}).catch((e) => e);
 			expect(error.message).toBe(expected);
 		}
 	});
 
 	it("reports other Keychain failures with stderr but never stdout", async () => {
 		const keychain = security({ code: 51, stdout: KEY, stderr: "User interaction is not allowed." });
-		const error = await resolveApiKey({ env: {}, platform: "darwin", runSecurity: keychain.run }).catch((e) => e);
+		const error = await resolveApiKey({
+			store: emptyStore(),
+			env: {},
+			platform: "darwin",
+			runSecurity: keychain.run,
+		}).catch((e) => e);
 		expect(error).toBeInstanceOf(KeychainError);
 		expect(error.code).toBe("keychain_error");
 		expect(error.message).toContain("User interaction is not allowed.");
@@ -96,7 +179,12 @@ describe("resolveApiKey", () => {
 
 	it("asks for ANTHROPIC_API_KEY outside macOS, without running security", async () => {
 		const keychain = security({ code: 0, stdout: KEY, stderr: "" });
-		const error = await resolveApiKey({ env: {}, platform: "linux", runSecurity: keychain.run }).catch((e) => e);
+		const error = await resolveApiKey({
+			store: emptyStore(),
+			env: {},
+			platform: "linux",
+			runSecurity: keychain.run,
+		}).catch((e) => e);
 		expect(error).toBeInstanceOf(MissingApiKeyError);
 		expect(error.message).toContain("ANTHROPIC_API_KEY");
 		expect(keychain.calls).toEqual([]);

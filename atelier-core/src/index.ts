@@ -31,6 +31,15 @@ export {
 	type SdkQuery,
 } from "./backends/claude-code/backend.ts";
 export { type MapContext, mapSdkMessage } from "./backends/claude-code/map.ts";
+export {
+	bundledClaudeCode,
+	ClaudeCodeAuthError,
+	type ClaudeCodeAuthStatus,
+	claudeCodeAuthStatus,
+	claudeCodeLogin,
+	claudeCodeLogout,
+	describeClaudeCodeAuth,
+} from "./claude-code-auth.ts";
 export { type CoreExit, RpcClient, type RpcClientOptions, RpcError } from "./client/rpc-client.ts";
 export {
 	compactThreshold,
@@ -42,8 +51,12 @@ export {
 	RESERVE_TOKENS,
 } from "./compaction/compactor.ts";
 export {
+	ANTHROPIC_PROVIDER,
+	type ApiKeySource,
+	apiKeySource,
 	KEYCHAIN_SERVICE,
 	KeychainError,
+	MISSING_API_KEY_MESSAGE,
 	MissingApiKeyError,
 	resolveApiKey,
 	STORE_KEY_COMMAND,

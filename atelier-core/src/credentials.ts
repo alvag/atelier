@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { AuthStore, authFile } from "./auth-store.ts";
 
 /** Keychain service that holds the Anthropic API key. */
 export const KEYCHAIN_SERVICE = "atelier-anthropic";
@@ -29,9 +31,20 @@ export type SecurityRunner = (args: readonly string[]) => Promise<SecurityResult
 
 export interface ApiKeySources {
 	env?: Record<string, string | undefined>;
+	/** Where `atelier login` keeps the key; defaults to `~/.atelier/auth.json`. */
+	store?: AuthStore;
 	platform?: NodeJS.Platform;
 	runSecurity?: SecurityRunner;
 }
+
+/** Where the key comes from: ANTHROPIC_API_KEY, `atelier login`, or the macOS Keychain. */
+export type ApiKeySource = "env" | "stored" | "keychain";
+
+/** The provider id of the Anthropic API key in `auth.json`. */
+export const ANTHROPIC_PROVIDER = "anthropic";
+
+export const MISSING_API_KEY_MESSAGE =
+	"No Anthropic API key. Store one with `atelier login api-key anthropic` (/login in a session), or set ANTHROPIC_API_KEY.";
 
 /** Runs macOS `security` by absolute path, without a shell. */
 export const runSecurity: SecurityRunner = (args) =>
@@ -42,24 +55,39 @@ export const runSecurity: SecurityRunner = (args) =>
 		});
 	});
 
+const fromEnv = (sources: ApiKeySources) => (sources.env ?? process.env).ANTHROPIC_API_KEY?.trim() || undefined;
+
+function storedKey(sources: ApiKeySources): string | undefined {
+	const credential = (sources.store ?? new AuthStore(authFile(homedir()))).get(ANTHROPIC_PROVIDER);
+	return credential?.type === "api_key" ? credential.key.trim() || undefined : undefined;
+}
+
 /**
- * Finds the Anthropic API key: ANTHROPIC_API_KEY when it is set for this
- * command, otherwise the macOS Keychain. Atelier never stores or logs it.
+ * Finds the Anthropic API key: ANTHROPIC_API_KEY when it is set for this command, then the key `atelier login` stored
+ * in `~/.atelier/auth.json`, then the macOS Keychain. Atelier never logs it.
  */
 export async function resolveApiKey(sources: ApiKeySources = {}): Promise<string> {
-	const fromEnv = (sources.env ?? process.env).ANTHROPIC_API_KEY?.trim();
-	if (fromEnv) return fromEnv;
+	const key = fromEnv(sources) ?? storedKey(sources);
+	if (key) return key;
 
-	if ((sources.platform ?? process.platform) !== "darwin")
-		throw new MissingApiKeyError("No Anthropic API key. Set ANTHROPIC_API_KEY for this command.");
+	if ((sources.platform ?? process.platform) !== "darwin") throw new MissingApiKeyError(MISSING_API_KEY_MESSAGE);
 
 	const result = await (sources.runSecurity ?? runSecurity)(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"]);
-	const missing = new MissingApiKeyError(`No Anthropic API key in the Keychain. Store it with: ${STORE_KEY_COMMAND}`);
+	const missing = new MissingApiKeyError(MISSING_API_KEY_MESSAGE);
 	if (result.code === ITEM_NOT_FOUND) throw missing;
 	// stdout may hold the key: only stderr goes into the message.
 	if (result.code !== 0)
 		throw new KeychainError(`The Keychain could not be read (security exit ${result.code}): ${result.stderr.trim()}`);
-	const key = result.stdout.trim();
-	if (!key) throw missing;
-	return key;
+	const fromKeychain = result.stdout.trim();
+	if (!fromKeychain) throw missing;
+	return fromKeychain;
+}
+
+/** Where `resolveApiKey` would take the key from, asking the Keychain only whether it has one, never for the key. */
+export async function apiKeySource(sources: ApiKeySources = {}): Promise<ApiKeySource | undefined> {
+	if (fromEnv(sources)) return "env";
+	if (storedKey(sources)) return "stored";
+	if ((sources.platform ?? process.platform) !== "darwin") return undefined;
+	const result = await (sources.runSecurity ?? runSecurity)(["find-generic-password", "-s", KEYCHAIN_SERVICE]);
+	return result.code === 0 ? "keychain" : undefined;
 }
