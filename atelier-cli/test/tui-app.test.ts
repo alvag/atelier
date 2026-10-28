@@ -2032,7 +2032,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(0);
 	});
 
-	it("says what is wrong with a model it cannot read, and has no /backend command", async () => {
+	it("says what is wrong with a model it cannot read, and that /backend is gone, without a turn", async () => {
 		const h = harness([]);
 		const stub = listingCore();
 		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
@@ -2046,11 +2046,16 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(h.screen.screen()).not.toContain("Move the session to another backend");
 		h.screen.type("end anthropic-api");
 		h.screen.type("\r");
-		await until(() => stub.log.commands.some((command) => command.command === "session.send"));
-		expect(stub.log.commands.filter((command) => command.command === "session.send")).toEqual([
-			{ command: "session.send", sessionId: "s1", prompt: "/backend anthropic-api" },
-		]);
-		h.screen.type("\x03");
+		await until(() =>
+			h.screen.screen().includes("/backend no longer exists: pick a model of another provider in /model"),
+		);
+		h.screen.type("/backend");
+		h.screen.type("\r");
+		await until(
+			() =>
+				h.screen.screen().split("/backend no longer exists: pick a model of another provider in /model").length === 3,
+		);
+		expect(stub.log.commands.map((command) => command.command)).not.toContain("session.send");
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});

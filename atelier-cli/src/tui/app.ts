@@ -161,6 +161,9 @@ const COMMANDS = [
 	{ name: "exit", description: "Close the session" },
 ];
 
+/** What a typed `/backend` says, instead of reaching the model as a prompt. */
+const BACKEND_GONE = "/backend no longer exists: pick a model of another provider in /model";
+
 /** Under `/model`'s list: why a provider may be missing from it. */
 const MODEL_NOTE = "Only showing models from configured providers. Use /login to add providers.";
 
@@ -1251,6 +1254,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		else if (text === "/feature") toggleFeature();
 		else if (command === "/mcp") await runMcp(words.slice(1));
 		else if (command === "/permissions") await runPermissions(words.slice(1));
+		// Gone: the model list moves a session to another provider now.
+		else if (command === "/backend") conversation.note(BACKEND_GONE, true);
 		else if (command === "/login" || command === "/logout") {
 			await runLogin(command, words.slice(1));
 			// A sign-in adds its provider's models to /model, a sign-out takes them away.
