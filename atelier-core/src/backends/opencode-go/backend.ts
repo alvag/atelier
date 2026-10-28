@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
+import { type AtelierEventBody, errorEvent } from "../../events.ts";
 import { VERSION } from "../../version.ts";
 import { AnthropicApiBackend, type AnthropicApiBackendOptions } from "../anthropic-api/backend.ts";
 import { anthropicTransport, type ModelTransport } from "../anthropic-api/transport.ts";
-import { chatCompletionsTransport } from "./chat-completions.ts";
+import { chatCompletionsTransport, USAGE_LIMIT } from "./chat-completions.ts";
 import { DEFAULT_OPENCODE_GO_MODEL, OPENCODE_GO_BASE_URL, openCodeGoModel } from "./models.ts";
 
 export const OPENCODE_GO_BACKEND_ID = "opencode-go";
@@ -19,6 +20,30 @@ export interface OpenCodeGoBackendOptions extends Omit<AnthropicApiBackendOption
 /** The headers of every request of one session: its conversation id, and Atelier as the client. */
 export function openCodeGoHeaders(sessionId: string): Record<string, string> {
 	return { [OPENCODE_SESSION_HEADER]: sessionId, "user-agent": `atelier/${VERSION}` };
+}
+
+const KEY_HINT =
+	"OpenCode Go refused the key: store another with /login api-key opencode-go (atelier login api-key opencode-go), or check OPENCODE_API_KEY.";
+const QUOTA_HINT =
+	"OpenCode Go's usage limit is reached: it counts 5-hour, weekly and monthly limits; see https://opencode.ai/console.";
+
+/**
+ * The transport's errors as OpenCode Go means them: a spent plan (402, or 429 that names the limit) is
+ * `quota_exceeded` and not retried, and a refused key says where the key comes from.
+ */
+function withOpenCodeErrors(transport: ModelTransport): ModelTransport {
+	return {
+		...transport,
+		errorEvent(error, message): AtelierEventBody {
+			const status = (error as { status?: unknown } | null)?.status;
+			if (status === 402 || (status === 429 && USAGE_LIMIT.test(message)))
+				return errorEvent("quota_exceeded", `${message}. ${QUOTA_HINT}`, false);
+			const event = transport.errorEvent(error, message);
+			return event.type === "error" && event.code === "authentication_error"
+				? { ...event, message: `${message}. ${KEY_HINT}` }
+				: event;
+		},
+	};
 }
 
 /** Reasoning a Chat Completions model left carries no signature, so a Messages API model cannot take it back. */
@@ -61,22 +86,27 @@ export function createOpenCodeGoBackend(options: OpenCodeGoBackendOptions): Anth
 		id: OPENCODE_GO_BACKEND_ID,
 		connect: () => {
 			const headers = openCodeGoHeaders(randomUUID());
-			const messages = messagesTransport(
-				new Anthropic({
+			const messages = withOpenCodeErrors(
+				messagesTransport(
+					new Anthropic({
+						apiKey: options.apiKey,
+						baseURL: baseUrl,
+						// The SDK sends the key as a bearer token; the Messages API's own header goes too.
+						defaultHeaders: { ...headers, "x-api-key": options.apiKey },
+						...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+						...(options.maxRetries === undefined ? {} : { maxRetries: options.maxRetries }),
+					}),
+				),
+			);
+			const chat = withOpenCodeErrors(
+				chatCompletionsTransport({
 					apiKey: options.apiKey,
-					baseURL: baseUrl,
-					// The SDK sends the key as a bearer token; the Messages API's own header goes too.
-					defaultHeaders: { ...headers, "x-api-key": options.apiKey },
+					baseUrl,
+					headers,
 					...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 					...(options.maxRetries === undefined ? {} : { maxRetries: options.maxRetries }),
 				}),
 			);
-			const chat = chatCompletionsTransport({
-				apiKey: options.apiKey,
-				baseUrl,
-				headers,
-				...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-			});
 			return (model) => (openCodeGoModel(model).protocol === "anthropic-messages" ? messages : chat);
 		},
 	});

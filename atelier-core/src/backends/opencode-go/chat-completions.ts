@@ -21,6 +21,34 @@ export interface ChatCompletionsOptions {
 	/** Sent with every request: the conversation's id and Atelier as the client. */
 	headers: Record<string, string>;
 	fetch?: typeof globalThis.fetch;
+	/** Retries of a request refused for load (429 but the usage limit, 5xx) or lost before it answered; 2 by default. */
+	maxRetries?: number;
+}
+
+const RETRY_BASE_MS = 500;
+
+/** What OpenCode says when the plan's usage, not the request rate, is spent. */
+export const USAGE_LIMIT = /usage limit|quota|allowance|balance|credits|monthly|weekly/i;
+
+/** Whether trying again later may work: load and lost connections, never a spent plan or a refused request. */
+function worthRetrying(error: unknown): boolean {
+	if (!(error instanceof ChatCompletionsError)) return true;
+	if (error.status === 429) return !USAGE_LIMIT.test(error.message);
+	return error.status !== undefined && error.status >= 500;
+}
+
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve) => {
+		const timer = setTimeout(resolve, ms);
+		signal?.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timer);
+				resolve();
+			},
+			{ once: true },
+		);
+	});
 }
 
 type ChatMessage =
@@ -207,20 +235,37 @@ async function failure(response: Response): Promise<ChatCompletionsError> {
  */
 export function chatCompletionsTransport(options: ChatCompletionsOptions): ModelTransport {
 	const fetchFn = options.fetch ?? globalThis.fetch;
+	const maxRetries = options.maxRetries ?? 2;
+	const post = async (body: string, signal: AbortSignal | undefined): Promise<Response> => {
+		const response = await fetchFn(`${options.baseUrl}/v1/chat/completions`, {
+			method: "POST",
+			headers: {
+				...options.headers,
+				authorization: `Bearer ${options.apiKey}`,
+				"content-type": "application/json",
+				accept: "text/event-stream",
+			},
+			body,
+			...(signal === undefined ? {} : { signal }),
+		});
+		if (!response.ok || response.body === null) throw await failure(response);
+		return response;
+	};
+	/** Only until the answer starts: a stream cut halfway is not sent again, since its deltas were already shown. */
+	const connect = async (body: string, signal: AbortSignal | undefined): Promise<Response> => {
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return await post(body, signal);
+			} catch (error) {
+				if (signal?.aborted || attempt >= maxRetries || !worthRetrying(error)) throw error;
+			}
+			await pause(RETRY_BASE_MS * 2 ** attempt, signal);
+		}
+	};
 	return {
 		async *request(params, signal): AsyncGenerator<ModelDelta, Anthropic.Message> {
-			const response = await fetchFn(`${options.baseUrl}/v1/chat/completions`, {
-				method: "POST",
-				headers: {
-					...options.headers,
-					authorization: `Bearer ${options.apiKey}`,
-					"content-type": "application/json",
-					accept: "text/event-stream",
-				},
-				body: JSON.stringify(toChatRequest(params)),
-				...(signal === undefined ? {} : { signal }),
-			});
-			if (!response.ok || response.body === null) throw await failure(response);
+			const response = await connect(JSON.stringify(toChatRequest(params)), signal);
+			if (response.body === null) throw new ChatCompletionsError(response.status, "empty answer");
 			let id = "chatcmpl";
 			let text = "";
 			let reasoning = "";
