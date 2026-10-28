@@ -1,5 +1,6 @@
 import { type AtelierEvent, type JsonValue, visibleText } from "@atelier/core";
 import { type Component, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { editView, writeView } from "./code-view.ts";
 import { highlightCode } from "./highlight.ts";
 import { hasColor, type Paint, type Style } from "./style.ts";
 
@@ -98,22 +99,32 @@ function fieldLines(input: JsonValue, paint: Paint): string[] {
 	return cappedLines(lines, MAX_DETAIL_LINES);
 }
 
-/** The call's input as the expanded card shows it: the whole command, the edits, the subagent's prompt. */
-function inputLines(tool: string, input: JsonValue, paint: Paint): string[] {
+/**
+ * The call's input as the expanded card shows it, in `room` columns: the whole command, the edits as a diff, the
+ * start of a written file, the subagent's prompt. `startLines` numbers the diff.
+ */
+function inputLines(
+	tool: string,
+	input: JsonValue,
+	paint: Paint,
+	room: number,
+	startLines: readonly number[] | undefined,
+): string[] {
 	const text = (name: string) => field(input, name);
 	switch (tool) {
 		case "bash":
 			return commandLines(shown(text("command") ?? ""), paint);
 		case "edit": {
-			const edits = typeof input === "object" && input !== null && !Array.isArray(input) ? input.edits : undefined;
+			const edits = isRecord(input) ? input.edits : undefined;
 			if (!Array.isArray(edits)) return [];
-			return edits.flatMap((edit) => [
-				...capped(shown(field(edit, "oldText") ?? ""), MAX_DETAIL_LINES).map((line) => paint("red", `- ${line}`)),
-				...capped(shown(field(edit, "newText") ?? ""), MAX_DETAIL_LINES).map((line) => paint("green", `+ ${line}`)),
-			]);
+			const texts = edits.map((edit) => ({
+				oldText: shown(field(edit, "oldText") ?? ""),
+				newText: shown(field(edit, "newText") ?? ""),
+			}));
+			return editView(texts, startLines, paint, room, 2 * MAX_DETAIL_LINES);
 		}
 		case "write":
-			return capped(shown(text("content") ?? ""), MAX_DETAIL_LINES).map((line) => paint("green", `+ ${line}`));
+			return writeView(shown(text("path") ?? ""), shown(text("content") ?? ""), paint, room, MAX_DETAIL_LINES);
 		case "grep":
 			return [searchLine(input, paint)];
 		case "read":
@@ -304,12 +315,12 @@ export class ToolCard implements Component {
 		for (const cause of done?.blocked ?? [])
 			lines.push(...indented([paint("yellow", `sandbox blocked: ${shown(cause)}`)], width, "   "));
 		if (!open) return lines;
-		const details = inputLines(this.tool, this.#input, paint);
+		const bar = paint(stateOf(done?.ok).style, hasColor(paint) ? "▎" : "│");
+		const details = inputLines(this.tool, this.#input, paint, Math.max(1, width - 3), done?.startLines);
 		if (done?.truncated)
 			details.push(
 				paint("dim", done.fullOutputPath ? `full output: ${shown(done.fullOutputPath)}` : "output truncated"),
 			);
-		const bar = paint(stateOf(done?.ok).style, hasColor(paint) ? "▎" : "│");
 		lines.push(...indented(details, width, ` ${bar} `));
 		if (this.#activity) lines.push(...indented(this.#activity.details(paint), width, "     "));
 		return lines;

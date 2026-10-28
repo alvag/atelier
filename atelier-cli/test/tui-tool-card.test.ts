@@ -136,6 +136,114 @@ describe("ToolCard", () => {
 		expect(memory.join("\n")).toContain("<dim>id    </> <yellow>7</>");
 	});
 
+	it("numbers a written file's lines and says how many more there are", () => {
+		const content = Array.from({ length: 14 }, (_, i) => `const v${i + 1} = ${i + 1};`).join("\n");
+		const { lines } = card("write", { path: "a.ts", content }, { summary: "a.ts (1.2 KB)" });
+		expect(lines.join("\n")).toMatchInlineSnapshot(`
+			" ✓ write a.ts · 1.2 KB
+			 │  1 const v1 = 1;
+			 │  2 const v2 = 2;
+			 │  3 const v3 = 3;
+			 │  4 const v4 = 4;
+			 │  5 const v5 = 5;
+			 │  6 const v6 = 6;
+			 │  7 const v7 = 7;
+			 │  8 const v8 = 8;
+			 │  9 const v9 = 9;
+			 │ 10 const v10 = 10;
+			 │ 11 const v11 = 11;
+			 │ 12 const v12 = 12;
+			 │    … 2 more lines"
+		`);
+	});
+
+	it("shows an edit as a numbered diff, the lines both sides share as context", () => {
+		const { lines } = card(
+			"edit",
+			{
+				path: "src/style.ts",
+				edits: [
+					{
+						oldText: "export const painter =\n  (color: boolean): Paint =>\n    (style, text) =>",
+						newText: "export const painter =\n  (color: boolean, tones?: Tones): Paint =>\n    (style, text) =>",
+					},
+				],
+			},
+			{ summary: "src/style.ts (1 edit)", startLines: [21] },
+		);
+		expect(lines.join("\n")).toMatchInlineSnapshot(`
+			" ✓ edit src/style.ts · 1 edit
+			 │ 21   export const painter =
+			 │ 22 -   (color: boolean): Paint =>
+			 │ 22 +   (color: boolean, tones?: Tones): Paint =>
+			 │ 23       (style, text) =>"
+		`);
+	});
+
+	it("numbers what an edit adds after the lines the earlier edits added or removed", () => {
+		const { lines } = card(
+			"edit",
+			{
+				path: "a.txt",
+				edits: [
+					{ oldText: "z", newText: "Z" },
+					{ oldText: "a", newText: "a1\na2" },
+				],
+			},
+			{ summary: "a.txt (2 edits)", startLines: [10, 1] },
+		);
+		expect(lines.join("\n")).toMatchInlineSnapshot(`
+			" ✓ edit a.txt · 2 edits
+			 │  1 - a
+			 │  1 + a1
+			 │  2 + a2
+			 │    ⋮
+			 │ 10 - z
+			 │ 11 + Z"
+		`);
+	});
+
+	it("shows an edit without numbers when the call does not say where it starts", () => {
+		const { lines } = card("edit", { path: "a.ts", edits: [{ oldText: "old", newText: "new" }] });
+		expect(lines.slice(1)).toEqual([" │ - old", " │ + new"]);
+	});
+
+	it("wraps a long line of a diff under its text, not under its number", () => {
+		const { lines } = card(
+			"edit",
+			{ path: "a.txt", edits: [{ oldText: "x", newText: "word ".repeat(10).trim() }] },
+			{ summary: "a.txt (1 edit)", startLines: [7] },
+			{ width: 30 },
+		);
+		expect(lines.join("\n")).toMatchInlineSnapshot(`
+			" ✓ edit a.txt · 1 edit
+			 │ 7 - x
+			 │ 7 + word word word word
+			 │     word word word word
+			 │     word word"
+		`);
+		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(30);
+	});
+
+	it("highlights a written file by its extension and colors a diff's marks", () => {
+		const write = card(
+			"write",
+			{ path: "a.ts", content: "const a = 1;" },
+			{ summary: "a.ts (12 B)" },
+			{ paint: tagged },
+		);
+		expect(write.lines[1]).toContain("<dim>1</> <magenta>const</>");
+		const edit = card(
+			"edit",
+			{ path: "a.ts", edits: [{ oldText: "keep\nold", newText: "keep\nnew" }] },
+			{ summary: "a.ts (1 edit)", startLines: [3] },
+			{ paint: tagged },
+		).lines.join("\n");
+		expect(edit).toContain("<dim>3</>   <dim>keep</>");
+		expect(edit).toContain("<dim>4</> <red>-</> <red>old</>");
+		expect(edit).toContain("<dim>4</> <green>+</> <green>new</>");
+	});
+
 	it("highlights a command as bash", () => {
 		const { lines } = card("bash", { command: 'echo "hi" # greet' }, { summary: "echo (exit 0)" }, { paint: tagged });
 		expect(lines[1]).toContain("<dim># greet</>");
