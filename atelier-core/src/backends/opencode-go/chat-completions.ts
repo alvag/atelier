@@ -177,11 +177,19 @@ interface ChatChunk {
 	error?: { message?: string };
 }
 
+/** The body's bytes: the first read, already made, then the rest. */
+async function* bytesFrom(
+	first: ReadableStreamReadResult<Uint8Array>,
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+): AsyncGenerator<Uint8Array> {
+	for (let next = first; !next.done; next = await reader.read()) yield next.value;
+}
+
 /** The `[DONE]` line that closes a stream. */
 const DONE = Symbol("done");
 
 /** The JSON of each `data:` line of an event stream, then `DONE` when the stream says it ended. */
-async function* events(body: ReadableStream<Uint8Array>): AsyncGenerator<ChatChunk | typeof DONE> {
+async function* events(body: AsyncIterable<Uint8Array>): AsyncGenerator<ChatChunk | typeof DONE> {
 	const decoder = new TextDecoder();
 	let buffer = "";
 	for await (const bytes of body) {
@@ -244,7 +252,7 @@ async function failure(response: Response): Promise<ChatCompletionsError> {
 export function chatCompletionsTransport(options: ChatCompletionsOptions): ModelTransport {
 	const fetchFn = options.fetch ?? globalThis.fetch;
 	const maxRetries = options.maxRetries ?? 2;
-	const post = async (body: string, signal: AbortSignal | undefined): Promise<Response> => {
+	const post = async (body: string, signal: AbortSignal | undefined): Promise<AsyncIterable<Uint8Array>> => {
 		const response = await fetchFn(`${options.baseUrl}/v1/chat/completions`, {
 			method: "POST",
 			headers: {
@@ -257,10 +265,13 @@ export function chatCompletionsTransport(options: ChatCompletionsOptions): Model
 			...(signal === undefined ? {} : { signal }),
 		});
 		if (!response.ok || response.body === null) throw await failure(response);
-		return response;
+		// The first read belongs to the attempt: a connection lost before the body's first byte is tried again.
+		const reader = response.body.getReader();
+		const first = await reader.read();
+		return bytesFrom(first, reader);
 	};
-	/** Only until the answer starts: a stream cut halfway is not sent again, since its deltas were already shown. */
-	const connect = async (body: string, signal: AbortSignal | undefined): Promise<Response> => {
+	/** Only until the answer's first byte: a stream cut later is not sent again, since its deltas were already shown. */
+	const connect = async (body: string, signal: AbortSignal | undefined): Promise<AsyncIterable<Uint8Array>> => {
 		for (let attempt = 0; ; attempt++) {
 			try {
 				return await post(body, signal);
@@ -272,8 +283,7 @@ export function chatCompletionsTransport(options: ChatCompletionsOptions): Model
 	};
 	return {
 		async *request(params, signal): AsyncGenerator<ModelDelta, Anthropic.Message> {
-			const response = await connect(JSON.stringify(toChatRequest(params)), signal);
-			if (response.body === null) throw new ChatCompletionsError(response.status, "empty answer");
+			const body = await connect(JSON.stringify(toChatRequest(params)), signal);
 			let id = "chatcmpl";
 			let text = "";
 			let reasoning = "";
@@ -281,7 +291,7 @@ export function chatCompletionsTransport(options: ChatCompletionsOptions): Model
 			let usage: ChatChunk["usage"];
 			const calls: { id: string; name: string; arguments: string }[] = [];
 			let done = false;
-			for await (const chunk of events(response.body)) {
+			for await (const chunk of events(body)) {
 				if (chunk === DONE) {
 					done = true;
 					break;

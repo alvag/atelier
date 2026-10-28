@@ -46,6 +46,21 @@ function withOpenCodeErrors(transport: ModelTransport): ModelTransport {
 	};
 }
 
+/**
+ * The Anthropic SDK retries every 429. A spent plan (402, or a 429 that names the usage limit) only fails again, so
+ * its answer is marked `x-should-retry: false`, a header the SDK obeys; anthropic-api's client is not wrapped.
+ */
+function withoutQuotaRetries(fetchFn: typeof globalThis.fetch): typeof globalThis.fetch {
+	return async (input, init) => {
+		const response = await fetchFn(input, init);
+		if (response.status !== 402 && response.status !== 429) return response;
+		const text = await response.text();
+		const headers = new Headers(response.headers);
+		if (response.status === 402 || USAGE_LIMIT.test(text)) headers.set("x-should-retry", "false");
+		return new Response(text, { status: response.status, statusText: response.statusText, headers });
+	};
+}
+
 /** Reasoning a Chat Completions model left carries no signature, so a Messages API model cannot take it back. */
 function withoutUnsigned(message: Anthropic.MessageParam): Anthropic.MessageParam {
 	if (typeof message.content === "string") return message;
@@ -93,7 +108,7 @@ export function createOpenCodeGoBackend(options: OpenCodeGoBackendOptions): Anth
 						baseURL: baseUrl,
 						// The SDK sends the key as a bearer token; the Messages API's own header goes too.
 						defaultHeaders: { ...headers, "x-api-key": options.apiKey },
-						...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+						fetch: withoutQuotaRetries(options.fetch ?? globalThis.fetch),
 						...(options.maxRetries === undefined ? {} : { maxRetries: options.maxRetries }),
 					}),
 				),
