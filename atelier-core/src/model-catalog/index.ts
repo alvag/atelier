@@ -1,4 +1,6 @@
 export { currentModelData, useModelData } from "./current.ts";
+export { defaultCatalogSources, modelRefreshEnabled } from "./defaults.ts";
+export { type DynamicCatalogOptions, DynamicModelCatalog } from "./dynamic.ts";
 export {
 	CATALOG_BACKENDS,
 	type CatalogBackend,

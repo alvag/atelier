@@ -97,6 +97,13 @@ export {
 	type NewMemory,
 } from "./memory/index.ts";
 export {
+	catalogFile,
+	DynamicModelCatalog,
+	defaultCatalogSources,
+	modelRefreshEnabled,
+	readCatalog,
+} from "./model-catalog/index.ts";
+export {
 	addTask,
 	appendLog,
 	CANONICAL_COLUMNS,

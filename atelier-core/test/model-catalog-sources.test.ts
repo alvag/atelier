@@ -126,6 +126,13 @@ it("does not ask Anthropic without a key, and lists nothing for it", async () =>
 	expect(modelDataOf(await readCatalog(file)).listed("anthropic-api")).toBeUndefined();
 });
 
+it("does not ask OpenCode Go when it has no key", async () => {
+	routes["/go/v1/models"] = json({ data: [{ id: "grok-4.7" }] });
+	const source = openCodeGoModelsSource({ baseUrl: `${base}/go`, signedIn: async () => false });
+	expect(await refreshCatalog(file, [source])).toEqual({ "opencode-go": "failed" });
+	expect(seen).toHaveLength(0);
+});
+
 it("lists OpenCode Go's models without its key", async () => {
 	routes["/go/v1/models"] = json({ object: "list", data: [{ id: "grok-4.7" }, { id: "minimax-m3" }, { id: 3 }] });
 	await refreshCatalog(file, [openCodeGoModelsSource({ baseUrl: `${base}/go` })]);
