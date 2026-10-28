@@ -211,6 +211,7 @@ describe("options.list", () => {
 					{ name: "claude-code", models: [...BACKEND_MODELS["claude-code"]] },
 					{ name: "anthropic-api", models: [...BACKEND_MODELS["anthropic-api"]] },
 					{ name: "opencode-go", models: [...BACKEND_MODELS["opencode-go"]] },
+					{ name: "openai-codex", models: [...BACKEND_MODELS["openai-codex"]] },
 				],
 				efforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
 				modes: ["normal", "auto", "yolo"],

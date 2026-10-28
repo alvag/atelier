@@ -24,7 +24,7 @@ export type Role = (typeof ROLES)[number];
 
 export { THINKING_LEVELS, type ThinkingLevel };
 
-export const PROFILE_BACKENDS = ["anthropic-api", "claude-code", "opencode-go"] as const;
+export const PROFILE_BACKENDS = ["anthropic-api", "claude-code", "opencode-go", "openai-codex"] as const;
 export type ProfileBackend = (typeof PROFILE_BACKENDS)[number];
 
 const SAFE_MODEL = /^[A-Za-z0-9._~:@/+%-]+$/;

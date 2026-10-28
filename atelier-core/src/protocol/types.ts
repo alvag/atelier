@@ -16,8 +16,11 @@ export const MAX_SESSION_NAME_CHARS = 200;
 /** What a saved session's id looks like: it names a file, so nothing that could leave the folder. */
 export const isSavedSessionId = (value: string): boolean => /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
 
-export const BACKEND_NAMES = ["claude-code", "anthropic-api", "opencode-go"] as const;
-/** claude-code uses the Claude subscription; anthropic-api and opencode-go run Atelier's own loop on an API key. */
+export const BACKEND_NAMES = ["claude-code", "anthropic-api", "opencode-go", "openai-codex"] as const;
+/**
+ * claude-code uses the Claude subscription; anthropic-api and opencode-go run Atelier's own loop on an API key;
+ * openai-codex runs it on the ChatGPT subscription.
+ */
 export type BackendName = (typeof BACKEND_NAMES)[number];
 export const DEFAULT_BACKEND: BackendName = "claude-code";
 

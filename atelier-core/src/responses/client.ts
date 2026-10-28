@@ -41,7 +41,7 @@ export interface ResponsesRequest {
 	input: ResponsesItem[];
 	tools?: ResponsesTool[];
 	/** Sent only when given; the encrypted reasoning comes back with it, to send again with the history. */
-	reasoning?: { effort: string; summary?: "auto" | "concise" | "detailed" };
+	reasoning?: { effort?: string; summary?: "auto" | "concise" | "detailed" };
 	promptCacheKey?: string;
 	/** Fields an endpoint adds to every request. */
 	extra?: Record<string, unknown>;
