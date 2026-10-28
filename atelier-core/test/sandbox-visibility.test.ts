@@ -25,15 +25,18 @@ const keyOf = (idOrCommand: string) => Buffer.from(idOrCommand.slice(0, 100)).to
 /**
  * A sandbox that wraps nothing; when a command is wrapped it records the
  * violations `report` returns under the run's key, the way the library's log
- * monitor would, `delayMs` later (the log lags while the command runs).
+ * monitor would, `delayMs` later (the log lags while the command runs); the
+ * first `hiddenReads` reads of the log see nothing yet.
  */
 function sandboxWith(
 	report: (command: string, run: number) => Pick<SandboxViolation, "line" | "command" | "encodedCommand">[] = () => [],
 	seed: SandboxViolation[] = [],
 	delayMs = 0,
+	hiddenReads = 0,
 ) {
 	const store: SandboxViolation[] = [...seed];
 	let runs = 0;
+	let reads = 0;
 	const manager: SandboxManagerLike = {
 		isSupportedPlatform: () => true,
 		checkDependencies: () => ({ errors: [], warnings: [] }),
@@ -48,7 +51,7 @@ function sandboxWith(
 			else setTimeout(() => record(violations), delayMs);
 			return command;
 		},
-		getSandboxViolationStore: () => ({ getViolations: () => [...store] }),
+		getSandboxViolationStore: () => ({ getViolations: () => (reads++ < hiddenReads ? [] : [...store]) }),
 		cleanupAfterCommand: () => {},
 		reset: async () => {},
 	};
@@ -109,6 +112,19 @@ describe("the cause of a sandbox block", () => {
 			"write to /a/one (not an allowed write path)",
 			"write to /a/two (not an allowed write path)",
 		]);
+	});
+
+	it("waits for the log when curl says it could not connect, and names the blocked connection", async () => {
+		const line = "deny network-outbound 127.0.0.1:8080";
+		const sandbox = sandboxWith((command) => [{ command, line }], [], 0, 1);
+		const result = await createBashTool({ sandbox, withoutApproval: true, policy: "verifier" }).execute(
+			{
+				command:
+					'echo "curl: (7) Failed to connect to 127.0.0.1 port 8080 after 0 ms: Couldn\'t connect to server" >&2; exit 7',
+			},
+			{ cwd },
+		);
+		expect(result.blocked).toEqual(["network connect to 127.0.0.1:8080 (no network for the verifier)"]);
 	});
 
 	it("leaves out the system's own preference reads and puts the connection before the files", async () => {
