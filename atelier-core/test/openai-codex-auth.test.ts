@@ -127,6 +127,8 @@ it("takes the pasted redirect URL, or the bare code, and refuses one of another 
 
 it("refuses a pasted URL or query without the sign-in's state, and never repeats the code in an error", () => {
 	expect(parsePasted("bare-code", "expected").code).toBe("bare-code");
+	// A bare code may hold `=` (base64 padding): only `code=` or `://` make it a redirect.
+	expect(parsePasted("YmFyZS1jb2Rl==", "expected").code).toBe("YmFyZS1jb2Rl==");
 	expect(() => parsePasted("http://127.0.0.1:1455/auth/callback?code=other-login", "expected")).toThrow(/state/);
 	expect(() => parsePasted("code=other-login", "expected")).toThrow(/state/);
 	const code = `test-code-${randomUUID()}`;

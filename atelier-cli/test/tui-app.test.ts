@@ -3221,3 +3221,14 @@ describe("TUI sign-in with ChatGPT", { timeout: 20_000 }, () => {
 		}
 	});
 });
+
+describe("paste question", () => {
+	it("hides a bare code, with or without =, and the code of a URL", async () => {
+		const { withoutCode } = await import("../src/tui/dialog.ts");
+		expect(withoutCode("YmFyZS1jb2Rl==")).toBe("[hidden code, 14 characters]");
+		expect(withoutCode("bare-code")).toBe("[hidden code, 9 characters]");
+		expect(withoutCode("http://localhost:1455/auth/callback?code=abc&state=s")).toBe(
+			"http://localhost:1455/auth/callback?code=[hidden]&state=s",
+		);
+	});
+});
