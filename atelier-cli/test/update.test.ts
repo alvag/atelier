@@ -5,8 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { VERSION } from "@atelier/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../src/run.ts";
+
+// Slow by nature, not by waiting: each test creates an origin with its releases, clones it and runs a real
+// `atelier update` (git fetch, checkout, describe and a pnpm script), 20 to 30 processes; under heavy load the
+// 5 s of a test and the 10 s of a hook are not enough.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 let root: string;
 let origin: string;
