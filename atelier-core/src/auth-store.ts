@@ -1,4 +1,5 @@
-import { open, stat, unlink, utimes } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { open, readFile, stat, unlink, utimes } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ensureSecretFolder, readSecretFile, writeSecretFile } from "./secret-file.ts";
@@ -27,14 +28,24 @@ export class AuthStoreError extends Error {
 export interface AuthStoreOptions {
 	/** How long a change waits for another process's lock before it fails. */
 	lockTimeoutMs?: number;
-	/** A lock older than this was left by a process that died, and is taken over. */
+	/**
+	 * A lock that names no process (one written by an older Atelier) and is older than this is taken over. The holder
+	 * renews the lock's time three times within it while it holds it.
+	 */
 	staleLockMs?: number;
+	/** How long a refresh waits for another process's lock before it fails (default 30 s). */
+	refreshLockTimeoutMs?: number;
 }
 
 const LOCK_TIMEOUT_MS = 5_000;
 /** A refresh waits longer: another process may be refreshing, which takes a request to the provider. */
 const REFRESH_LOCK_TIMEOUT_MS = 30_000;
 const STALE_LOCK_MS = 10_000;
+/**
+ * A lock whose process is alive is only taken over once it has not been renewed for this long: by then its id belongs
+ * to another process, or the holder was stopped long enough that the sign-in it refreshes is better asked again.
+ */
+const ABANDONED_LOCK_MS = 10 * 60_000;
 const LOCK_RETRY_MS = 20;
 
 export function authFile(home: string): string {
@@ -60,11 +71,13 @@ export class AuthStore {
 	readonly #file: string;
 	readonly #lockTimeoutMs: number;
 	readonly #staleLockMs: number;
+	readonly #refreshLockTimeoutMs: number;
 
 	constructor(file: string, options: AuthStoreOptions = {}) {
 		this.#file = file;
 		this.#lockTimeoutMs = options.lockTimeoutMs ?? LOCK_TIMEOUT_MS;
 		this.#staleLockMs = options.staleLockMs ?? STALE_LOCK_MS;
+		this.#refreshLockTimeoutMs = options.refreshLockTimeoutMs ?? REFRESH_LOCK_TIMEOUT_MS;
 	}
 
 	get file(): string {
@@ -110,7 +123,7 @@ export class AuthStore {
 		const current = this.get(provider);
 		if (current === undefined || !stale(current)) return current;
 		ensureSecretFolder(dirname(this.#file));
-		const release = await this.#lock(Math.max(this.#lockTimeoutMs, REFRESH_LOCK_TIMEOUT_MS));
+		const release = await this.#lock(this.#refreshLockTimeoutMs);
 		try {
 			const all = this.#read();
 			const entry = all[provider];
@@ -160,33 +173,37 @@ export class AuthStore {
 	}
 
 	/**
-	 * Creates `<file>.lock`, which only one process can create; waits while another holds it. While held, the lock's
-	 * time is renewed, so a slow holder (a refresh waiting on the provider) is not taken for a dead one.
+	 * Creates `<file>.lock`, which only one process can create, naming this process in it; waits while another holds
+	 * it. A holder that is alive keeps its lock however slow it is (a refresh waiting on the provider, a stopped
+	 * process): taking it over would send the same refresh token twice. The lock of a process that died is taken at
+	 * once. While held, the lock's time is renewed, so its age says how long its holder has not run.
 	 */
 	async #lock(timeoutMs = this.#lockTimeoutMs): Promise<() => Promise<void>> {
 		const lock = `${this.#file}.lock`;
 		const deadline = Date.now() + timeoutMs;
+		const owner = `${process.pid} ${randomUUID()}`;
 		for (;;) {
 			try {
 				const handle = await open(lock, "wx", 0o600);
-				await handle.close();
+				try {
+					await handle.writeFile(owner);
+				} finally {
+					await handle.close();
+				}
 				const heartbeat = setInterval(() => {
 					const now = new Date();
 					utimes(lock, now, now).catch(() => {});
 				}, this.#staleLockMs / 3);
 				heartbeat.unref();
-				return () => {
+				return async () => {
 					clearInterval(heartbeat);
-					return unlink(lock).catch(() => {});
+					// Only this holder's own lock: one taken over meanwhile belongs to another process now.
+					if ((await readFile(lock, "utf8").catch(() => "")) === owner) await unlink(lock).catch(() => {});
 				};
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			}
-			const age = await stat(lock).then(
-				(stats) => Date.now() - stats.mtimeMs,
-				() => 0,
-			);
-			if (age > this.#staleLockMs) {
+			if (await this.#abandoned(lock)) {
 				await unlink(lock).catch(() => {});
 				continue;
 			}
@@ -194,5 +211,32 @@ export class AuthStore {
 				throw new AuthStoreError(`${this.#file} is locked by another Atelier (${lock}); try again`);
 			await sleep(LOCK_RETRY_MS);
 		}
+	}
+
+	/** Whether the lock's holder is gone: a process that no longer runs, or no process named and an old lock. */
+	async #abandoned(lock: string): Promise<boolean> {
+		const [content, age] = await Promise.all([
+			readFile(lock, "utf8").catch(() => undefined),
+			stat(lock).then(
+				(stats) => Date.now() - stats.mtimeMs,
+				() => 0,
+			),
+		]);
+		// Gone meanwhile: the next try creates it.
+		if (content === undefined) return false;
+		const pid = Number.parseInt(content, 10);
+		// Empty or from an older Atelier; an empty one may also be a lock created a moment ago, which is not old.
+		if (!Number.isInteger(pid) || pid <= 0) return age > this.#staleLockMs;
+		return !isRunning(pid) || age > ABANDONED_LOCK_MS;
+	}
+}
+
+/** Whether a process with this id runs on this machine; one of another user's still runs. */
+function isRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
 }
