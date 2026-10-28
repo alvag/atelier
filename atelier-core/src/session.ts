@@ -1389,7 +1389,7 @@ export class Session {
 			// reversible delivery (a plain push or rebase) the gate marks.
 			const confirmed = approval?.confirm !== undefined;
 			const skipped =
-				(mode === "yolo" && approval?.sandboxFailed === undefined && (!confirmed || approval?.yoloWaived === true)) ||
+				(mode === "yolo" && approval?.sandboxFailed !== true && (!confirmed || approval?.yoloWaived === true)) ||
 				(approval?.classifyOnly === true && mode !== "auto");
 			const verdict =
 				approval && mode === "auto" && !confirmed ? await this.#classify(callId, call.tool, approval, emit) : undefined;
@@ -1409,7 +1409,8 @@ export class Session {
 					...(asking === undefined ? {} : { tool: asking }),
 					...(confirm === undefined ? {} : { confirm }),
 					...(remember === undefined ? {} : { remember }),
-					...(sandboxFailed === undefined ? {} : { sandboxFailed }),
+					// Only `true` means a failed start; a tool that sends anything else is taken as before, as not failed.
+					...(sandboxFailed === true ? { sandboxFailed } : {}),
 				};
 				emit({ type: "approval_requested", callId, ...question });
 				const request = { callId, ...question };
