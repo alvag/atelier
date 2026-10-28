@@ -26,6 +26,7 @@ import type { ToolDefinition } from "../tools/types.ts";
 import { type Candidate, emptyStartBase, type FreezeOptions, freezeCandidate, readTurnGit } from "./candidate.ts";
 import type { Finding } from "./findings.ts";
 import { gitText, runGit } from "./git.ts";
+import { followUpsBlock, reviewNoticeLines } from "./notice.ts";
 import { findReceipt, findReceipts, latestCorrection, type Receipt, replaceReceipt, writeReceipt } from "./receipts.ts";
 import { type ReviewDeps, type RoleName, type RoleResult, runReview } from "./reviewer.ts";
 import { type Assessment, assessRisk, type Escalation } from "./risk.ts";
@@ -113,6 +114,10 @@ export class SessionReview {
 	readonly #undone = new Set<string>();
 	/** The user allowed every high-risk review of this session: no more questions until it closes. */
 	#allowedForSession = false;
+	/** What the agent is told before its next prompt about the latest review; the newest replaces an older one. */
+	#notice: { review?: string[] | undefined } = {};
+	/** A notice the backend never took, for the next prompt unless a newer one came since. */
+	#returned: string | undefined;
 
 	constructor(options: ReviewOptions) {
 		this.#options = options;
@@ -146,6 +151,20 @@ export class SessionReview {
 	/** The user asked: any risk, no consent, and a receipt does not stop it. With a `ref`, against that ref's commit instead of HEAD. */
 	onDemand(host: ReviewHost, ref?: string): Promise<Spent> {
 		return this.#run(host, true, ref);
+	}
+
+	/** The notice of the latest review for the agent's next prompt, once; undefined when there is nothing to tell. */
+	takeNotice(): string | undefined {
+		const parts = [this.#notice.review].filter((part) => part !== undefined);
+		const text = parts.length === 0 ? this.#returned : followUpsBlock(parts);
+		this.#notice = {};
+		this.#returned = undefined;
+		return text;
+	}
+
+	/** A notice the backend failed before taking goes back for the next prompt, unless a newer one came since. */
+	returnNotice(text: string): void {
+		if (this.#notice.review === undefined) this.#returned ??= text;
 	}
 
 	async close(): Promise<void> {
@@ -422,6 +441,9 @@ export class SessionReview {
 			} catch (error) {
 				host.push(errorEvent("review_receipt_failed", `The receipt was not written: ${describeError(error)}`, true));
 			}
+			// The latest review is what the agent hears about, even when it has nothing to tell.
+			this.#notice.review = reviewNoticeLines(kept, receiptPath);
+			this.#returned = undefined;
 		}
 		const reason = receipt.unavailableReason ?? receipt.escalatedReason;
 		host.push({
