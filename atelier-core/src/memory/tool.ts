@@ -106,9 +106,10 @@ const VALUE_MASKS: RegExp[] = [
 	/\b((?:Proxy-)?Authorization["']?[ \t]*[:=][ \t]*')(?:\\.|[^'\\\n])*/gi,
 	/(?<=')([A-Za-z0-9_-]*Authorization[ \t]*[:=][ \t]*)(?![ \t'])(?:\\.|[^'\\\n])*/gi,
 	/(?<=")([A-Za-z0-9_-]*Authorization[ \t]*[:=][ \t]*)(?![ \t"])(?:\\.|[^"\\\n])*/gi,
-	// A quoted name ("Authorization": ...) with an unquoted value: the quote closes the name, not the value.
-	/(?<=['"])([A-Za-z0-9_-]*Authorization["'][ \t]*[:=][ \t]*)(?![ \t"'])[^\n]*/gi,
-	/(?<![-'"A-Za-z0-9_])([A-Za-z0-9_-]*Authorization["']?[ \t]*[:=][ \t]*)(?![ \t"'])[^\n]*/gi,
+	// A quoted name ("Authorization": ...) with an unquoted value: the quote closes the name, not the value. A JSON
+	// null, boolean or number ends where it ends, before a ',', '}' or ']', so the rest of a one-line object stays.
+	/(?<=['"])([A-Za-z0-9_-]*Authorization["'][ \t]*[:=][ \t]*)(?![ \t"'])(?:(?:null|true|false|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?=[ \t]*(?:[,}\]\n]|$))|[^\n]*)/gi,
+	/(?<![-'"A-Za-z0-9_])([A-Za-z0-9_-]*Authorization["']?[ \t]*[:=][ \t]*)(?![ \t"'])(?:(?:null|true|false|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?=[ \t]*(?:[,}\]\n]|$))|[^\n]*)/gi,
 	/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi,
 ];
 

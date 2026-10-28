@@ -850,6 +850,10 @@ describe("user prompts", () => {
 			"Authorization: AWS4-HMAC-SHA256 Credential=AKID/20260101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc123\nnext line",
 			"Proxy-Authorization: NTLM TlRMTVNTUAAB",
 			'{"Authorization": "Negotiate YIIabc def", "x": 1}',
+			'{"Authorization": null, "x": 1}',
+			'{"authorization":-1.5e3} {"Proxy-Authorization": true ,"y": ["z"]}',
+			"{Authorization: false}",
+			'{"Authorization": nullish token, "x": 1}',
 		];
 		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
 		for (const prompt of prompts) await send(prompt);
@@ -859,6 +863,10 @@ describe("user prompts", () => {
 			"Authorization: [REDACTED]\nnext line",
 			"Proxy-Authorization: [REDACTED]",
 			'{"Authorization": "[REDACTED]", "x": 1}',
+			'{"Authorization": [REDACTED], "x": 1}',
+			'{"authorization":[REDACTED]} {"Proxy-Authorization": [REDACTED] ,"y": ["z"]}',
+			"{Authorization: [REDACTED]}",
+			'{"Authorization": [REDACTED]',
 		]);
 	});
 
