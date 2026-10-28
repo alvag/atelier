@@ -190,7 +190,8 @@ function rememberOffer(
 const MAX_CAUSES = 5;
 
 /** The output of a command the sandbox refused tends to say so; those get a moment for the log the file denials come from. */
-const LOOKS_BLOCKED = /not permitted|permission denied|denied|refused|forbidden|resolve host|unreachable/i;
+const LOOKS_BLOCKED =
+	/not permitted|permission denied|denied|refused|forbidden|resolve host|unreachable|couldn't connect|could not connect|failed to connect/i;
 const GRACE_MS = 400;
 
 /** What the sandbox blocked in a failed run, at most MAX_CAUSES of them. */
