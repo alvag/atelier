@@ -124,12 +124,14 @@ async function loginWithDeviceCode(
 	interaction: OAuthInteraction,
 	options: CodexLoginOptions,
 ): Promise<CodexCredential> {
-	// The user may cancel while the code waits: that stops the polling and every request with it.
+	// The user may cancel while the code waits: that stops the polling and every request with it. Once the code was
+	// approved the offer closes, so the token exchange of a sign-in the user finished is never cut short.
 	const ended = new AbortController();
 	const cancelled = new AbortController();
 	const signal = AbortSignal.any([cancelled.signal, ...(options.signal ? [options.signal] : [])]);
+	let granted: DeviceGrant;
 	try {
-		return await deviceCode(interaction, { ...options, signal }, () => {
+		granted = await deviceCode(interaction, { ...options, signal }, () => {
 			interaction.waitOrCancel?.("Waiting for the code to be entered", ended.signal).then(
 				() => {
 					if (!ended.signal.aborted) cancelled.abort();
@@ -140,13 +142,21 @@ async function loginWithDeviceCode(
 	} finally {
 		ended.abort();
 	}
+	return exchange(granted.code, granted.verifier, granted.redirectUri, options);
+}
+
+/** What an approved device code gives to exchange for tokens. */
+interface DeviceGrant {
+	code: string;
+	verifier: string;
+	redirectUri: string;
 }
 
 async function deviceCode(
 	interaction: OAuthInteraction,
 	options: CodexLoginOptions & { signal: AbortSignal },
 	offerCancel: () => void,
-): Promise<CodexCredential> {
+): Promise<DeviceGrant> {
 	const base = authUrl(options);
 	const what = "The device code request";
 	const started = await postJson(
@@ -193,7 +203,7 @@ async function deviceCode(
 			signal: options.signal,
 		},
 	);
-	return exchange(granted.code, granted.verifier, `${base}/deviceauth/callback`, options);
+	return { ...granted, redirectUri: `${base}/deviceauth/callback` };
 }
 
 /** New tokens for a refresh token; an `OpenAiAuthError` with `expired` when it was refused. */
