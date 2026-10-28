@@ -7,6 +7,8 @@ import type { Receipt } from "./receipts.ts";
 export const NOTICE_MAX_ITEMS = 10;
 /** One item's line is cut to this many characters. */
 const ITEM_MAX_CHARS = 160;
+/** The verdict or outcome line, with its reason (which may carry a backend's error or a verifier's evidence), is cut to this many. */
+const HEADLINE_MAX_CHARS = 300;
 
 const SEVERITY_ORDER = ["blocker", "critical", "warning", "suggestion"];
 
@@ -24,7 +26,7 @@ export function reviewNoticeLines(receipt: Receipt, receiptPath: string | undefi
 		return [`The user skipped the review of your last change (risk ${receipt.risk.level}); it was not reviewed.`];
 	if (verdict === "unavailable" && receipt.unavailableReason === "interrupted") return undefined;
 	if (verdict === "approved" && receipt.followUps.length === 0) return undefined;
-	const lines = [`Atelier's review of your last change: ${headline(receipt)}`];
+	const lines = [cut(`Atelier's review of your last change: ${headline(receipt)}`, HEADLINE_MAX_CHARS)];
 	let room = NOTICE_MAX_ITEMS;
 	const list = (title: string, findings: readonly Finding[]) => {
 		if (findings.length === 0) return;
@@ -53,7 +55,10 @@ export function verificationNoticeLines(
 	if (end.outcome === "passed" || end.outcome === "corrected" || end.cause === "interrupted") return undefined;
 	const why = end.reason ?? end.cause;
 	const lines = [
-		`Atelier's verification of your last change: ${end.outcome}${why === undefined ? "." : `: ${oneLine(why)}`}`,
+		cut(
+			`Atelier's verification of your last change: ${end.outcome}${why === undefined ? "." : `: ${oneLine(why)}`}`,
+			HEADLINE_MAX_CHARS,
+		),
 	];
 	const unverified = requirements.filter((requirement) => requirement.verdict === "unverified");
 	const items = [
@@ -105,6 +110,6 @@ export function oneLine(text: string): string {
 	return escapeAgentText(text.replace(/\s+/g, " ").trim());
 }
 
-export function cut(line: string): string {
-	return line.length <= ITEM_MAX_CHARS ? line : `${line.slice(0, ITEM_MAX_CHARS - 1)}…`;
+export function cut(line: string, max = ITEM_MAX_CHARS): string {
+	return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
 }
