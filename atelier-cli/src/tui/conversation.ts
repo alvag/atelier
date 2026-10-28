@@ -4,7 +4,7 @@ import { phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
 import { ActivityBlock } from "./activity-block.ts";
 import { PromptBlock } from "./prompt.ts";
 import { ReviewBlock } from "./review-block.ts";
-import { markdownTheme, type Paint, Shade } from "./style.ts";
+import { markdownTheme, type Paint, Shade, Tones } from "./style.ts";
 import { AgentGroup, type CardView, ToolCard } from "./tool-card.ts";
 import { VerifyCard } from "./verify-card.ts";
 
@@ -80,6 +80,7 @@ export class Conversation extends Container {
 	readonly #paint: Paint;
 	readonly #shade: Shade;
 	readonly #now: () => Date;
+	readonly #tones: Tones;
 	readonly #renderer: Renderer;
 	/** What the renderer wrote for the event being shown. */
 	#notes = "";
@@ -109,12 +110,19 @@ export class Conversation extends Container {
 	#assessed: ReviewBlock | undefined;
 	readonly #verifications = new Map<string, VerifyCard>();
 
-	/** `now` tells the time a turn ends at, and how long each call took. */
-	constructor(paint: Paint, cwd: string, shade = new Shade(false), now: () => Date = () => new Date()) {
+	/** `now` tells the time a turn ends at, and how long each call took; `tones` are the tool cards' backgrounds. */
+	constructor(
+		paint: Paint,
+		cwd: string,
+		shade = new Shade(false),
+		now: () => Date = () => new Date(),
+		tones = new Tones(false),
+	) {
 		super();
 		this.#paint = paint;
 		this.#shade = shade;
 		this.#now = now;
+		this.#tones = tones;
 		this.#cwd = cwd;
 		const write = (text: string) => {
 			this.#notes += text;
@@ -215,7 +223,15 @@ export class Conversation extends Container {
 				this.#verification(event.verifyId).event(event);
 				return;
 			case "tool_call_started": {
-				const card = new ToolCard(event.tool, event.input, this.view, this.#paint, event.callId, this.#now);
+				const card = new ToolCard(
+					event.tool,
+					event.input,
+					this.view,
+					this.#paint,
+					event.callId,
+					this.#now,
+					this.#tones,
+				);
 				this.#cards.set(event.callId, card);
 				this.#activityBlock().add(card);
 				return;

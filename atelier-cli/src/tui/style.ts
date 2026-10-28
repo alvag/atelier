@@ -92,9 +92,61 @@ export class Shade {
 
 	/** `line` on the shade, kept after every reset inside it. */
 	paint(line: string): string {
-		const ansi = this.#ansi;
-		if (ansi === undefined) return line;
-		return `${ansi}${line.replace(BACKGROUND_RESET, (reset) => `${reset}${ansi}`)}${DEFAULT_BACKGROUND}`;
+		return this.#ansi === undefined ? line : onBackground(this.#ansi, line);
+	}
+}
+
+/** How far a card's background moves from the terminal's, and how much red or green a diff's band takes, on a dark and a light terminal. */
+const CARD_MIX = { dark: 0.06, light: 0.03 };
+const BAND_MIX = { dark: 0.22, light: 0.15 };
+const RED = rgbColor(220, 50, 47);
+const GREEN = rgbColor(40, 160, 60);
+
+/** `line` on the background `ansi`, kept after every reset inside it. */
+const onBackground = (ansi: string, line: string) =>
+	`${ansi}${line.replace(BACKGROUND_RESET, (reset) => `${reset}${ansi}`)}${DEFAULT_BACKGROUND}`;
+
+export type Band = "removed" | "added";
+
+/**
+ * The backgrounds of the tool cards, made from the terminal's own once it says it: the card's, a little lighter (or
+ * darker on a light terminal) and subtler than the prompt's shade, and a diff's bands, red and green. Until then, when
+ * the terminal never says it, and without color, there are none.
+ */
+export class Tones {
+	readonly #color: boolean;
+	#ansi: { card: string; removed: string; added: string } | undefined;
+
+	constructor(color: boolean) {
+		this.#color = color;
+	}
+
+	get on(): boolean {
+		return this.#ansi !== undefined;
+	}
+
+	/** Makes the backgrounds from the one the terminal reported, in the colors it takes. */
+	match(background: RgbColor | undefined, mode: TerminalColorMode): void {
+		if (!this.#color || background === undefined) return;
+		const base = rgbColor(background.r, background.g, background.b);
+		const dark = colorToOklch(base).l < 0.5;
+		const toward = dark ? rgbColor(255, 255, 255) : rgbColor(0, 0, 0);
+		const band = dark ? BAND_MIX.dark : BAND_MIX.light;
+		this.#ansi = {
+			card: backgroundAnsi(mixColors(base, toward, dark ? CARD_MIX.dark : CARD_MIX.light), mode),
+			removed: backgroundAnsi(mixColors(base, RED, band), mode),
+			added: backgroundAnsi(mixColors(base, GREEN, band), mode),
+		};
+	}
+
+	/** `line` on the card's background, or as it is without one. */
+	card(line: string): string {
+		return this.#ansi === undefined ? line : onBackground(this.#ansi.card, line);
+	}
+
+	/** `line` on a diff's red or green band, or as it is without one. */
+	band(band: Band, line: string): string {
+		return this.#ansi === undefined ? line : onBackground(this.#ansi[band], line);
 	}
 }
 
