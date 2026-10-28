@@ -2,6 +2,25 @@ import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { highlightCode } from "./highlight.ts";
 import type { Band, Paint, Tones } from "./style.ts";
 
+/** Characters of a line shown before it is cut: highlighting and wrapping a line much longer would hang the screen. */
+const MAX_LINE_CHARS = 500;
+/** Characters of code past which it is shown without highlighting, which grows faster than the code. */
+const MAX_HIGHLIGHTED = 20_000;
+
+/** `line` cut to its first characters with `…` when it is too long to show whole. */
+export function clipLine(line: string): string {
+	if (line.length <= MAX_LINE_CHARS) return line;
+	// A cut between the halves of a surrogate pair would leave half a character.
+	const end = /[\uD800-\uDBFF]/.test(line.charAt(MAX_LINE_CHARS - 1)) ? MAX_LINE_CHARS - 1 : MAX_LINE_CHARS;
+	return `${line.slice(0, end)}…`;
+}
+
+/** The lines of `code` highlighted as `lang`, or plain when it is too long to highlight quickly. */
+export function highlightLines(paint: Paint, lines: readonly string[], lang: string | undefined): string[] {
+	const code = lines.join("\n");
+	return code.length > MAX_HIGHLIGHTED ? [...lines] : highlightCode(paint, code, lang);
+}
+
 /** Lines of a diff past which a pair of texts that long is shown removed and added whole instead of compared. */
 const MAX_COMPARED = 250_000;
 
@@ -58,11 +77,12 @@ const MARK_STYLES = { removed: "red", added: "green" } as const;
 /** The language highlight.js may know a file by: its extension. */
 const languageOf = (path: string) => /\.([^./\\]+)$/.exec(path)?.[1];
 
+/** `… 3 more lines`. */
+const moreRow = (left: number): Row => ({ text: `… ${left} more line${left === 1 ? "" : "s"}` });
+
 /** `… 3 more lines` after the first `max` rows. */
 function capRows(rows: Row[], max: number): Row[] {
-	if (rows.length <= max) return rows;
-	const left = rows.length - max;
-	return [...rows.slice(0, max), { text: `… ${left} more line${left === 1 ? "" : "s"}` }];
+	return rows.length <= max ? rows : [...rows.slice(0, max), moreRow(rows.length - max)];
 }
 
 /**
@@ -90,10 +110,12 @@ function layout(rows: Row[], room: number, paint: Paint, tones?: Tones): string[
 	});
 }
 
-/** A written file: its first `max` lines numbered and highlighted by its extension. */
+/** A written file: its first `max` lines numbered and highlighted by its extension, each cut when too long. */
 export function writeView(path: string, content: string, paint: Paint, room: number, max: number): string[] {
-	const rows = highlightCode(paint, content, languageOf(path)).map((text, i): Row => ({ number: i + 1, text }));
-	return layout(capRows(rows, max), room, paint);
+	const lines = content.split("\n");
+	const shown = lines.slice(0, max).map(clipLine);
+	const rows = highlightLines(paint, shown, languageOf(path)).map((text, i): Row => ({ number: i + 1, text }));
+	return layout(lines.length > max ? [...rows, moreRow(lines.length - max)] : rows, room, paint);
 }
 
 interface Edit {
@@ -135,10 +157,10 @@ export function editView(
 	});
 	if (numbered) placed.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
 	const rows = placed.flatMap(({ edit, start, shift }, index) => {
-		const before = edit.oldText.split("\n");
-		const after = edit.newText.split("\n");
+		const before = edit.oldText.split("\n").map(clipLine);
+		const after = edit.newText.split("\n").map(clipLine);
 		const highlighted = banded
-			? { before: highlightCode(paint, edit.oldText, lang), after: highlightCode(paint, edit.newText, lang) }
+			? { before: highlightLines(paint, before, lang), after: highlightLines(paint, after, lang) }
 			: undefined;
 		const diff = lineDiff(before, after).map(({ kind, before: b, after: a }): Row => {
 			const line = kind === "added" ? (a as number) : (b as number);

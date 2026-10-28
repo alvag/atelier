@@ -1,6 +1,6 @@
 import { styleText } from "node:util";
 import type { AtelierEvent, JsonValue } from "@atelier/core";
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { backgroundAnsi, rgbColor, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { type Paint, painter, Tones } from "../src/tui/style.ts";
 import { ToolCard } from "../src/tui/tool-card.ts";
@@ -330,5 +330,60 @@ describe("ToolCard backgrounds", () => {
 		off.match(DARK, "truecolor");
 		const { lines } = card("edit", edit, done, { tones: off });
 		expect(lines.join("\n")).not.toContain("\x1b[");
+	});
+
+	it("keeps a diff's bands apart from the card and from each other in 256 colors, on any background", () => {
+		for (const background of [
+			{ r: 40, g: 44, b: 52 },
+			{ r: 0, g: 0, b: 0 },
+			{ r: 30, g: 30, b: 30 },
+			{ r: 255, g: 255, b: 255 },
+			{ r: 253, g: 246, b: 227 },
+		]) {
+			const { lines } = card("edit", edit, done, { paint: colored, tones: tones(background, "256color") });
+			const codes = (text: string) =>
+				[...(lines.find((line) => stripTerminalSequences(line).includes(text)) ?? "").matchAll(/48;5;(\d+)m/g)].map(
+					(m) => m[1],
+				);
+			const [cardCode] = codes("✓ edit");
+			const [, removedCode] = codes("1 - const");
+			const [, addedCode] = codes("1 + const");
+			const terminal = /48;5;(\d+)m/.exec(
+				backgroundAnsi(rgbColor(background.r, background.g, background.b), "256color"),
+			)?.[1];
+			expect(new Set([cardCode, removedCode, addedCode]).size, JSON.stringify(background)).toBe(3);
+			expect([removedCode, addedCode], JSON.stringify(background)).not.toContain(terminal);
+		}
+	});
+});
+
+describe("ToolCard with large input", () => {
+	const colored: Paint = (style, text) => styleText(style, text, { validateStream: false });
+	const long = "a".repeat(200_000);
+	const quickly = (render: () => string[]) => {
+		const start = performance.now();
+		const lines = render();
+		expect(performance.now() - start).toBeLessThan(1000);
+		return lines;
+	};
+
+	it("cuts a very long line of a written file, an edit or a command instead of hanging on it", () => {
+		const tones = new Tones(true);
+		tones.match({ r: 30, g: 30, b: 30 }, "truecolor");
+		const write = quickly(() => card("write", { path: "a.ts", content: long }, { summary: "a.ts (195 KB)" }).lines);
+		expect(write.length).toBeLessThan(20);
+		expect(write.join("\n")).toContain("…");
+		const edit = quickly(
+			() =>
+				card(
+					"edit",
+					{ path: "a.ts", edits: [{ oldText: long, newText: `${long}b` }] },
+					{ summary: "a.ts (1 edit)", startLines: [1] },
+					{ paint: colored, tones },
+				).lines,
+		);
+		expect(edit.length).toBeLessThan(30);
+		const bash = quickly(() => card("bash", { command: `echo ${long}` }, { summary: "echo (exit 0)" }).lines);
+		expect(bash.length).toBeLessThan(20);
 	});
 });
