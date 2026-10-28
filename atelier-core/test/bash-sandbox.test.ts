@@ -370,9 +370,10 @@ describe.skipIf(!onMac)("the agent's bash and the git operations that run steps 
 		git(cwd, "add", "-A");
 		git(cwd, "commit", "-qm", "d");
 		const head = git(cwd, "rev-parse", "HEAD");
+		// Some git versions (2.54) end a rebase that cannot create its state with exit code 0, so what is checked is the
+		// denial and that nothing moved.
 		for (const command of ["git rebase topic", "git cherry-pick topic~1..topic", "git revert HEAD~1..HEAD"]) {
 			const result = await run(command);
-			expect(result.ok, command).toBe(false);
 			expect(result.output, command).toContain("Operation not permitted");
 		}
 		expect(git(cwd, "rev-parse", "HEAD")).toBe(head);
@@ -501,9 +502,11 @@ describe.skipIf(!onMac)("the agent's bash in a linked git worktree", () => {
 		git(main, "add", "-A");
 		git(main, "commit", "-qm", "t");
 		git(main, "switch", "-q", "-");
+		const head = git(worktree, "rev-parse", "HEAD");
 		const rebase = await run("git rebase topic");
-		expect(rebase.ok).toBe(false);
+		// Some git versions (2.54) end a rebase that cannot create its state with exit code 0: nothing moved is what counts.
 		expect(rebase.output).toContain("Operation not permitted");
+		expect(git(worktree, "rev-parse", "HEAD")).toBe(head);
 		const result = await run(
 			"git switch -q -c feature && echo b > b.txt && git add b.txt && git -c user.email=t@t -c user.name=t commit -qm b && git -c user.email=t@t -c user.name=t merge -q --no-edit topic",
 		);
@@ -650,7 +653,14 @@ describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 				await mkdir(join(linked, copy));
 				await writeFile(join(linked, copy, "a.txt"), `${copy}\n`);
 			}
-			const result = await verifier().execute(
+			// The system's PATH only: a folder of the user's PATH the verifier cannot read would be reported as a block.
+			const system = createBashTool({
+				withoutApproval: true,
+				policy: "verifier",
+				sandbox,
+				env: { PATH: "/usr/bin:/bin" },
+			});
+			const result = await system.execute(
 				{ command: "cd candidate && cat ../base/a.txt && ls .. && diff -u ../base/a.txt a.txt" },
 				{ cwd: linked },
 			);
