@@ -210,11 +210,9 @@ export class AuthStore {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			}
 			const seen = await this.#abandoned(lock);
-			if (seen !== undefined) {
-				await this.#takeOver(lock, seen, owner);
-				// A lock that cannot be removed would be judged and taken over again forever: the deadline still counts.
-				if (Date.now() < deadline) continue;
-			}
+			// Removed, the next try creates it at once. One that another waiter is removing, or that cannot be removed, is
+			// waited for like a live holder's, deadline and pause included, so it is not judged again and again.
+			if (seen !== undefined && (await this.#takeOver(lock, seen, owner))) continue;
 			if (Date.now() >= deadline)
 				throw new AuthStoreError(`${this.#file} is locked by another Atelier (${lock}); try again`);
 			await sleep(LOCK_RETRY_MS);
@@ -250,9 +248,9 @@ export class AuthStore {
 	 * Removes the abandoned lock that held `seen`, one waiter at a time: without that, a waiter that judged the old lock
 	 * could remove the new one another waiter just took, and both would hold it. `<lock>.break` lets one waiter remove
 	 * it, and only while the lock still holds what was judged; the others try again. A breaker that died leaves its
-	 * own file, which is judged the same way.
+	 * own file, which is judged the same way. Whether this waiter removed the lock.
 	 */
-	async #takeOver(lock: string, seen: string, owner: string): Promise<void> {
+	async #takeOver(lock: string, seen: string, owner: string): Promise<boolean> {
 		const breaker = `${lock}.break`;
 		try {
 			const handle = await open(breaker, "wx", 0o600);
@@ -265,10 +263,14 @@ export class AuthStore {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			const stuck = await this.#abandoned(breaker);
 			if (stuck !== undefined && (await readLock(breaker)) === stuck) await unlink(breaker).catch(() => {});
-			return;
+			return false;
 		}
 		try {
-			if ((await this.#abandoned(lock)) === seen) await unlink(lock).catch(() => {});
+			if ((await this.#abandoned(lock)) !== seen) return false;
+			return await unlink(lock).then(
+				() => true,
+				() => false,
+			);
 		} finally {
 			await unlink(breaker).catch(() => {});
 		}
