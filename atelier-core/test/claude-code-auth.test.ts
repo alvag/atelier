@@ -12,7 +12,7 @@ import {
 	describeClaudeCodeAuth,
 	loginWarning,
 } from "../src/claude-code-auth.ts";
-import { MISSING_API_KEY_MESSAGE } from "../src/credentials.ts";
+import { MISSING_API_KEY_MESSAGE, MISSING_OPENCODE_GO_KEY_MESSAGE } from "../src/credentials.ts";
 import { requireIsolatedHome } from "./support/login-isolation.ts";
 
 requireIsolatedHome();
@@ -134,5 +134,14 @@ describe("loginWarning", () => {
 		expect(await check("anthropic-api")).toBe(MISSING_API_KEY_MESSAGE);
 		const missing = await loginWarning("claude-code", { executable: join(dir, "nope"), env: {}, store: store() });
 		expect(missing).toBe("Claude Code's login could not be checked: Claude Code binary not found (reinstall Atelier)");
+	});
+
+	it("says when opencode-go has no key, from OPENCODE_API_KEY or atelier login", async () => {
+		expect(await check("opencode-go")).toBe(MISSING_OPENCODE_GO_KEY_MESSAGE);
+		// An Anthropic key is not an OpenCode Go key.
+		expect(await check("opencode-go", { ANTHROPIC_API_KEY: "k" })).toBe(MISSING_OPENCODE_GO_KEY_MESSAGE);
+		expect(await check("opencode-go", { OPENCODE_API_KEY: "k" })).toBeUndefined();
+		await store().set("opencode-go", { type: "api_key", key: "k" });
+		expect(await check("opencode-go")).toBeUndefined();
 	});
 });

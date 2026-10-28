@@ -126,7 +126,7 @@ function firstLine(command: string): string {
 }
 
 /** Credentials the model could read with `echo $VAR` and leak; nothing else is removed. */
-const HIDDEN_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+const HIDDEN_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENCODE_API_KEY"];
 
 function commandEnv(extra: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
 	const env = { ...process.env };

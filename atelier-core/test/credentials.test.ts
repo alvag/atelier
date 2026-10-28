@@ -12,8 +12,11 @@ import {
 	KEYCHAIN_SERVICE,
 	KeychainError,
 	MISSING_API_KEY_MESSAGE,
+	MISSING_OPENCODE_GO_KEY_MESSAGE,
 	MissingApiKeyError,
+	openCodeGoKeySource,
 	resolveApiKey,
+	resolveOpenCodeGoKey,
 	type SecurityResult,
 } from "../src/credentials.ts";
 import { decodeServerMessage, FakeBackend, RpcServer, type ServerMessage } from "../src/index.ts";
@@ -194,6 +197,32 @@ describe("resolveApiKey", () => {
 	});
 });
 
+describe("resolveOpenCodeGoKey", () => {
+	const goKey = `oc-${"test"}-go`;
+
+	it("takes OPENCODE_API_KEY first, then the key atelier login stored, never the Keychain", async () => {
+		const store = new AuthStore(join(dir, "auth.json"));
+		await store.set("opencode-go", { type: "api_key", key: ` ${goKey} ` });
+		await expect(resolveOpenCodeGoKey({ store, env: {} })).resolves.toBe(goKey);
+		await expect(resolveOpenCodeGoKey({ store, env: { OPENCODE_API_KEY: " from-env " } })).resolves.toBe("from-env");
+		expect(openCodeGoKeySource({ store, env: {} })).toBe("stored");
+		expect(openCodeGoKeySource({ store, env: { OPENCODE_API_KEY: "x" } })).toBe("env");
+		// The Anthropic key is another provider's: it never stands in for this one.
+		const anthropicOnly = new AuthStore(join(dir, "other", "auth.json"));
+		await anthropicOnly.set("anthropic", { type: "api_key", key: KEY });
+		expect(openCodeGoKeySource({ store: anthropicOnly, env: { ANTHROPIC_API_KEY: KEY } })).toBeUndefined();
+	});
+
+	it("tells how to store a key when there is none", async () => {
+		const missing = resolveOpenCodeGoKey({ store: emptyStore(), env: { OPENCODE_API_KEY: "  " } });
+		await expect(missing).rejects.toBeInstanceOf(MissingApiKeyError);
+		await expect(missing).rejects.toThrow(MISSING_OPENCODE_GO_KEY_MESSAGE);
+		expect(MISSING_OPENCODE_GO_KEY_MESSAGE).toBe(
+			"No OpenCode Go API key. Store one with `atelier login api-key opencode-go` (/login in a session), or set OPENCODE_API_KEY.",
+		);
+	});
+});
+
 describe("createBackend", () => {
 	it("keeps the resolved key out of the environment and out of error events", async () => {
 		const before = { ...process.env };
@@ -341,11 +370,16 @@ describe("session.start backend selection", () => {
 });
 
 describe("bash environment", () => {
-	const saved = { api: process.env.ANTHROPIC_API_KEY, token: process.env.ANTHROPIC_AUTH_TOKEN };
+	const saved = {
+		api: process.env.ANTHROPIC_API_KEY,
+		token: process.env.ANTHROPIC_AUTH_TOKEN,
+		opencode: process.env.OPENCODE_API_KEY,
+	};
 	afterEach(() => {
 		for (const [name, value] of [
 			["ANTHROPIC_API_KEY", saved.api],
 			["ANTHROPIC_AUTH_TOKEN", saved.token],
+			["OPENCODE_API_KEY", saved.opencode],
 		] as const) {
 			if (value === undefined) delete process.env[name];
 			else process.env[name] = value;
@@ -353,17 +387,21 @@ describe("bash environment", () => {
 		delete process.env.ATELIER_TEST_VISIBLE;
 	});
 
-	it("hides Anthropic credentials from commands the model runs and keeps everything else", async () => {
+	it("hides the providers' credentials from commands the model runs and keeps everything else", async () => {
 		process.env.ANTHROPIC_API_KEY = KEY;
 		process.env.ANTHROPIC_AUTH_TOKEN = "token-SECRET";
+		process.env.OPENCODE_API_KEY = `opencode-${"SECRET"}`;
 		process.env.ATELIER_TEST_VISIBLE = "still here";
 		const outcome = await bashTool.execute(
-			// biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion, not a JS template.
-			{ command: 'echo "${ANTHROPIC_API_KEY-unset} ${ANTHROPIC_AUTH_TOKEN-unset} $ATELIER_TEST_VISIBLE"' },
+			{
+				command:
+					// biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion, not a JS template.
+					'echo "${ANTHROPIC_API_KEY-unset} ${ANTHROPIC_AUTH_TOKEN-unset} ${OPENCODE_API_KEY-unset} $ATELIER_TEST_VISIBLE"',
+			},
 			{ cwd: tmpdir() },
 		);
 		expect(outcome.ok).toBe(true);
-		expect(outcome.output).toContain("unset unset still here");
+		expect(outcome.output).toContain("unset unset unset still here");
 		expect(outcome.output).not.toContain("SECRET");
 		expect(process.env.ANTHROPIC_API_KEY).toBe(KEY);
 	});

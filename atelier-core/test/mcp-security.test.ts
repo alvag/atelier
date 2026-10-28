@@ -269,9 +269,11 @@ it("hides the providers' stored keys and ANTHROPIC_API_KEY in what the servers a
 	await providers.set("anthropic", { type: "api_key", key: "stored-provider-key-123" });
 	const manager = new McpManager(
 		{ file: join(dir, "mcp.json"), servers: [], problems: [], secrets: [] },
-		{ providers, env: { ANTHROPIC_API_KEY: "env-provider-key-456" } },
+		{ providers, env: { ANTHROPIC_API_KEY: "env-provider-key-456", OPENCODE_API_KEY: "env-opencode-key-654" } },
 	);
-	expect(manager.hide("a stored-provider-key-123 and env-provider-key-456")).toBe("a *** and ***");
+	expect(manager.hide("a stored-provider-key-123 and env-provider-key-456 or env-opencode-key-654")).toBe(
+		"a *** and *** or ***",
+	);
 	const byDefault = new McpManager(
 		{ file: join(dir, "mcp.json"), servers: [], problems: [], secrets: [] },
 		{ env: {} },

@@ -46,6 +46,13 @@ export const ANTHROPIC_PROVIDER = "anthropic";
 export const MISSING_API_KEY_MESSAGE =
 	"No Anthropic API key. Store one with `atelier login api-key anthropic` (/login in a session), or set ANTHROPIC_API_KEY.";
 
+/** The provider id of the OpenCode Go API key in `auth.json`, and the variable that overrides it. */
+export const OPENCODE_GO_PROVIDER = "opencode-go";
+export const OPENCODE_GO_KEY_ENV = "OPENCODE_API_KEY";
+
+export const MISSING_OPENCODE_GO_KEY_MESSAGE =
+	"No OpenCode Go API key. Store one with `atelier login api-key opencode-go` (/login in a session), or set OPENCODE_API_KEY.";
+
 /** Runs macOS `security` by absolute path, without a shell. */
 export const runSecurity: SecurityRunner = (args) =>
 	new Promise((resolve) => {
@@ -55,10 +62,11 @@ export const runSecurity: SecurityRunner = (args) =>
 		});
 	});
 
-const fromEnv = (sources: ApiKeySources) => (sources.env ?? process.env).ANTHROPIC_API_KEY?.trim() || undefined;
+const envKey = (sources: ApiKeySources, name: string) => (sources.env ?? process.env)[name]?.trim() || undefined;
+const fromEnv = (sources: ApiKeySources) => envKey(sources, "ANTHROPIC_API_KEY");
 
-function storedKey(sources: ApiKeySources): string | undefined {
-	const credential = (sources.store ?? new AuthStore(authFile(homedir()))).get(ANTHROPIC_PROVIDER);
+function storedKey(sources: ApiKeySources, provider = ANTHROPIC_PROVIDER): string | undefined {
+	const credential = (sources.store ?? new AuthStore(authFile(homedir()))).get(provider);
 	return credential?.type === "api_key" ? credential.key.trim() || undefined : undefined;
 }
 
@@ -81,6 +89,22 @@ export async function resolveApiKey(sources: ApiKeySources = {}): Promise<string
 	const fromKeychain = result.stdout.trim();
 	if (!fromKeychain) throw missing;
 	return fromKeychain;
+}
+
+/**
+ * Finds the OpenCode Go API key: OPENCODE_API_KEY when it is set for this command, then the key `atelier login` stored
+ * in `~/.atelier/auth.json`. There is no Keychain entry for it.
+ */
+export async function resolveOpenCodeGoKey(sources: ApiKeySources = {}): Promise<string> {
+	const key = envKey(sources, OPENCODE_GO_KEY_ENV) ?? storedKey(sources, OPENCODE_GO_PROVIDER);
+	if (key) return key;
+	throw new MissingApiKeyError(MISSING_OPENCODE_GO_KEY_MESSAGE);
+}
+
+/** Where `resolveOpenCodeGoKey` would take the key from. */
+export function openCodeGoKeySource(sources: ApiKeySources = {}): Exclude<ApiKeySource, "keychain"> | undefined {
+	if (envKey(sources, OPENCODE_GO_KEY_ENV)) return "env";
+	return storedKey(sources, OPENCODE_GO_PROVIDER) ? "stored" : undefined;
 }
 
 /** Where `resolveApiKey` would take the key from, asking the Keychain only whether it has one, never for the key. */
