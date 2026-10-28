@@ -117,6 +117,24 @@ describe("parseCliArgs", () => {
 		expect(USAGE).toContain("ATELIER_COMPACT_AT=<n>");
 	});
 
+	it("reads a backend prefix in --model, as profiles do, as if --backend named it", () => {
+		expect(parseCliArgs(["--model", "openai-codex/gpt-6-luna"], "/h")).toMatchObject({
+			model: "gpt-6-luna",
+			backend: "openai-codex",
+			explicitBackend: "openai-codex",
+		});
+		expect(parseCliArgs(["--backend", "opencode-go", "--model", "opencode-go/minimax-m3"], "/h")).toMatchObject({
+			model: "minimax-m3",
+			backend: "opencode-go",
+		});
+		const plain = parseCliArgs(["--model", "sonnet"], "/h");
+		expect(plain).toMatchObject({ model: "sonnet", backend: "claude-code" });
+		expect(plain.explicitBackend).toBeUndefined();
+		expect(parseCliArgs(["--model", "vendor/model"], "/h")).toMatchObject({ model: "vendor/model" });
+		expect(USAGE).toContain("--model <name>");
+		expect(USAGE).toContain("openai-codex/gpt-6-luna");
+	});
+
 	it("reads --help and --version", () => {
 		expect(parseCliArgs(["--help"], "/h").help).toBe(true);
 		expect(parseCliArgs(["-h"], "/h").help).toBe(true);
@@ -129,6 +147,11 @@ describe("parseCliArgs", () => {
 		[["--model", ""], /--model needs a value/],
 		[["--backend", "openai"], /--backend must be claude-code, anthropic-api, opencode-go or openai-codex/],
 		[["   "], /The prompt is empty/],
+		[
+			["--backend", "claude-code", "--model", "openai-codex/gpt-6-luna"],
+			/--model names the openai-codex backend, but --backend is claude-code/,
+		],
+		[["--model", "claude-code/"], /--model: no model after the "claude-code\/" prefix/],
 	])("rejects %j", (argv, message) => {
 		expect(() => parseCliArgs(argv, "/h")).toThrow(UsageError);
 		expect(() => parseCliArgs(argv, "/h")).toThrow(message);
