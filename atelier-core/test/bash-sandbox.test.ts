@@ -179,14 +179,22 @@ describe.skipIf(!onMac)("the agent's bash in the sandbox", () => {
 });
 
 /**
- * Runs `command` until its result names a cause. The library reads the file
- * denials from the system log, which can lag in the first seconds after it
- * starts, so the same denied command is repeated for a while; the cause itself
- * is what is under test, not how fast the log answers.
+ * Runs `command` until its result names the `expected` cause. The library reads
+ * the denials from the system log, which can lag in the first seconds after it
+ * starts or under load, so the same denied command is repeated for a while; the
+ * cause itself is what is under test, not how fast the log answers. Another
+ * cause can arrive first (a denied read before the denied connection), so
+ * waiting for any cause is not enough.
  */
-async function untilBlocked(tool: ReturnType<typeof createBashTool>, command: string, workDir: string) {
+async function untilBlocked(
+	tool: ReturnType<typeof createBashTool>,
+	command: string,
+	workDir: string,
+	expected: string | RegExp,
+) {
+	const names = (output: string) => (typeof expected === "string" ? output.includes(expected) : expected.test(output));
 	let result = await tool.execute({ command }, { cwd: workDir });
-	for (let attempt = 0; attempt < 30 && !result.output.includes("[sandbox blocked:"); attempt++) {
+	for (let attempt = 0; attempt < 30 && !names(result.output); attempt++) {
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		result = await tool.execute({ command }, { cwd: workDir });
 	}
@@ -195,14 +203,24 @@ async function untilBlocked(tool: ReturnType<typeof createBashTool>, command: st
 
 describe.skipIf(!onMac)("what the sandbox says it blocked", () => {
 	it("names the file a command tried to write", async () => {
-		const result = await untilBlocked(createBashTool({ sandbox }), `echo x > ${outside}/file.txt`, cwd);
+		const result = await untilBlocked(
+			createBashTool({ sandbox }),
+			`echo x > ${outside}/file.txt`,
+			cwd,
+			`[sandbox blocked: write to ${outside}/file.txt`,
+		);
 		expect(result.ok).toBe(false);
 		expect(result.output).toContain(`[sandbox blocked: write to ${outside}/file.txt (not an allowed write path)]`);
 		expect(result.blocked).toContain(`write to ${outside}/file.txt (not an allowed write path)`);
 	}, 30_000);
 
 	it("names the secret a command tried to read", async () => {
-		const result = await untilBlocked(createBashTool({ sandbox }), `cat ${home}/.ssh/id_rsa`, cwd);
+		const result = await untilBlocked(
+			createBashTool({ sandbox }),
+			`cat ${home}/.ssh/id_rsa`,
+			cwd,
+			`[sandbox blocked: read of ${home}/.ssh/id_rsa`,
+		);
 		expect(result.output).toContain(`[sandbox blocked: read of ${home}/.ssh/id_rsa (denied by the sandbox policy)]`);
 		expect(result.output).not.toContain("FAKE-PRIVATE-KEY");
 	}, 30_000);
@@ -213,12 +231,14 @@ describe.skipIf(!onMac)("what the sandbox says it blocked", () => {
 			const verifier = createBashTool({ withoutApproval: true, policy: "verifier", sandbox });
 			const dir = join(base, "verify");
 			await mkdir(dir, { recursive: true });
+			const blocked = /\[sandbox blocked: network connect to [^ ]+ \(no network for the verifier\)\]/;
 			const result = await untilBlocked(
 				verifier,
 				`curl -sS --max-time 3 http://127.0.0.1:${port(server.server)}/`,
 				dir,
+				blocked,
 			);
-			expect(result.output).toMatch(/\[sandbox blocked: network connect to [^ ]+ \(no network for the verifier\)\]/);
+			expect(result.output).toMatch(blocked);
 			expect(server.hits()).toBe(0);
 		} finally {
 			server.server.close();
