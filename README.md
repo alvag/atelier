@@ -98,7 +98,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | ----------------- | -------------------------------------------------------------------------------------------------------------- |
 | Enter             | Send the prompt; while a turn runs, queue it as a steer, which the agent gets with its next tool result.       |
 | Alt+Enter         | While a turn runs, queue a follow-up, which runs as a turn of its own after it.                                |
-| Alt+Up            | Take the queued messages back into the editor, to edit them and send them again.                               |
+| Shift+Up          | Take the queued messages back into the editor, to edit them and send them again (also Alt+Up).                 |
 | Esc               | Interrupt the running turn (what is queued comes back to the editor); in a question or a list, deny or cancel. |
 | Up / Down         | Prompt history; move in lists and questions.                                                                   |
 | Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit.                                               |

@@ -1125,7 +1125,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			tui.requestRender();
 			return { consume: true };
 		}
-		if (matchesKey(data, "alt+up") && questions.length === 0 && queue.messages.length > 0) {
+		// Shift+Up works in terminals that do not send Option as Alt, and leaves Up to the editor's history.
+		const takeBack = matchesKey(data, "shift+up") || matchesKey(data, "alt+up");
+		if (takeBack && questions.length === 0 && queue.messages.length > 0) {
 			void takeBackQueue();
 			return { consume: true };
 		}
