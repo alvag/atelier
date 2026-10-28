@@ -178,16 +178,28 @@ interface ChatChunk {
 	error?: { message?: string };
 }
 
+/** A connection lost in the middle of the answer, with what it said (undici's "terminated", say) at the end. */
+function cutStream(error: unknown): unknown {
+	if (error instanceof Error && error.name === "AbortError") return error;
+	const said = error instanceof Error ? error.message : String(error);
+	return new ChatCompletionsError(
+		undefined,
+		`The Chat Completions stream was cut before the answer was complete (${said}).`,
+	);
+}
+
 /**
- * The body's bytes: the first read, already made, then the rest. However the reading stops (`[DONE]`, an error, an
- * abort, a reader that leaves early), the body is cancelled, so the connection is not left held.
+ * The body's bytes: the first read, already made, then the rest; a read that fails later is a stream cut. However the
+ * reading stops (`[DONE]`, an error, an abort, a reader that leaves early), the body is cancelled, so the connection
+ * is not left held.
  */
 async function* bytesFrom(
 	first: ReadableStreamReadResult<Uint8Array>,
 	reader: ReadableStreamDefaultReader<Uint8Array>,
 ): AsyncGenerator<Uint8Array> {
+	const read = () => reader.read().catch((error: unknown) => Promise.reject(cutStream(error)));
 	try {
-		for (let next = first; !next.done; next = await reader.read()) yield next.value;
+		for (let next = first; !next.done; next = await read()) yield next.value;
 	} finally {
 		// Settles at once on a body already ended or errored; a failure here changes nothing.
 		await reader.cancel().catch(() => {});

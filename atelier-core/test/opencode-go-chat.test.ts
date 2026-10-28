@@ -327,7 +327,12 @@ describe("opencode-go on Chat Completions", () => {
 	});
 
 	it("fails a stream whose connection drops in the middle of a tool call", async () => {
-		expect(await cutTurn({ sse: halfCall, cut: true })).toMatchObject({ code: "api_error", recoverable: true });
+		expect(await cutTurn({ sse: halfCall, cut: true })).toMatchObject({
+			code: "api_error",
+			// What the connection said, kept at the end.
+			message: "The Chat Completions stream was cut before the answer was complete (terminated).",
+			recoverable: true,
+		});
 	});
 
 	it("takes a stream that ends with its finish_reason, even without [DONE]", async () => {
