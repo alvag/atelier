@@ -51,6 +51,19 @@ describe("read outside the working directory", () => {
 		expect(JSON.stringify(result)).not.toContain("PRIVATE-KEY-MATERIAL");
 	});
 
+	it("refuses Atelier's credential files, the sign-ins and the MCP servers' tokens", async () => {
+		await mkdir(join(home, ".atelier"));
+		for (const name of ["auth.json", "mcp-auth.json"]) {
+			const file = join(home, ".atelier", name);
+			await writeFile(file, '{"anthropic":{"type":"api_key","key":"STORED-KEY"}}');
+			const result = await read(file);
+			expect(result).toMatchObject({ ok: false, output: `${PROTECTED} ${file}` });
+			expect(JSON.stringify(result)).not.toContain("STORED-KEY");
+		}
+		await writeFile(join(home, ".atelier", "profiles.json"), "{}");
+		expect(await read(join(home, ".atelier", "profiles.json"))).toMatchObject({ ok: true });
+	});
+
 	it("refuses a symlink in the working directory that leads into a secret directory", async () => {
 		await symlink(join(home, ".ssh"), join(cwd, "keys"));
 		await symlink(join(home, ".ssh", "id_rsa"), join(cwd, "key"));
@@ -102,6 +115,16 @@ describe.each([
 		expect(result.output).toContain("notes/todo.txt:1:PRIVATE-KEY-NOTE is fine to find");
 		expect(result.output).toContain("Documents/tax.txt:1:PRIVATE-TAXES");
 		expect(result.output).not.toContain("PRIVATE-KEY-MATERIAL");
+	});
+
+	it("returns nothing of Atelier's credential files, rooted at their folder or at one of them", async () => {
+		await mkdir(join(home, ".atelier"));
+		await writeFile(join(home, ".atelier", "auth.json"), '{"key":"PRIVATE-STORED-KEY"}');
+		await writeFile(join(home, ".atelier", "mcp-auth.json"), '{"token":"PRIVATE-STORED-TOKEN"}');
+		const result = await grep("PRIVATE", join(home, ".atelier"));
+		expect(result.output).not.toContain("PRIVATE-STORED");
+		const direct = await grep("PRIVATE", join(home, ".atelier", "auth.json"));
+		expect(direct.output).not.toContain("PRIVATE-STORED");
 	});
 
 	it("skips what the configuration's denyRead lists", async () => {

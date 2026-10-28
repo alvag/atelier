@@ -117,6 +117,8 @@ describe("agentPolicy", () => {
 			"/home/ana/.config/gh",
 			"/home/ana/Library/Keychains",
 			"/home/ana/.claude",
+			"/home/ana/.atelier/auth.json",
+			"/home/ana/.atelier/mcp-auth.json",
 			"/home/ana/Documents",
 		]);
 		expect(policy.filesystem.denyWrite).toEqual(
@@ -194,7 +196,7 @@ describe("agentPolicy", () => {
 		]);
 	});
 
-	it("denies reading the user's credential directories and keychains", () => {
+	it("denies reading the user's credential directories, keychains and Atelier's credential files", () => {
 		expect(agentPolicy(SESSION).filesystem.denyRead).toEqual([
 			"/home/ana/.ssh",
 			"/home/ana/.aws",
@@ -202,6 +204,8 @@ describe("agentPolicy", () => {
 			"/home/ana/.config/gh",
 			"/home/ana/Library/Keychains",
 			"/home/ana/.claude",
+			"/home/ana/.atelier/auth.json",
+			"/home/ana/.atelier/mcp-auth.json",
 		]);
 	});
 
