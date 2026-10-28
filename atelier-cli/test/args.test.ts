@@ -135,6 +135,15 @@ describe("parseCliArgs", () => {
 		expect(USAGE).toContain("openai-codex/gpt-6-luna");
 	});
 
+	it("refuses a subcommand's session options before it reads --model", () => {
+		expect(() => parseCliArgs(["stats", "--model", "claude-code/"], "/h")).toThrow(
+			new UsageError("atelier stats takes no session options (--model)."),
+		);
+		expect(() => parseCliArgs(["login", "--backend", "anthropic-api", "--model", "openai-codex/x"], "/h")).toThrow(
+			new UsageError("atelier login takes no session options (--backend, --model)."),
+		);
+	});
+
 	it("reads --help and --version", () => {
 		expect(parseCliArgs(["--help"], "/h").help).toBe(true);
 		expect(parseCliArgs(["-h"], "/h").help).toBe(true);
