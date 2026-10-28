@@ -634,6 +634,23 @@ const MAX_SOCKET_PATH = 103;
 /** How long the library may take to start in the short folder before it is given back. */
 const START_TIMEOUT_MS = 10_000;
 
+const RESET_WHILE_STARTING = {
+	available: false,
+	reason: "the sandbox was reset while it was starting",
+	failed: true,
+} as const satisfies SandboxStatus;
+
+/**
+ * A start of the library: `done` once it settled and whatever it set up that
+ * nobody keeps is reset; `settled` once the start itself has; `givenUp` when its
+ * caller stopped waiting for it (timed out or reset).
+ */
+interface Flight {
+	done: Promise<void>;
+	settled: boolean;
+	givenUp: boolean;
+}
+
 /** Whether `work` settles within `ms`; it goes on either way. */
 async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
 	let timer: NodeJS.Timeout | undefined;
@@ -693,11 +710,10 @@ export class Sandbox {
 	#manager: SandboxManagerLike | undefined;
 	/** Ends a start in the short folder that has not finished, so that `reset()` gives the folder back. */
 	#starting: AbortController | undefined;
-	/**
-	 * A start given up on (timed out or reset) until it settles and whatever it set
-	 * up is stopped; `settled` once the start itself has, and only its reset is left.
-	 */
-	#abandoned: { stopped: Promise<void>; settled: boolean } | undefined;
+	/** The library's start in flight, the only one at a time: the library is one per process. */
+	#inFlight: Flight | undefined;
+	/** Counts the resets: a start of an older generation never starts the library, nor keeps it. */
+	#generation = 0;
 
 	constructor(options: SandboxOptions = {}) {
 		this.#options = options;
@@ -709,26 +725,27 @@ export class Sandbox {
 	}
 
 	async #start(): Promise<SandboxStatus> {
+		const generation = this.#generation;
 		if (this.#options.disabled !== undefined) return { available: false, reason: this.#options.disabled };
 		const platform = this.#options.platform ?? process.platform;
 		if (platform !== "darwin") return { available: false, reason: NOT_AVAILABLE_ON_PLATFORM };
 		const inside = this.#options.insideSandbox ?? (this.#options.manager ? () => false : isInsideSandbox);
 		if (inside()) return { available: false, reason: INSIDE_SANDBOX };
 		try {
-			// The library is global to the process: a start given up on must be stopped before another one begins.
-			if (this.#abandoned !== undefined && !(await settlesWithin(this.#abandoned.stopped, this.#startTimeoutMs())))
-				return { available: false, reason: "an earlier start of the sandbox has not finished", failed: true };
+			// An earlier start, given up on or of an older generation, is stopped before this one begins.
+			while (this.#inFlight !== undefined)
+				if (!(await settlesWithin(this.#inFlight.done, this.#startTimeoutMs())))
+					return { available: false, reason: "an earlier start of the sandbox has not finished", failed: true };
+			if (generation !== this.#generation) return RESET_WHILE_STARTING;
 			const manager = this.#options.manager ?? (await defaultManager());
+			if (generation !== this.#generation) return RESET_WHILE_STARTING;
 			if (!manager.isSupportedPlatform()) return { available: false, reason: NOT_AVAILABLE_ON_PLATFORM };
 			const { errors } = manager.checkDependencies();
 			if (errors.length > 0) return { available: false, reason: errors.join(", "), failed: true };
-			// The log monitor is what reports the file denials; the proxy reports the network ones on its own.
-			const initialize = () => manager.initialize(SESSION_CONFIG, undefined, true);
 			// A socket that does not fit fails with EINVAL: the library starts with TMPDIR in a short folder instead.
-			if (socketFits(tmpdir())) await initialize();
-			else await this.#initializeInShortDir(manager, initialize);
-			this.#manager = manager;
-			return { available: true };
+			if (socketFits(tmpdir())) await this.#launch(manager, generation).started;
+			else await this.#initializeInShortDir(manager, generation);
+			return this.#manager === manager ? { available: true } : RESET_WHILE_STARTING;
 		} catch (error) {
 			return { available: false, reason: errorMessage(error), failed: true };
 		}
@@ -741,24 +758,27 @@ export class Sandbox {
 	 * back and fails. The library goes on alone, but this sandbox keeps it: once it
 	 * settles, well or not, it is reset, so no proxy is left running without an owner.
 	 */
-	async #initializeInShortDir(manager: SandboxManagerLike, initialize: () => Promise<void>): Promise<void> {
+	async #initializeInShortDir(manager: SandboxManagerLike, generation: number): Promise<void> {
 		const dir = ownShortDir(this.#options.socketRoot ?? "/tmp");
 		const starting = new AbortController();
 		this.#starting = starting;
 		const timeoutMs = this.#startTimeoutMs();
-		let started: Promise<void> | undefined;
+		let flight: Flight | undefined;
 		try {
 			await borrowTmpdir(
 				dir,
 				() => {
 					checkOwnDir(dir);
-					started = initialize();
-					return started;
+					if (generation !== this.#generation) throw new Error(RESET_WHILE_STARTING.reason);
+					const launched = this.#launch(manager, generation);
+					flight = launched.flight;
+					return launched.started;
 				},
 				{ timeoutMs, signal: starting.signal },
 			);
 		} catch (error) {
-			if (started !== undefined) this.#abandon(manager, started);
+			// Given up on before it settled: it is reset when it does. One that already failed is left as it is.
+			if (flight !== undefined) flight.givenUp = true;
 			if (error instanceof BorrowTimeoutError)
 				throw new Error(`the sandbox did not start within ${timeoutMs / 1000} s`);
 			throw error;
@@ -771,20 +791,34 @@ export class Sandbox {
 		return this.#options.startTimeoutMs ?? START_TIMEOUT_MS;
 	}
 
-	/** Resets the library once a start this sandbox gave up on settles, whether it started or failed. */
-	#abandon(manager: SandboxManagerLike, started: Promise<void>): void {
-		const abandoned = { stopped: Promise.resolve(), settled: false };
-		const settle = () => {
-			abandoned.settled = true;
+	/**
+	 * Starts the library and decides, in the one reaction to its end, what becomes
+	 * of it: kept as this sandbox's when it started, nobody gave up on it and no
+	 * reset came since; otherwise reset, whether it started or failed, unless it
+	 * failed while still wanted. The start waits on `started`, which settles after
+	 * that decision.
+	 */
+	#launch(manager: SandboxManagerLike, generation: number): { started: Promise<void>; flight: Flight } {
+		// The log monitor is what reports the file denials; the proxy reports the network ones on its own.
+		const initialize = manager.initialize(SESSION_CONFIG, undefined, true);
+		const flight: Flight = { done: Promise.resolve(), settled: false, givenUp: false };
+		const decide = (ok: boolean): Promise<void> | undefined => {
+			flight.settled = true;
+			const wanted = !flight.givenUp && generation === this.#generation;
+			if (ok && wanted) this.#manager = manager;
+			return wanted ? undefined : manager.reset();
 		};
-		abandoned.stopped = started
-			.then(settle, settle)
-			.then(() => manager.reset())
+		flight.done = initialize
+			.then(
+				() => decide(true),
+				() => decide(false),
+			)
 			.catch(() => {})
 			.finally(() => {
-				if (this.#abandoned === abandoned) this.#abandoned = undefined;
+				if (this.#inFlight === flight) this.#inFlight = undefined;
 			});
-		this.#abandoned = abandoned;
+		this.#inFlight = flight;
+		return { started: initialize, flight };
 	}
 
 	/** The command line that runs `command` under the policy; throws when the sandbox is unavailable. */
@@ -882,19 +916,20 @@ export class Sandbox {
 
 	/** Stops the library's proxies; the next command starts it again. */
 	async reset(): Promise<void> {
+		// Every start under way, or waiting to begin, is now of an older generation: none keeps or starts the library.
+		this.#generation++;
 		const starting = this.#starting;
 		const ready = this.#ready;
-		starting?.abort(new Error("the sandbox was reset while it was starting"));
+		starting?.abort(new Error(RESET_WHILE_STARTING.reason));
 		const manager = this.#manager;
 		this.#ready = undefined;
 		this.#manager = undefined;
-		// An aborted start answers at once, and hands what it began to `#abandoned`.
+		// An aborted start answers at once, and its flight resets the library when it settles.
 		if (starting !== undefined) await ready;
 		await manager?.reset();
-		// What a start given up on set up is stopped when it settles: reset waits for that stop once the start has
-		// settled, and leaves one still hanging to stop itself whenever it settles.
-		const abandoned = this.#abandoned;
-		if (abandoned?.settled) await settlesWithin(abandoned.stopped, this.#startTimeoutMs());
+		// Reset waits for that once the start has settled, and leaves one still hanging to stop itself when it settles.
+		const flight = this.#inFlight;
+		if (flight?.settled) await settlesWithin(flight.done, this.#startTimeoutMs());
 	}
 }
 
