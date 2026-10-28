@@ -50,17 +50,23 @@ export async function readCatalog(file: string): Promise<CatalogFile> {
 	} catch {
 		return { sources: {} };
 	}
-	const sources: Record<string, SourceEntry> = {};
-	if (!isRecord(parsed) || !isRecord(parsed.sources)) return { sources };
-	for (const [name, entry] of Object.entries(parsed.sources)) {
-		if (!isRecord(entry) || typeof entry.checkedAt !== "number") continue;
-		sources[name] = {
-			checkedAt: entry.checkedAt,
-			...(typeof entry.etag === "string" ? { etag: entry.etag } : {}),
-			models: catalogModels(entry.models),
-		};
-	}
-	return { sources };
+	if (!isRecord(parsed) || !isRecord(parsed.sources)) return { sources: {} };
+	// Built from entries, so a source named `__proto__` stays an entry and never becomes the object's prototype.
+	const entries = Object.entries(parsed.sources).flatMap(([name, entry]): [string, SourceEntry][] =>
+		isRecord(entry) && typeof entry.checkedAt === "number"
+			? [
+					[
+						name,
+						{
+							checkedAt: entry.checkedAt,
+							...(typeof entry.etag === "string" ? { etag: entry.etag } : {}),
+							models: catalogModels(entry.models),
+						},
+					],
+				]
+			: [],
+	);
+	return { sources: Object.fromEntries(entries) };
 }
 
 /** The last write to each file in this process: the next one waits for it, so no source's answer is lost here. */
@@ -184,8 +190,13 @@ export function modelDataOf(catalog: CatalogFile): ModelData {
 	const listed: CatalogListing = {};
 	for (const backend of CATALOG_BACKENDS) {
 		const merged = new Map<string, CatalogModel>();
-		for (const model of catalog.sources["models.dev"]?.models[backend] ?? []) merged.set(model.id, model);
-		const provided = catalog.sources[backend]?.models[backend];
+		const own = (name: string) => (Object.hasOwn(catalog.sources, name) ? catalog.sources[name] : undefined);
+		const listOf = (name: string) => {
+			const list = own(name)?.models?.[backend];
+			return Array.isArray(list) ? list : undefined;
+		};
+		for (const model of listOf("models.dev") ?? []) merged.set(model.id, model);
+		const provided = listOf(backend);
 		for (const model of provided ?? []) merged.set(model.id, { ...merged.get(model.id), ...model });
 		models[backend] = [...merged.values()];
 		if (provided) listed[backend] = provided.map((model) => model.id);

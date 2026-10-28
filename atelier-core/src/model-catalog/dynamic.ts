@@ -4,6 +4,7 @@ import { useModelData } from "./current.ts";
 import { ModelData } from "./model-data.ts";
 import { claudeCodeModelsSource } from "./providers.ts";
 import {
+	type CatalogFile,
 	type CatalogSource,
 	modelDataOf,
 	type RefreshOptions,
@@ -21,6 +22,8 @@ export interface DynamicCatalogOptions {
 	/** False (`ATELIER_MODEL_REFRESH=off`): only the cache is read, nothing is asked. */
 	network?: boolean;
 	refresh?: RefreshOptions;
+	/** Injected in tests; defaults to `readCatalog`. */
+	read?: (file: string) => Promise<CatalogFile>;
 }
 
 /**
@@ -39,9 +42,10 @@ export class DynamicModelCatalog implements ModelCatalog {
 		this.#loaded = this.#load();
 	}
 
+	/** Never fails: whatever the cache holds, the code's list stays. */
 	async models(backend: BackendName): Promise<readonly string[]> {
 		const base = BACKEND_MODELS[backend];
-		const listed = (await this.#loaded).listed(backend) ?? [];
+		const listed = (await this.#loaded.catch(() => new ModelData())).listed(backend) ?? [];
 		return [...base, ...listed.filter((id) => !base.includes(id))];
 	}
 
@@ -75,14 +79,21 @@ export class DynamicModelCatalog implements ModelCatalog {
 		}
 	}
 
+	/** Reads the cache again; until the read ends, the lists of the last one are offered. */
 	async #reload(): Promise<void> {
-		this.#loaded = this.#load();
-		await this.#loaded;
+		const data = await this.#load();
+		this.#loaded = Promise.resolve(data);
 	}
 
+	/** The cache's data; a read that fails, or a cache that makes no sense, is no data at all. */
 	async #load(): Promise<ModelData> {
 		const read = ++this.#reads;
-		const data = await readCatalog(this.#options.file).then(modelDataOf, () => new ModelData());
+		let data: ModelData;
+		try {
+			data = modelDataOf(await (this.#options.read ?? readCatalog)(this.#options.file));
+		} catch {
+			data = new ModelData();
+		}
 		if (read === this.#reads) useModelData(data);
 		return data;
 	}
