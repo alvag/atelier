@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { VERSION } from "../../version.ts";
 import { AnthropicApiBackend, type AnthropicApiBackendOptions } from "../anthropic-api/backend.ts";
 import { anthropicTransport, type ModelTransport } from "../anthropic-api/transport.ts";
+import { chatCompletionsTransport } from "./chat-completions.ts";
 import { DEFAULT_OPENCODE_GO_MODEL, OPENCODE_GO_BASE_URL, openCodeGoModel } from "./models.ts";
 
 export const OPENCODE_GO_BACKEND_ID = "opencode-go";
@@ -20,9 +21,21 @@ export function openCodeGoHeaders(sessionId: string): Record<string, string> {
 	return { [OPENCODE_SESSION_HEADER]: sessionId, "user-agent": `atelier/${VERSION}` };
 }
 
+/** Reasoning a Chat Completions model left carries no signature, so a Messages API model cannot take it back. */
+function withoutUnsigned(message: Anthropic.MessageParam): Anthropic.MessageParam {
+	if (typeof message.content === "string") return message;
+	const kept = message.content.filter((block) => block.type !== "thinking" || block.signature !== "");
+	if (kept.length === message.content.length) return message;
+	// Same role and block kinds as `message`, so the cast cannot change its type.
+	return {
+		...message,
+		content: kept.length > 0 ? kept : [{ type: "text", text: "(no answer)" }],
+	} as Anthropic.MessageParam;
+}
+
 /**
- * The Messages API at OpenCode Go: the SDK's transport, without what only Anthropic takes (`diagnostics`), and with
- * the windows of the model table instead of the models API.
+ * The Messages API at OpenCode Go: the SDK's transport, without what only Anthropic takes (`diagnostics`) or the
+ * reasoning of Chat Completions models, and with the windows of the model table instead of the models API.
  */
 function messagesTransport(client: Anthropic): ModelTransport {
 	const transport = anthropicTransport(client);
@@ -30,7 +43,7 @@ function messagesTransport(client: Anthropic): ModelTransport {
 		...transport,
 		request(params, signal) {
 			const { diagnostics: _diagnostics, ...rest } = params;
-			return transport.request(rest, signal);
+			return transport.request({ ...rest, messages: rest.messages.map(withoutUnsigned) }, signal);
 		},
 		contextWindow: async (model) => openCodeGoModel(model).contextWindow,
 	};
@@ -58,7 +71,13 @@ export function createOpenCodeGoBackend(options: OpenCodeGoBackendOptions): Anth
 					...(options.maxRetries === undefined ? {} : { maxRetries: options.maxRetries }),
 				}),
 			);
-			return () => messages;
+			const chat = chatCompletionsTransport({
+				apiKey: options.apiKey,
+				baseUrl,
+				headers,
+				...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+			});
+			return (model) => (openCodeGoModel(model).protocol === "anthropic-messages" ? messages : chat);
 		},
 	});
 }
