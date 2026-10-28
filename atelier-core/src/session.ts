@@ -657,6 +657,9 @@ export class Session {
 				this.#recoveryInFlight = this.#recovery;
 				this.#recovery = undefined;
 			}
+			// The outcome of the latest review, once: the agent hears about it, and acts only if the user asks.
+			let reviewNotice = this.#review?.takeNotice();
+			if (reviewNotice !== undefined) sent = `${reviewNotice}\n\n${sent}`;
 			const mcpStatus = this.mcpStatus();
 			if (mcpStatus !== undefined && JSON.stringify(mcpStatus) !== this.#mcpSaid) {
 				this.#mcpSaid = JSON.stringify(mcpStatus);
@@ -678,7 +681,10 @@ export class Session {
 			this.#steerable = true;
 			try {
 				for await (const event of backendSession.send(sent)) {
-					if (!refusal(event)) this.#recoveryInFlight = undefined;
+					if (!refusal(event)) {
+						this.#recoveryInFlight = undefined;
+						reviewNotice = undefined;
+					}
 					if (event.type === "turn_finished") finish ??= event;
 					else {
 						if (event.type === "error") failed = true;
@@ -695,6 +701,7 @@ export class Session {
 				// Never taken: it goes with the next prompt, unless a later compaction left a newer one.
 				if (this.#recoveryInFlight !== undefined) this.#recovery ??= this.#recoveryInFlight;
 				this.#recoveryInFlight = undefined;
+				if (reviewNotice !== undefined) this.#review?.returnNotice(reviewNotice);
 			}
 			this.#previousTurn = { request: prompt, lastMessage: lastMessageTail(this.#lastMessage) };
 			await logged;
