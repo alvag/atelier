@@ -752,6 +752,22 @@ describe("user prompts", () => {
 		]);
 	});
 
+	it("masks a URL password up to the authority's last '@', with '@' or '/' inside it", async () => {
+		const prompts = [
+			"git clone https://ana:p@ss@host.example/x.git",
+			"psql postgres://ana:a/b@db.local:5432/app now",
+			"see https://ana:pw@host.example/@scope/pkg",
+		];
+		const { memory, session: s, send } = await session(prompts.map(() => [{ event: finished }]));
+		for (const prompt of prompts) await send(prompt);
+		await s.close();
+		expect(memory.prompts).toEqual([
+			"git clone https://ana:[REDACTED]@host.example/x.git",
+			"psql postgres://ana:[REDACTED]@db.local:5432/app now",
+			"see https://ana:[REDACTED]@host.example/@scope/pkg",
+		]);
+	});
+
 	it("masks an Authorization or Proxy-Authorization value whole, whatever its scheme", async () => {
 		const prompts = [
 			"Authorization: Negotiate YIIabcdefghijk lmnop",

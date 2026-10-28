@@ -52,8 +52,10 @@ const VALUE_MASKS: RegExp[] = [
 	/\b((?:Proxy-)?Authorization["']?[ \t]*[:=][ \t]*)(?![ \t"'])[^\n"']+/gi,
 	/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi,
 	new RegExp(`\\b(${SECRET_NAME}["']?\\s*[:=]\\s*)(?:"[^"\\n]*"|'[^'\\n]*'|[^\\s"',;]+)`, "gi"),
-	// A password in a URL: scheme://user:password@host.
-	/\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:)[^\s@/]+(?=@)/gi,
+	// A password in a URL, scheme://user:password@host, up to the authority's last '@': one that the next '@' follows
+	// without a '/', '?' or '#' between them still belongs to the password. Starting only where a scheme can start
+	// keeps it linear on long runs of scheme characters.
+	/(?<![A-Za-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:)[^\s@]*(?:@[^\s@/?#]*(?=@))*(?=@)/gi,
 ];
 
 /** The private key blocks and the shapes `findSecret` knows, replaced by `[REDACTED]` where they stand whole. */
