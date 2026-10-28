@@ -9,6 +9,8 @@ import {
 	claudeCodeLogout,
 	describeClaudeCodeAuth,
 	describeError,
+	OPENCODE_GO_KEY_ENV,
+	OPENCODE_GO_PROVIDER,
 	type SecurityRunner,
 } from "@atelier/core";
 
@@ -50,18 +52,23 @@ export interface LoginPorts {
 }
 
 /**
- * A provider and the backend that uses it. Each method lists its own providers: Codex joins the accounts and
- * OpenCode Go the API keys as one more row each.
+ * A provider and the backend that uses it. Each method lists its own providers: Codex joins the accounts as one more
+ * row. An API key names the variable that overrides the stored one, and whether the Keychain may hold it.
  */
 interface Provider {
 	id: string;
 	label: string;
 	backend: string;
+	env?: string;
+	keychain?: boolean;
 }
 
 const PROVIDERS: Record<LoginMethod, readonly Provider[]> = {
 	account: [{ id: ANTHROPIC_PROVIDER, label: "Anthropic", backend: "claude-code" }],
-	"api-key": [{ id: ANTHROPIC_PROVIDER, label: "Anthropic", backend: "anthropic-api" }],
+	"api-key": [
+		{ id: ANTHROPIC_PROVIDER, label: "Anthropic", backend: "anthropic-api", env: "ANTHROPIC_API_KEY", keychain: true },
+		{ id: OPENCODE_GO_PROVIDER, label: "OpenCode Go", backend: "opencode-go", env: OPENCODE_GO_KEY_ENV },
+	],
 };
 
 const METHODS: readonly { method: LoginMethod; label: string }[] = [
@@ -69,8 +76,8 @@ const METHODS: readonly { method: LoginMethod; label: string }[] = [
 	{ method: "api-key", label: "Sign in with an API key" },
 ];
 
-export const LOGIN_USAGE = "/login [account|api-key] [anthropic]";
-export const LOGOUT_USAGE = "/logout [account|api-key] [anthropic]";
+export const LOGIN_USAGE = "/login [account|api-key] [anthropic|opencode-go]";
+export const LOGOUT_USAGE = "/logout [account|api-key] [anthropic|opencode-go]";
 
 /** `[account|api-key] [provider]`, either word optional; undefined for anything else. */
 export function parseLoginTarget(words: readonly string[]): LoginTarget | undefined {
@@ -99,7 +106,7 @@ async function accountStatus(ports: LoginPorts): Promise<ClaudeCodeAuthStatus | 
 	}
 }
 
-async function statusOf(ports: LoginPorts, method: LoginMethod): Promise<string> {
+async function statusOf(ports: LoginPorts, method: LoginMethod, provider: Provider): Promise<string> {
 	if (method === "account") {
 		const status = await accountStatus(ports);
 		if (status instanceof Error) return `unknown: ${status.message}`;
@@ -107,10 +114,11 @@ async function statusOf(ports: LoginPorts, method: LoginMethod): Promise<string>
 			? `✓ ${describeClaudeCodeAuth(status)}`
 			: describeClaudeCodeAuth(status);
 	}
-	const stored = store(ports).get(ANTHROPIC_PROVIDER)?.type === "api_key";
-	const fromEnv = Boolean(ports.env.ANTHROPIC_API_KEY?.trim());
-	if (stored) return fromEnv ? "✓ stored (ANTHROPIC_API_KEY overrides it)" : "✓ stored";
-	if (fromEnv) return "from ANTHROPIC_API_KEY";
+	const stored = store(ports).get(provider.id)?.type === "api_key";
+	const fromEnv = provider.env !== undefined && Boolean(ports.env[provider.env]?.trim());
+	if (stored) return fromEnv ? `✓ stored (${provider.env} overrides it)` : "✓ stored";
+	if (fromEnv) return `from ${provider.env}`;
+	if (!provider.keychain) return "not configured";
 	return (await apiKeySource({
 		store: store(ports),
 		env: {},
@@ -123,6 +131,9 @@ async function statusOf(ports: LoginPorts, method: LoginMethod): Promise<string>
 
 async function pickMethod(ports: LoginPorts, target: LoginTarget): Promise<LoginMethod | undefined> {
 	if (target.method !== undefined) return target.method;
+	// A provider that only one method has needs no question.
+	const withProvider = METHODS.filter(({ method }) => PROVIDERS[method].some(({ id }) => id === target.provider));
+	if (withProvider.length === 1) return withProvider[0]?.method;
 	const index = await ports.choose(
 		"Select authentication method",
 		METHODS.map(({ label }) => ({ label })),
@@ -145,7 +156,7 @@ async function pickProvider(
 		return found;
 	}
 	const options = await Promise.all(
-		providers.map(async ({ label }) => ({ label, status: await statusOf(ports, method) })),
+		providers.map(async (provider) => ({ label: provider.label, status: await statusOf(ports, method, provider) })),
 	);
 	const index = await ports.choose(METHODS.find((entry) => entry.method === method)?.label ?? method, options);
 	return index === undefined ? undefined : providers[index];
@@ -201,8 +212,8 @@ async function loginApiKey(ports: LoginPorts, provider: Provider): Promise<boole
 		return false;
 	}
 	ports.say(`✓ ${provider.label}: API key stored in ~/.atelier/auth.json; --backend ${provider.backend} uses it.`);
-	if (ports.env.ANTHROPIC_API_KEY?.trim())
-		ports.say("ANTHROPIC_API_KEY is set here, and takes priority over the stored key.");
+	if (provider.env !== undefined && ports.env[provider.env]?.trim())
+		ports.say(`${provider.env} is set here, and takes priority over the stored key.`);
 	return true;
 }
 
