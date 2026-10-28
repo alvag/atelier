@@ -184,11 +184,6 @@ export function parseCliArgs(
 	if (mode !== undefined && !isPermissionMode(mode)) throw new UsageError("--mode must be normal, auto or yolo.");
 	if (values.backend !== undefined && !isBackendName(values.backend))
 		throw new UsageError(`--backend must be ${BACKEND_NAMES.slice(0, -1).join(", ")} or ${BACKEND_NAMES.at(-1)}.`);
-	const named = modelOption(values.model);
-	if (named.backend !== undefined && values.backend !== undefined && named.backend !== values.backend)
-		throw new UsageError(`--model names the ${named.backend} backend, but --backend is ${values.backend}.`);
-	const chosenBackend = values.backend ?? named.backend;
-	const backend = chosenBackend ?? DEFAULT_BACKEND;
 	if (values.resume !== undefined && values.resume.trim() === "") throw new UsageError("--resume needs a value.");
 	if (values.continue && values.resume !== undefined)
 		throw new UsageError("--continue and --resume cannot be used together.");
@@ -219,6 +214,12 @@ export function parseCliArgs(
 				`atelier ${subcommand.name} takes no session options (${given.map((name) => `--${name}`).join(", ")}).`,
 			);
 	}
+	// Read only for a session: a subcommand has refused its session options above.
+	const named = modelOption(values.model);
+	if (named.backend !== undefined && values.backend !== undefined && named.backend !== values.backend)
+		throw new UsageError(`--model names the ${named.backend} backend, but --backend is ${values.backend}.`);
+	const chosenBackend = values.backend ?? named.backend;
+	const backend = chosenBackend ?? DEFAULT_BACKEND;
 	const prompt = subcommand === undefined && positionals.length > 0 ? positionals.join(" ") : undefined;
 	if (prompt !== undefined && prompt.trim() === "") throw new UsageError("The prompt is empty.");
 	return {
