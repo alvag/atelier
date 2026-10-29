@@ -139,6 +139,22 @@ describe("a change of mode during the session", () => {
 		expect(s.backend.prompts).toEqual([`${YOLO_RULES}\n\nfirst`, `${LEFT_YOLO}\n\nsecond`]);
 	});
 
+	it("keeps the mode of a backend change pending until the new backend takes a prompt", async () => {
+		const s = await start([DONE]);
+		s.session.setPermissionMode("yolo");
+		await s.send("first");
+		const replacement = new FakeBackend([[{ throw: "API unavailable" }], DONE, DONE], "anthropic-api");
+		await s.session.setBackend(replacement);
+		await s.send("lost");
+		await s.send("retry");
+		await s.send("then");
+		await s.session.close();
+		expect(replacement.startOptions?.systemPromptAppend ?? "").not.toContain(YOLO_RULES);
+		expect(replacement.prompts[0]).toContain(YOLO_RULES);
+		expect(replacement.prompts[1]).toContain(YOLO_RULES);
+		expect(replacement.prompts[2]).toBe("then");
+	});
+
 	it("says nothing when the model already has the mode right", async () => {
 		const s = await start([DONE, DONE, DONE], { permissionMode: "yolo" });
 		s.session.setPermissionMode("yolo");

@@ -1152,6 +1152,8 @@ export class Session {
 		this.#mainAgent = undefined;
 		this.#backendChange = { from, summarized: summary !== undefined };
 		this.#unannounced = true;
+		// The new backend knows only its system prompt's mode: a later one is a note, pending until it takes a prompt.
+		this.#toldYolo = this.#startedYolo;
 		if (summary !== undefined) {
 			// Saved first, so the state knows whether the recovery notice already brings the memory.
 			if (this.#carried === undefined) await this.#saveSummary(summary.text);
