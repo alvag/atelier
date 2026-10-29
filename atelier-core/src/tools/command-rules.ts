@@ -211,6 +211,8 @@ interface Key {
 	leavesProject: boolean;
 	/** The places its words may name, as written: the words, an option's attached value (`-Cdir`, `--dir=dir`). */
 	places: string[];
+	/** Its standard input comes from the line (a pipe, `<`, a heredoc, a here-string): code no project rule covers. */
+	readsInput: boolean;
 }
 
 const ruleOf = ({ program, subcommand }: Key) => (subcommand === undefined ? program : `${program} ${subcommand}`);
@@ -240,7 +242,7 @@ function launcherOf(name: string, words: SimpleCommand["words"]): string | undef
 }
 
 /** The key of one command, or undefined when it can never be covered. */
-function keyOf({ wrappers, words, writesFile, setsEnvironment }: SimpleCommand): Key | undefined {
+function keyOf({ wrappers, words, writesFile, setsEnvironment, readsInput }: SimpleCommand): Key | undefined {
 	const [first, second] = words;
 	if (writesFile || setsEnvironment || first === undefined || first.raw !== first.value || !PROGRAM.test(first.value))
 		return undefined;
@@ -276,6 +278,7 @@ function keyOf({ wrappers, words, writesFile, setsEnvironment }: SimpleCommand):
 			...(program.includes("/") && !program.startsWith("/") ? [program] : []),
 			...words.slice(1).flatMap(({ value }) => placesOf(value)),
 		],
+		readsInput,
 	};
 }
 
@@ -338,7 +341,8 @@ export function coveredBy(
 	const staysInProject = !keys.some(
 		(key) => CHANGES_DIRECTORY.has(key.program) || key.leavesProject || !key.places.every(inProject),
 	);
-	return staysInProject && keys.every((key) => covers(rules, key) || covers(projectRules, key));
+	// What a command reads from the line (`make -f - <<EOF`) is code the words do not show: only a session or global rule covers it.
+	return staysInProject && keys.every((key) => covers(rules, key) || (!key.readsInput && covers(projectRules, key)));
 }
 
 /** How broadly `rule` may be kept: only for the session, in a project, or always; undefined when it is no rule `commandRules` could give. */

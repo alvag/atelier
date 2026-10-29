@@ -271,7 +271,7 @@ describe("coveredBy with project rules", () => {
 		expect(coveredBy("printf '%s' /tmp | make -f -", ["printf"], ["make"])).toBe(false);
 		expect(coveredBy("printf x | xargs echo; make", ["printf", "echo"], ["make"])).toBe(false);
 		expect(coveredBy("printf '%s' /tmp", ["printf"], ["make"])).toBe(true);
-		expect(coveredBy("printf x | make -f -", ["printf"], ["make"])).toBe(true);
+		expect(coveredBy("printf x; make", ["printf"], ["make"])).toBe(true);
 	});
 
 	it("asks the caller whether each place a word names stays in the project", () => {
@@ -289,6 +289,30 @@ describe("coveredBy with project rules", () => {
 		asked.length = 0;
 		expect(coveredBy("make -C link", ["make"], ["make"], inside)).toBe(true);
 		expect(asked).toEqual([]);
+	});
+
+	it.each([
+		"make -f - <<'EOF'\ninclude /outside/Makefile\nEOF",
+		"make -f - <<< 'include /outside/Makefile'",
+		"make -f - < /outside/Makefile",
+		"make -f - < Makefile.in",
+		"make -f - 0<Makefile.in",
+		"printf 'include /tmp/M\\n' | make -f -",
+		"printf x |& make -f -",
+		"printf x | (make -f -)",
+		"printf x | { make -f -; }",
+		"(make -f -) < Makefile.in",
+	])("never covers by a project rule a command whose standard input another part of the line gives: %j", (command) => {
+		expect(coveredBy(command, ["printf"], ["make"])).toBe(false);
+	});
+
+	it("still covers by a project rule a command that reads no input from the line", () => {
+		expect(coveredBy("pnpm test", [], ["pnpm"])).toBe(true);
+		expect(coveredBy("pnpm test 2>&1 | tail -5", ["tail"], ["pnpm"])).toBe(true);
+		expect(coveredBy("pnpm test || printf failed", ["printf"], ["pnpm"])).toBe(true);
+		// A session rule covers it as before.
+		expect(coveredBy("printf x | make -f -", ["printf", "make"])).toBe(true);
+		expect(coveredBy("make -f - <<< 'all:'", ["make"])).toBe(true);
 	});
 
 	it("still covers such a line by a session rule", () => {
