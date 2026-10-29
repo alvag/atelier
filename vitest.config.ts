@@ -8,7 +8,7 @@ export default defineConfig({
 		env: { ATELIER_SCRATCH_SWEEP: "off" },
 		// An empty home per worker, and a guard that fails a test which runs the real Claude Code or Keychain.
 		setupFiles: ["atelier-core/test/support/setup.ts"],
-		// Inside a sandbox the Seatbelt and PTY tests skip: the run ends with a warning that says so.
+		// Inside a sandbox the Seatbelt tests skip: the run ends with a warning that says so.
 		globalSetup: ["atelier-core/test/support/nested-sandbox.ts"],
 	},
 });
