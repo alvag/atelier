@@ -413,7 +413,8 @@ export type AtelierEventBody =
 	| { type: "task_started"; taskId: string; agent: string; label: string; outputPath: string; running: number }
 	/**
 	 * A background task ended: `finished` with a report, `failed` without one (`error` says why), `stopped` by `job_stop`
-	 * or the session's close. `notified`, `running` and `waiting` as in `job_finished`; said as `job_finished` is.
+	 * or the session's close. `reportTail`: the report's last lines, at most 400 characters (the whole report is in
+	 * `outputPath`). `notified`, `running` and `waiting` as in `job_finished`; said as `job_finished` is.
 	 */
 	| {
 			type: "task_finished";
@@ -425,6 +426,7 @@ export type AtelierEventBody =
 			durationMs: number;
 			outputPath: string;
 			costUsd?: number;
+			reportTail?: string;
 			notified: boolean;
 			running: number;
 			waiting: number;

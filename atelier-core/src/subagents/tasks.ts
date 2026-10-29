@@ -7,6 +7,8 @@ import { boundReport, MAX_BACKGROUND_TASKS, type SubagentResult } from "./defini
 /** Finished tasks `job_list` still shows, the latest ones. */
 const MAX_FINISHED_TASKS = 20;
 const MAX_LABEL_CHARS = 80;
+/** What the clients get of a report: its last lines, within this many characters. */
+const REPORT_TAIL_CHARS = 400;
 
 export type TaskStatus = "running" | "finished" | "failed" | "stopped";
 
@@ -24,6 +26,8 @@ export interface TaskInfo {
 	outputPath: string;
 	/** What its subagent cost, when its backend says. */
 	costUsd?: number;
+	/** The last lines of its report, for the clients, once it finished. */
+	reportTail?: string;
 }
 
 /** How the subagent's turn ended: its report, or why there is none. */
@@ -185,8 +189,10 @@ export class BackgroundTasks {
 			info.status = "failed";
 			info.error = result.error;
 		}
-		if (result.ok) log(`\n## Report\n\n${result.report}`);
-		else log(`\n## ${info.status === "stopped" ? "Stopped" : `Failed: ${result.error}`}`);
+		if (result.ok) {
+			info.reportTail = tailOf(result.report);
+			log(`\n## Report\n\n${result.report}`);
+		} else log(`\n## ${info.status === "stopped" ? "Stopped" : `Failed: ${result.error}`}`);
 		this.#forgetOld();
 		if (info.status === "stopped") {
 			quietly(() => this.#options.onEnded({ task: { ...info } }));
@@ -214,6 +220,15 @@ export class BackgroundTasks {
 function labelOf(text: string): string {
 	const line = (text.split("\n").find((part) => part.trim() !== "") ?? "").trim();
 	return line.length > MAX_LABEL_CHARS ? `${line.slice(0, MAX_LABEL_CHARS - 3)}...` : line;
+}
+
+/** The report's last whole lines within REPORT_TAIL_CHARS, after a `…` line when some were left out. */
+function tailOf(report: string): string {
+	const text = report.trim();
+	if (text.length <= REPORT_TAIL_CHARS) return text;
+	const end = text.slice(-(REPORT_TAIL_CHARS - 2));
+	const start = end.indexOf("\n");
+	return `…\n${start === -1 ? end : end.slice(start + 1)}`;
 }
 
 function quietly(action: () => void): void {
