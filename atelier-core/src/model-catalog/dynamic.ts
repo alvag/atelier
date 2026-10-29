@@ -1,7 +1,7 @@
 import { BACKEND_MODELS, type ModelCatalog } from "../options.ts";
 import type { BackendName } from "../protocol/types.ts";
 import { useModelData } from "./current.ts";
-import { ModelData } from "./model-data.ts";
+import { type CatalogModel, ModelData } from "./model-data.ts";
 import { claudeCodeModelsSource } from "./providers.ts";
 import {
 	type CatalogFile,
@@ -47,6 +47,11 @@ export class DynamicModelCatalog implements ModelCatalog {
 		const base = BACKEND_MODELS[backend];
 		const listed = (await this.#latest()).listed(backend) ?? [];
 		return [...base, ...listed.filter((id) => !base.includes(id))];
+	}
+
+	/** What the catalog knows of a model: its window, price, levels and whether it takes images, each when a source said it. */
+	async model(backend: BackendName, id: string): Promise<CatalogModel | undefined> {
+		return (await this.#latest()).model(backend, id);
 	}
 
 	/** The data of the newest read that ended: a newer one published while this waited replaces what it waited for. */

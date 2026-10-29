@@ -60,6 +60,7 @@ const anthropicModel = (id: string, window: number | null, efforts: string[], of
 	max_input_tokens: window,
 	capabilities: {
 		effort: Object.fromEntries([["supported", efforts.length > 0], ...efforts.map((e) => [e, supported(true)])]),
+		image_input: supported(id === "claude-new-6"),
 		thinking: {
 			supported: true,
 			types: {
@@ -112,8 +113,13 @@ it("lists Anthropic's models with the key, page by page, over what models.dev sa
 		prices: [{ input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }],
 		efforts: ["low", "high"],
 		off: "disabled",
+		images: true,
 	});
-	expect(data.model("anthropic-api", "claude-old-3")).toEqual({ id: "claude-old-3", off: "between_tools" });
+	expect(data.model("anthropic-api", "claude-old-3")).toEqual({
+		id: "claude-old-3",
+		off: "between_tools",
+		images: false,
+	});
 });
 
 it("does not ask Anthropic without a key, and lists nothing for it", async () => {
@@ -150,6 +156,7 @@ it("lists the Codex models the account's picker shows, in its order, with their 
 			{ slug: "gpt-6-luna", visibility: "list", priority: 4, context_window: 272_000, supported_reasoning_levels: [] },
 			{
 				slug: "gpt-6.1-terra",
+				input_modalities: ["text", "image"],
 				visibility: "list",
 				priority: 1,
 				context_window: 400_000,
@@ -169,6 +176,7 @@ it("lists the Codex models the account's picker shows, in its order, with their 
 		id: "gpt-6.1-terra",
 		contextWindow: 400_000,
 		efforts: ["low", "high"],
+		images: true,
 	});
 });
 

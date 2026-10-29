@@ -20,6 +20,8 @@ export interface CatalogModel {
 	efforts?: readonly Effort[];
 	/** How its thinking is turned off, as `pricing.ts` sends it; `disabled` also stands for OpenCode Go's `none`. */
 	off?: ThinkingOff;
+	/** Whether it takes images in its input. */
+	images?: boolean;
 }
 
 export type CatalogModels = Partial<Record<CatalogBackend, readonly CatalogModel[]>>;
@@ -82,6 +84,7 @@ export function catalogModel(value: unknown): CatalogModel | undefined {
 	}
 	if (Array.isArray(value.efforts)) model.efforts = value.efforts.filter(isEffort);
 	if (value.off === "disabled" || value.off === "between_tools") model.off = value.off;
+	if (typeof value.images === "boolean") model.images = value.images;
 	return model;
 }
 

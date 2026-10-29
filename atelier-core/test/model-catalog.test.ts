@@ -51,6 +51,7 @@ const MODELS_DEV = {
 				reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "xhigh", "max"] }],
 				limit: { context: 1_000_000, output: 128_000 },
 				cost: { input: 4, output: 20, cache_read: 0.2, cache_write: 5 },
+				modalities: { input: ["text", "image", "pdf"], output: ["text"] },
 			},
 			broken: { id: 7, limit: { context: -1 } },
 		},
@@ -62,6 +63,7 @@ const MODELS_DEV = {
 				id: "grok-4.7",
 				reasoning_options: [{ type: "effort", values: ["none", "minimal", "low", "high"] }],
 				limit: { context: 500_000 },
+				modalities: { input: ["text"], output: ["text"] },
 				cost: {
 					input: 2,
 					output: 6,
@@ -109,6 +111,7 @@ it("keeps what models.dev says of the providers' models in ~/.atelier/models.jso
 		contextWindow: 1_000_000,
 		prices: [{ input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }],
 		efforts: ["low", "medium", "high", "xhigh", "max"],
+		images: true,
 	});
 	// `none` turns thinking off, as `disabled` stands for it; a level Atelier does not send is left out.
 	expect(data.model("opencode-go", "grok-4.7")).toEqual({
@@ -120,8 +123,9 @@ it("keeps what models.dev says of the providers' models in ~/.atelier/models.jso
 		],
 		efforts: ["low", "high"],
 		off: "disabled",
+		images: false,
 	});
-	// A window that is not a size, or a tier that is not by prompt size, is not invented: it is left out.
+	// A window that is not a size, a tier that is not by prompt size, or unsaid modalities are not invented: left out.
 	expect(data.model("opencode-go", "odd-tier")).toEqual({ id: "odd-tier" });
 	expect(data.model("anthropic-api", "broken")).toBeUndefined();
 	// Codex serves its own windows, not the API's: models.dev's OpenAI models are not read.

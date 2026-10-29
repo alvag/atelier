@@ -75,6 +75,8 @@ function modelOf(value: unknown): CatalogModel | undefined {
 		: [];
 	if (levels.length > 0) model.efforts = levels.filter(isEffort);
 	if (levels.includes("none")) model.off = "disabled";
+	if (isRecord(value.modalities) && Array.isArray(value.modalities.input))
+		model.images = value.modalities.input.includes("image");
 	return model;
 }
 
