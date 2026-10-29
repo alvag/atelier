@@ -96,7 +96,7 @@ const createBackend = (name: BackendName) =>
 	process.env.ATELIER_BACKEND === "echo"
 		? new EchoBackend()
 		: createNamedBackend(name, {
-				...(compactAt === undefined ? {} : { anthropicApi: { compactAt }, openaiCodex: { compactAt } }),
+				...(compactAt === undefined ? {} : { compactAt }),
 				...(catalog === undefined
 					? {}
 					: {
