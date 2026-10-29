@@ -82,7 +82,7 @@ export interface Folded {
 
 /**
  * A question with a list of answers, in a frame: `┌ title ─┐`, the question's lines, then the choices. The answer
- * selected at first is `initial`; Esc gives `cancel`. Text pasted into it answers nothing: only keys move or choose.
+ * selected at first is `initial`, or none without one: Enter answers nothing until Up or Down has selected; Esc gives `cancel`. Text pasted into it answers nothing: only keys move or choose.
  * With `folded`, it shows that short form until `toggle()` opens the whole question. With `guardMs`, the keys that
  * arrive that long after `reveal()` are dropped, so a key typed before the question appeared does not answer it.
  */
@@ -97,18 +97,24 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 	readonly #guardMs: number;
 	#revealedAt: number | undefined;
 	readonly #paste: PasteFilter;
+	/** Whether a choice is selected: always with an `initial`, else after the first Up or Down. */
+	#armed: boolean;
+	/** The descriptions to show under the label of the choice at the same index, when they are not beside it. */
+	readonly #below: readonly (string | undefined)[] | undefined;
 
 	constructor(
 		options: {
 			title: string;
 			lines: readonly string[];
 			choices: readonly Choice<T>[];
-			initial: T;
+			initial?: T;
 			cancel: T;
 			/** How many choices are shown at once; all of them by default. */
 			rows?: number;
 			folded?: Folded;
 			guardMs?: number;
+			/** Shows each description on its own row under its label, not beside it. */
+			descriptionsBelow?: boolean;
 			/** The filter that followed the input before this question appeared; one of its own by default. */
 			paste?: PasteFilter;
 		},
@@ -121,12 +127,21 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 		this.#folded = options.folded;
 		this.#guardMs = options.guardMs ?? 0;
 		this.#paste = options.paste ?? new PasteFilter();
+		this.#below = options.descriptionsBelow ? options.choices.map((choice) => choice.description) : undefined;
 		const items = options.choices.map(({ value, label, description }) => ({
 			value,
 			label,
-			...(description === undefined ? {} : { description }),
+			...(description === undefined || this.#below !== undefined ? {} : { description }),
 		}));
-		this.#list = new SelectList(items, Math.min(items.length, options.rows ?? items.length), selectListTheme(paint));
+		this.#armed = options.initial !== undefined;
+		const theme = selectListTheme(paint);
+		// Nothing is highlighted until a key selects.
+		this.#list = new SelectList(items, Math.min(items.length, options.rows ?? items.length), {
+			...theme,
+			selectedPrefix: (text) => (this.#armed ? theme.selectedPrefix(text) : " ".repeat(visibleWidth(text))),
+			// The list marks its selected row with an arrow of its own, which is dropped too.
+			selectedText: (text) => (this.#armed ? theme.selectedText(text) : text.replace(/^→ /, "  ")),
+		});
 		this.#list.setSelectedIndex(
 			Math.max(
 				0,
@@ -156,7 +171,18 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 
 	handleInput(data: string): void {
 		const keys = this.#paste.feed(data);
-		if (keys !== "" && !this.#guarded()) this.#list.handleInput(keys);
+		if (keys === "" || this.#guarded()) return;
+		if (!this.#armed) {
+			// The first Up or Down selects the first or last choice; Enter and the rest wait for a choice.
+			const up = matchesKey(keys, "up");
+			if (!up && !matchesKey(keys, "down") && !matchesKey(keys, "escape")) return;
+			if (up || matchesKey(keys, "down")) {
+				this.#armed = true;
+				if (up) this.#list.handleInput(keys);
+				return;
+			}
+		}
+		this.#list.handleInput(keys);
 	}
 
 	invalidate(): void {
@@ -180,9 +206,22 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 		return [
 			truncateToWidth(top, width),
 			...body.map(row),
-			...this.#list.render(inner).map(row),
+			...this.#choiceRows(inner).map(row),
 			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
 		];
+	}
+
+	/** The list's rows; with descriptions below, each label's row is followed by its description, dimmed and indented. */
+	#choiceRows(width: number): string[] {
+		const rows = this.#list.render(width);
+		const below = this.#below;
+		// Every choice is shown (no scroll line) in a list with descriptions below.
+		if (below === undefined || rows.length !== below.length) return rows;
+		return rows.flatMap((line, index) => {
+			const description = below[index]?.replace(/[\r\n]+/g, " ").trim();
+			if (description === undefined || description === "") return [line];
+			return [line, this.#paint("dim", truncateToWidth(`    ${description}`, width, "…"))];
+		});
 	}
 }
 
@@ -427,6 +466,75 @@ export class PasteDialog implements Component, Focusable {
 		return [
 			truncateToWidth(paint("yellow", `┌${title}${"─".repeat(fill)}┐`), width),
 			line(hint),
+			line(`> ${shown}`),
+			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
+		];
+	}
+}
+
+/** The longest text an `ask_user` answer of the user's own words may have. */
+const OTHER_MAX = 2000;
+
+/**
+ * A text to type, in a frame like a question's, for the answer a list does not offer. Typing, pasting and editing are
+ * the input line's; Enter sends what was typed as it is, but not nothing, blank or longer than 2000 characters (it says
+ * so and keeps the text); Esc answers nothing.
+ */
+export class TextDialog implements Component, Focusable {
+	focused = false;
+	readonly #title: string;
+	readonly #paint: Paint;
+	readonly #input = new Input();
+	#problem = "";
+	/** Whether it has answered: a late key or submit after that answers nothing. */
+	#answered = false;
+
+	constructor(title: string, paint: Paint, answer: (value: string | undefined) => void) {
+		this.#title = title;
+		this.#paint = paint;
+		const once = (value: string | undefined) => {
+			if (this.#answered) return;
+			this.#answered = true;
+			answer(value);
+		};
+		this.#input.onSubmit = (value) => {
+			if (this.#answered) return;
+			if (value.trim() === "") this.#problem = "Type an answer, or Esc to cancel";
+			else if (value.length > OTHER_MAX) this.#problem = `Too long: ${value.length} of ${OTHER_MAX} characters`;
+			else once(value);
+		};
+		this.#input.onEscape = () => once(undefined);
+	}
+
+	handleInput(data: string): void {
+		if (this.#answered) return;
+		this.#problem = "";
+		this.#input.handleInput(data);
+	}
+
+	reveal(): void {}
+
+	toggle(): boolean {
+		return false;
+	}
+
+	invalidate(): void {}
+
+	render(width: number): string[] {
+		const paint = this.#paint;
+		const inner = Math.max(1, width - 4);
+		const title = truncateToWidth(` ${this.#title} `, inner);
+		const fill = Math.max(0, width - 2 - visibleWidth(title));
+		const line = (text: string) => {
+			const cut = truncateToWidth(text, inner, "…", true);
+			return `${paint("yellow", "│")} ${cut} ${paint("yellow", "│")}`;
+		};
+		const typed = visibleText(this.#input.getValue()).text;
+		// The end of a long text is what changes as it is typed or pasted.
+		const shown = typed.length > inner - 2 ? `…${typed.slice(typed.length - (inner - 3))}` : typed;
+		return [
+			truncateToWidth(paint("yellow", `┌${title}${"─".repeat(fill)}┐`), width),
+			line(paint("dim", this.#problem || "Type your answer · Enter sends · Esc cancels")),
 			line(`> ${shown}`),
 			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
 		];

@@ -1200,8 +1200,8 @@ describe("TUI", { timeout: 20_000 }, () => {
 		await until(() => h.screen.screen().includes("── new session ──"));
 		const starts = h.core.commands.filter((command) => command.command === "session.start");
 		expect(starts).toEqual([
-			{ command: "session.start", cwd, mode: "auto" },
-			{ command: "session.start", cwd, mode: "auto" },
+			{ command: "session.start", cwd, mode: "auto", userQuestions: true },
+			{ command: "session.start", cwd, mode: "auto", userQuestions: true },
 		]);
 		await until(() => h.backend.closed);
 
@@ -1814,7 +1814,13 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		h.screen.type("/new");
 		h.screen.type("\r");
 		await until(() => stub.log.commands.some((command) => command.command === "session.close"));
-		expect(stub.log.commands).toContainEqual({ command: "session.start", cwd, mode: "normal", noSession: true });
+		expect(stub.log.commands).toContainEqual({
+			command: "session.start",
+			cwd,
+			mode: "normal",
+			noSession: true,
+			userQuestions: true,
+		});
 		stub.held[0]?.reject(new Error("refused"));
 		await tick();
 		h.screen.type("x");
@@ -2232,6 +2238,170 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(approvals()[1]).toMatchObject({ callId: "a2", approved: true, remember: "session" });
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
+	});
+
+	describe("structured user questions", () => {
+		const batch = [
+			{
+				id: "q1",
+				question: "Which \x1b[31mdb?",
+				options: [
+					{ id: "a", label: "Postgres", description: "the \x1b[2Jbig one", recommended: true },
+					{ id: "b", label: "SQLite" },
+				],
+			},
+			{
+				id: "q2",
+				question: "Which cache?",
+				options: [
+					{ id: "c", label: "Redis" },
+					{ id: "d", label: "None", recommended: true },
+				],
+			},
+		];
+		const askUser = (emit: (event: Record<string, unknown>) => void, callId = "u1") =>
+			emit({ type: "user_question_requested", callId, questions: batch });
+
+		it("opts in on start, lists the recommended option first and unselected, and sends a complete batch", async () => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			expect(stub.log.commands.find((command) => command.command === "session.start")).toMatchObject({
+				userQuestions: true,
+			});
+			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
+			askUser(stub.emit);
+			await until(() => h.screen.screen().includes("Question 1 of 2"));
+			const screen = h.screen.screen();
+			expect(screen).toContain("Postgres (Recommended)");
+			expect(screen).toContain("Other...");
+			expect(screen).not.toContain("\x1b[31m");
+			expect(screen).toContain("␛[31mdb?");
+			expect(screen.indexOf("Postgres")).toBeLessThan(screen.indexOf("SQLite"));
+			// Nothing is selected: Enter alone answers nothing; Down selects the first choice, the recommended one.
+			h.screen.type("\r");
+			expect(answers()).toHaveLength(0);
+			h.screen.type("\x1b[B");
+			h.screen.type("\x1b[B");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("Question 2 of 2"));
+			expect(answers()).toHaveLength(0);
+			h.screen.type("\x1b[B");
+			h.screen.type("\x1b[B");
+			h.screen.type("\x1b[B");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("Other") && h.screen.screen().includes("Enter sends"));
+			h.screen.type("   ");
+			h.screen.type("\r");
+			expect(answers()).toHaveLength(0);
+			h.screen.type("my cache");
+			h.screen.type("\r");
+			await until(() => answers().length === 1);
+			expect(answers()[0]).toMatchObject({
+				callId: "u1",
+				answers: [
+					{ questionId: "q1", optionId: "b" },
+					{ questionId: "q2", other: "   my cache" },
+				],
+			});
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("answers with the source id of the option selected, even an id that is a sentinel, and shows descriptions below", async () => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
+			stub.emit({
+				type: "user_question_requested",
+				callId: "u9",
+				questions: [
+					{
+						id: "q1",
+						question: "Pick",
+						options: [
+							{ id: "\0", label: "Zero", description: "first detail", recommended: true },
+							{ id: "\0other", label: "Zero other" },
+						],
+					},
+				],
+			});
+			await until(() => h.screen.screen().includes("Question 1 of 1"));
+			// The screen text has no line breaks: the frame's rows meet as "││".
+			const rows = h.screen.screen().slice(h.screen.screen().indexOf("┌ Pick")).split("││");
+			expect(rows[1]).not.toContain("→");
+			const label = rows.findIndex((row) => row.includes("Zero") && !row.includes("Zero other"));
+			expect(rows[label]).not.toContain("first detail");
+			expect(rows[label + 1]).toContain("first detail");
+			expect(rows[label + 2]).toContain("Zero other");
+			h.screen.type("\x1b[B");
+			h.screen.type("\r");
+			await until(() => answers().length === 1);
+			expect(answers()[0]).toMatchObject({ answers: [{ questionId: "q1", optionId: "\0" }] });
+			stub.emit({
+				type: "user_question_requested",
+				callId: "u10",
+				questions: [
+					{
+						id: "q1",
+						question: "Pick",
+						options: [
+							{ id: "\0", label: "Zero", recommended: true },
+							{ id: "\0other", label: "Zero other" },
+						],
+					},
+				],
+			});
+			await until(() => h.screen.screen().includes("Question 1 of 1"));
+			h.screen.type("\x1b[A");
+			h.screen.type("\x1b[A");
+			h.screen.type("\r");
+			await until(() => answers().length === 2);
+			expect(answers()[1]).toMatchObject({ answers: [{ questionId: "q1", optionId: "\0other" }] });
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("sends null when cancelled, and nothing when the core resolved it first", async () => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
+			askUser(stub.emit);
+			await until(() => h.screen.screen().includes("Question 1 of 2"));
+			h.screen.type("\x1b");
+			await until(() => answers().length === 1);
+			expect(answers()[0]).toMatchObject({ callId: "u1", answers: null });
+			stub.emit({ type: "user_question_resolved", callId: "u1", result: { status: "cancelled", reason: "user" } });
+			// Resolved by the core while the Other input is open and an approval waits behind it.
+			askUser(stub.emit, "u2");
+			stub.emit({ type: "approval_requested", tool: "bash", callId: "a1", command: "echo hi" });
+			await until(() => h.screen.screen().includes("Question 1 of 2"));
+			h.screen.type("\x1b[B");
+			h.screen.type("\x1b[B");
+			h.screen.type("\x1b[B");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("Enter sends"));
+			stub.emit({ type: "user_question_resolved", callId: "u2", result: { status: "superseded" } });
+			await until(() => h.screen.screen().includes("Run this command?"));
+			// Keys go to the approval left behind, not to the closed text input.
+			h.screen.type("\x1b[B");
+			h.screen.type("\r");
+			await until(() => stub.log.commands.some((command) => command.command === "session.approve"));
+			expect(answers()).toHaveLength(1);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
 	});
 
 	it("offers Allow always in this project when the question offers it, and sends project", async () => {
