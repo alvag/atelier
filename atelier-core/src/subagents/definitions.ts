@@ -61,6 +61,11 @@ export const BUILTIN_AGENTS: readonly SubagentDefinition[] = Object.freeze([
 	},
 ]);
 
+/** How a subagent's turn ended: its report, or why there is none; with what it cost when its backend says. */
+export type SubagentResult =
+	| { ok: true; report: string; costUsd?: number }
+	| { ok: false; error: string; costUsd?: number };
+
 export type RunSubagent = (agent: SubagentDefinition, prompt: string, context: ToolContext) => Promise<ToolOutcome>;
 
 /** The task tool the parent sees. Its execution belongs to the session, which owns backends and events. */

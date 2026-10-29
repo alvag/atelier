@@ -87,7 +87,13 @@ import type { SavedConfig } from "./sessions/format.ts";
 import type { SessionRecorder } from "./sessions/recorder.ts";
 import { type LoadedSkills, loadSkills, skillsPrompt } from "./skills.ts";
 import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
-import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
+import {
+	boundReport,
+	createTaskTool,
+	type SubagentDefinition,
+	type SubagentResult,
+	TASK_TOOL,
+} from "./subagents/definitions.ts";
 import { ASK_USER_TOOL, type AskUser, createAskUserTool, type UserQuestionCapabilities } from "./tools/ask-user.ts";
 import { BASH_BACKGROUND_TOOL, JOB_LIST_TOOL, JOB_STOP_TOOL } from "./tools/background.ts";
 import { commandRuleScope } from "./tools/command-rules.ts";
@@ -2036,20 +2042,55 @@ export class Session {
 		{ callId, signal }: ToolContext,
 	): Promise<ToolOutcome> {
 		const fail = (output: string): ToolOutcome => ({ ok: false, output, summary: output, truncated: false });
-		let child: Session;
-		// Only the worker and the explorer have an entry in the profile.
+		const settings = this.#subagentSettings(agent);
+		const child = await this.#startChild(options, agent, settings);
+		if (typeof child === "string") return fail(child);
+		this.#child = child;
+		const stop = () => void child.interrupt();
+		signal?.addEventListener("abort", stop, { once: true });
+		const tag: SubagentTag = { ...(callId === undefined ? {} : { parentCallId: callId }), agent: agent.name };
+		try {
+			// Clients see the child's work in the parent's turn; the parent model never does.
+			const result = await this.#childReport(child, agent, settings, prompt, (body) =>
+				this.#turn?.push({ ...body, ...tag }),
+			);
+			if (!result.ok) return fail(result.error);
+			const bounded = boundReport(result.report);
+			return {
+				ok: true,
+				output: bounded.text,
+				summary: `${agent.name}: ${bounded.text.length} characters`,
+				truncated: bounded.truncated,
+			};
+		} finally {
+			signal?.removeEventListener("abort", stop);
+			this.#child = undefined;
+			await child.close();
+		}
+	}
+
+	/** What a subagent runs with: its entry in the profile (only the worker and the explorer have one), else the parent's. */
+	#subagentSettings(agent: SubagentDefinition): ReturnType<typeof roleSettings> {
 		const role = agent.name === "worker" || agent.name === "explorer" ? agent.name : undefined;
-		const settings = roleSettings(
+		return roleSettings(
 			role === undefined ? undefined : this.#options.profile,
 			role ?? "worker",
 			undefined,
 			this.#thinking,
 		);
+	}
+
+	/** Starts a subagent's session, in `normal`; a failure answers the message the parent sees instead. */
+	async #startChild(
+		options: SubagentOptions,
+		agent: SubagentDefinition,
+		settings: ReturnType<typeof roleSettings>,
+	): Promise<Session | string> {
 		try {
 			const backend = await options.createBackend(settings.backend);
 			const model = settings.model ?? agent.models[backend.id] ?? this.#model;
 			const childCompaction = compactionSettings(this.#options.profile, backend.id).compaction;
-			child = await Session.start({
+			return await Session.start({
 				backend,
 				userQuestions: false,
 				cwd: this.#options.cwd,
@@ -2070,51 +2111,52 @@ export class Session {
 				createId: this.#createId,
 			});
 		} catch (error) {
-			if (settings.backend !== undefined) return fail(roleStartMessage(agent.name, settings.backend, error));
-			return fail(`The ${agent.name} subagent could not start: ${describeError(error)}`);
+			if (settings.backend !== undefined) return roleStartMessage(agent.name, settings.backend, error);
+			return `The ${agent.name} subagent could not start: ${describeError(error)}`;
 		}
-		this.#child = child;
-		const stop = () => void child.interrupt();
-		signal?.addEventListener("abort", stop, { once: true });
-		const tag: SubagentTag = { ...(callId === undefined ? {} : { parentCallId: callId }), agent: agent.name };
-		try {
-			// Only the text after the child's last tool call is its answer.
-			let report = "";
-			let failure: string | undefined;
-			// The parent model never sees the child's compaction rows: a failed one goes with the failure.
-			let compactionFailure: string | undefined;
-			let stopReason = "incomplete";
-			for await (const event of child.send(prompt)) {
-				// Clients see the child's work in the parent's turn; the parent model never does.
-				// The child's `bash` is the parent's: the status was already said. The context warning is the main agent's.
-				if (event.type === "sandbox_status" || event.type === "context_warning") continue;
-				const { seq: _seq, turnId: _turnId, ...body } = event;
-				this.#turn?.push({ ...body, ...tag });
-				if (event.type === "text_delta") report += event.text;
-				else if (event.type === "tool_call_started") report = "";
-				else if (event.type === "error") failure ??= `${event.code}: ${event.message}`;
-				else if (event.type === "compaction_finished" && !event.ok)
-					compactionFailure = event.error ?? "no reason given";
-				else if (event.type === "turn_finished") stopReason = event.stopReason;
+	}
+
+	/** Plays the child's one turn and turns its final text into its report; `onEvent` hears each event worth telling. */
+	async #childReport(
+		child: Session,
+		agent: SubagentDefinition,
+		settings: ReturnType<typeof roleSettings>,
+		prompt: string,
+		onEvent: (body: AtelierEventBody) => void,
+	): Promise<SubagentResult> {
+		// Only the text after the child's last tool call is its answer.
+		let report = "";
+		let failure: string | undefined;
+		// The parent model never sees the child's compaction rows: a failed one goes with the failure.
+		let compactionFailure: string | undefined;
+		let stopReason = "incomplete";
+		let costUsd: number | undefined;
+		for await (const event of child.send(prompt)) {
+			// The child's `bash` is the parent's: the status was already said. The context warning is the main agent's.
+			if (event.type === "sandbox_status" || event.type === "context_warning") continue;
+			const { seq: _seq, turnId: _turnId, ...body } = event;
+			onEvent(body);
+			if (event.type === "text_delta") report += event.text;
+			else if (event.type === "tool_call_started") report = "";
+			else if (event.type === "error") failure ??= `${event.code}: ${event.message}`;
+			else if (event.type === "compaction_finished" && !event.ok) compactionFailure = event.error ?? "no reason given";
+			else if (event.type === "turn_finished") {
+				stopReason = event.stopReason;
+				costUsd = event.costUsd;
 			}
-			if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined) {
-				const compaction = compactionFailure === undefined ? "" : `; its compaction failed: ${compactionFailure}`;
-				const on = settings.backend === undefined ? "" : ` on ${settings.backend}`;
-				return fail(`The ${agent.name} subagent failed${on} (${stopReason}): ${failure ?? "no details"}${compaction}`);
-			}
-			if (report.trim() === "") return fail(`The ${agent.name} subagent returned no report.`);
-			const bounded = boundReport(report);
+		}
+		const cost = costUsd === undefined ? {} : { costUsd };
+		if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined) {
+			const compaction = compactionFailure === undefined ? "" : `; its compaction failed: ${compactionFailure}`;
+			const on = settings.backend === undefined ? "" : ` on ${settings.backend}`;
 			return {
-				ok: true,
-				output: bounded.text,
-				summary: `${agent.name}: ${bounded.text.length} characters`,
-				truncated: bounded.truncated,
+				ok: false,
+				error: `The ${agent.name} subagent failed${on} (${stopReason}): ${failure ?? "no details"}${compaction}`,
+				...cost,
 			};
-		} finally {
-			signal?.removeEventListener("abort", stop);
-			this.#child = undefined;
-			await child.close();
 		}
+		if (report.trim() === "") return { ok: false, error: `The ${agent.name} subagent returned no report.`, ...cost };
+		return { ok: true, report, ...cost };
 	}
 
 	/** Registers the session in memory, once; a failure is said in the first turn, and memory goes on without it. */
