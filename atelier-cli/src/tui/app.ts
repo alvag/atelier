@@ -75,7 +75,7 @@ import { readGitBranch } from "./git-branch.ts";
 import { Header, type HeaderState } from "./header.ts";
 import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
-import { ProgramStatusReporter, settledState } from "./program-status.ts";
+import { ProgramStatusReporter } from "./program-status.ts";
 import { PromptEditor } from "./prompt.ts";
 import { QueuePanel } from "./queue-panel.ts";
 import {
@@ -90,6 +90,7 @@ import {
 } from "./selectors.ts";
 import { readTuiSettings } from "./settings.ts";
 import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
+import { StatusLine } from "./status-line.ts";
 import { editorTheme, type Paint, painter, Shade, Tones } from "./style.ts";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
@@ -127,6 +128,8 @@ export interface TuiOptions {
 	closeTimeoutMs?: number;
 	/** How long an approval ignores keys after it appears, so one typed before it does not answer it (default 400 ms). */
 	answerGuardMs?: number;
+	/** How often the terminal is told a running turn's new line at most (default 500 ms). */
+	statusIntervalMs?: number;
 	/** The system the notices are sent for, and what starts their commands (default: this process's, detached). */
 	platform?: NodeJS.Platform;
 	spawn?: (command: string, args: string[]) => void;
@@ -533,10 +536,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	});
 	/** Follows every chunk of input, the editor's and the questions', so a paste stays one across them. */
 	const input = new PasteFilter();
-	const programStatus = new ProgramStatusReporter(options.terminal);
+	const programStatus = new ProgramStatusReporter(options.terminal, options.statusIntervalMs);
+	/** What the main agent is doing, the terminal's line for it. */
+	let line = new StatusLine();
 	/** Tells the terminal, and Herdr when the TUI runs in one of its panes, what the TUI is doing. */
-	const reportState = (state: Parameters<ProgramStatusReporter["report"]>[0], blocked?: Blocked) => {
-		programStatus.report(state, blocked);
+	const reportState = (state: Parameters<ProgramStatusReporter["report"]>[0], blocked?: Blocked, message?: string) => {
+		programStatus.report(state, blocked ?? { message });
 		herdr?.report(state, blocked);
 	};
 	/** Tells Herdr which session the TUI runs. */
@@ -545,7 +550,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const reportRunning = () => {
 		const blocked = questions[0]?.blocked;
 		if (blocked) reportState("blocked", blocked);
-		else if (busy) reportState("working");
+		else if (busy) reportState("working", undefined, line.working());
 	};
 
 	const setBusy = (on: boolean) => {
@@ -554,6 +559,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		editor.disableSubmit = commanding;
 		status.clear();
 		if (on) {
+			line.started();
 			attention.turnStarted();
 			reportRunning();
 			status.addChild(loader);
@@ -674,6 +680,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		footer.state = footerAfter(footer.state, event);
 		conversation.event(event);
 		feature.event(event);
+		line.event(event);
 		// The main agent's task in progress, the footer's, goes to Herdr's sidebar.
 		if (event.type === "feature_changed" && event.parentCallId === undefined)
 			herdr?.activity(event.tasks.find((task) => task.status === "in_progress"));
@@ -724,9 +731,10 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			void readBranch();
 			dropQuestions();
 			setBusy(false);
-			reportState(settledState(event.stopReason));
+			const settled = line.settled(event.stopReason);
+			reportState(settled.state, undefined, settled.message);
 			attention.turnFinished(event.stopReason);
-		}
+		} else reportRunning();
 		tui.requestRender();
 	};
 
@@ -947,6 +955,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		feature.open = open;
 		odd.addChild(feature);
 		herdr?.activity(undefined);
+		line = new StatusLine();
 		void request({ command: "session.close", sessionId: previous });
 		reportSession();
 	};

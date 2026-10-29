@@ -1,0 +1,66 @@
+import type { AtelierEvent } from "@atelier/core";
+import { plain } from "./herdr-status.ts";
+import { settledState } from "./program-status.ts";
+import { target } from "./tool-card.ts";
+
+/** The longest line told to the terminal, far under the 2048 bytes OSC 7501 takes. */
+export const MAX_LINE_CHARS = 200;
+const ELLIPSIS = "…";
+
+/** The first line of `text` with words, one line without control or bidi characters, cut to `max` characters. */
+export function oneLine(text: string, max = MAX_LINE_CHARS): string {
+	const first = plain(text.split("\n").find((line) => plain(line) !== "") ?? "");
+	const characters = [...first];
+	if (characters.length <= max) return first;
+	return `${characters
+		.slice(0, max - 1)
+		.join("")
+		.trimEnd()}${ELLIPSIS}`;
+}
+
+/**
+ * What the main agent is doing, for the terminal's agent row: the call it runs, else the ODD task in progress, while a
+ * turn runs; the first line of its last text when the turn ends, or of the error that ended it.
+ */
+export class StatusLine {
+	#call: { id: string; line: string } | undefined;
+	#task: string | undefined;
+	/** The main agent's text since its last call. */
+	#text = "";
+	#error: string | undefined;
+
+	/** A turn starts: what the turn before said is not its. */
+	started() {
+		this.#call = undefined;
+		this.#text = "";
+		this.#error = undefined;
+	}
+
+	event(event: AtelierEvent) {
+		// A subagent's work shows as the task call that runs it.
+		if (event.parentCallId !== undefined) return;
+		if (event.type === "tool_call_started") {
+			this.#call = { id: event.callId, line: `${event.tool} ${target(event.input)}`.trim() };
+			this.#text = "";
+		} else if (event.type === "tool_call_finished" && event.callId === this.#call?.id) this.#call = undefined;
+		else if (event.type === "text_delta") this.#text += event.text;
+		else if (event.type === "error") this.#error = event.message;
+		else if (event.type === "feature_changed") {
+			const task = event.tasks.find((each) => each.status === "in_progress");
+			this.#task = task === undefined ? undefined : `${task.id} ${task.title}`;
+		}
+	}
+
+	/** The line while the turn runs; empty when there is nothing to say. */
+	working(): string {
+		return oneLine(this.#call?.line ?? this.#task ?? "");
+	}
+
+	/** The state a turn leaves behind and its line. */
+	settled(stopReason: string): { state: ReturnType<typeof settledState>; message: string } {
+		const state = settledState(stopReason);
+		if (state === "done") return { state, message: oneLine(this.#text) };
+		if (state === "idle") return { state, message: "interrupted" };
+		return { state, message: oneLine(this.#error ?? "") };
+	}
+}

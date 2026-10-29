@@ -41,7 +41,7 @@ export function summaryText(summary: string): string {
 }
 
 /** What a call works on, from its input, while it has no summary yet: what it names, or its first text. */
-function target(input: JsonValue): string {
+export function target(input: JsonValue): string {
 	const first = isRecord(input) ? Object.values(input).find((value) => typeof value === "string") : undefined;
 	const value =
 		field(input, "path") ??
