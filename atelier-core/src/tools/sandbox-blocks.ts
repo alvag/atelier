@@ -9,8 +9,13 @@ import type { SandboxPolicyName } from "./sandbox.ts";
 
 const FILE_WRITE = /\bfile-write[\w-]*\s+(\S.*)$/;
 const FILE_READ = /\bfile-read[\w-]*\s+(\S.*)$/;
-/** A path in a `.git` or a `.git` itself, where every denied write is one of the git protections. */
+/** A path in a `.git` or a `.git` itself. */
 const IN_GIT = /\/\.git(\/|$)/;
+
+/** Under a directory the agent writes, a denied write in a `.git` is one of the git protections, not a place left out. */
+function isGitProtection(path: string, writable: readonly string[]): boolean {
+	return IN_GIT.test(path) && writable.some((dir) => path.startsWith(`${dir}/`));
+}
 const NETWORK = /\bnetwork-outbound\s+(\S+)(?:\s+\((.*)\))?\s*$/;
 
 /**
@@ -23,7 +28,11 @@ const SYSTEM_PROBE = /\/Library\/(Preferences|Logging|Managed Preferences)\/|\.G
 export const NO_VERIFIER_NETWORK = "no network for the verifier";
 
 /** The cause one violation line states, or undefined for a line that is not a denial worth showing. */
-export function describeViolation(line: string, policy: SandboxPolicyName): string | undefined {
+export function describeViolation(
+	line: string,
+	policy: SandboxPolicyName,
+	writable: readonly string[] = [],
+): string | undefined {
 	const network = NETWORK.exec(line);
 	if (network) {
 		const reason = policy === "verifier" ? NO_VERIFIER_NETWORK : network[2];
@@ -31,7 +40,7 @@ export function describeViolation(line: string, policy: SandboxPolicyName): stri
 	}
 	const write = FILE_WRITE.exec(line);
 	if (write)
-		return `write to ${write[1]} (${IN_GIT.test(write[1] ?? "") ? "git state that runs code" : "not an allowed write path"})`;
+		return `write to ${write[1]} (${isGitProtection(write[1] ?? "", writable) ? "git state that runs code" : "not an allowed write path"})`;
 	const read = FILE_READ.exec(line);
 	if (read && !SYSTEM_PROBE.test(read[1] ?? "")) return `read of ${read[1]} (denied by the sandbox policy)`;
 	return undefined;
@@ -41,8 +50,16 @@ export function describeViolation(line: string, policy: SandboxPolicyName): stri
 const KIND_ORDER = ["network", "write", "read"];
 const kindOf = (cause: string) => KIND_ORDER.findIndex((kind) => cause.startsWith(kind));
 
-/** The distinct causes of the violation lines, most telling first, each kind in the order it was seen. */
-export function describeViolations(lines: readonly string[], policy: SandboxPolicyName): string[] {
-	const causes = lines.flatMap((line) => describeViolation(line, policy) ?? []);
+/**
+ * The distinct causes of the violation lines, most telling first, each kind in the order it was seen. `writable` is
+ * where the agent's policy lets commands write (the working directory and the configuration's directories, by name
+ * and real path): only a `.git` there is called git state.
+ */
+export function describeViolations(
+	lines: readonly string[],
+	policy: SandboxPolicyName,
+	writable: readonly string[] = [],
+): string[] {
+	const causes = lines.flatMap((line) => describeViolation(line, policy, writable) ?? []);
 	return [...new Set(causes)].sort((a, b) => kindOf(a) - kindOf(b));
 }

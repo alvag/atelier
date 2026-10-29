@@ -200,8 +200,9 @@ async function blockedCauses(
 	runId: string,
 	policy: SandboxPolicyName,
 	output: string,
+	cwd: string,
 ): Promise<string[]> {
-	const causes = await sandbox.blocks(runId, { policy, graceMs: LOOKS_BLOCKED.test(output) ? GRACE_MS : 0 });
+	const causes = await sandbox.blocks(runId, { policy, graceMs: LOOKS_BLOCKED.test(output) ? GRACE_MS : 0, cwd });
 	if (causes.length <= MAX_CAUSES) return causes;
 	return [...causes.slice(0, MAX_CAUSES), `and ${causes.length - MAX_CAUSES} more`];
 }
@@ -399,7 +400,8 @@ export function createBashTool({
 				: "";
 			const ok = !stopped && code === 0;
 			// Only a failed command is asked: the library also logs the denied probes of commands that worked.
-			const blocked = sandboxStatus.available && !ok ? await blockedCauses(sandbox, runId, policy, finished.tail) : [];
+			const blocked =
+				sandboxStatus.available && !ok ? await blockedCauses(sandbox, runId, policy, finished.tail, cwd) : [];
 			const label = stopped === "timeout" ? "timed out" : stopped === "aborted" ? "aborted" : `exit ${code ?? "?"}`;
 			return {
 				ok,
