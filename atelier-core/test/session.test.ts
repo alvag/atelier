@@ -64,7 +64,12 @@ describe("Session", () => {
 	it("passes cwd, model, tools and a byte-stable prompt append to the backend", async () => {
 		const tools = [echoTool([])];
 		const { backend } = await start([], { model: "opus", tools, systemPromptAppend: "be brief" });
-		expect(backend.startOptions).toMatchObject({ cwd: "/work", model: "opus", tools, systemPromptAppend: "be brief" });
+		expect(backend.startOptions).toMatchObject({
+			cwd: "/work",
+			model: "opus",
+			tools: [...tools, expect.objectContaining({ name: "ask_user" })],
+			systemPromptAppend: "be brief",
+		});
 	});
 
 	it("stamps events with an increasing seq and one turnId per turn", async () => {

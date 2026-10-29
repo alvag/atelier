@@ -75,7 +75,7 @@ describe("MCP in a session", () => {
 			]),
 		});
 		try {
-			expect(backend.startOptions?.tools.map((tool) => tool.name)).toEqual(["mcp_search", "mcp_call"]);
+			expect(backend.startOptions?.tools.map((tool) => tool.name)).toEqual(["ask_user", "mcp_search", "mcp_call"]);
 			const prompt = backend.startOptions?.systemPromptAppend ?? "";
 			expect(prompt).toContain("find them with mcp_search and run them with mcp_call");
 			expect(prompt).toContain("- docs: Search the product docs");
@@ -89,7 +89,7 @@ describe("MCP in a session", () => {
 	it("has no MCP tools nor prompt block without servers", async () => {
 		const backend = new FakeBackend([]);
 		const session = await Session.start({ backend, cwd: dir, tools: [], mcp: mcp([]) });
-		expect(backend.startOptions?.tools).toEqual([]);
+		expect(backend.startOptions?.tools.map((tool) => tool.name)).toEqual(["ask_user"]);
 		expect(backend.startOptions?.systemPromptAppend).toBe("");
 		await session.close();
 	});

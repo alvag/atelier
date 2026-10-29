@@ -86,6 +86,7 @@ import type { SessionRecorder } from "./sessions/recorder.ts";
 import { type LoadedSkills, loadSkills, skillsPrompt } from "./skills.ts";
 import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
+import { ASK_USER_TOOL, type AskUser, createAskUserTool } from "./tools/ask-user.ts";
 import { commandRuleScope } from "./tools/command-rules.ts";
 import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
 import {
@@ -95,6 +96,7 @@ import {
 	ToolInputError,
 	type ToolOutcome,
 } from "./tools/types.ts";
+import { UserQuestions } from "./user-questions.ts";
 
 type TurnEvent = AtelierEventBody & SubagentTag;
 
@@ -102,6 +104,7 @@ type TurnEvent = AtelierEventBody & SubagentTag;
 const CREDENTIAL_ERRORS: ReadonlySet<string> = new Set(["not_logged_in", "authentication_error"]);
 /** Tools a subagent never gets: delegation and the ODD document belong to the parent. */
 const PARENT_ONLY = new Set([
+	ASK_USER_TOOL,
 	TASK_TOOL,
 	FEATURE_TOOL,
 	PHASE_TOOL,
@@ -201,6 +204,10 @@ export interface SessionOptions {
 	noSandbox?: boolean;
 	/** Asks the user; without it, calls that need approval are denied. */
 	approve?: (request: ApprovalRequest) => Promise<ApprovalAnswer>;
+	/** User-only question channel for a direct client. Never inherited by subagents. */
+	askUser?: AskUser;
+	/** True: answers arrive through answerUser. False: omit the tool (internal child sessions). */
+	userQuestions?: boolean;
 	/**
 	 * The rules the user allowed, which spare the questions they cover: the session's in memory and the saved ones.
 	 * Without it nothing is remembered and questions offer only Allow and Deny. Subagents share the parent's.
@@ -338,6 +345,7 @@ export class Session {
 	#child: Session | undefined;
 	readonly #odd: OddTracker | undefined;
 	readonly #review: SessionReview | undefined;
+	readonly #userQuestions: UserQuestions;
 	/** Recent memory, fetched at start and given with the first prompt only; fetched again after each compaction. */
 	#memoryContext = "";
 	/**
@@ -438,8 +446,24 @@ export class Session {
 					options.noSandbox ? { ...options.review, sandbox: new Sandbox({ disabled: SANDBOX_OFF }) } : options.review,
 				)
 			: undefined;
+		this.#userQuestions = new UserQuestions(
+			(event) => this.#turn?.push(event),
+			(signal) => this.#turn?.drained(signal) ?? Promise.resolve(false),
+		);
 		const all = [
 			...tools,
+			...(options.userQuestions === false
+				? []
+				: [
+						createAskUserTool((questions, context) =>
+							this.#userQuestions.ask(
+								questions,
+								context,
+								options.userQuestions === true || options.askUser !== undefined,
+								options.askUser,
+							),
+						),
+					]),
 			...(this.#review ? [this.#review.tool] : []),
 			...(this.#odd ? this.#odd.tools() : []),
 			...(options.memory ? [createMemoryTool(options.memory)] : []),
@@ -596,6 +620,7 @@ export class Session {
 			throw new ConfigureError("turn_ended", "The turn was interrupted or failed; the message was not queued.");
 		const message = { id: this.#createId(), kind, text };
 		this.#queue.push(message);
+		this.#userQuestions.cancel({ status: "superseded" });
 		this.#sayQueue();
 		return { ...message };
 	}
@@ -1339,9 +1364,20 @@ export class Session {
 					...(requests === undefined ? {} : { requests }),
 				};
 			},
-			startChild: (options) => Session.start(options),
+			startChild: (options) => Session.start({ ...options, userQuestions: false }),
 			createId: this.#createId,
 		};
+	}
+
+	/** Answers one live batch atomically; invalid replies leave it pending. Null cancels it. */
+	answerUser(callId: string, answers: unknown): void {
+		if (!this.#userQuestions.has(callId))
+			throw new ConfigureError("unknown_question", `No pending user question ${callId}.`);
+		try {
+			this.#userQuestions.answer(callId, answers);
+		} catch (error) {
+			throw new ConfigureError("invalid_answer", describeError(error));
+		}
 	}
 
 	/** Aborts running tools and asks the backend to stop the turn. */
@@ -1356,6 +1392,7 @@ export class Session {
 	close(): Promise<void> {
 		if (!this.#closing) {
 			this.#closed = true;
+			this.#userQuestions.cancel({ status: "cancelled", reason: "closed" });
 			const scratch = this.#scratch;
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
 			this.#closing = Promise.resolve()
@@ -1562,6 +1599,7 @@ export class Session {
 			const compaction = compactionSettings(this.#options.profile, backend.id).compaction;
 			child = await Session.start({
 				backend,
+				userQuestions: false,
 				cwd: this.#options.cwd,
 				...(settings.model === undefined ? {} : { model: settings.model }),
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
@@ -1736,6 +1774,7 @@ export class Session {
 			const childCompaction = compactionSettings(this.#options.profile, backend.id).compaction;
 			child = await Session.start({
 				backend,
+				userQuestions: false,
 				cwd: this.#options.cwd,
 				...(model === undefined ? {} : { model }),
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),

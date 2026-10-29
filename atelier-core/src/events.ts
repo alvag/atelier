@@ -4,6 +4,7 @@
  */
 
 import type { ThinkingLevel } from "./thinking.ts";
+import type { UserQuestion, UserQuestionResult } from "./tools/ask-user.ts";
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
@@ -295,6 +296,8 @@ export type AtelierEventBody =
 			/** For `edit`: the line each edit's new text starts at in the file after it, in the order of the edits; absent for other tools. */
 			newStartLines?: number[];
 	  }
+	| { type: "user_question_requested"; callId: string; questions: UserQuestion[] }
+	| { type: "user_question_resolved"; callId: string; result: UserQuestionResult }
 	/** Sent first in a session's first turn when `bash` exists: whether its commands run in the sandbox, with what, or why not. */
 	| { type: "sandbox_status"; sandboxed: boolean; mechanism?: string; reason?: string }
 	/** `bash` runs without the sandbox, so every command asks: said once per turn, before the first question. */
