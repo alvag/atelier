@@ -317,7 +317,8 @@ describe("options.list", () => {
 	});
 
 	it("lists the first model of each backend as the default one the backends use", async () => {
-		const { DEFAULT_API_MODEL } = await import("../src/index.ts");
+		const { DEFAULT_MODEL, DEFAULT_API_MODEL } = await import("../src/index.ts");
+		expect(BACKEND_MODELS["claude-code"][0]).toBe(DEFAULT_MODEL);
 		expect(BACKEND_MODELS["anthropic-api"][0]).toBe(DEFAULT_API_MODEL);
 	});
 });

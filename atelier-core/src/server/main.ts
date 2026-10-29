@@ -96,7 +96,14 @@ const createBackend = (name: BackendName) =>
 		? new EchoBackend()
 		: createNamedBackend(name, {
 				...(compactAt === undefined ? {} : { anthropicApi: { compactAt }, openaiCodex: { compactAt } }),
-				...(catalog === undefined ? {} : { claudeCode: { listModels: (list) => void catalog.listClaudeCode(list) } }),
+				...(catalog === undefined
+					? {}
+					: {
+							claudeCode: {
+								listModels: (list) => void catalog.listClaudeCode(list),
+								onContextWindows: (windows) => void catalog.noteClaudeCodeWindows(windows),
+							},
+						}),
 			});
 
 // The models options.list offers: the echo backend (tests) has none, ATELIER_LOGIN_CHECK=off asks nothing.

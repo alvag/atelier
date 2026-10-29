@@ -4,6 +4,7 @@ import {
 	getSessionInfo,
 	type HookCallback,
 	type ModelInfo,
+	type ModelUsage,
 	type Options,
 	type SDKMessage,
 	type SDKUserMessage,
@@ -33,8 +34,10 @@ import { summarizesThinking, type ThinkingSend, thinkingToSend } from "../../pri
 import type { ToolDefinition } from "../../tools/types.ts";
 import { VERSION } from "../../version.ts";
 import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./map.ts";
+import { claudeCodeName, isVersionedClaudeId, withoutWindow } from "./models.ts";
 
-export const DEFAULT_MODEL = "opus";
+/** The model a session runs without one chosen; Claude Code is sent the alias that stands for it, `opus`. */
+export const DEFAULT_MODEL = "claude-opus-5-5";
 export const DEFAULT_INTERRUPT_GRACE_MS = 5000;
 const ACCOUNT_INFO_TIMEOUT_MS = 3000;
 const TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
@@ -71,6 +74,8 @@ export interface ClaudeCodeBackendOptions {
 	 * its list is old, so no process is started only to list them.
 	 */
 	listModels?: (list: () => Promise<readonly ModelInfo[]>) => void;
+	/** At each turn's end, the window Claude Code ran each model with, by its versioned id. */
+	onContextWindows?: (windows: Record<string, number>) => void;
 	/** Whether Claude Code still has the session `sessionId` for the folder; injected in tests, the SDK's lookup by default. */
 	sessionExists?: (sessionId: string, cwd: string) => Promise<boolean>;
 }
@@ -162,7 +167,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 			prompt: input,
 			options: {
 				cwd: start.cwd,
-				model,
+				model: claudeCodeName(model),
 				...(sent?.effort === undefined ? {} : { effort: sent.effort }),
 				...(sent?.thinking === "disabled" ? { thinking: { type: "disabled" as const } } : {}),
 				// The API omits the thinking text by default on these models; the setting alone did not bring it back.
@@ -193,9 +198,11 @@ export class ClaudeCodeBackend implements AgentBackend {
 		const { supportedModels } = query;
 		if (supportedModels) this.#options.listModels?.(() => supportedModels.call(query));
 		const record = this.#options.onSdkMessage;
+		const noteWindows = this.#options.onContextWindows;
 		const observe = (message: SDKMessage) => {
 			record?.(message);
 			bridge.observe(message);
+			if (message.type === "result" && noteWindows) noteWindows(windowsOf(message.modelUsage));
 		};
 		return new ClaudeCodeSession(
 			query,
@@ -277,6 +284,17 @@ async function confirmSubscription(query: SdkQuery): Promise<boolean> {
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+/** The window of each model a turn ran, by its versioned id: the canonical one, or the key without `[1m]`. */
+function windowsOf(usage: Record<string, ModelUsage> | undefined): Record<string, number> {
+	const windows: Record<string, number> = {};
+	for (const [key, entry] of Object.entries(usage ?? {})) {
+		const id = withoutWindow(entry.canonicalModel ?? key);
+		if (isVersionedClaudeId(id) && Number.isSafeInteger(entry.contextWindow) && entry.contextWindow > 0)
+			windows[id] = entry.contextWindow;
+	}
+	return windows;
 }
 
 class ClaudeCodeSession implements BackendSession {
@@ -472,7 +490,7 @@ class ClaudeCodeSession implements BackendSession {
 		// The Agent SDK has no way to turn thinking off in an open query; refuse before changing anything.
 		if (change.thinking !== undefined && sent?.report === "off")
 			throw new Error("claude-code cannot turn thinking off in an open session.");
-		if (change.model !== undefined) await setModel.call(this.#query, change.model);
+		if (change.model !== undefined) await setModel.call(this.#query, claudeCodeName(change.model));
 		this.#model = model;
 		// A new model only needs the effort again when it takes the level differently from the old one.
 		if (sent !== undefined && (change.thinking !== undefined || sent.report !== this.#effort)) {

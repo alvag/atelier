@@ -1,9 +1,10 @@
+import { isVersionedClaudeId } from "../backends/claude-code/models.ts";
 import { BACKEND_MODELS, type ModelCatalog } from "../options.ts";
 import type { BackendName } from "../protocol/types.ts";
 import { useModelData } from "./current.ts";
 import { type CatalogModel, ModelData } from "./model-data.ts";
 import { newestFirst } from "./order.ts";
-import { claudeCodeModelsSource, isVersionedClaudeId } from "./providers.ts";
+import { claudeCodeModelsSource } from "./providers.ts";
 import {
 	type CatalogFile,
 	type CatalogSource,
@@ -13,6 +14,7 @@ import {
 	readCatalog,
 	refreshCatalog,
 	refreshSource,
+	updateSource,
 } from "./store.ts";
 
 /** Claude Code's aliases are not offered: the versioned id each stands for is. */
@@ -101,6 +103,35 @@ export class DynamicModelCatalog implements ModelCatalog {
 			await this.#reload();
 		} catch {
 			// The list stays as it was.
+		}
+	}
+
+	/**
+	 * Keeps the window Claude Code ran each model with, as a turn's end says it, in its list: a model the list lacks is
+	 * not added, and nothing is written when the windows are the ones kept. Never fails.
+	 */
+	async noteClaudeCodeWindows(windows: Record<string, number>): Promise<void> {
+		const data = await this.#latest();
+		const kept = new Set(data.listed("claude-code") ?? []);
+		const changed = Object.entries(windows).filter(
+			([id, window]) => kept.has(id) && data.model("claude-code", id)?.contextWindow !== window,
+		);
+		if (changed.length === 0) return;
+		const noted = new Map(changed);
+		try {
+			await updateSource(this.#options.file, "claude-code", (entry) => ({
+				...entry,
+				models: {
+					...entry.models,
+					"claude-code": (entry.models["claude-code"] ?? []).map((model) => {
+						const window = noted.get(model.id);
+						return window === undefined ? model : { ...model, contextWindow: window };
+					}),
+				},
+			}));
+			await this.#reload();
+		} catch {
+			// The window is said again at the next turn's end.
 		}
 	}
 
