@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -327,6 +327,17 @@ describe("background jobs", () => {
 		await until(() => grandchildren.every((pid) => !alive(pid)));
 		expect(ended.map((end) => end.notice)).toEqual([undefined, undefined]);
 		expect(() => jobs.start(plain("true", dir))).toThrow("Refused: the session is closing.");
+	});
+
+	it("closes the output file of a job whose spawn is refused", async () => {
+		const { dir, jobs } = harness();
+		// The process's open descriptors, on macOS and Linux alike.
+		const open = () => readdirSync("/dev/fd").length;
+		const before = open();
+		for (let i = 0; i < 5; i++) expect(() => jobs.start(plain("echo \u0000", dir))).toThrow();
+		await jobs.stopAll();
+		expect(open()).toBeLessThanOrEqual(before);
+		expect(jobs.running).toBe(0);
 	});
 
 	it("keeps the last 20 jobs to end, whenever they started", async () => {

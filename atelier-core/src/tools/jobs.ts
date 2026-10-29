@@ -152,12 +152,19 @@ export class Jobs {
 		const sink = new JobOutput(outputPath);
 		const { file, args, cwd, env } = request.run;
 		const mark = randomBytes(16).toString("hex");
-		const child = spawn("/bin/bash", ["-c", GUARDIAN, "atelier-job", process.execPath, SWEEP_SCRIPT, file, ...args], {
-			cwd,
-			env: { ...env, [JOB_MARK]: mark },
-			detached: true,
-			stdio: ["pipe", "pipe", "pipe"],
-		});
+		let child: ChildProcess;
+		try {
+			child = spawn("/bin/bash", ["-c", GUARDIAN, "atelier-job", process.execPath, SWEEP_SCRIPT, file, ...args], {
+				cwd,
+				env: { ...env, [JOB_MARK]: mark },
+				detached: true,
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+		} catch (error) {
+			// Refused at once (a NUL in an argument, say): nothing runs, and its output file is not left open.
+			sink.close();
+			throw error;
+		}
 		// The pipe only tells the watcher that Atelier is gone; a write error on it means nothing more.
 		child.stdin?.on("error", () => {});
 		child.stdout?.on("data", (chunk: Buffer) => sink.write(chunk));
