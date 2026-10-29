@@ -42,6 +42,24 @@ describe("projectRoot", () => {
 		expect(await projectRoot(join(root, "wt", "sub"))).toBe(main);
 	});
 
+	it("is the folder itself when its .git file claims a worktree the main checkout does not know", async () => {
+		const main = join(root, "main");
+		await mkdir(main);
+		git(main, "init", "-q");
+		git(main, "commit", "-q", "--allow-empty", "-m", "x");
+		const forged = join(root, "forged");
+		await mkdir(join(forged, "metadata"), { recursive: true });
+		await writeFile(join(forged, ".git"), "gitdir: metadata\n");
+		await writeFile(join(forged, "metadata", "commondir"), `${join(main, ".git")}\n`);
+		expect(await projectRoot(forged)).toBe(forged);
+		// Under the main checkout's worktrees too, a git directory that points back at another folder is not this one's.
+		git(main, "worktree", "add", "-q", join(root, "wt"));
+		await mkdir(join(root, "other"));
+		await writeFile(join(root, "other", ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt")}\n`);
+		expect(await projectRoot(join(root, "other"))).toBe(join(root, "other"));
+		expect(await projectRoot(join(root, "wt"))).toBe(main);
+	});
+
 	it("is a submodule's own folder, and the folder holding a .git file it cannot follow", async () => {
 		await mkdir(join(root, "app", ".git", "modules", "lib"), { recursive: true });
 		await mkdir(join(root, "app", "lib"), { recursive: true });

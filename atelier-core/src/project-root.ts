@@ -18,15 +18,23 @@ export async function projectRoot(cwd: string): Promise<string> {
 	}
 }
 
-/** The main checkout of a linked worktree whose `.git` file is `dotGit`; undefined for a submodule or what cannot be read. */
+/**
+ * The main checkout of a linked worktree whose `.git` file is `dotGit`; undefined for a submodule, for what cannot be
+ * read, and for a `.git` file the main checkout does not know: only a git directory in the common directory's
+ * `worktrees/` whose `gitdir` points back at this very `.git` file is a linked worktree, so a folder cannot claim
+ * another checkout's rules by writing a pointer of its own.
+ */
 async function mainCheckout(dir: string, dotGit: string): Promise<string | undefined> {
 	try {
 		const pointer = /^gitdir: (.+)$/m.exec(await readFile(dotGit, "utf8"))?.[1]?.trim();
 		if (pointer === undefined) return undefined;
-		const gitDir = resolve(dir, pointer);
+		const gitDir = await realpath(resolve(dir, pointer));
 		// A submodule's git directory has no `commondir`: it is a repository of its own.
 		const common = (await readFile(join(gitDir, "commondir"), "utf8")).trim();
 		const commonDir = await realpath(resolve(gitDir, common));
+		if (dirname(gitDir) !== join(commonDir, "worktrees")) return undefined;
+		const back = (await readFile(join(gitDir, "gitdir"), "utf8")).trim();
+		if ((await realpath(resolve(gitDir, back))) !== (await realpath(dotGit))) return undefined;
 		// A bare repository is its own git directory; otherwise the checkout is the folder that holds `.git`.
 		return basename(commonDir) === ".git" ? dirname(commonDir) : commonDir;
 	} catch {
