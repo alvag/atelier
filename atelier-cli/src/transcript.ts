@@ -1,5 +1,5 @@
 import { type SavedEntry, type UserQuestion, visibleText } from "@atelier/core";
-import { type AskOutcome, questionsOf } from "./tui/answered-block.ts";
+import { type AskOutcome, finishedOutcome, questionsOf } from "./tui/answered-block.ts";
 
 /** An `ask_user` batch of the main agent in a saved turn, and what it came to; none when the file ends before it settled. */
 interface SavedAsk {
@@ -35,9 +35,9 @@ function asking(turn: SavedTurn, event: Extract<SavedEntry, { type: "event" }>["
 	else if (event.type === "user_question_requested") askOf(turn, event.callId).questions = event.questions;
 	else if (event.type === "user_question_resolved") askOf(turn, event.callId).outcome = event.result;
 	else if (event.type === "tool_call_finished") {
-		// A batch the core ended without asking it has no resolution of its own.
+		// A batch the core ended without asking it, or whose call failed, has no resolution of its own.
 		const ask = turn.asked.find((candidate) => candidate.callId === event.callId);
-		if (ask !== undefined) ask.outcome ??= { status: "not_asked" };
+		if (ask !== undefined) ask.outcome ??= finishedOutcome(event);
 	}
 }
 
@@ -78,7 +78,7 @@ export function savedParts(id: string, name: string | undefined, entries: readon
 		out += promptLine(turn.prompt);
 		for (const steer of turn.steers) out += promptLine(steer);
 		for (const { questions, outcome } of turn.asked) {
-			if (outcome === undefined || questions.length === 0) continue;
+			if (outcome === undefined || (questions.length === 0 && outcome.status !== "failed")) continue;
 			parts.push({ text: out });
 			parts.push({ questions, outcome });
 			out = "";

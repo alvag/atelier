@@ -2419,6 +2419,14 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				summary: "User answered 1 question.",
 				truncated: false,
 			}),
+			event(5, { type: "tool_call_started", callId: "u2", tool: "ask_user", input: { questions: [] } }),
+			event(6, {
+				type: "tool_call_finished",
+				callId: "u2",
+				ok: false,
+				summary: "Invalid input: ✖ Too small",
+				truncated: false,
+			}),
 			{ type: "text", turnId: "t1", text: "Commits in Spanish, then." },
 		];
 		const stub = stubCore({
@@ -2437,6 +2445,9 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(screen).toContain("⎿ Which language should commit messages use?  → Spanish");
 		expect(screen.indexOf("> set up commits")).toBeLessThan(screen.indexOf("Answered 1 question"));
 		expect(screen.indexOf("Answered 1 question")).toBeLessThan(screen.indexOf("Commits in Spanish"));
+		expect(screen).toContain("● ask_user failed");
+		expect(screen).toContain("⎿ Invalid input: ✖ Too small");
+		expect(screen).not.toContain("0 questions");
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
 	});
