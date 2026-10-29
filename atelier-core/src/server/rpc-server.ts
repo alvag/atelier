@@ -481,6 +481,16 @@ export class RpcServer {
 	}
 
 	/**
+	 * The backends signed in to, which only narrow the models `options.list` offers: none without the `signedIn` option,
+	 * and none when it fails, so the rest of the answer still serves.
+	 */
+	#signedIn(): Promise<readonly BackendName[]> {
+		const signedIn = this.#options.signedIn;
+		if (signedIn === undefined) return Promise.resolve([]);
+		return signedIn().catch((): readonly BackendName[] => []);
+	}
+
+	/**
 	 * What the selectors of a client offer: the backends with their models, the models of the backends signed in to,
 	 * the effort levels, the modes and the profiles.
 	 */
@@ -488,10 +498,7 @@ export class RpcServer {
 		const catalog = this.#options.catalog ?? BASE_CATALOG;
 		const [lists, signedIn] = await Promise.all([
 			Promise.all(BACKEND_NAMES.map((name) => catalog.models(name))),
-			// The sign-ins only narrow the models offered: when they cannot be read, the rest of the answer still serves.
-			(this.#options.signedIn?.() ?? Promise.resolve<readonly BackendName[]>([])).catch(
-				(): readonly BackendName[] => [],
-			),
+			this.#signedIn(),
 		]);
 		const backends = BACKEND_NAMES.map((name, index) => ({ name, models: [...(lists[index] ?? [])] }));
 		return {

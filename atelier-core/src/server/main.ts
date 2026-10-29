@@ -34,8 +34,8 @@ Environment:
   ATELIER_SANDBOX=off    Run every session's bash without the macOS sandbox: each command asks,
                          and the verifier gets no bash (session.start can also ask for it)
   ATELIER_LOGIN_CHECK=off
-                         options.list offers every backend's models without asking
-                         Claude Code, auth.json or the Keychain which ones are signed in
+                         Offer every backend's models in options.list; unset, it asks Claude
+                         Code, auth.json and the Keychain which backends are signed in
   ATELIER_ALLOW_ROOT     As root (uid 0) the server refuses to start unless this is exactly
                          "I accept the risk"; it then warns on every start
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
