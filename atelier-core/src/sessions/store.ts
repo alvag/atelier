@@ -44,8 +44,8 @@ export interface LoadedSession {
 	config: SavedConfig;
 	/** Absent for a session that never finished a turn: it starts empty with the saved configuration. */
 	resume?: ResumeState;
-	/** Whether the model was last told it runs in yolo; absent in a file saved before it was kept. */
-	yoloTold?: boolean;
+	/** Whether the model was last told it runs in yolo (`null`: unknown); absent in a file saved before it was kept. */
+	yoloTold?: boolean | null;
 	/** Everything the transcript shows again; the backend state is left out. */
 	entries: SavedEntry[];
 	turns: number;
