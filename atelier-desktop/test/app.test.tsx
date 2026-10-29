@@ -1723,6 +1723,16 @@ describe("App", () => {
 			expect(status.queryByText(/^ctx /)).toBeNull();
 		});
 
+		it("drops the model of the backend left when the configuration moves to another backend without one", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({ type: "session_started", backend: "anthropic-api", model: "first", authSource: "api_key" });
+			const status = within(screen.getByRole("status"));
+			expect(await status.findByText("first")).toBeTruthy();
+			fake.emit({ type: "session_configured", backend: "openai-codex", permissionMode: "normal" });
+			await waitFor(() => expect(status.queryByText("first")).toBeNull());
+		});
+
 		it("says the context size is unknown right after a compaction", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");

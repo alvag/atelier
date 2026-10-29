@@ -393,12 +393,12 @@ function applyMainEvent(state: ChatState, event: AtelierEvent): ChatState {
 				...(event.permissionMode === undefined ? {} : { permissionMode: event.permissionMode }),
 			};
 		}
-		case "session_configured":
-			return {
-				...withoutStaleContext(state, event.backend, event.model),
-				backend: event.backend,
-				...(event.model === undefined ? {} : { model: event.model }),
-			};
+		case "session_configured": {
+			// No model is the backend's default one: the same model on the same backend, none known yet on another.
+			const { model: _model, ...rest } = withoutStaleContext(state, event.backend, event.model);
+			const model = event.model ?? (event.backend === state.backend ? state.model : undefined);
+			return { ...rest, backend: event.backend, ...(model === undefined ? {} : { model }) };
+		}
 		case "rate_limit": {
 			if (event.status === "allowed") return state;
 			return { ...state, notice: `Rate limit: ${event.status}${event.window ? ` (${event.window})` : ""}` };
