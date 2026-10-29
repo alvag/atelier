@@ -355,6 +355,8 @@ export class Session {
 	/** What the backend that ran the turn answered at its end, until the turn's last event is saved. */
 	#endState: ResumeState | undefined;
 	#endBackend = "";
+	/** What the model of that backend was last told about yolo, taken with its state: a backend change resets it. */
+	#endYoloTold: boolean | null = false;
 	/** The first failed write was reported; the ones after it are not. */
 	#saveFailureSaid = false;
 	/** The sandbox warning was already said in this turn. */
@@ -893,6 +895,7 @@ export class Session {
 			// The state of the backend that ran the turn, before a change made at its end can replace the backend.
 			if (this.#options.record) this.#endState = this.#backendSession?.resumeState?.();
 			this.#endBackend = this.#backendSessionId;
+			this.#endYoloTold = this.#toldYolo;
 			// A change asked during the turn lands now, between this turn and the next.
 			await this.#applyPending(turn);
 			finish = this.#withHandoff(this.#withClassifier(finish));
@@ -913,7 +916,7 @@ export class Session {
 				const event = stamp(body);
 				// The state goes after the turn's events and before its end, which is the last line of the turn.
 				if (event.type === "turn_finished")
-					this.#options.record?.state(this.#endBackend, this.#endState, this.#toldYolo);
+					this.#options.record?.state(this.#endBackend, this.#endState, this.#endYoloTold);
 				this.#options.record?.event(event);
 				// The file holds the turn before a client hears it ended.
 				if (event.type === "turn_finished") await this.#recordFlush();
