@@ -180,17 +180,44 @@ it("lists the Codex models the account's picker shows, in its order, with their 
 	});
 });
 
-it("lists the models Claude Code offers the subscription, aliases included, with their levels", async () => {
+it("lists the models Claude Code offers the subscription by their versioned ids, with the aliases that stand for them", async () => {
 	const models = async () => [
-		{ value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus", description: "" },
-		{ value: "claude-fable-5-1", displayName: "Fable", description: "", supportedEffortLevels: ["low", "max"] },
+		{ value: "default", resolvedModel: "claude-opus-5-5", displayName: "Default", description: "" },
+		{
+			value: "opus",
+			resolvedModel: "claude-opus-5-5[1m]",
+			displayName: "Opus",
+			description: "",
+			supportedEffortLevels: ["low", "max"],
+		},
+		{ value: "sonnet", resolvedModel: "claude-sonnet-5-5", displayName: "Sonnet", description: "" },
+		{ value: "claude-fable-5-1", displayName: "Fable", description: "", supportedEffortLevels: ["low"] },
+		{ value: "claude-opus-4-6[1m]", resolvedModel: "claude-opus-4-6", displayName: "Opus 4.6", description: "" },
+		// An alias Claude Code does not resolve says no model, and an empty row neither.
+		{ value: "haiku", displayName: "Haiku", description: "" },
 		{ value: "", displayName: "", description: "" },
 	];
 	await refreshCatalog(file, [claudeCodeModelsSource(models)]);
 	const data = modelDataOf(await readCatalog(file));
-	expect(data.listed("claude-code")).toEqual(["opus", "claude-fable-5-1"]);
-	expect(data.model("claude-code", "claude-fable-5-1")).toEqual({ id: "claude-fable-5-1", efforts: ["low", "max"] });
-	expect(data.model("claude-code", "opus")).toEqual({ id: "opus" });
+	expect(data.listed("claude-code")).toEqual([
+		"claude-opus-5-5",
+		"claude-sonnet-5-5",
+		"claude-fable-5-1",
+		"claude-opus-4-6",
+	]);
+	// `default` stands for whatever the account starts on: it is never sent for a model.
+	expect(data.model("claude-code", "claude-opus-5-5")).toEqual({
+		id: "claude-opus-5-5",
+		efforts: ["low", "max"],
+		aliases: ["opus"],
+	});
+	expect(data.model("claude-code", "claude-sonnet-5-5")).toEqual({ id: "claude-sonnet-5-5", aliases: ["sonnet"] });
+	expect(data.model("claude-code", "claude-fable-5-1")).toEqual({ id: "claude-fable-5-1", efforts: ["low"] });
+	expect(data.model("claude-code", "claude-opus-4-6")).toEqual({
+		id: "claude-opus-4-6",
+		aliases: ["claude-opus-4-6[1m]"],
+	});
+	expect(data.model("claude-code", "opus")).toBeUndefined();
 });
 
 it("gives up on a source that hangs before its request, without holding up the others", async () => {
@@ -256,9 +283,11 @@ it("takes an empty answer, or one without a valid model, as broken: the cache st
 			expect(await readFile(file, "utf8")).toBe(before);
 		}
 
-	await refreshCatalog(file, [claudeCodeModelsSource(async () => [{ value: "opus" }])]);
+	await refreshCatalog(file, [
+		claudeCodeModelsSource(async () => [{ value: "opus", resolvedModel: "claude-opus-5-5" }]),
+	]);
 	const withClaude = await readFile(file, "utf8");
-	for (const list of [[], [{ value: "" }]]) {
+	for (const list of [[], [{ value: "" }], [{ value: "opus" }]]) {
 		const outcome = await refreshSource(
 			file,
 			claudeCodeModelsSource(async () => list),

@@ -10,6 +10,7 @@ export {
 	ModelData,
 } from "./model-data.ts";
 export { MODELS_DEV_URL, type ModelsDevOptions, modelsDevSource, parseModelsDev } from "./models-dev.ts";
+export { newestFirst } from "./order.ts";
 export {
 	ANTHROPIC_URL,
 	type AnthropicModelsOptions,
