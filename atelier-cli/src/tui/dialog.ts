@@ -101,6 +101,7 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 	#armed: boolean;
 	/** The descriptions to show under the label of the choice at the same index, when they are not beside it. */
 	readonly #below: readonly (string | undefined)[] | undefined;
+	readonly #choiceWidth: number;
 
 	constructor(
 		options: {
@@ -133,6 +134,7 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 			label,
 			...(description === undefined || this.#below !== undefined ? {} : { description }),
 		}));
+		this.#choiceWidth = Math.max(0, ...items.map((item) => visibleWidth(item.label) + 4));
 		this.#armed = options.initial !== undefined;
 		const theme = selectListTheme(paint);
 		// Nothing is highlighted until a key selects.
@@ -158,9 +160,9 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 		this.#revealedAt ??= now;
 	}
 
-	/** Opens the whole question, or folds it again; false when there is nothing folded. */
+	/** Opens folded text; structured choices are already complete and consume Ctrl+O without opening raw cards. */
 	toggle(): boolean {
-		if (this.#folded === undefined) return false;
+		if (this.#folded === undefined) return this.#below !== undefined;
 		this.#open = !this.#open;
 		return true;
 	}
@@ -213,14 +215,20 @@ export class ChoiceDialog<T extends string> implements Component, Focusable {
 
 	/** The list's rows; with descriptions below, each label's row is followed by its description, dimmed and indented. */
 	#choiceRows(width: number): string[] {
-		const rows = this.#list.render(width);
 		const below = this.#below;
+		// SelectList cuts labels, so give it room for the complete text before wrapping it to the frame.
+		const rows = this.#list.render(below === undefined ? width : Math.max(width, this.#choiceWidth));
 		// Every choice is shown (no scroll line) in a list with descriptions below.
 		if (below === undefined || rows.length !== below.length) return rows;
 		return rows.flatMap((line, index) => {
+			const label = wrapTextWithAnsi(line, width);
 			const description = below[index]?.replace(/[\r\n]+/g, " ").trim();
-			if (description === undefined || description === "") return [line];
-			return [line, this.#paint("dim", truncateToWidth(`    ${description}`, width, "…"))];
+			if (description === undefined || description === "") return label;
+			const indent = " ".repeat(Math.min(4, Math.max(0, width - 1)));
+			return [
+				...label,
+				...wrapTextWithAnsi(description, width - indent.length).map((part) => this.#paint("dim", indent + part)),
+			];
 		});
 	}
 }
@@ -483,14 +491,16 @@ const OTHER_MAX = 2000;
 export class TextDialog implements Component, Focusable {
 	focused = false;
 	readonly #title: string;
+	readonly #lines: readonly string[];
 	readonly #paint: Paint;
 	readonly #input = new Input();
 	#problem = "";
 	/** Whether it has answered: a late key or submit after that answers nothing. */
 	#answered = false;
 
-	constructor(title: string, paint: Paint, answer: (value: string | undefined) => void) {
+	constructor(title: string, paint: Paint, answer: (value: string | undefined) => void, lines: readonly string[] = []) {
 		this.#title = title;
+		this.#lines = lines;
 		this.#paint = paint;
 		const once = (value: string | undefined) => {
 			if (this.#answered) return;
@@ -515,7 +525,7 @@ export class TextDialog implements Component, Focusable {
 	reveal(): void {}
 
 	toggle(): boolean {
-		return false;
+		return true;
 	}
 
 	invalidate(): void {}
@@ -534,6 +544,7 @@ export class TextDialog implements Component, Focusable {
 		const shown = typed.length > inner - 2 ? `…${typed.slice(typed.length - (inner - 3))}` : typed;
 		return [
 			truncateToWidth(paint("yellow", `┌${title}${"─".repeat(fill)}┐`), width),
+			...this.#lines.flatMap((text) => wrapTextWithAnsi(text, inner)).map(line),
 			line(paint("dim", this.#problem || "Type your answer · Enter sends · Esc cancels")),
 			line(`> ${shown}`),
 			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
