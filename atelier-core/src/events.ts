@@ -312,8 +312,11 @@ export type AtelierEventBody =
 			confirm?: string;
 			/** The sandbox failed to start: the command asks in every mode, `yolo` included. */
 			sandboxFailed?: true;
-			/** What "Allow in this session" and "Allow always" would remember; absent when only Allow and Deny are offered. */
-			remember?: { rules: string[]; always: boolean };
+			/**
+			 * What "Allow in this session" and "Allow always" would remember; absent when only Allow and Deny are offered.
+			 * `project` (the project's real path) offers "Allow always in this project" instead of "Allow always".
+			 */
+			remember?: { rules: string[]; always: boolean; project?: string };
 	  }
 	/**
 	 * `auto`: what the permission classifier decided about the call, before it runs or is refused. `undecided`: the

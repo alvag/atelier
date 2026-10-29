@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -585,6 +585,36 @@ describe("RpcServer", () => {
 				h.send({ command: "session.permissions_remove", sessionId, ruleId: "always:bash:open" }),
 			);
 			expect(again).toMatchObject({ ok: false, error: { code: "unknown_rule" } });
+		});
+
+		it("offers and keeps a rule always in the session's project, and lists it with its project", async () => {
+			const gated = defineTool({
+				name: "shell",
+				description: "Runs a command",
+				inputShape: { command: z.string() },
+				gate: async ({ command }) => ({
+					approval: { command, remember: { rules: ["make"], always: false, project: true } },
+				}),
+				execute: async ({ command }) => ({ ok: true, output: `ran ${command}`, summary: command, truncated: false }),
+			});
+			const asking = [{ toolCall: { tool: "shell", input: { command: "make" }, callId: "k1" } }, { event: finished }];
+			const h = harness([[asking]], [gated]);
+			const sessionId = await h.start();
+			const project = await realpath(cwd);
+			h.send({ command: "session.send", sessionId, prompt: "x" });
+			const asked = await h.waitFor((m) => m.type === "event" && m.event.type === "approval_requested");
+			expect(asked).toMatchObject({ event: { remember: { rules: ["make"], always: false, project } } });
+			const id = h.send({ command: "session.approve", sessionId, callId: "k1", approved: true, remember: "project" });
+			expect(await h.responseTo(id)).toMatchObject({ ok: true });
+			await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
+			expect(JSON.parse(await readFile(join(cwd, ".atelier", "project-permissions.json"), "utf8")).allow).toEqual([
+				{ bash: "make", project },
+			]);
+			const listed = await h.responseTo(h.send({ command: "session.permissions", sessionId }));
+			expect(listed).toMatchObject({
+				ok: true,
+				result: { rules: [{ id: "project:bash:make", scope: "project", kind: "bash", value: "make", project }] },
+			});
 		});
 
 		it("rejects an approval nobody asked for", async () => {

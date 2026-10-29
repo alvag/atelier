@@ -86,6 +86,7 @@ import type { SessionRecorder } from "./sessions/recorder.ts";
 import { type LoadedSkills, loadSkills, skillsPrompt } from "./skills.ts";
 import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
+import { commandRuleScope } from "./tools/command-rules.ts";
 import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
 import {
 	type ToolContext,
@@ -112,9 +113,19 @@ const PARENT_ONLY = new Set([
 
 /** Tells the agent which commands run outside the sandbox on their own, so it asks to leave it only when needed. */
 async function rulesPrompt(rules: PermissionRules | undefined): Promise<string> {
-	const bash = rules === undefined ? [] : (await rules.current()).bash;
-	if (bash.length === 0) return "";
-	return `The user allows these bash commands outside the sandbox without asking: ${bash.join(", ")}. They run there on their own: do not set unsandboxed for them.`;
+	const { bash, projectBash } = rules === undefined ? { bash: [], projectBash: [] } : await rules.current();
+	const lines = [
+		...(bash.length === 0
+			? []
+			: [`The user allows these bash commands outside the sandbox without asking: ${bash.join(", ")}.`]),
+		...(projectBash.length === 0
+			? []
+			: [
+					`In this project the user also allows these bash commands outside the sandbox without asking: ${projectBash.join(", ")}.`,
+				]),
+	];
+	if (lines.length === 0) return "";
+	return `${lines.join(" ")} They run there on their own: do not set unsandboxed for them.`;
 }
 
 export interface ApprovalRequest {
@@ -130,12 +141,23 @@ export interface ApprovalRequest {
 	sandboxFailed?: true;
 	/**
 	 * What "Allow in this session" and "Allow always" would remember (`rules`, shown to the user); `always` is false when
-	 * only the session may keep them. Absent when the answer can only allow or deny.
+	 * they may not be kept for every folder. `project`, the project's real path, is set when they may be kept always in
+	 * it instead ("Allow always in this project"): a command of the line runs code the repository defines. Absent when
+	 * the answer can only allow or deny.
 	 */
-	remember?: { rules: string[]; always: boolean };
+	remember?: { rules: string[]; always: boolean; project?: string };
 }
 
-/** The user's answer: allow or deny this call, or allow it and remember its rules for the session or always. */
+/** Why rules the question did not offer for every folder cannot be kept always. */
+function neverAlways(kind: PermissionRuleKind, rules: readonly string[]): string {
+	const project = kind === "bash" ? rules.find((rule) => commandRuleScope(rule) === "project") : undefined;
+	const runner = kind === "bash" && rules.some((rule) => commandRuleScope(rule) === "session");
+	if (project !== undefined && !runner)
+		return `"${project}" runs code the project defines: it is allowed always only in a project`;
+	return `${rules.join(", ")} runs arbitrary code: it is never allowed always`;
+}
+
+/** The user's answer: allow or deny this call, or allow it and remember its rules for the session, the project or always. */
 export type ApprovalAnswer = boolean | { remember: PermissionRuleScope };
 
 /** What `auto` decides with: a backend for the classifier's separate model call. Never given to children. */
@@ -348,6 +370,7 @@ export class Session {
 	#warned = false;
 	/** The broken rules file was already said in this session. */
 	#rulesProblemSaid = false;
+	#rulesIgnoredSaid = false;
 	/** The user's prompt of the turn running now, verbatim: what the classifier judges an action against. */
 	#turnPrompt: string | undefined;
 	/** The last `send` turn that finished: the rest the classifier knows of the conversation. */
@@ -1427,10 +1450,15 @@ export class Session {
 			} else if (approval) {
 				const { command, reason, tool: asking, confirm, sandboxFailed } = approval;
 				const store = this.#options.permissionRules;
+				const project = approval.remember?.project === true ? await store?.project() : undefined;
 				const remember =
 					store === undefined || approval.remember === undefined
 						? undefined
-						: { ...approval.remember, always: approval.remember.always && store.canSave };
+						: {
+								rules: approval.remember.rules,
+								always: approval.remember.always && store.canSave,
+								...(project === undefined ? {} : { project }),
+							};
 				const question = {
 					command,
 					...(reason === undefined ? {} : { reason }),
@@ -1620,32 +1648,42 @@ export class Session {
 	}
 
 	/** The rules in force now, as tools take them; a broken saved file is said once, as a recoverable error, and counts as none. */
-	async #currentRules(emit: (event: AtelierEventBody) => void): Promise<{ bashRules: string[]; pathRules: string[] }> {
+	async #currentRules(
+		emit: (event: AtelierEventBody) => void,
+	): Promise<{ bashRules: string[]; projectBashRules: string[]; pathRules: string[] }> {
 		const rules = this.#options.permissionRules;
-		if (rules === undefined) return { bashRules: [], pathRules: [] };
+		if (rules === undefined) return { bashRules: [], projectBashRules: [], pathRules: [] };
 		const current = await rules.current();
 		if (current.problem !== undefined && !this.#rulesProblemSaid) {
 			this.#rulesProblemSaid = true;
 			emit(errorEvent("permission_rules_invalid", current.problem, true));
 		}
-		return { bashRules: current.bash, pathRules: current.paths };
+		if (current.ignored !== undefined && !this.#rulesIgnoredSaid) {
+			this.#rulesIgnoredSaid = true;
+			emit(errorEvent("permission_rules_ignored", current.ignored, true));
+		}
+		return { bashRules: current.bash, projectBashRules: current.projectBash, pathRules: current.paths };
 	}
 
-	/** Keeps the answer's rules; what cannot be saved always (a launcher, a broken file) is kept for the session, and said. */
+	/**
+	 * Keeps the answer's rules; what cannot be saved always or in the project (a launcher, a project's command for every
+	 * folder, a broken file) is kept for the session, and said.
+	 */
 	async #remember(
 		kind: PermissionRuleKind,
-		{ rules, always }: { rules: string[]; always: boolean },
+		{ rules, always, project }: { rules: string[]; always: boolean; project?: string },
 		scope: PermissionRuleScope,
 		emit: (event: AtelierEventBody) => void,
 	): Promise<void> {
 		const store = this.#options.permissionRules;
 		if (store === undefined) return;
 		const kept = rules.map((value) => ({ kind, value }));
-		if (scope === "always") {
+		if (scope !== "session") {
 			try {
-				if (!always)
-					throw new PermissionRulesError(`${rules.join(", ")} runs arbitrary code: it is never allowed always`);
-				await store.allow(kept, "always");
+				if (scope === "always" && !always) throw new PermissionRulesError(neverAlways(kind, rules));
+				if (scope === "project" && project === undefined)
+					throw new PermissionRulesError("they are not allowed always in a project here");
+				await store.allow(kept, scope);
 				return;
 			} catch (error) {
 				emit(
