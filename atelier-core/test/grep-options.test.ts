@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -169,6 +169,31 @@ for (const [name, useRipgrep] of [
 			await writeFile(join(cwd, "plain.txt"), "HIT plain\n");
 			const all = await grep.execute({ pattern: "HIT", context: 1 }, ctx);
 			expect(all.output).toBe("plain.txt:1:HIT plain");
+		});
+
+		it("refuses a path that names a secret file through a link to an ordinary one", async () => {
+			await writeFile(join(cwd, "payload.txt"), "SECRET BEFORE\nHIT SECRET\nSECRET AFTER\n");
+			for (const name of ["alias.pem", ".env.alias", "alias.KEY"]) {
+				await symlink(join(cwd, "payload.txt"), join(cwd, name));
+				expect(await grep.execute({ pattern: "HIT", path: name, context: 1 }, ctx), name).toMatchObject({
+					ok: false,
+					output: `Path is a protected secret location: ${name}`,
+				});
+			}
+		});
+
+		it("refuses the home's secret directories when the working directory is the home", async () => {
+			const home = cwd;
+			await mkdir(join(home, ".ssh"));
+			await writeFile(join(home, ".ssh", "id_rsa"), "SECRET BEFORE\nHIT SECRET\nSECRET AFTER\n");
+			const tool = createGrepTool({ useRipgrep, home });
+			for (const path of [".ssh/id_rsa", ".ssh"])
+				expect(await tool.execute({ pattern: "HIT", path, context: 1 }, ctx), path).toMatchObject({
+					ok: false,
+					output: `Path is a protected secret location: ${path}`,
+				});
+			await writeFile(join(home, "plain.txt"), "HIT plain\n");
+			expect((await tool.execute({ pattern: "HIT", context: 1 }, ctx)).output).toBe("plain.txt:1:HIT plain");
 		});
 
 		it("refuses a limit or context out of range", async () => {

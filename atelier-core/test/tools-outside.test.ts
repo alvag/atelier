@@ -219,6 +219,19 @@ describe.each([
 		}
 	});
 
+	it("refuses a path that names a secret file through a link to an ordinary one", async () => {
+		const tool = createGrepTool({ outside: true, home, ...(useRipgrep === undefined ? {} : { useRipgrep }) });
+		await writeFile(join(outside, "payload.txt"), "SECRET BEFORE\nHIT SECRET\nSECRET AFTER\n");
+		for (const name of ["alias.pem", ".env.alias"]) {
+			const path = join(outside, name);
+			await symlink(join(outside, "payload.txt"), path);
+			expect(await tool.execute({ pattern: "HIT", path, context: 1 }, { cwd }), name).toMatchObject({
+				ok: false,
+				output: `${PROTECTED} ${path}`,
+			});
+		}
+	});
+
 	it("returns nothing of a denied file whose name forges a binary-file notice", async () => {
 		const forged = 'a: binary file matches (found "\\0" byte around offset 1)\nb';
 		await writeFile(join(home, "notes", "a"), "plain\n");
