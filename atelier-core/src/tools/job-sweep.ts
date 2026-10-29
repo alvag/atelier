@@ -13,11 +13,21 @@ export const JOB_MARK = "ATELIER_JOB";
 /** Rounds of looking and killing: a process may start another while the last round kills. */
 const ROUNDS = 5;
 
-interface ProcessRow {
+/** One process of a listing: its id, its parent, its group, and whether it carries the job's mark. */
+export interface ProcessRow {
 	pid: number;
 	ppid: number;
 	pgid: number;
 	marked: boolean;
+}
+
+/** How long a listing may take; after it the sweep goes on as without one, so a stop is not held by a slow `ps`. */
+export const LIST_TIMEOUT_MS = 2000;
+
+/** What a sweep did: the pids it signaled, and whether every listing it asked for answered in time. */
+export interface Swept {
+	signaled: number[];
+	listed: boolean;
 }
 
 /**
@@ -25,14 +35,22 @@ interface ProcessRow {
  * found in one listing so a parent that dies first does not hide its children. SIGKILL goes round after round until
  * none is left; another signal goes once. Never signals the process that runs it. Answers every pid it signaled, for
  * a caller that must escalate later, when a parent that died may no longer lead to them. Best effort: without a process
- * listing (a sandbox refuses `ps`) it finds nothing and the group's own signal is all there is.
+ * listing (a sandbox refuses `ps`, or it does not answer within LIST_TIMEOUT_MS) it finds nothing and the group's own
+ * signal is all there is.
  */
-export async function sweepJob(pgid: number, mark: string, signal: NodeJS.Signals = "SIGKILL"): Promise<number[]> {
+export async function sweepJob(
+	pgid: number,
+	mark: string,
+	signal: NodeJS.Signals = "SIGKILL",
+	list: ProcessList = listProcesses,
+): Promise<Swept> {
 	const entry = `${JOB_MARK}=${mark}`;
 	const rounds = signal === "SIGKILL" ? ROUNDS : 1;
 	const signaled = new Set<number>();
 	for (let round = 0; round < rounds; round++) {
-		const pids = jobProcesses(await listProcesses(entry), pgid);
+		const rows = await within(list(entry), LIST_TIMEOUT_MS);
+		if (rows === undefined) return { signaled: [...signaled], listed: false };
+		const pids = jobProcesses(rows, pgid);
 		if (pids.length === 0) break;
 		for (const pid of pids) {
 			signaled.add(pid);
@@ -41,7 +59,20 @@ export async function sweepJob(pgid: number, mark: string, signal: NodeJS.Signal
 			} catch {}
 		}
 	}
-	return [...signaled];
+	return { signaled: [...signaled], listed: true };
+}
+
+/** What `work` answers within `ms`, or undefined; a failure counts as no answer. */
+async function within<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+	let timer: NodeJS.Timeout | undefined;
+	const late = new Promise<undefined>((resolve) => {
+		timer = setTimeout(() => resolve(undefined), ms);
+	});
+	try {
+		return await Promise.race([work.catch(() => undefined), late]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /** The job's processes in one listing: the group and the marked ones, then their descendants by parent. */
@@ -59,6 +90,9 @@ function jobProcesses(rows: readonly ProcessRow[], pgid: number): number[] {
 	return [...found];
 }
 
+/** Lists the processes, telling those whose environment holds `entry`: the system's listing, or a test's. */
+export type ProcessList = (entry: string) => Promise<ProcessRow[]>;
+
 async function listProcesses(entry: string): Promise<ProcessRow[]> {
 	return process.platform === "linux" ? linuxProcesses(entry) : psProcesses(entry);
 }
@@ -70,7 +104,7 @@ async function psProcesses(entry: string): Promise<ProcessRow[]> {
 			execFile(
 				"/bin/ps",
 				["-A", "-E", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "command="],
-				{ maxBuffer: 64 * 1024 * 1024 },
+				{ maxBuffer: 64 * 1024 * 1024, timeout: LIST_TIMEOUT_MS },
 				(_error, stdout) => resolve(stdout ?? ""),
 			);
 		} catch {
