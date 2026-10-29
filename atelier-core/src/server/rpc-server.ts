@@ -735,6 +735,8 @@ export class RpcServer {
 					return undefined;
 				});
 		const mcp = this.#options.connectMcp?.(cwd);
+		/** Starts the turn of a job notice that came with no turn running, once the session is served. */
+		let wake: (() => void) | undefined;
 		let session: Session;
 		try {
 			session = await Session.start({
@@ -778,6 +780,7 @@ export class RpcServer {
 					agents: this.#options.subagents ?? BUILTIN_AGENTS,
 					createBackend: (name) => this.#options.createBackend(name ?? backend),
 				},
+				wake: () => wake?.(),
 			});
 		} catch (error) {
 			if (recorder) this.#writing.delete(recorder.path);
@@ -812,6 +815,10 @@ export class RpcServer {
 			consents,
 			...(recorder === undefined ? {} : { recorder }),
 		});
+		wake = () => {
+			const entry = this.#sessions.get(sessionId);
+			if (entry !== undefined && !entry.session.busy) this.#runQueued(sessionId, entry);
+		};
 		return { sessionId, session, ...(recorder === undefined ? {} : { savedId: recorder.id }) };
 	}
 

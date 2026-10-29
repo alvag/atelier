@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
 	type AtelierEventBody,
+	createBackgroundTools,
 	createBashTool,
 	decodeServerMessage,
 	defineTool,
@@ -1153,5 +1154,32 @@ describe("RpcServer permission modes", () => {
 			error: { code: "unknown_session", message: "No session nope." },
 		});
 		await h.close();
+	});
+});
+
+describe("RpcServer and background jobs", () => {
+	it("starts a turn of its own when a job ends while no turn runs", async () => {
+		const go = join(cwd, "go");
+		const background = createBackgroundTools({ sandbox: new Sandbox({ platform: "darwin", manager: fakeManager }) });
+		const command = `while [ ! -f ${go} ]; do sleep 0.02; done; echo done`;
+		const h = harness(
+			[
+				[
+					[{ toolCall: { tool: "bash_background", input: { command }, callId: "c1" } }, { event: finished }],
+					[{ event: finished }],
+				],
+			],
+			background,
+		);
+		const sessionId = await h.start();
+		await h.responseTo(h.send({ command: "session.send", sessionId, prompt: "start it" }));
+		await until(() => h.events(sessionId).some((e) => e.type === "turn_finished"));
+		await writeFile(go, "");
+		await until(() => h.events(sessionId).filter((e) => e.type === "turn_finished").length === 2);
+		expect(h.backends[0]?.prompts[1]).toMatch(/^Background job 1 \(".*"\) ended: exit code 0/);
+		const woken = h.events(sessionId).filter((e) => e.seq === 1)[1];
+		expect(woken).toMatchObject({ type: "job_finished", jobId: "1", notified: true });
+		await h.responseTo(h.send({ command: "shutdown" }));
+		await h.done;
 	});
 });

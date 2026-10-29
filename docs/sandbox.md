@@ -4,6 +4,8 @@ The macOS sandbox for `bash`, the permission modes, the command guard and the co
 
 On macOS every `bash` command of the agent, its workers and the verifier runs under the operating system's sandbox (Seatbelt, through `@anthropic-ai/sandbox-runtime` 0.0.81). It is built for macOS only: elsewhere, or if `sandbox-exec` does not answer, there is no sandbox and the commands fall back to approvals (see below).
 
+A command the agent starts in the background with `bash_background` goes through everything this page says of `bash`: the same sandbox, guard, rules, `unsandboxed` with its reason and questions; only its output and its end reach the agent later (see [How Atelier works](architecture.md)).
+
 ## What is isolated and what is not
 
 |         | Agent and workers                                                                                                                                                                                                                                                                                                                                                            | Verifier                                                                                                                                                                                                                                                                                                                                                     |
