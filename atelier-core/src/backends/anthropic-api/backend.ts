@@ -34,6 +34,7 @@ import {
 	type Usage,
 	ZERO_USAGE,
 } from "../../events.ts";
+import { BACKEND_DEFAULTS } from "../../options.ts";
 import {
 	costOfRequest,
 	summarizesThinking,
@@ -50,7 +51,7 @@ import { anthropicTransport, finalMessage, type ModelTransport } from "./transpo
 export { DEFAULT_CONTEXT_WINDOW } from "./transport.ts";
 
 export const BACKEND_ID = "anthropic-api";
-export const DEFAULT_API_MODEL = "claude-sonnet-5-5";
+export const DEFAULT_API_MODEL = BACKEND_DEFAULTS["anthropic-api"];
 /** Output budget per request; a turn that needs more continues after its tool results. */
 export const DEFAULT_MAX_TOKENS = 16_000;
 export const DEFAULT_MAX_REQUESTS_PER_TURN = 50;

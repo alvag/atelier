@@ -57,7 +57,7 @@ The interactive session runs full screen: the transcript scrolls above (mouse wh
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--mode <mode>`                    | Permission mode: `normal` (default), `auto` or `yolo` (see below).                                                                                                |
 | `--backend <name>`                 | `claude-code` (default, Claude subscription), `anthropic-api` (billed to the API key), `opencode-go` (OpenCode Go plan) or `openai-codex` (ChatGPT subscription). |
-| `--model <name>`                   | Model to use (default: `claude-opus-5-5` on `claude-code`, `claude-sonnet-5-5` on `anthropic-api`); `openai-codex/gpt-6-luna` also picks the backend.                        |
+| `--model <name>`                   | Model to use (default: `claude-opus-5-5` on `claude-code`, `claude-sonnet-5-5` on `anthropic-api`); `openai-codex/gpt-6-luna` also picks the backend.             |
 | `--profile <name>`                 | Agent profile for this session (see [profiles](docs/profiles.md)).                                                                                                |
 | `--cwd <dir>`                      | Working directory (default: current directory).                                                                                                                   |
 | `--continue`                       | Resume the newest saved session of the working directory.                                                                                                         |

@@ -10,7 +10,8 @@ export interface ListedModel {
 
 /** What `options.list` answers, as the selectors read it. */
 export interface Options {
-	backends: { name: string; models: string[] }[];
+	/** `default`: the model the backend runs when none was chosen; absent from a core that does not say it. */
+	backends: { name: string; default?: string; models: string[] }[];
 	/** Absent from a core that does not list them. */
 	models?: ListedModel[];
 	efforts: string[];
@@ -42,7 +43,7 @@ export const choicesOf = (values: readonly string[], now: string | undefined): C
 
 /**
  * The models of the providers signed in to, `model [provider]`, each valued `provider/model`. The one in use (the
- * backend's first model when none was chosen) is marked current; when the list lacks it, it comes first all the same,
+ * backend's default when none was chosen) is marked current; when the list lacks it, it comes first all the same,
  * `signed out` when its provider is not listed.
  */
 export function modelChoices(
@@ -52,7 +53,7 @@ export function modelChoices(
 ): Choice<string>[] {
 	const models = options.models ?? [];
 	const backend = BACKEND_NAMES.find((name) => name === sessionBackend);
-	const inUse = model ?? options.backends.find((listed) => listed.name === backend)?.models[0];
+	const inUse = model ?? options.backends.find((listed) => listed.name === backend)?.default;
 	const now = backend === undefined || inUse === undefined ? undefined : formatModel(backend, inUse);
 	const row = (provider: BackendName, name: string, ...notes: (string | undefined)[]) => {
 		const value = formatModel(provider, name);

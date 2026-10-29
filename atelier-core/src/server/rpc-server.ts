@@ -8,7 +8,7 @@ import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { McpManager } from "../mcp/index.ts";
 import type { MemoryPort } from "../memory/index.ts";
 import { PERMISSION_MODES } from "../modes.ts";
-import { BACKEND_MODELS, BASE_CATALOG, type ModelCatalog } from "../options.ts";
+import { BACKEND_DEFAULTS, BACKEND_MODELS, BASE_CATALOG, type ModelCatalog } from "../options.ts";
 import { type DefaultPermissionMode, readDefaultPermissionMode } from "../permission-mode.ts";
 import { PermissionRules } from "../permission-rules.ts";
 import {
@@ -491,7 +491,7 @@ export class RpcServer {
 	}
 
 	/**
-	 * What the selectors of a client offer: the backends with their models, the models of the backends signed in to,
+	 * What the selectors of a client offer: the backends with their default and their models, the models of the backends signed in to,
 	 * the effort levels, the modes and the profiles.
 	 */
 	async #optionsList(cwd: string | undefined): Promise<Result> {
@@ -507,7 +507,11 @@ export class RpcServer {
 			),
 			this.#signedIn(),
 		]);
-		const backends = BACKEND_NAMES.map((name, index) => ({ name, models: [...(lists[index] ?? [])] }));
+		const backends = BACKEND_NAMES.map((name, index) => ({
+			name,
+			default: BACKEND_DEFAULTS[name],
+			models: [...(lists[index] ?? [])],
+		}));
 		return {
 			backends,
 			models: backends
