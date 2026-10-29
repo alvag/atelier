@@ -1183,7 +1183,7 @@ describe("RpcServer and background jobs", () => {
 		await h.done;
 	});
 
-	it("says the end of a job after an interrupted turn at once, outside any turn, and starts no turn for it", async () => {
+	it("says the end of a job after an interrupted turn at once, outside any turn, to a client that asked for such events", async () => {
 		const go = join(cwd, "go");
 		const background = createBackgroundTools({ sandbox: new Sandbox({ platform: "darwin", manager: fakeManager }) });
 		const command = `while [ ! -f ${go} ]; do sleep 0.1; done; echo done`;
@@ -1191,7 +1191,8 @@ describe("RpcServer and background jobs", () => {
 			[[[{ toolCall: { tool: "bash_background", input: { command }, callId: "c1" } }, { waitForInterrupt: true }]]],
 			background,
 		);
-		const sessionId = await h.start();
+		const started = await h.responseTo(h.send({ command: "session.start", cwd, sessionEvents: true }));
+		const { sessionId } = (started as unknown as { result: { sessionId: string } }).result;
 		await h.responseTo(h.send({ command: "session.send", sessionId, prompt: "start it" }));
 		await until(() => h.events(sessionId).some((e) => e.type === "job_started"));
 		await h.responseTo(h.send({ command: "session.interrupt", sessionId }));
@@ -1204,6 +1205,39 @@ describe("RpcServer and background jobs", () => {
 			event: expect.objectContaining({ type: "job_finished", jobId: "1", notified: true, running: 0, waiting: 1 }),
 		});
 		expect(h.backends[0]?.prompts).toHaveLength(1);
+		await h.responseTo(h.send({ command: "shutdown" }));
+		await h.done;
+	});
+
+	it("keeps such an end for the next turn of a client that did not ask for events outside a turn", async () => {
+		const go = join(cwd, "go");
+		// The job's sandbox is cleaned up as it ends, just before its notice: how the test knows it ended.
+		let cleaned = 0;
+		const manager = { ...fakeManager, cleanupAfterCommand: () => void cleaned++ };
+		const background = createBackgroundTools({ sandbox: new Sandbox({ platform: "darwin", manager }) });
+		const command = `while [ ! -f ${go} ]; do sleep 0.1; done; echo done`;
+		const h = harness(
+			[
+				[
+					[{ toolCall: { tool: "bash_background", input: { command }, callId: "c1" } }, { waitForInterrupt: true }],
+					[{ event: finished }],
+				],
+			],
+			background,
+		);
+		const sessionId = await h.start();
+		await h.responseTo(h.send({ command: "session.send", sessionId, prompt: "start it" }));
+		await until(() => h.events(sessionId).some((e) => e.type === "job_started"));
+		await h.responseTo(h.send({ command: "session.interrupt", sessionId }));
+		await until(() => h.events(sessionId).some((e) => e.type === "turn_finished"));
+		await writeFile(go, "");
+		await until(() => cleaned === 1);
+		const send = await h.responseTo(h.send({ command: "session.send", sessionId, prompt: "continue" }));
+		const turnId = (send as unknown as { result: { turnId: string } }).result.turnId;
+		await until(() => h.events(sessionId).filter((e) => e.type === "turn_finished").length === 2);
+		expect(h.messages.some((m) => m.type === "session_event")).toBe(false);
+		expect(h.backends[0]?.prompts[1]).toMatch(/^Background job 1 [\s\S]*\n\ncontinue$/);
+		expect(h.events(sessionId).find((e) => e.type === "job_finished")).toMatchObject({ turnId, waiting: 1 });
 		await h.responseTo(h.send({ command: "shutdown" }));
 		await h.done;
 	});

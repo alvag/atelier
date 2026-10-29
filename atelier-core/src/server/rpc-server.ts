@@ -134,6 +134,8 @@ interface StartRequest {
 	noSession?: boolean | undefined;
 	/** The client answers `ask_user` questions (`session.answer_user`). */
 	userQuestions?: boolean | undefined;
+	/** The client reads `session_event` messages, events outside any turn. */
+	sessionEvents?: boolean | undefined;
 	/** Starts from this saved session and goes on writing its file. */
 	resumed?: { loaded: LoadedSession; store: SessionStore } | undefined;
 }
@@ -271,6 +273,7 @@ export class RpcServer {
 					mode: message.mode,
 					noSession: message.noSession === true,
 					userQuestions: message.userQuestions === true,
+					sessionEvents: message.sessionEvents === true,
 				});
 				return {
 					sessionId: started.sessionId,
@@ -283,7 +286,12 @@ export class RpcServer {
 					sessions: JSON.parse(JSON.stringify(await store.list(message.cwd))) as JsonValue[],
 				}));
 			case "session.resume":
-				return this.#resume(message.cwd, message.sessionId, message.userQuestions === true);
+				return this.#resume(
+					message.cwd,
+					message.sessionId,
+					message.userQuestions === true,
+					message.sessionEvents === true,
+				);
 			case "session.rename":
 				return this.#saved(async (store) => {
 					await store.rename(message.cwd, message.sessionId, message.name);
@@ -631,13 +639,14 @@ export class RpcServer {
 	}
 
 	/** Starts a session from a saved one and answers what a client needs to show it again. */
-	async #resume(cwd: string, savedId: string, userQuestions: boolean): Promise<Result> {
+	async #resume(cwd: string, savedId: string, userQuestions: boolean, sessionEvents: boolean): Promise<Result> {
 		return this.#saved(async (store) => {
 			const loaded = await store.load(cwd, savedId);
 			const started = await this.#start({
 				cwd,
 				noSandbox: this.#options.noSandbox === true,
 				userQuestions,
+				sessionEvents,
 				resumed: { loaded, store },
 			});
 			return {
@@ -783,7 +792,8 @@ export class RpcServer {
 					createBackend: (name) => this.#options.createBackend(name ?? backend),
 				},
 				wake: () => wake?.(),
-				idleEvent: (event) => idleEvent?.(event),
+				// Only a client that reads events outside a turn gets them; the others get them in the next turn.
+				...(request.sessionEvents === true ? { idleEvent: (event: AtelierEventBody) => idleEvent?.(event) } : {}),
 			});
 		} catch (error) {
 			if (recorder) this.#writing.delete(recorder.path);
