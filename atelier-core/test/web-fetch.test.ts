@@ -285,6 +285,78 @@ describe("web_fetch address guard (S2)", () => {
 	});
 });
 
+describe("web_fetch special-use and embedded IPv4 addresses (#128)", () => {
+	const special = "a reserved, multicast or documentation address.";
+	const internal = "a private, link-local or otherwise internal address.";
+
+	it.each([
+		["100.100.100.200", `100.100.100.200 is ${internal}`],
+		["[fec0::1]", `fec0::1 is ${internal}`],
+		["[64:ff9b:1::1]", `64:ff9b:1::1 is ${internal}`],
+		["192.0.0.1", `192.0.0.1 is ${special}`],
+		["198.18.0.1", `198.18.0.1 is ${special}`],
+		["192.0.2.1", `192.0.2.1 is ${special}`],
+		["198.51.100.1", `198.51.100.1 is ${special}`],
+		["203.0.113.1", `203.0.113.1 is ${special}`],
+		["224.0.0.1", `224.0.0.1 is ${special}`],
+		["240.0.0.1", `240.0.0.1 is ${special}`],
+		["[ff02::1]", `ff02::1 is ${special}`],
+		["[100::1]", `100::1 is ${special}`],
+		["[2001:db8::1]", `2001:db8::1 is ${special}`],
+		["[64:ff9b::a9fe:a9fe]", `64:ff9b::a9fe:a9fe carries 169.254.169.254, ${internal}`],
+		["[::a9fe:a9fe]", `::a9fe:a9fe carries 169.254.169.254, ${internal}`],
+		["[::ffff:0:a9fe:a9fe]", `::ffff:0:a9fe:a9fe carries 169.254.169.254, ${internal}`],
+		// Node's BlockList checks an IPv4-mapped address against the IPv4 rules itself.
+		["[::ffff:a9fe:a9fe]", `::ffff:a9fe:a9fe is ${internal}`],
+		["[64:ff9b::c000:201]", `64:ff9b::c000:201 carries 192.0.2.1, ${special}`],
+	])("refuses the literal %s before any request", async (host, message) => {
+		const out = await fetchPage(createWebFetchTool(), `http://${host}:${new URL(base).port}/never`);
+		expect(out).toMatchObject({ ok: false, output: `Refused: ${message}` });
+		expect(seen).toEqual([]);
+	});
+
+	it.each([
+		["64:ff9b::a9fe:a9fe", `64:ff9b::a9fe:a9fe carries 169.254.169.254, ${internal}`],
+		["::a9fe:a9fe", `::a9fe:a9fe carries 169.254.169.254, ${internal}`],
+		["::ffff:0:a9fe:a9fe", `::ffff:0:a9fe:a9fe carries 169.254.169.254, ${internal}`],
+		["::ffff:169.254.169.254", `::ffff:169.254.169.254 is ${internal}`],
+		["::ffff:0:169.254.169.254", `::ffff:0:169.254.169.254 carries 169.254.169.254, ${internal}`],
+		["64:ff9b::7f00:1", "64:ff9b::7f00:1 carries 127.0.0.1, a loopback address."],
+		["fe80::1%lo0", `fe80::1 is ${internal}`],
+		["not-an-ip", "not-an-ip is not an IP address."],
+	])("refuses a name that resolves to %s before any request", async (address, message) => {
+		const tool = createWebFetchTool({ resolve: async () => [address] });
+		const out = await fetchPage(tool, `http://sneaky.example:${new URL(base).port}/never`);
+		expect(out).toMatchObject({ ok: false, output: `Refused: ${message}` });
+		expect(seen).toEqual([]);
+	});
+
+	it("refuses a MagicDNS-like name that resolves into the shared address space", async () => {
+		const tool = createWebFetchTool({ resolve: async () => ["100.100.100.200"] });
+		const out = await fetchPage(tool, `http://box.tailnet.example:${new URL(base).port}/never`);
+		expect(out).toMatchObject({ ok: false, output: `Refused: 100.100.100.200 is ${internal}` });
+		expect(seen).toEqual([]);
+	});
+
+	it.each([
+		["http://100.100.100.200/latest/", `100.100.100.200 is ${internal}`],
+		["http://[64:ff9b::a9fe:a9fe]/latest/", `64:ff9b::a9fe:a9fe carries 169.254.169.254, ${internal}`],
+		["http://nat.example/latest/", `::ffff:0:a9fe:a9fe carries 169.254.169.254, ${internal}`],
+	])("refuses a redirect to %s after the first request", async (location, message) => {
+		handler = (_request, response) => response.writeHead(302, { location }).end();
+		const tool = local({ resolve: async (host) => (host === "nat.example" ? ["::ffff:0:a9fe:a9fe"] : ["127.0.0.1"]) });
+		const out = await fetchPage(tool, `${base}/bounce`);
+		expect(out).toMatchObject({ ok: false, output: `Refused: ${message}` });
+		expect(seen).toEqual(["/bounce"]);
+	});
+
+	it.each(["::1", "::ffff:127.0.0.1"])("still lets %s through when the tool was built for tests", async (address) => {
+		const tool = local({ resolve: async () => [address] });
+		const out = await fetchPage(tool, `http://pages.example:${new URL(base).port}/x`);
+		expect(out.output).not.toContain("Refused");
+	});
+});
+
 async function collect(events: AsyncIterable<AtelierEvent>) {
 	const out: AtelierEvent[] = [];
 	for await (const event of events) out.push(event);

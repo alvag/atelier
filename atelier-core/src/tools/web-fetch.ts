@@ -18,40 +18,113 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
 /** Pages kept per session; the oldest goes first. */
 const CACHE_ENTRIES = 20;
 
-const loopback = new BlockList();
-loopback.addSubnet("127.0.0.0", 8, "ipv4");
-loopback.addAddress("::1", "ipv6");
-loopback.addSubnet("::ffff:127.0.0.0", 104, "ipv6");
+type Subnet = readonly [network: string, bits: number];
 
-const internal = new BlockList();
-internal.addSubnet("0.0.0.0", 8, "ipv4");
-internal.addSubnet("10.0.0.0", 8, "ipv4");
-internal.addSubnet("172.16.0.0", 12, "ipv4");
-internal.addSubnet("192.168.0.0", 16, "ipv4");
-internal.addSubnet("169.254.0.0", 16, "ipv4");
-internal.addAddress("::", "ipv6");
-internal.addSubnet("fc00::", 7, "ipv6");
-internal.addSubnet("fe80::", 10, "ipv6");
-for (const [network, bits] of [
-	["0.0.0.0", 8],
-	["10.0.0.0", 8],
-	["172.16.0.0", 12],
-	["192.168.0.0", 16],
-	["169.254.0.0", 16],
-] as const)
-	internal.addSubnet(`::ffff:${network}`, 96 + bits, "ipv6");
+function blockList(ipv4: Subnet[], ipv6: Subnet[]): BlockList {
+	const list = new BlockList();
+	for (const [network, bits] of ipv4) list.addSubnet(network, bits, "ipv4");
+	for (const [network, bits] of ipv6) list.addSubnet(network, bits, "ipv6");
+	return list;
+}
+
+const loopback = blockList([["127.0.0.0", 8]], [["::1", 128]]);
+
+const internal = blockList(
+	[
+		["0.0.0.0", 8],
+		["10.0.0.0", 8],
+		["100.64.0.0", 10],
+		["169.254.0.0", 16],
+		["172.16.0.0", 12],
+		["192.168.0.0", 16],
+	],
+	[
+		["::", 128],
+		["64:ff9b:1::", 48],
+		["fc00::", 7],
+		["fe80::", 10],
+		["fec0::", 10],
+	],
+);
+
+const special = blockList(
+	[
+		["192.0.0.0", 24],
+		["192.0.2.0", 24],
+		["198.18.0.0", 15],
+		["198.51.100.0", 24],
+		["203.0.113.0", 24],
+		["224.0.0.0", 4],
+		["240.0.0.0", 4],
+	],
+	[
+		["100::", 64],
+		["2001:db8::", 32],
+		["ff00::", 8],
+	],
+);
+
+/** IPv4-mapped, IPv4-compatible, SIIT and NAT64 addresses reach the IPv4 in their last 32 bits. */
+const carriesIpv4 = blockList(
+	[],
+	[
+		["::ffff:0:0", 96],
+		["::", 96],
+		["::ffff:0:0:0", 96],
+		["64:ff9b::", 96],
+	],
+);
 
 class RefusedError extends Error {
 	override name = "RefusedError";
 }
 
-/** Throws for an address the tool never connects to: the machine itself and the networks behind it. */
-function checkAddress(address: string, allowLoopback: boolean): void {
-	const family = isIP(address) === 6 ? "ipv6" : "ipv4";
-	if (!allowLoopback && loopback.check(address, family))
-		throw new RefusedError(`Refused: ${address} is a loopback address.`);
-	if (internal.check(address, family))
-		throw new RefusedError(`Refused: ${address} is a private, link-local or otherwise internal address.`);
+/** The eight 16-bit groups of an IPv6 address, with a dotted IPv4 tail as the last two; null when it cannot be read. */
+function ipv6Groups(address: string): number[] | null {
+	const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(address);
+	let hex = address;
+	if (dotted) {
+		const [a, b, c, d] = dotted.slice(1).map(Number) as [number, number, number, number];
+		hex = `${address.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+	}
+	const halves = hex.split("::");
+	const head = halves[0] ? halves[0].split(":") : [];
+	const tail = halves[1] ? halves[1].split(":") : [];
+	const gap = halves.length === 2 ? 8 - head.length - tail.length : 0;
+	if (halves.length > 2 || gap < 0) return null;
+	const groups = [...head, ...Array<string>(gap).fill("0"), ...tail].map((group) => Number.parseInt(group, 16));
+	return groups.length === 8 && groups.every((group) => group >= 0 && group <= 0xffff) ? groups : null;
+}
+
+/** The IPv4 in the last 32 bits of an IPv6 address. */
+function embeddedIpv4(address: string): string {
+	const groups = ipv6Groups(address);
+	if (!groups) throw new RefusedError(`Refused: ${address} is not an IP address.`);
+	const [high, low] = groups.slice(6) as [number, number];
+	return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
+}
+
+/** Why the tool never connects to an address, or null when it may: the machine itself, the networks behind it and the special-use ranges. */
+function refusal(address: string, allowLoopback: boolean): string | null {
+	const family = isIP(address);
+	if (family === 0) return "not an IP address";
+	const type = family === 6 ? "ipv6" : "ipv4";
+	if (loopback.check(address, type)) return allowLoopback ? null : "a loopback address";
+	if (internal.check(address, type)) return "a private, link-local or otherwise internal address";
+	if (special.check(address, type)) return "a reserved, multicast or documentation address";
+	return null;
+}
+
+/** Throws for an address the tool never connects to, including an IPv6 address that carries such an IPv4. */
+function checkAddress(raw: string, allowLoopback: boolean): void {
+	const address = raw.split("%")[0] as string;
+	const reason = refusal(address, allowLoopback);
+	if (reason) throw new RefusedError(`Refused: ${address} is ${reason}.`);
+	// `::1` lies inside `::/96`; when loopback is allowed it must not be read as 0.0.0.1.
+	if (isIP(address) !== 6 || loopback.check(address, "ipv6") || !carriesIpv4.check(address, "ipv6")) return;
+	const ipv4 = embeddedIpv4(address);
+	const carried = refusal(ipv4, allowLoopback);
+	if (carried) throw new RefusedError(`Refused: ${address} carries ${ipv4}, ${carried}.`);
 }
 
 type Resolver = (hostname: string) => Promise<string[]>;
