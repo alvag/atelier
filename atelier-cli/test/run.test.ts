@@ -2393,7 +2393,7 @@ describe("ask_user on the line terminal", () => {
 		expect(t.result()).toEqual({
 			status: "answered",
 			answers: [
-				{ questionId: "db", optionId: "sqlite" },
+				{ questionId: "db", optionId: "sqlite", label: "SQLite" },
 				{ questionId: "mode", other: "2" },
 			],
 		});
@@ -2424,7 +2424,7 @@ describe("ask_user on the line terminal", () => {
 		await t.pending;
 		expect(t.result().answers).toEqual([
 			{ questionId: "db", other: "  both, please " },
-			{ questionId: "mode", optionId: "fast" },
+			{ questionId: "mode", optionId: "fast", label: "Fast" },
 		]);
 	});
 

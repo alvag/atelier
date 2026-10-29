@@ -37,7 +37,10 @@ it("passes validated questions and call context to the user callback, without pe
 	expect(tool.approvalCommand(input())).toBeUndefined();
 	expect(await tool.execute(input(), context)).toEqual({
 		ok: true,
-		output: JSON.stringify(result),
+		output: JSON.stringify({
+			status: "answered",
+			answers: [{ questionId: "q1", optionId: "b", label: "Refactor" }],
+		}),
 		summary: "User answered 1 question.",
 		truncated: false,
 	});
@@ -61,7 +64,12 @@ it("accepts boundary lengths and returns a complete mixed batch without trimming
 			: { questionId: q.id, optionId: q.options[0]?.id as string },
 	);
 	const tool = createAskUserTool(async () => ({ status: "answered", answers }));
-	expect(JSON.parse((await tool.execute({ questions }, context)).output)).toEqual({ status: "answered", answers });
+	// The model also gets the label of each option chosen; the user's own text comes as written, without one.
+	const labelled = answers.map((entry) => ("optionId" in entry ? { ...entry, label: "L".repeat(200) } : entry));
+	expect(JSON.parse((await tool.execute({ questions }, context)).output)).toEqual({
+		status: "answered",
+		answers: labelled,
+	});
 });
 
 describe("ask_user input validation", () => {
