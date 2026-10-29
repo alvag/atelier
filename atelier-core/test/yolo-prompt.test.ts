@@ -104,6 +104,26 @@ describe("a change of mode during the session", () => {
 		expect(s.backend.prompts).toEqual(["first", `${LEFT_YOLO}\n\nsecond`, "third", `${YOLO_RULES}\n\nfourth`]);
 	});
 
+	it("gives the note again with the next prompt when the backend failed before taking the one that carried it", async () => {
+		const refused: FakeStep[] = [
+			{ event: { type: "error", code: "api_error", message: "overloaded", recoverable: false } },
+			{ event: { ...finished, stopReason: "error" } },
+		];
+		const s = await start([[{ throw: "connection reset" }], refused, DONE, DONE]);
+		s.session.setPermissionMode("yolo");
+		await s.send("first");
+		await s.send("second");
+		await s.send("third");
+		await s.send("fourth");
+		await s.session.close();
+		expect(s.backend.prompts).toEqual([
+			`${YOLO_RULES}\n\nfirst`,
+			`${YOLO_RULES}\n\nsecond`,
+			`${YOLO_RULES}\n\nthird`,
+			"fourth",
+		]);
+	});
+
 	it("says nothing when the model already has the mode right", async () => {
 		const s = await start([DONE, DONE, DONE], { permissionMode: "yolo" });
 		s.session.setPermissionMode("yolo");

@@ -713,11 +713,10 @@ export class Session {
 			const mcpNote = this.#options.mcp ? mcpInstructionsNote(this.#options.mcp, this.#mcpGiven) : undefined;
 			if (mcpNote !== undefined) sent = `${mcpNote}\n\n${sent}`;
 			// A mode changed since the model was last told: entering yolo gives its rules, leaving it says they ended.
+			// It counts as told once the model took the prompt; until then the next prompt carries it again.
 			const yolo = this.#options.permissionMode === "yolo";
-			if (yolo !== this.#toldYolo) {
-				this.#toldYolo = yolo;
-				sent = `${yolo ? YOLO_RULES : LEFT_YOLO}\n\n${sent}`;
-			}
+			const telling = yolo !== this.#toldYolo;
+			if (telling) sent = `${yolo ? YOLO_RULES : LEFT_YOLO}\n\n${sent}`;
 			// A backend that took the conversation over by a summary gets it with its first prompt.
 			if (this.#handoff !== undefined) {
 				sent = `${this.#handoff}\n\n${sent}`;
@@ -732,7 +731,10 @@ export class Session {
 			try {
 				for await (const event of backendSession.send(sent)) {
 					if (!refusal(event)) this.#recoveryInFlight = undefined;
-					if (answered(event)) reviewNotice = undefined;
+					if (answered(event)) {
+						reviewNotice = undefined;
+						if (telling) this.#toldYolo = yolo;
+					}
 					if (event.type === "turn_finished") finish ??= event;
 					else {
 						if (event.type === "error") failed = true;
