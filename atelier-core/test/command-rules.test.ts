@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { commandRules, coveredBy, isValidCommandRule } from "../src/index.ts";
+import { commandRuleScope, commandRules, coveredBy, isValidCommandRule } from "../src/index.ts";
 
 describe("commandRules", () => {
-	const DERIVED: [string, string[], boolean][] = [
+	const DERIVED: [string, string[], boolean, "project"?][] = [
 		["ego-browser nodejs <<EOF\nawait page.goto('https://google.com')\nEOF", ["ego-browser nodejs"], true],
 		["mkdir -p x && ego-browser nodejs <<'EOF'\nconsole.log(1)\nEOF", ["mkdir", "ego-browser nodejs"], true],
 		["open file.png", ["open"], true],
-		["npm install foo", ["npm install"], true],
+		["npm install foo", ["npm install"], false, "project"],
 		["node script.js", ["node"], false],
-		["npm test 2>&1 | tail -5", ["npm test", "tail"], true],
+		["npm test 2>&1 | tail -5", ["npm test", "tail"], false, "project"],
 		["(cd sub; open a.png)", ["cd sub", "open"], true],
 		["open a.png; open b.png", ["open"], true],
 		["/usr/bin/open a.png", ["/usr/bin/open"], true],
@@ -22,7 +22,7 @@ describe("commandRules", () => {
 		["npx prettier .", ["npx prettier"], false],
 		["pnpm dlx create-vite", ["pnpm dlx"], false],
 		["pnpm exec vitest", ["pnpm exec"], false],
-		["pnpm install", ["pnpm install"], true],
+		["pnpm install", ["pnpm install"], false, "project"],
 		["yarn dlx foo", ["yarn dlx"], false],
 		["pipx run black", ["pipx run"], false],
 		["uvx ruff", ["uvx ruff"], false],
@@ -30,18 +30,27 @@ describe("commandRules", () => {
 		["nohup timeout 5 deno run x.ts", ["deno run"], false],
 		["time osascript -e 'x'", ["osascript"], false],
 		["ls | xargs rm", ["ls", "rm"], true],
-		["pnpm -r build", ["pnpm"], true],
+		["pnpm -r build", ["pnpm"], false, "project"],
 		["pnpm -C . dlx foo", ["pnpm dlx"], false],
 		["pnpm --filter x exec foo", ["pnpm exec"], false],
 		["npm --prefix . exec foo", ["npm exec"], false],
 		["yarn --cwd x dlx foo", ["yarn dlx"], false],
 		["pipx --quiet run foo", ["pipx run"], false],
 		["uv --quiet run x.py", ["uv run"], false],
-		["npm test 2>&1 >/dev/null", ["npm test"], true],
+		["npm test 2>&1 >/dev/null", ["npm test"], false, "project"],
 		["ego-browser nodejs < script.js", ["ego-browser nodejs"], true],
+		["make", ["make"], false, "project"],
+		["make -j4 test", ["make"], false, "project"],
+		["yarn build", ["yarn build"], false, "project"],
+		["cargo test", ["cargo test"], false, "project"],
+		["/opt/homebrew/bin/npm ci", ["/opt/homebrew/bin/npm ci"], false, "project"],
+		["./gradlew build", ["./gradlew build"], false, "project"],
+		["bin/dev", ["bin/dev"], false, "project"],
+		["mkdir -p x && pnpm install", ["mkdir", "pnpm install"], false, "project"],
+		["pnpm install && npx foo", ["pnpm install", "npx foo"], false],
 	];
-	it.each(DERIVED)("%s", (command, rules, always) => {
-		expect(commandRules(command)).toEqual({ rules, always });
+	it.each(DERIVED)("%s", (command, rules, always, project) => {
+		expect(commandRules(command)).toEqual({ rules, always, ...(project === undefined ? {} : { project: true }) });
 	});
 
 	const NEVER: string[] = [
@@ -163,7 +172,7 @@ describe("coveredBy", () => {
 });
 
 describe("isValidCommandRule", () => {
-	it.each(["open", "ego-browser nodejs", "npm install", "/usr/bin/open"])("accepts %s", (rule) => {
+	it.each(["open", "ego-browser nodejs", "/usr/bin/open"])("accepts %s", (rule) => {
 		expect(isValidCommandRule(rule, { always: true })).toBe(true);
 	});
 	it.each(["", " open", "open  x", "npm install foo", "open\n", "$X", "op*n"])("refuses %j", (rule) => {
@@ -174,6 +183,63 @@ describe("isValidCommandRule", () => {
 			expect(isValidCommandRule(rule, { always: true })).toBe(false);
 			expect(isValidCommandRule(rule, { always: false })).toBe(true);
 		}
+	});
+});
+
+describe("commandRuleScope", () => {
+	it.each([
+		["open", "always"],
+		["ego-browser nodejs", "always"],
+		["npm install", "project"],
+		["npm", "project"],
+		["pnpm", "project"],
+		["make", "project"],
+		["./gradlew", "project"],
+		["scripts/build.sh", "project"],
+		["node", "session"],
+		["pnpm dlx", "session"],
+		["julia", "session"],
+		["op*n", undefined],
+		["eval", undefined],
+	] as const)("%s may be kept %s", (rule, scope) => {
+		expect(commandRuleScope(rule)).toBe(scope);
+	});
+
+	it("never allows a project program always", () => {
+		expect(isValidCommandRule("npm install", { always: true })).toBe(false);
+		expect(isValidCommandRule("npm install", { always: false })).toBe(true);
+	});
+});
+
+describe("coveredBy with project rules", () => {
+	it("covers by a project rule as by any other", () => {
+		expect(coveredBy("pnpm install", [], ["pnpm install"])).toBe(true);
+		expect(coveredBy("pnpm -r build", [], ["pnpm"])).toBe(true);
+		expect(coveredBy("mkdir x && pnpm install", ["mkdir"], ["pnpm install"])).toBe(true);
+		expect(coveredBy("pnpm install src/lib", [], ["pnpm install"])).toBe(true);
+		expect(coveredBy("pnpm dlx evil", [], ["pnpm"])).toBe(false);
+	});
+
+	it.each([
+		"cd ../other && pnpm install",
+		"pushd /tmp/x; pnpm install",
+		"pnpm install; popd",
+		"pnpm -C /other install",
+		"pnpm -C/other install",
+		"pnpm --dir=/other install",
+		"npm --prefix ~/other install",
+		"make -C ../other",
+		"make --directory=../other",
+		"pnpm install ../lib",
+		"../other/gradlew build",
+	])("never covers %s by a project rule: it can leave the project", (command) => {
+		expect(
+			coveredBy(command, ["cd", "pushd", "popd"], ["pnpm", "pnpm install", "npm", "make", "../other/gradlew"]),
+		).toBe(false);
+	});
+
+	it("still covers such a line by a session rule", () => {
+		expect(coveredBy("pnpm -C /other install", ["pnpm"])).toBe(true);
 	});
 });
 

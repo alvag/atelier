@@ -1,0 +1,54 @@
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { beforeEach, describe, expect, it } from "vitest";
+import { projectRoot } from "../src/index.ts";
+
+let root: string;
+
+beforeEach(async () => {
+	root = await realpath(await mkdtemp(join(tmpdir(), "atelier-project-root-")));
+});
+
+const git = (cwd: string, ...args: string[]) =>
+	execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "pipe" });
+
+describe("projectRoot", () => {
+	it("is the folder itself outside git", async () => {
+		await mkdir(join(root, "notes"));
+		expect(await projectRoot(join(root, "notes"))).toBe(join(root, "notes"));
+	});
+
+	it("is the checkout's root from a subfolder", async () => {
+		await mkdir(join(root, "app", ".git"), { recursive: true });
+		await mkdir(join(root, "app", "src", "lib"), { recursive: true });
+		expect(await projectRoot(join(root, "app", "src", "lib"))).toBe(join(root, "app"));
+	});
+
+	it("is the real path, through a symbolic link", async () => {
+		await mkdir(join(root, "app", ".git"), { recursive: true });
+		await symlink(join(root, "app"), join(root, "link"));
+		expect(await projectRoot(join(root, "link"))).toBe(join(root, "app"));
+	});
+
+	it("is the main checkout for a linked worktree", async () => {
+		const main = join(root, "main");
+		await mkdir(main);
+		git(main, "init", "-q");
+		git(main, "commit", "-q", "--allow-empty", "-m", "x");
+		git(main, "worktree", "add", "-q", join(root, "wt"));
+		await mkdir(join(root, "wt", "sub"));
+		expect(await projectRoot(join(root, "wt", "sub"))).toBe(main);
+	});
+
+	it("is a submodule's own folder, and the folder holding a .git file it cannot follow", async () => {
+		await mkdir(join(root, "app", ".git", "modules", "lib"), { recursive: true });
+		await mkdir(join(root, "app", "lib"), { recursive: true });
+		await writeFile(join(root, "app", "lib", ".git"), "gitdir: ../.git/modules/lib\n");
+		expect(await projectRoot(join(root, "app", "lib"))).toBe(join(root, "app", "lib"));
+		await mkdir(join(root, "odd"));
+		await writeFile(join(root, "odd", ".git"), "nothing here");
+		expect(await projectRoot(join(root, "odd"))).toBe(join(root, "odd"));
+	});
+});

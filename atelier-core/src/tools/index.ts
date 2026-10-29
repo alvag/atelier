@@ -8,7 +8,13 @@ import { webSearchTool } from "./web-search.ts";
 import { writeTool } from "./write.ts";
 
 export { type BashOptions, bashTool, createBashTool, DEFAULT_TIMEOUT_SEC } from "./bash.ts";
-export { type CommandRules, commandRules, coveredBy, isValidCommandRule } from "./command-rules.ts";
+export {
+	type CommandRules,
+	commandRuleScope,
+	commandRules,
+	coveredBy,
+	isValidCommandRule,
+} from "./command-rules.ts";
 export { createEditTool, type EditOptions, editTool } from "./edit.ts";
 export { createGrepTool, grepTool, openGrepTool } from "./grep.ts";
 export { MAX_WRITE_BYTES } from "./limits.ts";
