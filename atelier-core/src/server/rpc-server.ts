@@ -132,6 +132,8 @@ interface StartRequest {
 	mode?: PermissionMode | undefined;
 	/** The session is not saved. */
 	noSession?: boolean | undefined;
+	/** The client answers `ask_user` questions (`session.answer_user`). */
+	userQuestions?: boolean | undefined;
 	/** Starts from this saved session and goes on writing its file. */
 	resumed?: { loaded: LoadedSession; store: SessionStore } | undefined;
 }
@@ -268,6 +270,7 @@ export class RpcServer {
 					profile: message.profile,
 					mode: message.mode,
 					noSession: message.noSession === true,
+					userQuestions: message.userQuestions === true,
 				});
 				return {
 					sessionId: started.sessionId,
@@ -280,7 +283,7 @@ export class RpcServer {
 					sessions: JSON.parse(JSON.stringify(await store.list(message.cwd))) as JsonValue[],
 				}));
 			case "session.resume":
-				return this.#resume(message.cwd, message.sessionId);
+				return this.#resume(message.cwd, message.sessionId, message.userQuestions === true);
 			case "session.rename":
 				return this.#saved(async (store) => {
 					await store.rename(message.cwd, message.sessionId, message.name);
@@ -404,6 +407,16 @@ export class RpcServer {
 				if (!answer) throw new CommandError("unknown_approval", `No pending approval ${message.callId}.`);
 				entry.approvals.delete(message.callId);
 				answer(message.approved && message.remember !== undefined ? { remember: message.remember } : message.approved);
+				return {};
+			}
+			case "session.answer_user": {
+				const { session } = this.#session(message.sessionId);
+				try {
+					session.answerUser(message.callId, message.answers);
+				} catch (error) {
+					if (error instanceof ConfigureError) throw new CommandError(error.code, error.message);
+					throw error;
+				}
 				return {};
 			}
 			case "session.permissions":
@@ -618,12 +631,13 @@ export class RpcServer {
 	}
 
 	/** Starts a session from a saved one and answers what a client needs to show it again. */
-	async #resume(cwd: string, savedId: string): Promise<Result> {
+	async #resume(cwd: string, savedId: string, userQuestions: boolean): Promise<Result> {
 		return this.#saved(async (store) => {
 			const loaded = await store.load(cwd, savedId);
 			const started = await this.#start({
 				cwd,
 				noSandbox: this.#options.noSandbox === true,
+				userQuestions,
 				resumed: { loaded, store },
 			});
 			return {
@@ -738,6 +752,7 @@ export class RpcServer {
 				...(saved?.yoloTold === undefined ? {} : { resumedYoloTold: saved.yoloTold }),
 				...(recorder === undefined ? {} : { record: recorder }),
 				tools: this.#options.tools,
+				...(request.userQuestions ? { userQuestions: true } : {}),
 				systemPromptAppend: this.#options.systemPromptAppend,
 				...(noSandbox ? { noSandbox: true } : {}),
 				approve: ({ callId }) => new Promise<ApprovalAnswer>((resolve) => approvals.set(callId, resolve)),

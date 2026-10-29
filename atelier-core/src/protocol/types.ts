@@ -3,6 +3,7 @@ import type { PermissionRuleScope } from "../permission-rules.ts";
 import type { ReviewConsentAnswer } from "../review/session-review.ts";
 import type { PermissionMode } from "../session.ts";
 import type { ThinkingLevel } from "../thinking.ts";
+import type { UserAnswer } from "../tools/ask-user.ts";
 
 /** Bumped on any incompatible change; sent first by the server in `hello`. */
 export const PROTOCOL_VERSION = 7;
@@ -45,6 +46,8 @@ export type ClientCommand =
 			profile?: string;
 			/** Does not save the session (the CLI's `--no-session`); without it the server saves it when it has a home directory. */
 			noSession?: boolean;
+			/** Opts in to `ask_user` questions (`user_question_requested`, answered by `session.answer_user`); without it the tool is unavailable at once. */
+			userQuestions?: boolean;
 	  }
 	/** The profiles in `~/.atelier/profiles.json`, its `active`, and with `cwd`, the profile a session there would take without a choice. */
 	| { command: "profiles.list"; cwd?: string }
@@ -77,6 +80,12 @@ export type ClientCommand =
 	 * project?, ignored? }] }`; `project` names a project rule's project, `ignored` a saved rule no longer used.
 	 */
 	| { command: "session.permissions"; sessionId: string }
+	/**
+	 * Answers the `ask_user` batch `callId` of a session that opted in with `userQuestions`: one answer per question
+	 * (`optionId` or `other`), or `null` to cancel. Answers `{}`. Fails with `invalid_answer` (the question stays
+	 * pending) or `unknown_question` (answered, ended or never asked).
+	 */
+	| { command: "session.answer_user"; sessionId: string; callId: string; answers: UserAnswer[] | null }
 	/** Removes the rule whose `id` `session.permissions` gave as `ruleId`; answers the rules left, or fails with `unknown_rule`. */
 	| { command: "session.permissions_remove"; sessionId: string; ruleId: string }
 	/** Reviews the current uncommitted change at any risk, against HEAD or the git ref `ref` names; answers like session.send. */
@@ -135,7 +144,7 @@ export type ClientCommand =
 	 * `unsupported_version`, `corrupt`, `session_in_use` (this server already runs it) or `session_resume_failed`
 	 * (the backend could not resume, as when Claude Code lost the session); nothing is started then.
 	 */
-	| { command: "session.resume"; sessionId: string; cwd: string }
+	| { command: "session.resume"; sessionId: string; cwd: string; userQuestions?: boolean }
 	/** Names a saved session of the folder `cwd` (1 to 200 characters); appended to its file, never rewriting it. Answers `{}`. */
 	| { command: "session.rename"; sessionId: string; cwd: string; name: string }
 	/** Deletes a saved session's file; refused with `session_in_use` while this server runs it. Answers `{}`. */
