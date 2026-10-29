@@ -40,6 +40,7 @@ import {
 	recoveryNotice,
 	SESSION_SUMMARY_TYPE,
 	type SummaryOutcome,
+	summaryPreview,
 } from "./memory/index.ts";
 import type { PermissionMode } from "./modes.ts";
 import type { CompletedFeature } from "./odd/tracker.ts";
@@ -1829,11 +1830,17 @@ export class Session {
 			return "skipped";
 		}
 		try {
-			const { warning } = await memory.save({
+			const { id, warning } = await memory.save({
 				title: `Session summary: ${memory.project}, ${localDate(new Date())}`,
 				type: SESSION_SUMMARY_TYPE,
 				content: summary,
 				topicKey: this.#summaryKey,
+			});
+			this.#say({
+				type: "memory_summary_saved",
+				id,
+				preview: summaryPreview(summary),
+				...(warning === undefined ? {} : { warning }),
 			});
 			if (warning !== undefined)
 				this.#say(

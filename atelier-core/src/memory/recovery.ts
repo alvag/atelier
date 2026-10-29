@@ -1,3 +1,5 @@
+import { visibleText } from "../text.ts";
+
 /** How saving a compaction summary to memory ended: what the agent is told to do about it after the compaction. */
 export type SummaryOutcome = "saved" | "uncertain" | "failed" | "skipped";
 
@@ -29,4 +31,19 @@ function instruction(outcome: SummaryOutcome, key: string): string {
 		case "skipped":
 			return "The compaction summary was not saved to memory because it contains what looks like a credential; do not save it.";
 	}
+}
+
+/** The longest preview of a saved summary, in characters, the ellipsis included. */
+export const SUMMARY_PREVIEW_CHARS = 120;
+
+/**
+ * The summary's first line that says something, as plain text: hidden characters as markers, blanks as one space, cut
+ * with `…` past `SUMMARY_PREVIEW_CHARS`.
+ */
+export function summaryPreview(summary: string): string {
+	const line = summary.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
+	const plain = visibleText(line).text.replace(/\s+/g, " ").trim();
+	const chars = [...plain];
+	if (chars.length <= SUMMARY_PREVIEW_CHARS) return plain;
+	return `${chars.slice(0, SUMMARY_PREVIEW_CHARS - 1).join("")}…`;
 }

@@ -271,6 +271,10 @@ describe("Session.setBackend and memory", () => {
 				topicKey: expect.stringMatching(/^session\/.+\/summary$/),
 			},
 		]);
+		const events = await drain(session, "second");
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "memory_summary_saved", id: 1, preview: SUMMARY.split("\n")[0] }),
+		);
 		// The new backend's own compactions update the same entry.
 		next.startOptions?.compacted?.("## Goal\n- later");
 		await until(() => memory.saved.length === 2);
