@@ -7,6 +7,15 @@ import { webFetchTool } from "./web-fetch.ts";
 import { webSearchTool } from "./web-search.ts";
 import { writeTool } from "./write.ts";
 
+export {
+	ASK_USER_TOOL,
+	type AskUser,
+	createAskUserTool,
+	parseUserAnswers,
+	type UserAnswer,
+	type UserQuestion,
+	type UserQuestionResult,
+} from "./ask-user.ts";
 export { type BashOptions, bashTool, createBashTool, DEFAULT_TIMEOUT_SEC } from "./bash.ts";
 export {
 	type CommandRules,
