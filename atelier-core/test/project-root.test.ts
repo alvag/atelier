@@ -83,10 +83,7 @@ describe("projectRoot", () => {
 		["[core]\n\tbare = false\n[other]\n\tbare = true\n", false],
 		["[core]\n\tbare =\n", false],
 		["[core]\n\tbare = Off\n", false],
-		["[core.sub]\n\tbare = true\n", false],
-		['[core "x"]\n\tbare = true\n', false],
 		["[core]\n\tbare = true\n\tbare = false\n", false],
-		["[core]\n\t# bare = true\n", false],
 		["[core]\n\tbare = yes # a comment\n", true],
 		["[CORE]\n\tBare=On ; note\n", true],
 		["[core]\n\tbare\n", true],
@@ -115,6 +112,12 @@ describe("projectRoot", () => {
 		'[remote "origin]\n\turl = x\n[core]\n\tbare = false\n',
 		"[co re]\n\tbare = false\n",
 		'[core]\n\tbare = "false # not a comment"\n',
+		"",
+		"# only a comment\n",
+		"[core]\n\tfilemode = true\n",
+		"[core.sub]\n\tbare = true\n",
+		'[core "x"]\n\tbare = true\n',
+		"[core]\n\t# bare = true\n",
 		'[core]\n\tbare = " false "\n',
 		'[core]\n\tbare = " true "\n',
 	])(
@@ -164,6 +167,19 @@ describe("projectRoot", () => {
 		await symlink(join(root, "missing"), join(bare, "config"));
 		expect(await projectOf(join(bare, "sub"))).toEqual({ project: bare, checkout: bare });
 	});
+
+	it("does not wait on a config that is a pipe nobody writes: the folder is its own project", async () => {
+		const outer = join(root, "outer");
+		const bare = join(outer, "bare");
+		await mkdir(join(outer, ".git"), { recursive: true });
+		await mkdir(join(bare, "objects"), { recursive: true });
+		await mkdir(join(bare, "refs"));
+		await mkdir(join(bare, "sub"));
+		await writeFile(join(bare, "HEAD"), "ref: refs/heads/main\n");
+		execFileSync("mkfifo", [join(root, "fifo")]);
+		await symlink(join(root, "fifo"), join(bare, "config"));
+		expect(await projectOf(join(bare, "sub"))).toEqual({ project: bare, checkout: bare });
+	}, 3000);
 
 	it("goes on past a bare-looking folder whose config says with certainty it is not bare", async () => {
 		const outer = join(root, "outer");
