@@ -64,8 +64,9 @@ type Row = { line: string; target: "block" | Thought[] };
 
 /**
  * The calls the agent made between two of its texts, and its thinking among them, as one block: folded, the thinking
- * and a line that sums the calls up, `⎿ Ran 3 commands · read 1 file`, with every failure and what the sandbox blocked
- * under it; open, the thinking and each call's card in order. A click opens or folds the block, or the thinking under it.
+ * and a line that sums the calls up, `⎿ Ran 3 commands · read 1 file`, with each memory call's two lines, every failure
+ * and what the sandbox blocked under it; open, the thinking and each call's card in order. A memory call is never in
+ * the summary, since its own lines always show. A click opens or folds the block, or the thinking under it.
  */
 export class ActivityBlock implements Component {
 	readonly #steps: (ToolCard | Thought)[] = [];
@@ -135,7 +136,7 @@ export class ActivityBlock implements Component {
 
 	#rows(width: number): Row[] {
 		const paint = this.#paint;
-		const counted = this.#cards.filter((card) => !HIDDEN_TOOLS.has(card.tool));
+		const counted = this.#cards.filter((card) => !HIDDEN_TOOLS.has(card.tool) && !card.pinned);
 		const shown = this.#cards.filter((card) => !HIDDEN_TOOLS.has(card.tool) || card.failed);
 		const thoughts = this.#steps.filter(isThought);
 		const block = (line: string): Row => ({ line, target: "block" });
@@ -159,8 +160,10 @@ export class ActivityBlock implements Component {
 		if (running !== undefined) rows.push(block(truncateToWidth(this.#runningLine(running), width)));
 		else if (counted.length > 0)
 			rows.push(block(truncateToWidth(paint("dim", ` ⎿ ${activitySummary(counted)}`), width)));
+		for (const card of shown.filter((card) => card.pinned))
+			rows.push(...card.render(Math.max(1, width - 2), false).map((line) => block(`  ${line}`)));
 		const room = Math.max(1, width - 3);
-		for (const alert of shown.flatMap((card) => card.alerts()))
+		for (const alert of shown.filter((card) => !card.pinned).flatMap((card) => card.alerts()))
 			rows.push(...wrapTextWithAnsi(alert, room).map((part) => block(`   ${part}`)));
 		return rows;
 	}
@@ -182,7 +185,7 @@ export class ActivityBlock implements Component {
 	/** `⎿ ◐ bash pnpm test… (ran 2 commands)`: the call running now in the summary's place, and what is done so far. */
 	#runningLine(running: ToolCard): string {
 		const paint = this.#paint;
-		const done = this.#cards.filter((card) => !HIDDEN_TOOLS.has(card.tool) && !card.running);
+		const done = this.#cards.filter((card) => !HIDDEN_TOOLS.has(card.tool) && !card.pinned && !card.running);
 		const so = done.length === 0 ? "" : paint("dim", `  (${activitySummary(done).toLowerCase()})`);
 		return `${paint("dim", " ⎿")} ${paint("cyan", "◐")} ${running.current()}…${so}`;
 	}
