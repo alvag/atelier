@@ -4,6 +4,7 @@ import {
 	type AtelierEvent,
 	FakeBackend,
 	type FakeStep,
+	PermissionRules,
 	Session,
 	type SessionOptions,
 } from "../src/index.ts";
@@ -108,6 +109,35 @@ it.each(["interrupt", "close", "cancel"] as const)(
 		await session.close();
 	},
 );
+
+it("never registers a question after closing during a permission-rules read", async () => {
+	const permissionRules = new PermissionRules();
+	const empty = { bash: [], projectBash: [], paths: [] };
+	let release!: () => void;
+	const reading = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const current = vi
+		.spyOn(permissionRules, "current")
+		.mockResolvedValue(empty)
+		.mockResolvedValueOnce(empty)
+		.mockImplementationOnce(async () => {
+			await reading;
+			return empty;
+		});
+	const askUser = vi.fn<AskUser>().mockResolvedValue(answered);
+	const { session, backend, events, done } = await start({ permissionRules, askUser });
+	await until(() => events.some((event) => event.type === "tool_call_started") && current.mock.calls.length === 2);
+	await session.close();
+	release();
+	await done;
+	expect(events.filter((event) => event.type === "user_question_requested")).toHaveLength(0);
+	expect(askUser).not.toHaveBeenCalled();
+	expect(backend.toolResults[0]).toMatchObject({
+		ok: false,
+		output: JSON.stringify({ status: "cancelled", reason: "closed" }),
+	});
+});
 
 it("returns unavailable without an interactive channel", async () => {
 	const { session, backend, done } = await start();

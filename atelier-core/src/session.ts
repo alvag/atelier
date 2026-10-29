@@ -1438,7 +1438,7 @@ export class Session {
 	close(): Promise<void> {
 		if (!this.#closing) {
 			this.#closed = true;
-			this.#userQuestions.cancel({ status: "cancelled", reason: "closed" });
+			this.#userQuestions.close();
 			const scratch = this.#scratch;
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
 			this.#closing = Promise.resolve()
