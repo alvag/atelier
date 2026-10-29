@@ -101,6 +101,7 @@ export {
 	DynamicModelCatalog,
 	defaultCatalogSources,
 	modelRefreshEnabled,
+	modelRefreshOff,
 	readCatalog,
 } from "./model-catalog/index.ts";
 export {

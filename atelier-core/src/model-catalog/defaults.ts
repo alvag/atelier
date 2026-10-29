@@ -5,9 +5,19 @@ import { modelsDevSource } from "./models-dev.ts";
 import { anthropicModelsSource, codexModelsSource, openCodeGoModelsSource } from "./providers.ts";
 import type { CatalogSource } from "./store.ts";
 
-/** `ATELIER_MODEL_REFRESH=off`: the model lists come from the code and the cache, and nothing is asked. */
+/** The variable that keeps the catalog off the network, as it was set, or undefined when none does. */
+export function modelRefreshOff(env: Record<string, string | undefined>): string | undefined {
+	const offline = env.ATELIER_OFFLINE;
+	if (offline !== undefined && offline !== "" && offline !== "0") return `ATELIER_OFFLINE=${offline}`;
+	return env.ATELIER_MODEL_REFRESH === "off" ? "ATELIER_MODEL_REFRESH=off" : undefined;
+}
+
+/**
+ * `ATELIER_OFFLINE` (set, and not `0`) or `ATELIER_MODEL_REFRESH=off`: the model lists come from the code and the
+ * cache, and nothing is asked.
+ */
 export function modelRefreshEnabled(env: Record<string, string | undefined>): boolean {
-	return env.ATELIER_MODEL_REFRESH !== "off";
+	return modelRefreshOff(env) === undefined;
 }
 
 export interface CatalogSourcesOptions {

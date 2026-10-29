@@ -1,5 +1,5 @@
 export { currentModelData, useModelData } from "./current.ts";
-export { defaultCatalogSources, modelRefreshEnabled } from "./defaults.ts";
+export { defaultCatalogSources, modelRefreshEnabled, modelRefreshOff } from "./defaults.ts";
 export { type DynamicCatalogOptions, DynamicModelCatalog } from "./dynamic.ts";
 export {
 	CATALOG_BACKENDS,

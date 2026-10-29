@@ -23,7 +23,7 @@ The answers are kept in `~/.atelier/models.json`: each source's last answer and 
 
 When the core starts (`atelier`, the TUI, the desktop) it reads the cache, offers what it holds, and refreshes in the background, never holding up the start or a selector: each source whose answer is older than 6 hours is asked, models.dev with its etag (`If-None-Match`), each request within 4 seconds. A provider is asked only when you are signed in to it, as `/model` finds out: `ANTHROPIC_API_KEY` or `auth.json`, the Keychain asked only whether it holds a key (never for the key, so no Keychain dialog shows without you asking), `OPENCODE_API_KEY` or `auth.json`, the Codex sign-in in `auth.json`. A provider you are not signed in to is `skipped`: none of its credentials is read, and only that check runs again at the next start. Its credential is read only when its turn comes. An answer that fails, times out or is not a list leaves the cache as it was, and the source is asked again at the next refresh. A cache entry that makes no sense is dropped alone; a cache that cannot be read at all leaves the code's lists, and a new read does not hold up the lists of the last one. Two processes refreshing at once can lose one's answer, never the file. A session that already started keeps its model's window; the new lists show at the next `/model`.
 
-`ATELIER_MODEL_REFRESH=off` asks nothing: the lists come from the code and the cache. `ATELIER_LOGIN_CHECK=off` reads no credential for the catalog: only models.dev, which takes none, is asked.
+`ATELIER_MODEL_REFRESH=off` asks nothing: the lists come from the code and the cache. `ATELIER_OFFLINE` set to anything but `0` (`ATELIER_OFFLINE=1`) does the same. `ATELIER_LOGIN_CHECK=off` reads no credential for the catalog: only models.dev, which takes none, is asked.
 
 ## `atelier models`
 
@@ -39,7 +39,7 @@ openai-codex · the code's list
   ...
 ```
 
-`(new)` marks a model the code's list lacks. `atelier models --refresh` asks every source first, whatever the age of its answer, and says how each went (`Refreshed: models.dev changed, anthropic-api skipped, opencode-go unchanged, openai-codex changed.`; `skipped`: not signed in, nothing asked). Claude Code's list is refreshed by its sessions only. With `ATELIER_MODEL_REFRESH=off` it prints `ATELIER_MODEL_REFRESH=off: nothing was asked.` instead. It takes no other option; `--refresh` without `models` is a usage error.
+`(new)` marks a model the code's list lacks. `atelier models --refresh` asks every source first, whatever the age of its answer, and says how each went (`Refreshed: models.dev changed, anthropic-api skipped, opencode-go unchanged, openai-codex changed.`; `skipped`: not signed in, nothing asked). Claude Code's list is refreshed by its sessions only. With `ATELIER_MODEL_REFRESH=off` or `ATELIER_OFFLINE=1` it prints the variable and `: nothing was asked.` instead (`ATELIER_OFFLINE=1: nothing was asked.`). It takes no other option; `--refresh` without `models` is a usage error.
 
 ## What is sent where
 
