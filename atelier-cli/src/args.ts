@@ -287,8 +287,8 @@ function parse(argv: readonly string[]) {
 }
 
 /**
- * A model as `--model` and `/model` take it, read as profiles read one: `openai-codex/gpt-6-luna` names its backend
- * too; a name without one of their prefixes is taken as it is.
+ * A model as `--model` and `/model` take it. A name with a backend prefix, `openai-codex/gpt-6-luna`, is read as
+ * profiles read one and names its backend too; a name without one is taken as it is, unchecked.
  */
 export function readModel(value: string): ReturnType<typeof parseModel> {
 	const prefixed = PROFILE_BACKENDS.some((name) => value.startsWith(`${name}/`));

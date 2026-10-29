@@ -47,11 +47,11 @@ export const choicesOf = (values: readonly string[], now: string | undefined): C
  */
 export function modelChoices(
 	options: Options,
-	running: string | undefined,
+	sessionBackend: string | undefined,
 	model: string | undefined,
 ): Choice<string>[] {
 	const models = options.models ?? [];
-	const backend = BACKEND_NAMES.find((name) => name === running);
+	const backend = BACKEND_NAMES.find((name) => name === sessionBackend);
 	const inUse = model ?? options.backends.find((listed) => listed.name === backend)?.models[0];
 	const now = backend === undefined || inUse === undefined ? undefined : formatModel(backend, inUse);
 	const row = (provider: BackendName, name: string, ...notes: (string | undefined)[]) => {
