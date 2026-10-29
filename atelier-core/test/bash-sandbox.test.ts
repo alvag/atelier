@@ -333,6 +333,13 @@ describe.skipIf(!onMac)("the sandbox configuration files", () => {
 		expect(await readFile(join(home, ".atelier", "sandbox.json"), "utf8")).toBe("{}");
 	});
 
+	it("does not let a command create or replace the rules saved for projects", async () => {
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		const result = await run(`echo '{}' > ${home}/.atelier/project-permissions.json`);
+		expect(result.ok).toBe(false);
+		expect(await exists(join(home, ".atelier", "project-permissions.json"))).toBe(false);
+	});
+
 	it("keeps another tool's credential file unwritable inside an added directory", async () => {
 		await mkdir(join(home, ".codex"));
 		await writeFile(join(home, ".codex", "auth.json"), "TOY-CLI-CREDENTIAL\n");
@@ -831,6 +838,25 @@ describe.skipIf(!onMac)("the commands the user's rules cover", () => {
 		const linked = await run(`touch ${outside}/link/permissions.json`);
 		expect(linked.ok).toBe(false);
 		expect(await exists(join(home, ".atelier", "permissions.json"))).toBe(false);
+	});
+
+	it("never write the rules saved for projects, also when a project rule covers the command", async () => {
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		await symlink(join(home, ".atelier"), join(cwd, "settings"));
+		const tool = createBashTool({ sandbox });
+		const quoted = await tool.execute(
+			{ command: `touch ${home}/.ate""lier/project-permi""ssions.json` },
+			{ cwd, bashRules: ["touch"] },
+		);
+		expect(quoted.output).toContain("[ran outside the sandbox");
+		expect(quoted.ok).toBe(false);
+		const linked = await tool.execute(
+			{ command: `touch settings/project-permi""ssions.json` },
+			{ cwd, projectBashRules: ["touch"] },
+		);
+		expect(linked.output).toContain("[ran outside the sandbox");
+		expect(linked.ok).toBe(false);
+		expect(await exists(join(home, ".atelier", "project-permissions.json"))).toBe(false);
 	});
 
 	it("keep the main sandbox's protected writes: git hooks and config, shell start-up files, secrets", async () => {

@@ -63,6 +63,8 @@ describe("commandRules", () => {
 		"bash -c 'open x'",
 		"diff <(ls a) <(ls b)",
 		"cp x ~/.atelier/permissions.json",
+		"cp x ~/.atelier/project-permissions.json",
+		"cp x project-permissions.json",
 		"cp x $HOME/.ATELIER/x",
 		"ego-browser nodejs <<EOF\nrequire('fs').writeFileSync(process.env.HOME + '/.atelier/permissions.json', '')\nEOF",
 		"ego-browser nodejs <<EOF\n$(touch x)\nEOF",
