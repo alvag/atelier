@@ -1339,7 +1339,11 @@ export class Session {
 	/** Runs a call of the main agent; in a turn that answers a prompt, the steers queued so far go with its result. */
 	async #executeTool(call: ToolCall): Promise<ToolCallResult> {
 		// HEAD is read where the turn started before any command of the agent can move it; the backend got the prompt at once.
-		await this.#review?.turnStarted();
+		// An interrupt ends the wait, and a call of an interrupted turn does not run.
+		const signal = this.#abort?.signal;
+		const lookup = this.#review?.turnStarted();
+		if (lookup !== undefined) await untilAborted(lookup, signal);
+		if (signal?.aborted) return { ok: false, output: "Not run: the turn was interrupted." };
 		const result = await this.#runTool(call);
 		if (!this.#steerable || this.#abort?.signal.aborted) return result;
 		const steers = this.#queue.filter((message) => message.kind === "steer");
@@ -1930,6 +1934,18 @@ function refusal(event: AtelierEventBody): boolean {
 function answered(event: AtelierEventBody): boolean {
 	if (event.type === "turn_finished") return event.stopReason !== "error" && event.stopReason !== "interrupted";
 	return event.type === "text_delta" || event.type === "thinking_delta" || event.type === "tool_call_started";
+}
+
+/** Waits for `work`, which never rejects, or until `signal` aborts, whichever comes first. */
+function untilAborted(work: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+	if (signal === undefined) return work;
+	if (signal.aborted) return Promise.resolve();
+	let stop = () => {};
+	const aborted = new Promise<void>((resolve) => {
+		stop = resolve;
+		signal.addEventListener("abort", stop, { once: true });
+	});
+	return Promise.race([work, aborted]).finally(() => signal.removeEventListener("abort", stop));
 }
 
 /** How steers reach the model with a tool result: as the user's words, apart from the tool's output. */
