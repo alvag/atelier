@@ -138,6 +138,28 @@ for (const [name, useRipgrep] of [
 			);
 		});
 
+		it("keeps adjacent matching lines as trailing context at the limit", async () => {
+			await writeFile(join(cwd, "adjacent.txt"), "before\nHIT one\nHIT two\nafter\n");
+			const result = await grep.execute({ pattern: "HIT", path: "adjacent.txt", context: 1, limit: 1 }, ctx);
+			expect(result.output).toContain("adjacent.txt-3-HIT two");
+			expect(result.summary).toBe("HIT: 1+ matches");
+		});
+
+		it("keeps the whole trailing context at the limit, also when the file ends inside it", async () => {
+			await writeFile(join(cwd, "tail.txt"), "HIT one\nHIT two\nmiddle\nlast\n");
+			const result = await grep.execute({ pattern: "HIT", path: "tail.txt", context: 2, limit: 1 }, ctx);
+			expect(result.output).toBe(
+				[
+					"tail.txt:1:HIT one",
+					"tail.txt-2-HIT two",
+					"tail.txt-3-middle",
+					"",
+					"[Showing the first 1 matches. Narrow the pattern, path or glob, or call grep again with limit: 2.]",
+				].join("\n"),
+			);
+			expect(result).toMatchObject({ truncated: true, summary: "HIT: 1+ matches" });
+		});
+
 		it("refuses a limit or context out of range", async () => {
 			for (const input of [{ limit: 0 }, { limit: 1001 }, { context: -1 }, { context: 21 }])
 				await expect(grep.execute({ pattern: "hit", ...input }, ctx), JSON.stringify(input)).rejects.toThrow();
