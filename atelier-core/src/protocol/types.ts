@@ -48,6 +48,8 @@ export type ClientCommand =
 			noSession?: boolean;
 			/** Opts in to `ask_user` questions (`user_question_requested`, answered by `session.answer_user`); without it the tool is unavailable at once. */
 			userQuestions?: boolean;
+			/** Opts in to `session_event` messages, events outside any turn; without it they go first in the next turn. */
+			sessionEvents?: boolean;
 	  }
 	/** The profiles in `~/.atelier/profiles.json`, its `active`, and with `cwd`, the profile a session there would take without a choice. */
 	| { command: "profiles.list"; cwd?: string }
@@ -144,7 +146,7 @@ export type ClientCommand =
 	 * `unsupported_version`, `corrupt`, `session_in_use` (this server already runs it) or `session_resume_failed`
 	 * (the backend could not resume, as when Claude Code lost the session); nothing is started then.
 	 */
-	| { command: "session.resume"; sessionId: string; cwd: string; userQuestions?: boolean }
+	| { command: "session.resume"; sessionId: string; cwd: string; userQuestions?: boolean; sessionEvents?: boolean }
 	/** Names a saved session of the folder `cwd` (1 to 200 characters); appended to its file, never rewriting it. Answers `{}`. */
 	| { command: "session.rename"; sessionId: string; cwd: string; name: string }
 	/** Deletes a saved session's file; refused with `session_in_use` while this server runs it. Answers `{}`. */
@@ -178,7 +180,9 @@ export type ServerMessage =
 	| { type: "event"; sessionId: string; event: AtelierEvent }
 	/**
 	 * An event outside any turn, which starts none: the end of a background job after a turn that was interrupted or
-	 * failed (`job_finished`, its notice waiting for the next prompt). No `seq` or `turnId`.
+	 * failed (`job_finished`, its notice waiting for the next prompt). No `seq` or `turnId`. Sent only to a session
+	 * whose `session.start` or `session.resume` asked for it with `sessionEvents`; other clients get the event first in
+	 * the next turn, as before.
 	 */
 	| { type: "session_event"; sessionId: string; event: AtelierEventBody }
 	/** A line the server could not attribute to any command. */

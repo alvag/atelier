@@ -163,6 +163,8 @@ export function useChat(bridge: AtelierBridge): Chat {
 			const result = await request({
 				command: "session.start",
 				cwd,
+				// The desktop shows a job's end outside any turn (`session_event`).
+				sessionEvents: true,
 				...(model ? { model } : {}),
 				backend,
 				userQuestions: true,

@@ -1223,8 +1223,8 @@ describe("TUI", { timeout: 20_000 }, () => {
 		await until(() => h.screen.screen().includes("── new session ──"));
 		const starts = h.core.commands.filter((command) => command.command === "session.start");
 		expect(starts).toEqual([
-			{ command: "session.start", cwd, mode: "auto", userQuestions: true },
-			{ command: "session.start", cwd, mode: "auto", userQuestions: true },
+			{ command: "session.start", cwd, mode: "auto", userQuestions: true, sessionEvents: true },
+			{ command: "session.start", cwd, mode: "auto", userQuestions: true, sessionEvents: true },
 		]);
 		await until(() => h.backend.closed);
 
@@ -1236,7 +1236,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		await until(() => h.screen.screen().includes("── resumed session ──"));
 		await until(() => h.screen.screen().includes(": 1 turn"));
 		const resumed = h.core.commands.find((command) => command.command === "session.resume");
-		expect(resumed).toMatchObject({ command: "session.resume", cwd });
+		expect(resumed).toMatchObject({ command: "session.resume", cwd, sessionEvents: true });
 		// The session /new started is closed once the resumed one runs.
 		await until(() => h.core.commands.filter((command) => command.command === "session.close").length === 2);
 		h.screen.type("\x04");
@@ -1843,6 +1843,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			mode: "normal",
 			noSession: true,
 			userQuestions: true,
+			sessionEvents: true,
 		});
 		stub.held[0]?.reject(new Error("refused"));
 		await tick();
