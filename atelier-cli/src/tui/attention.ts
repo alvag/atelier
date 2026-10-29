@@ -15,6 +15,7 @@ const STOP_REPORTING_FOCUS = "\x1b[?1004l";
 const WAITING = {
 	permission: "Waiting for approval",
 	question: "Waiting for review consent",
+	user_question: "Waiting for your answer",
 } as const;
 
 /**

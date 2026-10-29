@@ -4,7 +4,7 @@ import { Attention } from "../src/tui/attention.ts";
 import { DEFAULT_NOTIFICATIONS } from "../src/tui/settings.ts";
 
 /** What a turn that stopped for `stopReason` is told as, through OSC 9. */
-function toldAs(stopReason: string): string[] {
+function toldAs(stopReason: string, waiting?: Parameters<Attention["waiting"]>[0]): string[] {
 	let written = "";
 	const terminal = {
 		write: (data: string) => {
@@ -15,13 +15,22 @@ function toldAs(stopReason: string): string[] {
 		{ ...DEFAULT_NOTIFICATIONS, via: "terminal", minSeconds: 0 },
 		{ terminal, cwd: "/work/proj", env: { TERM_PROGRAM: "ghostty" }, platform: "linux" },
 	);
-	attention.turnStarted();
-	attention.turnFinished(stopReason);
+	if (waiting) attention.waiting(waiting);
+	else {
+		attention.turnStarted();
+		attention.turnFinished(stopReason);
+	}
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: the notification's sequence is what is read
 	return [...written.matchAll(/\x1b\]9;Atelier · proj: ([^\x07]*)\x07/g)].map((match) => match[1] ?? "");
 }
 
 describe("Attention", () => {
+	it("distinguishes agent questions from approvals and review consent", () => {
+		expect(toldAs("", "user_question")).toEqual(["Waiting for your answer"]);
+		expect(toldAs("", "question")).toEqual(["Waiting for review consent"]);
+		expect(toldAs("", "permission")).toEqual(["Waiting for approval"]);
+	});
+
 	it("tells a turn that failed as failed, whatever the backend calls its failure", () => {
 		for (const stopReason of [
 			"error",

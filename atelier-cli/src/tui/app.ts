@@ -186,7 +186,7 @@ const asker = (event: AtelierEvent) =>
 		: ` (asked by ${event.agent === undefined ? "a subagent" : shown(event.agent).text})`;
 
 /** What a question of the core says to the terminal while it waits. */
-type Blocked = { kind: "permission" | "question"; message: string };
+type Blocked = { kind: "permission" | "question" | "user_question"; message: string };
 
 /** The question an approval asks, worded as the CLI's yes/no question. */
 function approvalQuestion(event: Extract<AtelierEvent, { type: "approval_requested" }>): {
@@ -551,7 +551,15 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const programStatus = new ProgramStatusReporter(options.terminal);
 	/** Tells the terminal, and Herdr when the TUI runs in one of its panes, what the TUI is doing. */
 	const reportState = (state: Parameters<ProgramStatusReporter["report"]>[0], blocked?: Blocked) => {
-		programStatus.report(state, blocked);
+		programStatus.report(
+			state,
+			blocked === undefined
+				? undefined
+				: {
+						kind: blocked.kind === "permission" ? "permission" : "question",
+						message: blocked.message,
+					},
+		);
 		herdr?.report(state, blocked);
 	};
 	/** Tells Herdr which session the TUI runs. */
@@ -639,7 +647,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			cancel: () => finish(null),
 			local: false,
 			userCallId: callId,
-			blocked: { kind: "question", message: "Questions from the agent" },
+			blocked: { kind: "user_question", message: "Questions from the agent" },
 		};
 		const finish = (answers: typeof given | null) => {
 			if (closed) return;
