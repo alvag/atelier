@@ -1,9 +1,10 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { isInsideSandbox } from "../src/tools/sandbox.ts";
 import {
 	type EndedJob,
 	JobRefusedError,
@@ -65,6 +66,56 @@ async function pidIn(file: string): Promise<number> {
 	});
 	return pid;
 }
+
+/**
+ * A script that starts a program in a session and process group of its own, the way `spawn(..., { detached: true })`
+ * does, writes its pid to `pidFile`, and then exits or stays. The program is `/bin/sleep` while the script stays: macOS
+ * hides its environment, so only its parent ties it to the job. Once the script exits it is a Node process, found by
+ * the job's mark in its environment.
+ */
+function escaper(dir: string, pidFile: string, stay: boolean): string {
+	const script = join(dir, `escaper-${stay ? "stay" : "exit"}.mjs`);
+	const program = stay
+		? `"/bin/sleep", ["300"]`
+		: `${JSON.stringify(process.execPath)}, ["-e", "setInterval(() => {}, 1000)"]`;
+	writeFileSync(
+		script,
+		[
+			`import { spawn } from "node:child_process";`,
+			`import { writeFileSync } from "node:fs";`,
+			`const child = spawn(${program}, { detached: true, stdio: "ignore" });`,
+			"child.unref();",
+			`writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+			stay ? "setInterval(() => {}, 1000);" : "",
+		].join("\n"),
+	);
+	return `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`;
+}
+
+/** A script that starts `command` as a job of its own registry and stays, for a test to kill it. */
+function starterScript(dir: string, command: string): string {
+	const script = join(dir, "starter.ts");
+	const jobsModule = fileURLToPath(new URL("../src/tools/jobs.ts", import.meta.url));
+	writeFileSync(
+		script,
+		[
+			`import { Jobs } from ${JSON.stringify(jobsModule)};`,
+			`const jobs = new Jobs({ scratchDir: ${JSON.stringify(dir)}, onEnded: () => {} });`,
+			`const command = ${JSON.stringify(command)};`,
+			`jobs.start({ command, run: { file: "bash", args: ["-c", command], cwd: ${JSON.stringify(dir)}, env: process.env } });`,
+		].join("\n"),
+	);
+	return script;
+}
+
+/** Whether a process runs, a zombie not counted: one killed is a zombie until its parent, or launchd, reaps it. */
+function running(pid: number): boolean {
+	const stat = spawnSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+	return stat !== "" && !stat.startsWith("Z");
+}
+
+/** Finding a process that left the job's group lists every process: `ps`, which a sandbox around the tests refuses. */
+const canListProcesses = process.platform !== "darwin" || !isInsideSandbox();
 
 describe("background jobs", () => {
 	it("notices the end of a job with its exit code, elapsed time, output tail and output file", async () => {
@@ -149,6 +200,60 @@ describe("background jobs", () => {
 		expect(jobs.running).toBe(0);
 	});
 
+	describe.skipIf(!canListProcesses)("a descendant that left the job's process group", () => {
+		it("is killed when the job is stopped", async () => {
+			const { dir, jobs, ended } = harness();
+			const pidFile = join(dir, "escaped.pid");
+			const job = jobs.start(plain(escaper(dir, pidFile, true), dir));
+			const escaped = await pidIn(pidFile);
+			await jobs.stop(job.id);
+			await until(() => !running(escaped));
+			expect(ended).toHaveLength(1);
+		});
+
+		it("is killed when the job's command ends", async () => {
+			const { dir, jobs, ended } = harness();
+			const pidFile = join(dir, "escaped.pid");
+			jobs.start(plain(escaper(dir, pidFile, false), dir));
+			const escaped = await pidIn(pidFile);
+			await until(() => ended.length === 1);
+			await until(() => !running(escaped));
+		});
+
+		it("is killed when the session closes", async () => {
+			const { dir, jobs } = harness();
+			const pidFile = join(dir, "escaped.pid");
+			jobs.start(plain(escaper(dir, pidFile, true), dir));
+			const escaped = await pidIn(pidFile);
+			await jobs.stopAll();
+			await until(() => !running(escaped));
+		});
+
+		it("is killed when the process that started the job dies", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "atelier-jobs-crash-"));
+			dirs.push(dir);
+			const pidFile = join(dir, "escaped.pid");
+			const starter = spawn(process.execPath, [starterScript(dir, escaper(dir, pidFile, true))], { stdio: "ignore" });
+			const escaped = await pidIn(pidFile);
+			starter.kill("SIGKILL");
+			await until(() => !running(escaped));
+		});
+	});
+
+	it("ends a job whose leftover cannot be found and still holds its output", async () => {
+		const { dir, jobs, ended } = harness();
+		// A child in a session of its own, with no environment, that keeps the output pipe open for 6 seconds.
+		jobs.start(
+			plain(
+				`perl -e 'use POSIX; if (fork() == 0) { setsid(); exec "/usr/bin/env", "-i", "/bin/sleep", "6" }'; exit 0`,
+				dir,
+			),
+		);
+		const started = Date.now();
+		while (ended.length === 0 && Date.now() - started < 5000) await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(ended[0]?.job).toMatchObject({ status: "exited", exitCode: 0 });
+	});
+
 	it("kills a job that ignores SIGTERM once the grace period ends", async () => {
 		const { dir, jobs, ended } = harness();
 		const ready = join(dir, "ready");
@@ -220,18 +325,9 @@ describe("background jobs", () => {
 		const dir = mkdtempSync(join(tmpdir(), "atelier-jobs-crash-"));
 		dirs.push(dir);
 		const pidFile = join(dir, "grandchild.pid");
-		const script = join(dir, "starter.ts");
-		const jobsModule = fileURLToPath(new URL("../src/tools/jobs.ts", import.meta.url));
-		writeFileSync(
-			script,
-			[
-				`import { Jobs } from ${JSON.stringify(jobsModule)};`,
-				`const jobs = new Jobs({ scratchDir: ${JSON.stringify(dir)}, onEnded: () => {} });`,
-				`const command = ${JSON.stringify(`sleep 300 & echo $! > ${pidFile}; wait`)};`,
-				`jobs.start({ command, run: { file: "bash", args: ["-c", command], cwd: ${JSON.stringify(dir)}, env: process.env } });`,
-			].join("\n"),
-		);
-		const starter = spawn(process.execPath, [script], { stdio: "ignore" });
+		const starter = spawn(process.execPath, [starterScript(dir, `sleep 300 & echo $! > ${pidFile}; wait`)], {
+			stdio: "ignore",
+		});
 		const grandchild = await pidIn(pidFile);
 		expect(alive(grandchild)).toBe(true);
 		starter.kill("SIGKILL");

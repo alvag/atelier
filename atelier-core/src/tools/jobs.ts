@@ -1,7 +1,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { closeSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { visibleText } from "../text.ts";
+import { JOB_MARK, SWEEP_SCRIPT, sweepJob } from "./job-sweep.ts";
 import { MAX_LINE_CHARS } from "./limits.ts";
 
 /** Jobs that may run at once in one session: an orchestrator watches several flows and their CI. */
@@ -20,11 +22,19 @@ const MAX_LABEL_CHARS = 80;
 const MAX_COMMAND_CHARS = 1000;
 
 /**
- * The job's process group leader. It starts a watcher that kills the whole group once the pipe from Atelier closes,
- * which happens when Atelier quits or dies, however it does; then it becomes the command. The command comes as
- * arguments (`"$@"`) and is never part of this text. Atelier never writes to the pipe, so `read` returns only at its end.
+ * The job's process group leader: `bash -c GUARDIAN atelier-job <node> <sweep script> <file> <args...>`. It starts a
+ * watcher, then becomes the command. The watcher waits for the pipe from Atelier to close, which happens when Atelier
+ * quits or dies, however it does; it then runs the sweep (`sweepJob`) on its own group and the job's mark, and last
+ * kills the whole group, itself included. The command comes as arguments (`"$@"`) and the mark from the environment:
+ * neither is ever part of this text. Atelier never writes to the pipe, so `read` returns only at its end.
  */
-const GUARDIAN = 'exec 3<&0; { read -r _ <&3; kill -KILL 0; } >/dev/null 2>&1 & exec 0</dev/null 3<&-; exec "$@"';
+const GUARDIAN = [
+	"exec 3<&0",
+	"node=$1 sweep=$2; shift 2",
+	`{ read -r _ <&3; "$node" "$sweep" "$$" "$${JOB_MARK}"; kill -KILL 0; } >/dev/null 2>&1 &`,
+	"exec 0</dev/null 3<&-",
+	'exec "$@"',
+].join("\n");
 
 /** A command ready to run: the program and arguments `bash` would spawn (the sandbox's wrapper included). */
 export interface PreparedRun {
@@ -94,6 +104,8 @@ interface Entry {
 	info: JobInfo;
 	startedAt: number;
 	child: ChildProcess;
+	/** The value of the job's JOB_MARK in the environment of each of its processes. */
+	mark: string;
 	sink: JobOutput;
 	/** The command exited (or never started): stopping it now changes nothing. */
 	exited: boolean;
@@ -131,9 +143,10 @@ export class Jobs {
 		const outputPath = join(this.#options.scratchDir, `job-${id}.log`);
 		const sink = new JobOutput(outputPath);
 		const { file, args, cwd, env } = request.run;
-		const child = spawn("/bin/bash", ["-c", GUARDIAN, "atelier-job", file, ...args], {
+		const mark = randomBytes(16).toString("hex");
+		const child = spawn("/bin/bash", ["-c", GUARDIAN, "atelier-job", process.execPath, SWEEP_SCRIPT, file, ...args], {
 			cwd,
-			env,
+			env: { ...env, [JOB_MARK]: mark },
 			detached: true,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
@@ -154,6 +167,7 @@ export class Jobs {
 			info,
 			startedAt: Date.now(),
 			child,
+			mark,
 			sink,
 			exited: false,
 			stopping: false,
@@ -169,7 +183,10 @@ export class Jobs {
 		return [...this.#entries.values()].map((entry) => this.#snapshot(entry));
 	}
 
-	/** Kills the job's whole process group, SIGTERM then SIGKILL; a stopped job sends no notice. */
+	/**
+	 * Kills the job's whole process tree, SIGTERM then SIGKILL; a stopped job sends no notice. The tree is taken before the
+	 * first signal, while every parent still ties its children to the job.
+	 */
 	async stop(id: string): Promise<StopResult> {
 		const entry = this.#entries.get(id);
 		if (!entry) return { outcome: "unknown", id };
@@ -178,6 +195,7 @@ export class Jobs {
 			return { outcome: "ended", job: this.#snapshot(entry) };
 		}
 		entry.stopping = true;
+		if (entry.child.pid !== undefined) await sweepJob(entry.child.pid, entry.mark, "SIGTERM").catch(() => {});
 		killGroup(entry.child, "SIGTERM");
 		const timer = setTimeout(() => killGroup(entry.child, "SIGKILL"), KILL_GRACE_MS);
 		await entry.done;
@@ -196,24 +214,30 @@ export class Jobs {
 		return { ...entry.info, durationMs };
 	}
 
-	/** Waits for the job to end, sweeps what it left in its group, and reports the end once. */
+	/** Waits for the job to end, kills everything it left, and reports the end once. */
 	async #watch(entry: Entry, request: JobRequest): Promise<void> {
 		const { child } = entry;
+		const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
 		const ended = await new Promise<{ code: number | null; signal: string | null; error?: string }>((resolve) => {
-			let exit: { code: number | null; signal: string | null } | undefined;
+			// Without a pid the command never started, and no close follows.
 			child.once("error", (error) => {
-				// Without a pid the command never started, and no close follows.
 				if (child.pid === undefined) resolve({ code: null, signal: null, error: error.message });
 			});
-			child.once("exit", (code, signal) => {
-				entry.exited = true;
-				exit = { code, signal };
-				// What the command left behind dies with it; this also closes the pipes it holds, so close can follow.
-				killGroup(child, "SIGKILL");
-			});
-			child.once("close", (code, signal) => resolve(exit ?? { code, signal }));
+			child.once("exit", (code, signal) => resolve({ code, signal }));
 		});
 		entry.exited = true;
+		if (ended.error === undefined && child.pid !== undefined) {
+			// What the command left behind dies with it, also what left its group; that closes the pipes they held.
+			killGroup(child, "SIGKILL");
+			// The sweep is best effort: whatever it meets, the job still ends.
+			await sweepJob(child.pid, entry.mark).catch(() => {});
+			// A process the sweep could not find may still hold the output pipes: the job ends without waiting for it.
+			let timer: NodeJS.Timeout | undefined;
+			await Promise.race([closed, new Promise((resolve) => (timer = setTimeout(resolve, KILL_GRACE_MS)))]);
+			clearTimeout(timer);
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+		}
 		child.stdin?.destroy();
 		entry.sink.close();
 		request.cleanup?.();
