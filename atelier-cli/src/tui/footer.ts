@@ -56,6 +56,9 @@ export const STATUS_ITEMS = [
 ] as const;
 export type StatusItem = (typeof STATUS_ITEMS)[number];
 
+/** Fullscreen keeps only live activity below the editor; session details live in the top bar. */
+export const FULLSCREEN_FOOTER_ITEMS: readonly StatusItem[] = ["mode", "sandbox", "phase", "task"];
+
 export const isStatusItem = (value: unknown): value is StatusItem => STATUS_ITEMS.some((item) => item === value);
 
 /** What the footer always showed, with the working folder and the branch after the model. */

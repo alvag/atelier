@@ -175,13 +175,15 @@ const plain = (text: string) =>
 /** A terminal that keeps what the TUI wrote, without its styles, and types keys into it. */
 function fakeTerminal(columns = 100) {
 	let onInput: ((data: string) => void) | undefined;
+	let onResize: (() => void) | undefined;
 	let written = "";
 	let stopped = false;
 	const statuses: ProgramStatus[] = [];
 	const titles: string[] = [];
 	const terminal: Terminal = {
-		start: (input) => {
+		start: (input, resize) => {
 			onInput = input;
+			onResize = resize;
 		},
 		stop: () => {
 			stopped = true;
@@ -190,7 +192,9 @@ function fakeTerminal(columns = 100) {
 		write: (data) => {
 			written += data;
 		},
-		columns,
+		get columns() {
+			return columns;
+		},
 		rows: 40,
 		kittyProtocolActive: false,
 		moveBy: () => {},
@@ -210,6 +214,18 @@ function fakeTerminal(columns = 100) {
 	return {
 		terminal,
 		screen: () => plain(written),
+		/** The latest full row writes in the alternate screen, rather than the history of incremental writes. */
+		frame: () => {
+			const rows: string[] = [];
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: the cursor moves delimit screen row writes
+			for (const match of written.matchAll(/\x1b\[(\d+);1H\x1b\[2K(.*?)(?=\x1b\[\d+;\d+H|$)/gs))
+				rows[Number(match[1]) - 1] = plain(match[2] ?? "").trimEnd();
+			return rows;
+		},
+		resize: (width: number) => {
+			columns = width;
+			onResize?.();
+		},
 		type: (data: string) => onInput?.(data),
 		/** Everything written, styles and terminal sequences included. */
 		raw: () => written,
@@ -280,7 +296,9 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(screen).toContain("❯ fix it");
 		expect(screen).toContain("Done now.");
 		expect(screen).toContain("⎿ Read 1 file");
-		expect(screen).toContain(`m · ${basename(cwd)} · profile default · auto · sandbox ✗ · $0.50`);
+		expect(h.screen.frame()[0]).toContain("m · profile default");
+		expect(h.screen.frame()[0]).toMatch(/\$0\.50$/);
+		expect(h.screen.frame().at(-1)).toBe(" auto · sandbox ✗ · exploring");
 		h.screen.type("/exit");
 		h.screen.type("\r");
 		expect(await code).toBe(0);
@@ -553,7 +571,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 			join(home, ".atelier", "settings.json"),
 			JSON.stringify({ kind: "atelier.settings", version: 1, tui: { statusLine: ["cost", "weather", "mode"] } }),
 		);
-		const code = run(["--no-session", "--mode", "auto"], h.io, () => h.backend);
+		const code = run(["--no-session", "--no-fullscreen", "--mode", "auto"], h.io, () => h.backend);
 		await until(h.screen.started);
 		h.screen.type("go");
 		h.screen.type("\r");
@@ -568,11 +586,11 @@ describe("TUI", { timeout: 20_000 }, () => {
 		await mkdir(join(cwd, ".git"));
 		await writeFile(join(cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
 		const code = run(["--no-session"], h.io, () => h.backend);
-		await until(() => h.screen.screen().includes(`${basename(cwd)} · main ·`));
+		await until(() => h.screen.screen().includes(`${basename(cwd)} main ·`));
 		await writeFile(join(cwd, ".git", "HEAD"), "ref: refs/heads/feat/next\n");
 		h.screen.type("switch");
 		h.screen.type("\r");
-		await until(() => h.screen.screen().includes(`${basename(cwd)} · feat/next ·`));
+		await until(() => h.screen.screen().includes(`${basename(cwd)} feat/next ·`));
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});
@@ -583,19 +601,17 @@ describe("TUI", { timeout: 20_000 }, () => {
 		const rows = (count: number, word: string) =>
 			Array.from({ length: count }, (_, i) => `${word} ${String(i + 1).padStart(2, "0")}`).join("\n\n");
 
-		it("takes the alternate screen with a header, and leaves the transcript in the terminal on exit", async () => {
+		it("fixes the session bar above the transcript without a header or version, and leaves only the transcript on exit", async () => {
 			const h = harness([
 				[{ event: started }, { event: { type: "text_delta", text: "Hello back." } }, { event: finished }],
 			]);
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("Atelier "));
+			await until(() => h.screen.frame()[0]?.includes("profile default") === true);
 			expect(h.screen.raw()).toContain(ALT_ON);
-			// The folder as far as the terminal's width goes: a long temporary directory is cut with an ellipsis.
-			const shownPath = h.screen.screen().match(/Atelier \S+ · (\S+)/)?.[1] ?? "";
-			const kept = shownPath.replace(/(?:\.\.\.|…)$/, "");
-			expect(kept.length).toBeGreaterThan(1);
-			if (kept === shownPath) expect(shownPath).toBe(cwd);
-			else expect(cwd.startsWith(kept)).toBe(true);
+			expect(h.screen.frame()[0]).toContain(basename(cwd));
+			expect(h.screen.frame()[0]).toContain("fake · profile default");
+			expect(h.screen.frame().at(-1)).toBe(" normal");
+			expect(h.screen.screen()).not.toContain("Atelier ");
 			h.screen.type("hello");
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("$0.50"));
@@ -603,21 +619,67 @@ describe("TUI", { timeout: 20_000 }, () => {
 			h.screen.type("\r");
 			expect(await code).toBe(0);
 			const after = plain(h.screen.raw().slice(h.screen.raw().lastIndexOf(ALT_OFF)));
-			expect(after).toContain("Atelier ");
+			expect(after).not.toContain("Atelier ");
+			expect(after).not.toContain("profile default");
+			expect(after).not.toContain("$0.50");
 			expect(after).toContain("❯ hello");
 			expect(after).toContain("Hello back.");
 			// The editor and the status line stay behind in the alternate screen.
 			expect(after).not.toContain("sandbox ✗");
 		});
 
-		it("shows the header in a terminal with Kitty images, such as Herdr or Warp", async () => {
+		it("shows the fixed bar in a terminal with Kitty images, such as Herdr or Warp", async () => {
 			vi.stubEnv("TERM_PROGRAM", "herdr");
 			resetCapabilitiesCache();
 			// Wide enough for the whole folder, however long the temporary directory is.
 			const h = harness([], { columns: cwd.length + 100 });
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("Atelier "));
-			expect(h.screen.screen()).toMatch(new RegExp(`Atelier \\S+ · \\S*${basename(cwd)}`));
+			await until(() => h.screen.frame()[0]?.includes("profile default") === true);
+			expect(h.screen.frame()[0]).toContain(`${cwd} · fake · profile default`);
+			expect(h.screen.screen()).not.toContain("Atelier ");
+			h.screen.type("\x04");
+			expect(await code).toBe(0);
+		});
+
+		it("splits custom status items without duplicating session data or showing the version", async () => {
+			const h = harness([
+				[
+					{ event: started },
+					{ event: { type: "phase_changed", phase: "implementing", source: "declared" } },
+					{ event: finished },
+				],
+			]);
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "settings.json"),
+				JSON.stringify({
+					kind: "atelier.settings",
+					version: 1,
+					tui: { statusLine: ["cost", "version", "phase", "model", "mode"] },
+				}),
+			);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("go");
+			h.screen.type("\r");
+			await until(() => h.screen.frame()[0]?.endsWith("$0.50") === true);
+			expect(h.screen.frame().at(-1)).toBe(" implementing · normal");
+			expect(h.screen.frame().filter((line) => line?.includes("profile default"))).toHaveLength(1);
+			expect(h.screen.screen()).not.toMatch(/Atelier |v\d+\.\d+\.\d+/);
+			h.screen.type("\x04");
+			expect(await code).toBe(0);
+		});
+
+		it("leaves no footer when the chosen items all belong to the fixed bar", async () => {
+			const h = harness([]);
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "settings.json"),
+				JSON.stringify({ kind: "atelier.settings", version: 1, tui: { statusLine: ["cost", "version"] } }),
+			);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.frame()[0]?.includes("profile default") === true);
+			expect(h.screen.frame().at(-1)).toMatch(/^─+$/);
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
 		});
@@ -659,6 +721,8 @@ describe("TUI", { timeout: 20_000 }, () => {
 			let mark = h.screen.raw().length;
 			for (let i = 0; i < 4; i++) h.screen.type("\x1b[5~");
 			await until(() => since(mark).includes("row 01"));
+			expect(h.screen.frame()[0]).toContain("m · profile default");
+			expect(h.screen.frame()[0]).toMatch(/\$0\.50$/);
 			mark = h.screen.raw().length;
 			for (let i = 0; i < 4; i++) h.screen.type("\x1b[6~");
 			await until(() => since(mark).includes("row 60"));
@@ -671,6 +735,8 @@ describe("TUI", { timeout: 20_000 }, () => {
 			h.screen.type("more");
 			h.screen.type("\r");
 			await until(() => since(mark).includes("$1.50"));
+			expect(h.screen.frame()[0]).toMatch(/\$1\.50$/);
+			expect(h.screen.frame().at(-1)).toBe(" normal · sandbox ✗");
 			expect(since(mark)).not.toContain("fresh answer");
 			mark = h.screen.raw().length;
 			for (let i = 0; i < 60; i++) h.screen.type("\x1b[<65;10;5M");
@@ -686,20 +752,20 @@ describe("TUI", { timeout: 20_000 }, () => {
 				if (text.includes("The core exited")) saidAt = h.screen.raw().length;
 			};
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("Atelier "));
+			await until(() => h.screen.frame()[0]?.includes("profile default") === true);
 			h.core.exit({ code: 1, signal: null, stderr: "boom" });
 			expect(await code).toBe(1);
 			expect(saidAt).toBeGreaterThan(h.screen.raw().lastIndexOf(ALT_OFF));
 		});
 
-		it("shows Atelier's version in the status line when it is chosen", async () => {
+		it("still shows Atelier's version in the status line outside fullscreen when chosen", async () => {
 			const h = harness([]);
 			await mkdir(join(home, ".atelier"));
 			await writeFile(
 				join(home, ".atelier", "settings.json"),
 				JSON.stringify({ kind: "atelier.settings", version: 1, tui: { statusLine: ["version", "mode"] } }),
 			);
-			const code = run(["--no-session"], h.io, () => h.backend);
+			const code = run(["--no-session", "--no-fullscreen"], h.io, () => h.backend);
 			await until(() => /v\d+\.\d+\.\d+\S* · normal/.test(h.screen.screen()));
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
@@ -804,17 +870,17 @@ describe("TUI", { timeout: 20_000 }, () => {
 		});
 
 		it("copies the text selected with the mouse to the clipboard", async () => {
-			const h = harness([]);
+			const h = harness([], { columns: cwd.length + 100 });
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("Atelier "));
-			// Pressed on the header's first column (the first row), dragged to its 40th and released.
+			await until(() => h.screen.frame()[0]?.includes(cwd) === true);
+			// Select the fixed bar's first 40 cells.
 			h.screen.type("\x1b[<0;1;1M");
 			h.screen.type("\x1b[<32;40;1M");
 			h.screen.type("\x1b[<0;40;1m");
 			await until(() => h.screen.raw().includes("\x1b]52;c;"));
 			// biome-ignore lint/suspicious/noControlCharactersInRegex: the clipboard sequence is what is read
 			const copied = /\x1b\]52;c;([A-Za-z0-9+/=]*)\x07/.exec(h.screen.raw())?.[1] ?? "";
-			expect(Buffer.from(copied, "base64").toString()).toContain("Atelier");
+			expect(Buffer.from(copied, "base64").toString()).toContain(cwd.slice(0, 15));
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
 		});
@@ -1177,7 +1243,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		h.screen.type("/effort high");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("effort: high from the next turn"));
-		expect(h.screen.screen()).toContain(`claude-sonnet-5-5 high · ${basename(cwd)} · profile default`);
+		expect(h.screen.screen()).toContain("claude-sonnet-5-5 high · profile default");
 		h.screen.type("go");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("$0.50"));
@@ -1190,7 +1256,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 		const h = harness([]);
 		const code = run(["--no-session", "--mode", "yolo"], h.io, () => h.backend);
 		await until(h.screen.started);
-		await until(() => h.screen.screen().includes("profile default · yolo"));
+		await until(() => h.screen.frame().at(-1)?.includes("yolo") === true);
 		h.screen.type("/mode");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("Permission mode"));
@@ -1485,6 +1551,34 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		return { link, log, emit };
 	}
 
+	it("updates the fixed bar's gauge, clears stale context, and keeps the right block on resize", async () => {
+		const h = harness([], { columns: 120 });
+		const stub = stubCore();
+		h.io.tui.connect = async () => stub.link;
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		stub.emit({ ...started, effort: "high", profile: { name: "claude", origin: "explicit", roles: {} } });
+		stub.emit({ ...finished, context: { tokens: 110_000, window: 1_000_000, compactAt: 983_616 } });
+		const right = "ctx ▰▱▱▱▱▱▱▱ 11% · 1M · $0.50";
+		await until(() => h.screen.frame()[0]?.endsWith(right) === true);
+		expect(h.screen.frame()[0]).toHaveLength(120);
+		h.screen.resize(80);
+		await until(() => h.screen.frame()[0]?.length === 80);
+		expect(h.screen.frame()[0]).toMatch(/ctx ▰▱▱▱▱▱▱▱ 11% · 1M · \$0\.50$/);
+		stub.emit({ type: "compaction_finished", ok: true });
+		await until(() => h.screen.frame()[0]?.includes("ctx ▱▱▱▱▱▱▱▱ ? · 1M") === true);
+		stub.emit({ type: "session_configured", backend: "fake", model: "other", permissionMode: "normal" });
+		await until(() => h.screen.frame()[0]?.includes("other high") === true);
+		expect(h.screen.frame()[0]).not.toContain("ctx");
+		stub.emit({ ...finished, context: { tokens: 20_000, window: 200_000, compactAt: 183_616 } });
+		await until(() => h.screen.frame()[0]?.includes("ctx ▰▱▱▱▱▱▱▱ 10% · 200k") === true);
+		stub.emit({ type: "session_configured", backend: "openai-codex", permissionMode: "normal" });
+		await until(() => h.screen.frame()[0]?.includes("openai-codex") === true);
+		expect(h.screen.frame()[0]).not.toContain("ctx");
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
 	it("shows the event's strings with markers for control characters", async () => {
 		const h = harness([]);
 		const stub = stubCore();
@@ -1725,7 +1819,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 	}
 
 	/** The mode the footer showed last. */
-	const footerMode = (screen: string) => [...screen.matchAll(/profile p · (normal|auto|yolo)/g)].at(-1)?.[1];
+	const footerMode = (screen: ReturnType<typeof fakeTerminal>) => screen.frame().at(-1)?.trim();
 	const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 	const outOfOrder: [string, [number, "fail" | "ok"][], string][] = [
@@ -1769,7 +1863,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = heldCore({ mode: "normal" });
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => footerMode(h.screen.screen()) === "normal");
+			await until(() => footerMode(h.screen) === "normal");
 			h.screen.type("\x1b[Z");
 			h.screen.type("\x1b[Z");
 			await until(() => stub.held.length === 2);
@@ -1784,7 +1878,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				else request?.reject(new Error("refused"));
 				await tick();
 			}
-			await until(() => footerMode(h.screen.screen()) === mode);
+			await until(() => footerMode(h.screen) === mode);
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
 		},
@@ -1831,7 +1925,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		const stub = heldCore({ mode: "yolo" });
 		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 		const code = run(["--no-session"], h.io, () => h.backend);
-		await until(() => footerMode(h.screen.screen()) === "yolo");
+		await until(() => footerMode(h.screen) === "yolo");
 		h.screen.type("\x1b[Z");
 		await until(() => stub.held.length === 1);
 		h.screen.type("/new");
@@ -1849,7 +1943,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		await tick();
 		h.screen.type("x");
 		await tick();
-		expect(footerMode(h.screen.screen())).toBe("normal");
+		expect(footerMode(h.screen)).toBe("normal");
 		h.screen.type("\x03");
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
@@ -1861,7 +1955,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 		const code = run(["--no-session"], h.io, () => h.backend);
 		await until(h.screen.started);
-		await until(() => h.screen.screen().includes(`opus medium · ${basename(cwd)} · profile cheap · normal`));
+		await until(() => h.screen.screen().includes("opus medium · profile cheap"));
 		const sent = (name: string) => stub.log.commands.filter((command) => command.command === name);
 
 		h.screen.type("/model");
@@ -1887,7 +1981,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		h.screen.type("\x1b[B");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("profile: fast from the next turn"));
-		expect(h.screen.screen()).toContain(`sonnet high · ${basename(cwd)} · profile fast · normal`);
+		expect(h.screen.screen()).toContain("sonnet high · profile fast");
 
 		// Esc closes a list without changing anything.
 		const mark = h.screen.raw().length;
@@ -2005,7 +2099,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			{ command: "session.set_backend", sessionId: "s1", backend: "openai-codex", model: "gpt-luna" },
 		]);
 		expect(h.screen.screen()).toContain("backend: openai-codex, model: gpt-luna from the next turn");
-		expect(h.screen.screen()).toContain(`gpt-luna medium · ${basename(cwd)} · profile cheap`);
+		expect(h.screen.screen()).toContain("gpt-luna medium · profile cheap");
 		expect(stub.log.commands.filter((command) => command.command === "session.set_model")).toEqual([]);
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
@@ -2390,6 +2484,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			stub.emit({ type: "tool_call_started", callId: "wide", tool: "ask_user", input: { questions } });
 			stub.emit({ type: "user_question_requested", callId: "wide", questions });
 			await until(() => h.screen.screen().includes("Other..."));
+			expect(h.screen.frame()[0]).toContain("profile cheap");
+			expect(h.screen.frame()[0]).not.toContain("Question");
 			const dialog = () => {
 				const screen = h.screen.screen();
 				const start = screen.lastIndexOf("┌");

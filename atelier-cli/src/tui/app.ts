@@ -66,6 +66,7 @@ import {
 import { FeaturePanel } from "./feature-panel.ts";
 import {
 	type FooterState,
+	FULLSCREEN_FOOTER_ITEMS,
 	footerAfter,
 	footerLine,
 	footerWithConfiguration,
@@ -73,7 +74,7 @@ import {
 	type StatusItem,
 } from "./footer.ts";
 import { readGitBranch } from "./git-branch.ts";
-import { Header, type HeaderState } from "./header.ts";
+import { Header, type HeaderState, StatusBar } from "./header.ts";
 import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
 import { ProgramStatusReporter } from "./program-status.ts";
@@ -267,7 +268,9 @@ class Footer implements Component {
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		return [footerLine({ ...this.state, ...this.place }, width, this.#paint, this.#items)];
+		return this.#items.length === 0
+			? []
+			: [footerLine({ ...this.state, ...this.place }, width, this.#paint, this.#items)];
 	}
 }
 
@@ -493,7 +496,10 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const fullscreen = settings.fullscreen && !args.noFullscreen;
 	const attention = new Attention(settings.notifications, { ...options, cwd: args.cwd });
 	const tui = createScreen(attention.watch(options.terminal, fullscreen), fullscreen, paint);
-	const footer = new Footer(paint, settings.statusLine);
+	const footer = new Footer(
+		paint,
+		fullscreen ? settings.statusLine.filter((item) => FULLSCREEN_FOOTER_ITEMS.includes(item)) : settings.statusLine,
+	);
 	const version = options.version === undefined ? {} : { version: options.version };
 	footer.place = { cwd: args.cwd, ...version };
 	/** Reads the branch again, without blocking: the agent may have changed it. Only the newest read is shown. */
@@ -522,9 +528,15 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			...(effort === undefined ? {} : { effort }),
 		};
 	};
-	// What scrolls, and what stays in the terminal on exit: the header, then each session's conversation.
+	const bar = new StatusBar(paint, () => ({
+		...footer.state,
+		...footer.place,
+		cwd: args.cwd,
+		...(options.home === undefined ? {} : { home: options.home }),
+	}));
+	// What scrolls and stays in the terminal on exit; fullscreen has no transcript header.
 	const document = new Container();
-	document.addChild(new Header(paint, headerState));
+	if (!fullscreen) document.addChild(new Header(paint, headerState));
 	document.addChild(transcript);
 	const status = new Container();
 	// The ODD feature's tasks, over the questions and the editor.
@@ -572,14 +584,19 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		(text) => paint("dim", text),
 		"working… (Esc to interrupt)",
 	);
-	mount(tui, document, [
-		{ component: status },
-		{ component: odd },
-		{ component: dialogs },
-		{ component: queue },
-		{ component: editor, editor: true, shown: () => !questionOpen() },
-		{ component: footer },
-	]);
+	mount(
+		tui,
+		document,
+		[
+			{ component: status },
+			{ component: odd },
+			{ component: dialogs },
+			{ component: queue },
+			{ component: editor, editor: true, shown: () => !questionOpen() },
+			{ component: footer },
+		],
+		fullscreen ? bar : undefined,
+	);
 	tui.setFocus(editor);
 
 	let busy = false;
