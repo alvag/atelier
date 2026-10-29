@@ -91,7 +91,7 @@ function harness(turns: FakeStep[][], options: { input?: boolean } = {}) {
 }
 
 /** A job that ends once the test creates the file `go`, saying `done`. */
-const waitsForGo = () => `while [ ! -f ${join(cwd, "go")} ]; do sleep 0.02; done; echo done`;
+const waitsForGo = () => `while [ ! -f ${join(cwd, "go")} ]; do sleep 0.1; done; echo done`;
 const go = () => writeFile(join(cwd, "go"), "");
 const startJob = (command: string): FakeStep => ({
 	toolCall: { tool: "bash_background", input: { command, label: "wait" }, callId: "c1" },
