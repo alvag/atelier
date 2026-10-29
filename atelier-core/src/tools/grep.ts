@@ -57,6 +57,8 @@ function runSearch(
 	scan: {
 		/** Stops after one match more than this, so the caller knows there are more. */
 		limit: number;
+		/** Context lines around each match; the ones after the last match within the limit are still read. */
+		context: number;
 		/** System grep prints `--` between context blocks and cannot be told not to; these lines are dropped. */
 		dropSeparators: boolean;
 		/** Only ripgrep prints binary-file notices; system grep skips binary files (`-I`), so its output has none. */
@@ -69,6 +71,9 @@ function runSearch(
 		const child = spawn(command, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
 		const hits: Hit[] = [];
 		let found = 0;
+		/** The match that reached the limit, and whether a line past its trailing context has come. */
+		let boundary: Hit | undefined;
+		let over = false;
 		let stopped: SearchResult["stopped"];
 		/** An error while reading the output; the search is stopped and fails with it. */
 		let failed: unknown;
@@ -89,7 +94,9 @@ function runSearch(
 			path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path.replace(/^\.\//, "");
 		const push = (hit: Hit) => {
 			hits.push(hit);
-			if (hit.match) found++;
+			if (boundary === undefined) {
+				if (hit.match && ++found === scan.limit) boundary = hit;
+			} else if (!trails(boundary, hit, scan.context)) over = true;
 		};
 		const add = (record: string, nul: number) => {
 			const path = toRelative(record.slice(0, nul));
@@ -137,7 +144,7 @@ function runSearch(
 				}
 				const notice = takeNotice(false);
 				if (notice) {
-					if (found > scan.limit) return stop("limit");
+					if (over) return stop("limit");
 					continue;
 				}
 				const nul = pending.indexOf("\0");
@@ -145,7 +152,7 @@ function runSearch(
 				if (end === -1) break;
 				add(pending.slice(0, end), nul);
 				pending = pending.slice(end + 1);
-				if (found > scan.limit) return stop("limit");
+				if (over) return stop("limit");
 			}
 		};
 		// An exception must not escape the stream callback, where nothing catches it and it ends the process.
@@ -295,26 +302,36 @@ function isReadable(path: string, root: string, secrets: readonly string[]): boo
 	}
 }
 
-/** The hits up to the `limit`-th match, with its context after it but not the context before the next match. */
-function cutAtLimit(hits: Hit[], limit: number, context: number): Hit[] {
+/** Whether `hit` is within the `context` lines after `match`, in the same file. */
+function trails(match: Hit, hit: Hit, context: number): boolean {
+	return (
+		hit.path === match.path && hit.line !== undefined && match.line !== undefined && hit.line <= match.line + context
+	);
+}
+
+/**
+ * The hits up to the `limit`-th match and the context after it, where a later match shows as a context
+ * line; `more` says whether there were matches past the limit.
+ */
+function cutAtLimit(hits: Hit[], limit: number, context: number): { hits: Hit[]; more: boolean } {
+	const kept: Hit[] = [];
 	let seen = 0;
-	const end = hits.findIndex((hit) => hit.match && ++seen > limit);
-	if (end === -1) return hits;
-	const kept = hits.slice(0, end);
 	let last: Hit | undefined;
-	for (const hit of kept) if (hit.match) last = hit;
-	const after = (hit: Hit) =>
-		last !== undefined &&
-		hit.path === last.path &&
-		hit.line !== undefined &&
-		last.line !== undefined &&
-		hit.line <= last.line + context;
-	while (kept.length > 0) {
-		const tail = kept[kept.length - 1] as Hit;
-		if (tail.match || after(tail)) break;
-		kept.pop();
+	for (const hit of hits) {
+		if (last === undefined) {
+			kept.push(hit);
+			if (hit.match && ++seen === limit) last = hit;
+		} else if (trails(last, hit, context)) {
+			kept.push(hit.match ? asContext(hit) : hit);
+		} else break;
 	}
-	return kept;
+	return { hits: kept, more: countMatches(hits) > limit };
+}
+
+/** A match shown as a context line: `path-N-text` instead of `path:N:text`. */
+function asContext(hit: Hit): Hit {
+	const prefix = `${hit.path}:${hit.line}:`;
+	return { ...hit, match: false, text: `${hit.path}-${hit.line}-${hit.text.slice(prefix.length)}` };
 }
 
 /** The output lines; with context, a `--` line separates blocks that are not consecutive lines of one file. */
@@ -403,7 +420,7 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 					(options.outside ? isReadable(match, root, secrets) : true) &&
 					(useRipgrep || (byGlob?.(globPath(match)) ?? true));
 				const flags = { ignoreCase: ignoreCase ?? false, literal: literal ?? false, context };
-				const scan = { limit, dropSeparators: !useRipgrep && context > 0, notices: useRipgrep };
+				const scan = { limit, context, dropSeparators: !useRipgrep && context > 0, notices: useRipgrep };
 				const result = useRipgrep
 					? await runSearch(
 							"rg",
@@ -429,15 +446,16 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 						);
 				if (result.stopped === "aborted") return failure("Search aborted.");
 
-				const limited = render(cutAtLimit(result.hits, limit, context), context);
+				const cut = cutAtLimit(result.hits, limit, context);
+				const limited = render(cut.hits, context);
 				let shown = takeHead(limited.map((line) => line.text)).lines;
 				// A cut right after a block leaves its `--` last.
 				if (shown.length < limited.length && limited[shown.length - 1]?.text === "--") shown = shown.slice(0, -1);
 				const matches = countMatches(limited.slice(0, shown.length));
 				const clipped = shown.length < limited.length;
-				const truncated = result.stopped !== undefined || clipped;
+				const truncated = result.stopped !== undefined || cut.more || clipped;
 				const notes: string[] = [];
-				if (result.stopped === "limit" || clipped) {
+				if (result.stopped === "limit" || cut.more || clipped) {
 					const next =
 						clipped || limit >= MAX_LIMIT ? "" : `, or call grep again with limit: ${Math.min(limit * 2, MAX_LIMIT)}`;
 					notes.push(`[Showing the first ${matches} matches. Narrow the pattern, path or glob${next}.]`);
