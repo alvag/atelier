@@ -126,6 +126,38 @@ describe("resolveProfile", () => {
 		]);
 	});
 
+	it("ignores a pin whose name is not valid, naming it, and goes on to the next layer", async () => {
+		await setProfiles(profiles);
+		await mkdir(join(repo, ".git", "atelier"));
+		await writeFile(join(repo, ".git", "atelier", "profile-pin.json"), pin("bad name"));
+		const resolved = await resolveProfile({ cwd: repo, home });
+		expect([resolved.origin, resolved.name]).toEqual(["active", "global"]);
+		expect(messages(resolved.reports)).toEqual(['"profile" is not a valid profile name ("bad name"), pin ignored']);
+	});
+
+	it("ignores the repository's declaration whose name is not valid, naming it, and goes on to the next layer", async () => {
+		await setProfiles(profiles);
+		await mkdir(join(repo, ".atelier"));
+		await writeFile(join(repo, ".atelier", "profile.json"), pin("bad name"));
+		const resolved = await resolveProfile({ cwd: repo, home });
+		expect([resolved.origin, resolved.name]).toEqual(["active", "global"]);
+		expect(messages(resolved.reports)).toEqual(['"profile" is not a valid profile name ("bad name"), pin ignored']);
+	});
+
+	it("reports a chosen name that is not valid and goes on to the next layer", async () => {
+		await setProfiles(profiles);
+		const resolved = await resolveProfile({ cwd: repo, home, choice: "bad name" });
+		expect([resolved.origin, resolved.name]).toEqual(["active", "global"]);
+		expect(messages(resolved.reports)).toEqual(['profile "bad name" is not a valid profile name, skipped']);
+	});
+
+	it("ignores the profiles of a name that is not valid, keeping the rest of the file", async () => {
+		await setProfiles({ active: "global", profiles: { ...profiles.profiles, "bad name": { worker: { model: "x" } } } });
+		const resolved = await resolveProfile({ cwd: repo, home });
+		expect([resolved.origin, resolved.name]).toEqual(["active", "global"]);
+		expect(messages(resolved.reports)).toEqual(['profile "bad name": invalid profile name, dropped']);
+	});
+
 	it("outside a git repository only the choice and the global active apply", async () => {
 		await setProfiles(profiles);
 		const plain = join(base, "plain");

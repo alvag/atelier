@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	formatModel,
+	isValidProfileName,
+	ProfileNameError,
 	type ProfilesFile,
 	parseModel,
 	parseProfiles,
@@ -109,13 +111,84 @@ describe("parseProfiles", () => {
 		if (!read.valid) throw new Error(read.reason);
 		expect(read.file.profiles.get("p")).toEqual({ worker: { thinking: "low" }, explorer: { thinking: "high" } });
 	});
+});
 
-	it("keeps a profile named like an object property as an ordinary profile", () => {
+describe("profile names", () => {
+	it("accepts names of letters, digits, dots, underscores and dashes, up to 64 characters", () => {
+		for (const name of ["a", "A", "0", "cheap", "my-profile", "my_profile", "my.profile", "a1._-", "x".repeat(64)]) {
+			expect(isValidProfileName(name)).toBe(true);
+		}
+	});
+
+	it("refuses empty names, names with spaces or other characters, and names longer than 64 characters", () => {
+		for (const name of ["", " ", "my profile", "my/profile", "_leading", "-leading", ".leading", "x".repeat(65)])
+			expect(isValidProfileName(name)).toBe(false);
+	});
+
+	it("refuses the names that collide with the members of an object", () => {
+		for (const name of ["__proto__", "constructor", "prototype"]) expect(isValidProfileName(name)).toBe(false);
+	});
+
+	it("refuses a name that is not a string", () => {
+		for (const value of [undefined, null, 5, {}, []]) expect(isValidProfileName(value)).toBe(false);
+	});
+
+	it("drops a profile whose name is not valid, naming the entry, and keeps the rest of the file", () => {
 		const read = parseProfiles(
-			'{"kind":"atelier.agent_model_profiles","version":1,"profiles":{"__proto__":{"worker":{"model":"m"}}}}',
+			file({
+				profiles: {
+					"bad name": { worker: { model: "m" } },
+					"": { worker: { model: "m" } },
+					good: { worker: { model: "m" } },
+				},
+			}),
 		);
 		if (!read.valid) throw new Error(read.reason);
-		expect(read.file.profiles.get("__proto__")).toEqual({ worker: { model: "m" } });
+		expect([...read.file.profiles.keys()]).toEqual(["good"]);
+		expect(messages(read.reports)).toEqual([
+			'profile "bad name": invalid profile name, dropped',
+			'profile "": invalid profile name, dropped',
+		]);
+	});
+
+	it("drops the names that collide with the members of an object, naming the entry", () => {
+		const read = parseProfiles(
+			'{"kind":"atelier.agent_model_profiles","version":1,"profiles":{"__proto__":{"worker":{"model":"m"}},"constructor":{},"prototype":{},"good":{}}}',
+		);
+		if (!read.valid) throw new Error(read.reason);
+		expect([...read.file.profiles.keys()]).toEqual(["good"]);
+		expect(messages(read.reports)).toEqual([
+			'profile "__proto__": invalid profile name, dropped',
+			'profile "constructor": invalid profile name, dropped',
+			'profile "prototype": invalid profile name, dropped',
+		]);
+	});
+
+	it("quotes the name of a dropped entry, so it cannot break the line it is read on", () => {
+		const read = parseProfiles(file({ profiles: { 'a "quoted"\nname': {} } }));
+		if (!read.valid) throw new Error(read.reason);
+		expect(messages(read.reports)).toEqual(['profile "a \\"quoted\\"\\nname": invalid profile name, dropped']);
+	});
+
+	it("echoes the invalid active value and ignores it", () => {
+		const read = parseProfiles(file({ active: "bad name", profiles: { good: {} } }));
+		if (!read.valid) throw new Error(read.reason);
+		expect(read.file.active).toBeUndefined();
+		expect(messages(read.reports)).toEqual(['"active" is not a valid profile name ("bad name"), ignored']);
+	});
+
+	it("echoes an active that is not a string, and ignores it", () => {
+		const read = parseProfiles(file({ active: 5, profiles: { good: {} } }));
+		if (!read.valid) throw new Error(read.reason);
+		expect(read.file.active).toBeUndefined();
+		expect(messages(read.reports)).toEqual(['"active" is not a profile name (5), ignored']);
+	});
+
+	it("keeps an active that is a valid name", () => {
+		const read = parseProfiles(file({ active: "good", profiles: { good: {} } }));
+		if (!read.valid) throw new Error(read.reason);
+		expect(read.file.active).toBe("good");
+		expect(read.reports).toEqual([]);
 	});
 });
 
@@ -140,6 +213,27 @@ describe("readProfiles and writeProfiles", () => {
 		const read = await readProfiles(home);
 		expect(read.valid && read.file).toEqual(written);
 		expect(await readdir(join(home, ".atelier"))).toEqual(["profiles.json"]);
+	});
+
+	it("refuses to write a profile whose name is not valid, and writes nothing", async () => {
+		const file: ProfilesFile = { profiles: new Map([["bad name", { worker: { model: "m" } }]]) };
+		await expect(writeProfiles(file, home)).rejects.toThrow(ProfileNameError);
+		await expect(writeProfiles(file, home)).rejects.toThrow('Invalid profile name "bad name"');
+		expect(await readdir(join(home, ".atelier"))).toEqual([]);
+	});
+
+	it("refuses to write the names that collide with the members of an object", async () => {
+		for (const name of ["__proto__", "constructor", "prototype"]) {
+			const file: ProfilesFile = { profiles: new Map([[name, { worker: { model: "m" } }]]) };
+			await expect(writeProfiles(file, home)).rejects.toThrow(ProfileNameError);
+		}
+		expect(await readdir(join(home, ".atelier"))).toEqual([]);
+	});
+
+	it("refuses to write an active that is not a valid name, and writes nothing", async () => {
+		const file: ProfilesFile = { active: "bad name", profiles: new Map([["good", {}]]) };
+		await expect(writeProfiles(file, home)).rejects.toThrow(ProfileNameError);
+		expect(await readdir(join(home, ".atelier"))).toEqual([]);
 	});
 });
 

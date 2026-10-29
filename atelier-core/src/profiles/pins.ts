@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ProfileReport } from "./profiles.ts";
+import { describeProfileName, isValidProfileName } from "./profiles.ts";
 
 const run = promisify(execFile);
 
@@ -48,6 +49,8 @@ export function parsePin(text: string, path: string): PinRead {
 	if (pin.kind !== PIN_KIND || pin.version !== PIN_VERSION)
 		return drop(`expected kind "${PIN_KIND}" and version ${PIN_VERSION}`);
 	if (typeof pin.profile !== "string" || pin.profile === "") return drop(`"profile" is not a profile name`);
+	if (!isValidProfileName(pin.profile))
+		return drop(`"profile" is not a valid profile name (${describeProfileName(pin.profile)})`);
 	return { profile: pin.profile, reports: [] };
 }
 

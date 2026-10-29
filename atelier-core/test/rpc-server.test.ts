@@ -868,6 +868,63 @@ describe("session.start profiles", () => {
 		}
 	});
 
+	it("refuses a profile name that is not valid, and lists only the names a profile may carry", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-rpc-home-"));
+		try {
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "profiles.json"),
+				JSON.stringify({
+					kind: "atelier.agent_model_profiles",
+					version: 1,
+					active: "p",
+					profiles: {
+						p: { orchestrator: { model: "anthropic-api/claude-opus-5-5" } },
+						"bad name": { orchestrator: { model: "anthropic-api/claude-opus-5-5" } },
+					},
+				}),
+			);
+			const input = new PassThrough();
+			const messages: ServerMessage[] = [];
+			const server = new RpcServer({
+				input,
+				write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
+				createBackend: () => new FakeBackend([]),
+				tools: [],
+				systemPromptAppend: "",
+				home,
+				pinPlaces: async () => ({}),
+			});
+			void server.run();
+			const command = async (id: string, body: object) => {
+				input.write(`${JSON.stringify({ type: "command", id, ...body })}\n`);
+				for (let i = 0; i < 200 && !messages.some((m) => m.type === "response" && m.id === id); i++)
+					await new Promise((resolve) => setTimeout(resolve, 5));
+				return messages.find((m) => m.type === "response" && m.id === id);
+			};
+			const started = await command("s", { command: "session.start", cwd });
+			expect(started).toMatchObject({ ok: true });
+			const sessionId = (started as unknown as { result: { sessionId: string } }).result.sessionId;
+			expect(await command("i", { command: "session.set_profile", sessionId, profile: "bad name" })).toMatchObject({
+				ok: false,
+				error: {
+					code: "invalid_profile_name",
+					message: expect.stringContaining('Invalid profile name "bad name"'),
+				},
+			});
+			expect(await command("u", { command: "session.set_profile", sessionId, profile: "gone" })).toMatchObject({
+				ok: false,
+				error: { code: "unknown_profile" },
+			});
+			expect(await command("l", { command: "profiles.list", cwd })).toMatchObject({
+				ok: true,
+				result: { profiles: ["p"] },
+			});
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
 	it("answers other commands while profiles.list waits for git", async () => {
 		let release: (places: PinPlaces) => void = () => {};
 		const lookup = new Promise<PinPlaces>((resolve) => {

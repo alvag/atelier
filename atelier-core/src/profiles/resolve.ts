@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
 import { type PinPlaces, pinPlaces, readPin } from "./pins.ts";
 import {
+	describeProfileName,
+	isValidProfileName,
 	type Profile,
 	type ProfileReport,
 	type ProfilesFile,
@@ -72,6 +74,14 @@ export async function resolveProfile({
 	];
 	for (const [origin, name, source] of layers) {
 		if (name === undefined) continue;
+		// A name that is not valid names no profile at all: it is said so and the layer is skipped.
+		if (!isValidProfileName(name)) {
+			reports.push({
+				path: source,
+				message: `profile ${describeProfileName(name)} is not a valid profile name, skipped`,
+			});
+			continue;
+		}
 		const profile = file.profiles.get(name);
 		if (profile !== undefined) return { name, origin, profile, reports };
 		reports.push({ path: source, message: `profile "${name}" does not exist, skipped` });
