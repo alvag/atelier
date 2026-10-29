@@ -1,3 +1,4 @@
+import { visibleText } from "@atelier/core";
 import {
 	type Component,
 	type Focusable,
@@ -16,10 +17,12 @@ export interface QuestionOption {
 	recommended?: boolean;
 }
 
-/** What the user did: picked the option at that index, chose to type their own answer, or cancelled. */
-export type QuestionAnswer = { option: number } | "other" | "cancel";
+/** What the user did: picked the option at that index, sent their own text, or cancelled. */
+export type QuestionAnswer = { option: number } | { other: string } | "cancel";
 
 const TYPE_SOMETHING = "Type something…";
+/** The longest text an `ask_user` answer of the user's own words may have. */
+const OTHER_MAX = 2000;
 const RECOMMENDED = "Recommended";
 /** `❯ 1. `, with the space before it: the columns before a label. */
 const LEAD = 6;
@@ -28,6 +31,31 @@ const DESCRIPTION_ROOM = 40;
 
 /** The hint's parts in the order they are dropped when it does not fit: the first goes first. */
 const dropOrder = ["enter select", "↑↓ move"];
+
+/** Whether `keys` are typed text: no control character, so no other key, is in them. */
+const isText = (keys: string) => characters(keys).every((char) => char >= " " && char !== "\x7f");
+
+/** Each character of `text` with its end in it, so the cursor moves by whole characters. */
+const characters = (text: string) => Array.from(text);
+
+/** `text` as shown, with the cursor at `at` (an index in `characters`): `before`, the cursor's character and `after`. */
+function shownAround(text: string, at: number): { before: string; under: string; after: string } {
+	const chars = characters(text);
+	const shown = (part: string[]) => visibleText(part.join("")).text;
+	return {
+		before: shown(chars.slice(0, at)),
+		under: shown(chars.slice(at, at + 1)) || " ",
+		after: shown(chars.slice(at + 1)),
+	};
+}
+
+/** The end of `text` that fits in `width` columns, after `…` when it is cut. */
+function tailFit(text: string, width: number): string {
+	if (visibleWidth(text) <= width) return text;
+	let chars = characters(text);
+	while (chars.length > 0 && visibleWidth(chars.join("")) > width - 1) chars = chars.slice(1);
+	return `…${chars.join("")}`;
+}
 
 /** The parts of `parts` that fit in `width`, joined, dropping the least needed first; cut as a last resort. */
 function fitHint(parts: readonly string[], width: number): string {
@@ -43,8 +71,11 @@ function fitHint(parts: readonly string[], width: number): string {
  * One `ask_user` question between two rules of the accent color: the question in bold, its options numbered with
  * `Recommended` as a dimmed tag and descriptions beside them when the width allows (under them otherwise), then
  * `Type something…` and a line saying the keys. Nothing is selected at first: Up or Down puts the `❯` cursor on a row
- * and Enter answers it; a number key answers its row at once. With `guardMs`, the keys that arrive that long after
- * `reveal()` are dropped, so a key typed before the question appeared does not answer it; pasted text answers nothing.
+ * and Enter answers it; a number key answers its row at once. On `Type something…` what is typed or pasted goes into
+ * the row itself, and Enter sends it as written when it is not blank and at most 2000 characters; the draft stays
+ * while the cursor is elsewhere. With `guardMs`, the keys that arrive that long after `reveal()` are dropped, so a key
+ * typed before the question appeared does not answer it; pasted text answers nothing, and a paste goes into the text
+ * only when it starts there.
  */
 export class QuestionDialog implements Component, Focusable {
 	focused = false;
@@ -59,6 +90,11 @@ export class QuestionDialog implements Component, Focusable {
 	/** The row of the cursor, none until a key puts it on one; the last row is `Type something…`. */
 	#cursor: number | undefined;
 	#answered = false;
+	/** What the user typed on `Type something…`, and where the text cursor is in it, in characters. */
+	#text = "";
+	#at = 0;
+	/** Why Enter sent nothing, said in the hint line until the next key. */
+	#problem = "";
 
 	constructor(
 		options: {
@@ -101,14 +137,62 @@ export class QuestionDialog implements Component, Focusable {
 		return this.#revealedAt !== undefined && Date.now() - this.#revealedAt < this.#guardMs;
 	}
 
+	/** Whether the cursor is on `Type something…`. */
+	get #typing(): boolean {
+		return this.#cursor === this.#options.length;
+	}
+
 	#choose(row: number): void {
 		this.#answered = true;
-		this.#answer(row < this.#options.length ? { option: row } : "other");
+		this.#answer({ option: row });
+	}
+
+	/** Sends the text typed, unless it is blank or too long: then the hint line says why. */
+	#send(): void {
+		if (this.#text.trim() === "") this.#problem = "Type an answer, or esc to cancel";
+		else if (this.#text.length > OTHER_MAX) this.#problem = `Too long: ${this.#text.length} of ${OTHER_MAX} characters`;
+		else {
+			this.#answered = true;
+			this.#answer({ other: this.#text });
+		}
+	}
+
+	#insert(text: string): void {
+		const chars = characters(this.#text);
+		const added = characters(text);
+		this.#text = [...chars.slice(0, this.#at), ...added, ...chars.slice(this.#at)].join("");
+		this.#at += added.length;
+	}
+
+	/** A key on `Type something…`: it edits the text; true when it was one. */
+	#edit(keys: string): boolean {
+		const chars = characters(this.#text);
+		if (matchesKey(keys, "left")) this.#at = Math.max(0, this.#at - 1);
+		else if (matchesKey(keys, "right")) this.#at = Math.min(chars.length, this.#at + 1);
+		else if (matchesKey(keys, "home")) this.#at = 0;
+		else if (matchesKey(keys, "end")) this.#at = chars.length;
+		else if (matchesKey(keys, "backspace")) {
+			if (this.#at === 0) return true;
+			this.#text = [...chars.slice(0, this.#at - 1), ...chars.slice(this.#at)].join("");
+			this.#at--;
+		} else if (matchesKey(keys, "delete"))
+			this.#text = [...chars.slice(0, this.#at), ...chars.slice(this.#at + 1)].join("");
+		// Typed text, a character or a burst of them; any other key is not text.
+		else if (isText(keys)) this.#insert(keys);
+		else return false;
+		return true;
 	}
 
 	handleInput(data: string): void {
+		if (this.#answered) return;
+		this.#paste.keeping = this.#typing;
 		const keys = this.#paste.feed(data);
-		if (this.#answered || keys === "" || this.#guarded()) return;
+		const pasted = this.#paste.takePasted();
+		if (this.#guarded()) return;
+		this.#problem = "";
+		// A paste goes into the text only when it started there, never into an option.
+		if (this.#typing) for (const text of pasted) this.#insert(text.replace(/\r\n?/g, "\n"));
+		if (keys === "") return;
 		if (matchesKey(keys, "escape")) {
 			this.#answered = true;
 			this.#answer("cancel");
@@ -125,15 +209,17 @@ export class QuestionDialog implements Component, Focusable {
 			return;
 		}
 		if (matchesKey(keys, "enter")) {
-			if (this.#cursor !== undefined) this.#choose(this.#cursor);
+			if (this.#typing) this.#send();
+			else if (this.#cursor !== undefined) this.#choose(this.#cursor);
 			return;
 		}
+		if (this.#typing && this.#edit(keys)) return;
 		if (/^[1-9]$/.test(keys)) {
 			const row = Number(keys) - 1;
-			if (row < this.#rows) {
-				this.#cursor = row;
-				this.#choose(row);
-			}
+			if (row >= this.#rows) return;
+			this.#cursor = row;
+			// A number on Type something puts the cursor there, to type.
+			if (row < this.#options.length) this.#choose(row);
 		}
 	}
 
@@ -145,14 +231,22 @@ export class QuestionDialog implements Component, Focusable {
 		const rule = paint("cyan", "─".repeat(Math.max(1, width)));
 		const title = this.#title === undefined ? [] : wrapTextWithAnsi(paint("dim", this.#title), room);
 		const question = wrapTextWithAnsi(paint("bold", this.#question), room);
-		const hint = fitHint(["↑↓ move", `1-${this.#rows} pick`, "enter select", "esc cancel"], room);
+		const hint =
+			this.#problem !== ""
+				? paint("yellow", truncateToWidth(this.#problem, room, "…"))
+				: paint(
+						"dim",
+						this.#typing
+							? fitHint(["enter send", "↑↓ move", "esc cancel"], room)
+							: fitHint(["↑↓ move", `1-${this.#rows} pick`, "enter select", "esc cancel"], room),
+					);
 		const lines = [
 			rule,
 			...[...title, ...question].map((line) => ` ${line}`),
 			"",
 			...this.#optionRows(width),
 			"",
-			` ${paint("dim", hint)}`,
+			` ${hint}`,
 			rule,
 		];
 		return lines.map((line) => truncateToWidth(line, width));
@@ -192,9 +286,19 @@ export class QuestionDialog implements Component, Focusable {
 				...description.map((part) => `${" ".repeat(LEAD)}${part}`),
 			];
 		});
-		const other = this.#options.length;
-		const typed = other === this.#cursor ? paint(["bold", "cyan"], TYPE_SOMETHING) : TYPE_SOMETHING;
-		return [...rows, `${this.#lead(other)}${typed}`];
+		return [...rows, `${this.#lead(this.#options.length)}${this.#typed(Math.max(1, width - LEAD))}`];
+	}
+
+	/** `Type something…`, or the text typed there with the cursor in it, cut so the cursor stays in sight. */
+	#typed(room: number): string {
+		const paint = this.#paint;
+		if (!this.#typing)
+			return this.#text === "" ? TYPE_SOMETHING : truncateToWidth(visibleText(this.#text).text, room, "…");
+		if (this.#text === "") return `${paint("inverse", "T")}${paint("dim", TYPE_SOMETHING.slice(1))}`;
+		const { before, under, after } = shownAround(this.#text, this.#at);
+		const left = tailFit(before, Math.max(0, room - visibleWidth(under)));
+		const right = truncateToWidth(after, Math.max(0, room - visibleWidth(left) - visibleWidth(under)), "…");
+		return `${left}${paint("inverse", under)}${right}`;
 	}
 
 	/** ` ❯ 1. ` on the cursor's row, `   1. ` on the others. */

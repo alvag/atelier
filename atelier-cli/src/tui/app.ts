@@ -60,7 +60,6 @@ import {
 	PasteFilter,
 	SearchDialog,
 	SecretDialog,
-	TextDialog,
 } from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
 import {
@@ -527,7 +526,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const dialogs = new Container();
 	/** Questions waiting for an answer, the first one on screen. */
 	const questions: {
-		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog | SearchDialog | TextDialog | QuestionDialog;
+		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog | SearchDialog | QuestionDialog;
 		cancel: () => void;
 		local: boolean;
 		/** The `ask_user` batch it shows: the core's `user_question_resolved` closes it without an answer. */
@@ -680,7 +679,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const guardMs = options.answerGuardMs ?? ANSWER_GUARD_MS;
 		const asked = sessionId;
 		const entry: (typeof questions)[number] = {
-			dialog: new TextDialog("", paint, () => {}),
+			dialog: new QuestionDialog({ question: "", options: [] }, paint, () => {}),
 			cancel: () => finish(null),
 			local: false,
 			userCallId: callId,
@@ -720,17 +719,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				(answer) => {
 					if (closed) return;
 					if (answer === "cancel") return finish(null);
-					if (answer !== "other") {
-						const chosen = ordered[answer.option];
-						return chosen === undefined ? finish(null) : next({ questionId: item.id, optionId: chosen.id });
-					}
-					entry.dialog = new TextDialog(
-						title ?? "Type something",
-						paint,
-						(text) => (text === undefined ? finish(null) : next({ questionId: item.id, other: text })),
-						[question],
-					);
-					showQuestion();
+					if ("other" in answer) return next({ questionId: item.id, other: answer.other });
+					const chosen = ordered[answer.option];
+					return chosen === undefined ? finish(null) : next({ questionId: item.id, optionId: chosen.id });
 				},
 			);
 			if (questions[0] === entry) showQuestion();

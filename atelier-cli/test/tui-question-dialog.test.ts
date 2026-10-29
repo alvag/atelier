@@ -103,11 +103,12 @@ describe("QuestionDialog", () => {
 		expect(answers).toEqual([{ option: 0 }]);
 	});
 
-	it("goes to the last row with the first Up, and answers Type something there", () => {
-		const { shown, answers } = dialog();
+	it("goes to the last row with the first Up, where Enter with nothing typed sends nothing", () => {
+		const { shown, answers, lines } = dialog();
 		shown.handleInput(UP);
+		expect(lines(120)[5]).toBe(" ❯ 3. Type something…");
 		shown.handleInput("\r");
-		expect(answers).toEqual(["other"]);
+		expect(answers).toEqual([]);
 	});
 
 	it("picks with a number key, and ignores a number with no row", () => {
@@ -119,7 +120,7 @@ describe("QuestionDialog", () => {
 		expect(answers).toEqual([{ option: 1 }]);
 		const other = dialog();
 		other.shown.handleInput("3");
-		expect(other.answers).toEqual(["other"]);
+		expect(other.answers).toEqual([]);
 	});
 
 	it("takes no key during the guard after it appears, numbers and Enter included", () => {
@@ -147,5 +148,98 @@ describe("QuestionDialog", () => {
 			" Question 1 of 2",
 			" Which language should commit messages use?",
 		]);
+	});
+});
+
+describe("QuestionDialog's Type something row", () => {
+	const PASTE = (text: string) => `\x1b[200~${text}\x1b[201~`;
+	const typeRow = (lines: string[]) => lines.find((line) => /^ [❯ ] 3\. /.test(line)) ?? "";
+
+	it("takes the user's text in place once the cursor is on it, and sends it with Enter as written", () => {
+		const { shown, answers, lines } = dialog();
+		shown.handleInput("3");
+		expect(answers).toEqual([]);
+		expect(lines(120)).toContain(" enter send · ↑↓ move · esc cancel");
+		for (const key of ["  only", " ", "Vitest "]) shown.handleInput(key);
+		expect(typeRow(lines(120))).toBe(" ❯ 3.   only Vitest");
+		shown.handleInput("\r");
+		expect(answers).toEqual([{ other: "  only Vitest " }]);
+	});
+
+	it("types digits there instead of picking, and edits with Left, Right and Backspace", () => {
+		const { shown, answers } = dialog();
+		shown.handleInput("\x1b[A");
+		for (const key of ["1", "3", "\x1b[D", "2", "\x1b[C", "4", "\x7f", "\x1b[D", "\x1b[D", "\x1b[3~"])
+			shown.handleInput(key);
+		shown.handleInput("\r");
+		// 13, 123, 1234, 123, then Delete takes the 2 after the cursor.
+		expect(answers).toEqual([{ other: "13" }]);
+	});
+
+	it("needs a text that is not blank and at most 2000 characters, and says so in the hint line", () => {
+		const { shown, answers, lines } = dialog();
+		shown.handleInput("3");
+		shown.handleInput("   ");
+		shown.handleInput("\r");
+		expect(answers).toEqual([]);
+		expect(lines(120)).toContain(" Type an answer, or esc to cancel");
+		for (let i = 0; i < 3; i++) shown.handleInput("\x7f");
+		shown.handleInput("x".repeat(2001));
+		shown.handleInput("\r");
+		expect(answers).toEqual([]);
+		expect(lines(120)).toContain(" Too long: 2001 of 2000 characters");
+		shown.handleInput("\x7f");
+		shown.handleInput("\r");
+		expect(answers).toEqual([{ other: "x".repeat(2000) }]);
+	});
+
+	it("keeps the draft while the cursor is on another row", () => {
+		const { shown, answers, lines } = dialog();
+		shown.handleInput("3");
+		shown.handleInput("draft");
+		shown.handleInput("\x1b[A");
+		expect(typeRow(lines(120))).toBe("   3. draft");
+		expect(lines(120)).toContain(" ↑↓ move · 1-3 pick · enter select · esc cancel");
+		shown.handleInput("\x1b[B");
+		shown.handleInput("\r");
+		expect(answers).toEqual([{ other: "draft" }]);
+	});
+
+	it("takes a paste there, even one split across chunks, but not a paste begun before the cursor got there", () => {
+		const { shown, answers, lines } = dialog();
+		shown.handleInput("\x1b[200~ignored");
+		shown.handleInput(" still\x1b[201~");
+		shown.handleInput("3");
+		expect(typeRow(lines(120))).toBe(" ❯ 3. Type something…");
+		shown.handleInput("\x1b[200~one ");
+		shown.handleInput("two\x1b[201~");
+		shown.handleInput(PASTE(" three"));
+		shown.handleInput("\r");
+		expect(answers).toEqual([{ other: "one two three" }]);
+	});
+
+	it("shows control characters as markers and sends them as typed", () => {
+		const { shown, answers, lines } = dialog();
+		shown.handleInput("3");
+		shown.handleInput(PASTE("a\x1b[2Jb"));
+		expect(typeRow(lines(120))).toBe(" ❯ 3. a␛[2Jb");
+		shown.handleInput("\r");
+		expect(answers).toEqual([{ other: "a\x1b[2Jb" }]);
+	});
+
+	it("never overflows a very narrow terminal with a long text, and keeps the cursor's end in sight", () => {
+		const { shown, lines } = dialog();
+		shown.handleInput("3");
+		shown.handleInput(`${"a".repeat(80)}END`);
+		for (const line of lines(40)) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+		expect(typeRow(lines(40))).toMatch(/^ ❯ 3\. …a+END$/);
+	});
+
+	it("cancels the whole question on Esc while typing", () => {
+		const { shown, answers } = dialog();
+		shown.handleInput("3");
+		shown.handleInput("abc");
+		shown.handleInput("\x1b");
+		expect(answers).toEqual(["cancel"]);
 	});
 });
