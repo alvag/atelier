@@ -263,8 +263,8 @@ describe("options.list", () => {
 			{ provider: "openai-codex", model: "openai-codex-two" },
 		]);
 		expect(response.ok && response.result.backends).toContainEqual({
+			// The default is said only when it is one of the models.
 			name: "opencode-go",
-			default: "minimax-m3",
 			models: ["opencode-go-one", "opencode-go-two"],
 		});
 		expect(asked).toContain("anthropic-api");
@@ -377,6 +377,31 @@ describe("options.list", () => {
 		expect(claudeCode?.aliases).toEqual({ opus: "claude-opus-5-5", fable: "claude-fable-5-1" });
 		useModelData(new ModelData());
 		await h.close();
+	});
+
+	it("says no claude-code default when the subscription's list does not say what opus stands for", async () => {
+		const { catalogFile, DynamicModelCatalog, ModelData, useModelData } = await import("../src/model-catalog/index.ts");
+		const file = catalogFile(home);
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		const ask = async (listed: object[]) => {
+			const entry = { checkedAt: Date.now(), resolved: true, models: { "claude-code": listed } };
+			await writeFile(file, JSON.stringify({ version: 1, sources: { "claude-code": entry } }));
+			const h = serve(undefined, true, { catalog: new DynamicModelCatalog({ file, sources: [], network: false }) });
+			const response = await h.ask({ command: "options.list" });
+			await h.close();
+			const backends = response.ok ? (response.result.backends as { name: string; models: string[] }[]) : [];
+			return backends.find(({ name }) => name === "claude-code");
+		};
+		// A list without the alias: what opus runs is not on it, so no default is said rather than a guess.
+		const without = await ask([{ id: "claude-opus-4-8" }, { id: "claude-sonnet-4-6" }]);
+		expect(without?.models).toEqual(["claude-opus-4-8", "claude-sonnet-4-6"]);
+		expect(without).not.toHaveProperty("default");
+		// An empty list is no list: the code's is offered, with its default.
+		expect(await ask([])).toMatchObject({
+			default: "claude-opus-5-5",
+			models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
+		});
+		useModelData(new ModelData());
 	});
 
 	it("says as claude-code's default the model its alias opus stands for now, one of its models", async () => {
