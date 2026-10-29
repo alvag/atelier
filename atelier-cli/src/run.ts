@@ -437,6 +437,7 @@ export async function run(
 		...(mcp ? { mcp } : {}),
 		...(recorder === undefined ? {} : { record: recorder }),
 		...(resumed?.resume === undefined ? {} : { resume: resumed.resume }),
+		...(resumed?.yoloTold === undefined ? {} : { resumedYoloTold: resumed.yoloTold }),
 		...(resumed?.config.thinking === undefined ? {} : { thinking: resumed.config.thinking }),
 		...(memory ? { memory } : {}),
 		...(memoryUnavailable === undefined ? {} : { memoryUnavailable }),

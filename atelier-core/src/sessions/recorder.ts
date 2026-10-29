@@ -30,6 +30,8 @@ export interface RecorderOptions {
 	root?: string;
 	/** What the file already holds of the backend's state, so the next one is written as what follows it. */
 	known?: ResumeState;
+	/** What the file last said the model was told about yolo, so the next state writes it only when it changes. */
+	knownYoloTold?: boolean;
 }
 
 /**
@@ -50,6 +52,8 @@ export class SessionRecorder {
 	/** The messages the file holds of an `anthropic-api` history, by digest. */
 	#messages: string[];
 	#sessionId: string | undefined;
+	/** What the file says the model was last told about yolo; a file that never said it counts as not told. */
+	#yoloTold: boolean;
 	/** The turn of the last prompt: a queued message that started it is already saved as that prompt. */
 	#promptTurn: string | undefined;
 
@@ -60,6 +64,7 @@ export class SessionRecorder {
 		const known = options.known;
 		this.#messages = known !== undefined && "messages" in known ? known.messages.map(digest) : [];
 		this.#sessionId = known !== undefined && "sessionId" in known ? known.sessionId : undefined;
+		this.#yoloTold = options.knownYoloTold ?? false;
 	}
 
 	get id(): string {
@@ -123,30 +128,35 @@ export class SessionRecorder {
 	/**
 	 * The backend's state after a turn. A history is written as what was added to the ones already in the file, or
 	 * whole when it no longer starts with them (a compaction replaced its beginning): the file grows with the
-	 * conversation instead of with its square.
+	 * conversation instead of with its square. `yoloTold`, what the model was last told about yolo, goes with it when
+	 * it changed, and makes a state worth writing by itself.
 	 */
-	state(backend: string, state: ResumeState | undefined): void {
+	state(backend: string, state: ResumeState | undefined, yoloTold?: boolean): void {
 		if (state === undefined) return;
 		this.#endSegment();
 		// What the file holds moves forward only once the write succeeded, so a failed one is written again, in full.
 		this.#enqueue(async () => {
+			const told = yoloTold !== undefined && yoloTold !== this.#yoloTold ? { yoloTold } : {};
 			if ("sessionId" in state) {
-				if (state.sessionId === this.#sessionId) return;
-				await this.#write({ type: "state", backend, sessionId: state.sessionId });
+				if (state.sessionId === this.#sessionId && told.yoloTold === undefined) return;
+				await this.#write({ type: "state", backend, sessionId: state.sessionId, ...told });
 				this.#sessionId = state.sessionId;
+				this.#yoloTold = yoloTold ?? this.#yoloTold;
 				return;
 			}
 			const digests = state.messages.map(digest);
 			const kept = this.#messages;
 			const appended = digests.length >= kept.length && kept.every((one, index) => one === digests[index]);
-			if (appended && digests.length === kept.length) return;
+			if (appended && digests.length === kept.length && told.yoloTold === undefined) return;
 			await this.#write({
 				type: "state",
 				backend,
 				messages: appended ? state.messages.slice(kept.length) : state.messages,
 				replace: !appended,
+				...told,
 			});
 			this.#messages = digests;
+			this.#yoloTold = yoloTold ?? this.#yoloTold;
 		});
 	}
 

@@ -223,6 +223,45 @@ describe("the backend state", () => {
 		expect(loaded.resume).toEqual({ messages: [user("summary"), user("c"), assistant("d")] });
 	});
 
+	it("writes what the model was last told about yolo when it changes, even when the backend state did not", async () => {
+		const turns = Array.from({ length: 4 }, (): FakeStep[] => [{ event: finished }]);
+		const { record, backend, session } = await started(turns);
+		backend.resumeState = { sessionId: "cc-1" };
+		await drain(session, "plain");
+		session.setPermissionMode("yolo");
+		await drain(session, "in yolo");
+		session.setPermissionMode("normal");
+		await drain(session, "out of it");
+		await drain(session, "nothing new");
+		await session.close();
+		const states = (await linesOf(record.path)).filter((line) => line.type === "state");
+		expect(states).toEqual([
+			{ type: "state", backend: "claude-code", sessionId: "cc-1" },
+			{ type: "state", backend: "claude-code", sessionId: "cc-1", yoloTold: true },
+			{ type: "state", backend: "claude-code", sessionId: "cc-1", yoloTold: false },
+		]);
+		const store = new SessionStore(home);
+		expect((await store.load(cwd, record.id)).yoloTold).toBe(false);
+
+		// A later state without the field keeps what an earlier one said; a file without it says nothing.
+		const id = "told";
+		await writeSession(id, [
+			header(id),
+			config,
+			{ type: "state", backend: "claude-code", sessionId: "cc-1", yoloTold: true },
+			{ type: "state", backend: "claude-code", sessionId: "cc-2" },
+		]);
+		expect((await store.load(cwd, id)).yoloTold).toBe(true);
+		await writeSession("old", [header("old"), config, { type: "state", backend: "claude-code", sessionId: "cc-1" }]);
+		expect(await store.load(cwd, "old")).not.toHaveProperty("yoloTold");
+		await writeSession("bad", [
+			header("bad"),
+			config,
+			{ type: "state", backend: "claude-code", sessionId: "x", yoloTold: "yes" },
+		]);
+		await expect(store.load(cwd, "bad")).rejects.toMatchObject({ code: "corrupt" });
+	});
+
 	it("resumes with the configuration of the backend that wrote the state", async () => {
 		const id = "switched";
 		await writeSession(id, [

@@ -24,6 +24,7 @@ import {
 	VERSION,
 } from "@atelier/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { LEFT_YOLO, YOLO_RULES } from "../../atelier-core/src/prompt.ts";
 import { FakeOpenAiAuth, fakeCodexAccess, fakeRefresh } from "../../atelier-core/test/support/fake-openai-auth.ts";
 import { requireIsolatedHome } from "../../atelier-core/test/support/login-isolation.ts";
 import { run } from "../src/run.ts";
@@ -1972,6 +1973,27 @@ describe("saved sessions", () => {
 		const overridden = await resumeWith(["--continue", "--model", "opus", "--mode", "auto"], [], ["/mode"]);
 		expect(overridden.h.backend.startOptions?.model).toBe("opus");
 		expect(overridden.h.out()).toContain("mode: auto\n");
+	});
+
+	it("tells a session resumed out of yolo that yolo ended, when the model was told it in the saved conversation", async () => {
+		const first = savedHarness([answer("done")], { input: ["/mode yolo", "do it"] });
+		first.backend.resumeState = { sessionId: "cc-1" };
+		expect(await run([], first.io, first.createBackend)).toBe(0);
+		expect(first.backend.prompts).toEqual([`${YOLO_RULES}\n\ndo it`]);
+
+		const { h } = await resumeWith(["--continue", "--mode", "normal", "go"]);
+		expect(h.backend.prompts).toEqual([`${LEFT_YOLO}\n\ngo`]);
+	});
+
+	it("resumes a session saved before the mode was recorded as it always did, with no note", async () => {
+		const store = new SessionStore(home);
+		const record = store.create(cwd);
+		record.config({ backend: "claude-code", mode: "yolo" });
+		record.prompt("t1", `${YOLO_RULES}\n\ndo it`);
+		record.state("claude-code", { sessionId: "cc-1" });
+		await record.flush();
+		const { h } = await resumeWith(["--resume", record.id, "--mode", "normal", "go"]);
+		expect(h.backend.prompts).toEqual(["go"]);
 	});
 
 	it("says there is nothing to continue, and starts nothing", async () => {

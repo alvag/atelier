@@ -728,6 +728,7 @@ export class RpcServer {
 				...(model === undefined ? {} : { model }),
 				...(saved?.config.thinking === undefined ? {} : { thinking: saved.config.thinking }),
 				...(saved?.resume === undefined ? {} : { resume: saved.resume }),
+				...(saved?.yoloTold === undefined ? {} : { resumedYoloTold: saved.yoloTold }),
 				...(recorder === undefined ? {} : { record: recorder }),
 				tools: this.#options.tools,
 				systemPromptAppend: this.#options.systemPromptAppend,

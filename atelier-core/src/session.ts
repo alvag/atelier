@@ -220,6 +220,11 @@ export interface SessionOptions {
 	record?: SessionRecorder;
 	/** The backend resumes this saved conversation instead of starting an empty one; start rejects when it cannot. */
 	resume?: ResumeState;
+	/**
+	 * With `resume`: whether the saved conversation last told the model it runs in yolo, so a session resumed in another
+	 * mode says the change in its first prompt. Absent (a file saved before it was kept): the mode it starts in.
+	 */
+	resumedYoloTold?: boolean;
 }
 
 /** What the main agent runs with, as `Session.configure` and the `session_configured` event say it. */
@@ -461,7 +466,7 @@ export class Session {
 		const scratch = await createScratchDir("session");
 		session.#scratch = scratch;
 		session.#startedYolo = options.permissionMode === "yolo";
-		session.#toldYolo = session.#startedYolo;
+		session.#toldYolo = (options.resume === undefined ? undefined : options.resumedYoloTold) ?? session.#startedYolo;
 		session.#systemPrompt = [
 			options.systemPromptAppend ?? "",
 			options.odd ? ODD_RULES : "",
@@ -889,7 +894,8 @@ export class Session {
 			for await (const body of turn) {
 				const event = stamp(body);
 				// The state goes after the turn's events and before its end, which is the last line of the turn.
-				if (event.type === "turn_finished") this.#options.record?.state(this.#endBackend, this.#endState);
+				if (event.type === "turn_finished")
+					this.#options.record?.state(this.#endBackend, this.#endState, this.#toldYolo);
 				this.#options.record?.event(event);
 				// The file holds the turn before a client hears it ended.
 				if (event.type === "turn_finished") await this.#recordFlush();
