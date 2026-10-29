@@ -22,7 +22,7 @@ One tool handles a single question or a batch:
 ```
 
 - 1–4 questions, each with 2–4 model-provided options. Question IDs must be unique in the batch; option IDs must be unique within their question.
-- IDs: 1–64 characters; question text: 1–500; labels: 1–200. None may be blank. Optional descriptions: at most 300 characters.
+- IDs: 1–64 characters; question text: 1–500; labels: 1–200. None may be blank. Optional descriptions: 1–300 characters and nonblank when present; a blank description rejects the entire batch before the user callback runs.
 - Exactly one option per question must have `recommended: true`; the others may omit the field or set it to `false`. Clients must show it first with `(Recommended)`, without selecting it automatically or preselecting it. Descriptions go below their labels.
 - Every question also offers `Other...`, independently of the 2–4 model options. The model cannot disable it. The user writes 1–2000 characters, not only whitespace. The answer preserves their text, including leading/trailing spaces and newlines. String limits use JavaScript UTF-16 length.
 
@@ -47,7 +47,7 @@ These additions keep protocol version 7:
 
 ## Exact model description
 
-> Ask the user 1 to 4 questions, each with 2 to 4 options. Mark exactly one option per question recommended: true; clients show it first with (Recommended), never preselected. Each option may include a description of up to 300 characters. Every question also offers Other..., where the user can write 1 to 2000 characters; you cannot disable it. Only the user can answer, including in yolo mode. Wait for the result; never infer an answer from a cancelled, superseded or unavailable question.
+> Ask the user 1 to 4 questions, each with 2 to 4 options. Mark exactly one option per question recommended: true; clients show it first with (Recommended), never preselected. Each option may include a nonblank description of up to 300 characters. Every question also offers Other..., where the user can write 1 to 2000 characters; you cannot disable it. Only the user can answer, including in yolo mode. Wait for the result; never infer an answer from a cancelled, superseded or unavailable question.
 
 ## Results and integration boundary
 

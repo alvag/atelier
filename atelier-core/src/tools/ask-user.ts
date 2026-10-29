@@ -14,7 +14,7 @@ const uniqueIds = (items: { id: string }[]) => new Set(items.map((item) => item.
 const option = z.strictObject({
 	id,
 	label: text(200),
-	description: z.string().max(300).optional(),
+	description: text(300).optional(),
 	recommended: z.boolean().optional().describe("Exactly one option per question must have recommended: true"),
 });
 const question = z.strictObject({
@@ -75,7 +75,7 @@ export function createAskUserTool(ask?: AskUser): ToolDefinition {
 		description:
 			"Ask the user 1 to 4 questions, each with 2 to 4 options. " +
 			"Mark exactly one option per question recommended: true; clients show it first with (Recommended), never preselected. " +
-			"Each option may include a description of up to 300 characters. " +
+			"Each option may include a nonblank description of up to 300 characters. " +
 			"Every question also offers Other..., where the user can write 1 to 2000 characters; you cannot disable it. " +
 			"Only the user can answer, including in yolo mode. " +
 			"Wait for the result; never infer an answer from a cancelled, superseded or unavailable question.",
