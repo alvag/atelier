@@ -124,6 +124,21 @@ describe("a change of mode during the session", () => {
 		]);
 	});
 
+	it("counts the note as told once the model called a tool for its prompt, even when the turn then fails", async () => {
+		const toolThenError: FakeStep[] = [
+			{ toolCall: { tool: "read", input: { path: "a.ts" }, callId: "c1" } },
+			{ throw: "second model request failed" },
+		];
+		const s = await start([toolThenError, DONE]);
+		s.session.setPermissionMode("yolo");
+		await s.send("first");
+		s.session.setPermissionMode("normal");
+		await s.send("second");
+		await s.session.close();
+		expect(s.backend.toolResults).toHaveLength(1);
+		expect(s.backend.prompts).toEqual([`${YOLO_RULES}\n\nfirst`, `${LEFT_YOLO}\n\nsecond`]);
+	});
+
 	it("says nothing when the model already has the mode right", async () => {
 		const s = await start([DONE, DONE, DONE], { permissionMode: "yolo" });
 		s.session.setPermissionMode("yolo");
