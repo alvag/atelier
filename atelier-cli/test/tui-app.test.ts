@@ -2647,6 +2647,36 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("reports at done the agent's last text even when a call came after it", async () => {
+			const { h, stub, code } = stubbed();
+			await until(h.screen.started);
+			h.screen.type("go");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.length === 2);
+			stub.emit({ type: "text_delta", text: "Reading the config." });
+			stub.emit(callStarted("c1", "read", { path: "a.ts" }));
+			stub.emit(callFinished("c1"));
+			stub.emit({ type: "text_delta", text: "\n\n" });
+			stub.emit({ type: "turn_finished", stopReason: "end_turn", usage });
+			await until(() => h.screen.statuses.at(-1)?.state === "done");
+			expect(h.screen.statuses.at(-1)).toEqual(atelier("done", { message: "Reading the config." }));
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("reports a blocked question without control or bidi characters", async () => {
+			const { h, stub, code } = stubbed();
+			await until(h.screen.started);
+			stub.emit({ type: "approval_requested", callId: "c1", command: "echo hi", confirm: "ru؜le\x1b]0;x\x07" });
+			await until(() => h.screen.statuses.at(-1)?.state === "blocked");
+			expect(h.screen.statuses.at(-1)).toEqual(
+				atelier("blocked", { kind: "permission", message: "Run this command? (guard: rule␛]0;x⟨U+0007⟩)" }),
+			);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
 		it("holds back the live line between changes, and drops it once the turn ends", async () => {
 			const { h, stub, code } = stubbed(60_000);
 			await until(h.screen.started);
