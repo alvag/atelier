@@ -40,24 +40,25 @@ async function isBareRepository(dir: string): Promise<boolean> {
 }
 
 /**
- * The value of `core.bare` as git reads a config file: only in the `[core]` section (any case, no subsection), the
- * last one wins, a key alone is true, comments (`#`, `;`) and quotes are not part of the value, and a backslash at
- * the end of a line continues it on the next.
+ * Whether a config file sets `core.bare` true, read as git reads the simple files it writes: only in the `[core]`
+ * section (any case, no subsection), the last one wins, `true`, `yes`, `on`, `1` or a key alone, comments (`#`, `;`)
+ * left out. A quote or a backslash outside a section header (a quoted value, an escape, a continued line) is not
+ * read: such a file is never taken as bare, so a folder in it stays its own project, which is the safe side.
  */
 function coreBare(text: string): boolean {
 	let inCore = false;
 	let bare = false;
-	for (const raw of text.replace(/\\\r?\n/g, "").split("\n")) {
+	for (const raw of text.split(/\r?\n/)) {
 		let line = raw.trim();
 		const section = /^\[([^\]]*)\](.*)$/.exec(line);
 		if (section) {
 			inCore = (section[1] ?? "").trim().toLowerCase() === "core";
 			line = (section[2] ?? "").trim();
 		}
+		if (/["\\]/.test(line)) return false;
 		const entry = /^bare\s*(?:=(.*))?$/i.exec(line.replace(/\s*[#;].*$/, ""));
 		if (!inCore || entry === null) continue;
-		const value = (entry[1] ?? "true").trim().replace(/"/g, "").toLowerCase();
-		bare = ["true", "yes", "on", "1"].includes(value);
+		bare = ["true", "yes", "on", "1"].includes((entry[1] ?? "true").trim().toLowerCase());
 	}
 	return bare;
 }

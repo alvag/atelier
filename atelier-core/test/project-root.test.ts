@@ -81,10 +81,16 @@ describe("projectRoot", () => {
 		["[CORE]\n\tBare=On ; note\n", true],
 		["[core]\n\tbare\n", true],
 		["[core] bare = 1\n", true],
-		// A backslash at the end of a line continues the value on the next one, as git reads it.
+		["[core]\n\tbare = true # a comment\n", true],
+		['[remote "origin"]\n\turl = x\n[core]\n\tbare = true\r\n', true],
+		// Quotes and backslashes (escapes, continuations) are not read: such a config is never taken as bare.
 		["[other]\n\tx = a\\\n[core]\n\tbare = true\n", false],
-		["[core]\n\tbare = \\\ntrue\n", true],
+		["[core]\n\tbare = \\\ntrue\n", false],
 		["[core]\n\tbare = true\\\n\tbare = false\n", false],
+		["[core]\n bare = true\n # comment \\\n bare = false\n", false],
+		["[core]\n bare = true\n ; comment \\\n bare = false\n", false],
+		["[core]\n bare = true ; comment \\\n bare = false\n", false],
+		['[core]\n\tbare = "true"\n', false],
 	])("reads core.bare from %j as %s", async (config, bare) => {
 		const parent = join(root, "parent");
 		for (const dir of ["objects", "refs", "independent"]) await mkdir(join(parent, dir), { recursive: true });
