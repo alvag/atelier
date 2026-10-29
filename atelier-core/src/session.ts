@@ -106,7 +106,7 @@ type TurnEvent = AtelierEventBody & SubagentTag;
 
 /** Errors a backend reports when its credentials are missing or refused. */
 const CREDENTIAL_ERRORS: ReadonlySet<string> = new Set(["not_logged_in", "authentication_error"]);
-/** How long a job's notice waits for others before it wakes a turn: jobs that end together share one turn. */
+/** How long a turn a job's notice woke waits for others before it takes them: jobs that end together share one turn. */
 const WAKE_GATHER_MS = 250;
 /** Tools a subagent never gets: delegation and the ODD document belong to the parent. */
 const PARENT_ONLY = new Set([
@@ -462,8 +462,6 @@ export class Session {
 	 * wait for the user's next prompt and start no turn of their own.
 	 */
 	#jobsHeld = false;
-	/** A wake is due once the notices that end together have come. */
-	#wakeTimer: NodeJS.Timeout | undefined;
 
 	private constructor(options: SessionOptions) {
 		const subagents = options.subagents;
@@ -751,6 +749,8 @@ export class Session {
 	 */
 	async *#send(prompt: string, turnId: string, entered?: QueuedMessage, woken = false): AsyncGenerator<AtelierEvent> {
 		yield* this.#stream(turnId, woken ? undefined : prompt, entered, async (turn, signal, backendSession) => {
+			// A woken turn waits a moment for the notices of jobs ending with the first, then takes all there are.
+			if (woken) await untilAborted(new Promise<void>((resolve) => setTimeout(resolve, WAKE_GATHER_MS)), signal);
 			// The user's words reach the feature log as the turn starts, without delaying the backend;
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
 			this.#turnPrompt = woken ? undefined : prompt;
@@ -1543,7 +1543,6 @@ export class Session {
 			this.#closed = true;
 			this.#userQuestions.close();
 			const scratch = this.#scratch;
-			clearTimeout(this.#wakeTimer);
 			// The jobs stop whatever else fails below: apart from the chain, and waited for before their files go.
 			const stoppingJobs = this.#jobs?.stopAll().catch(() => {});
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
@@ -1639,23 +1638,13 @@ export class Session {
 		const idle = !this.#turnOpen() && this.#jobsHeld && !this.#closed ? this.#options.idleEvent : undefined;
 		if (idle !== undefined) this.#sayIdle(idle, ended);
 		else this.#say(ended);
-		if (notice !== undefined && this.#turn === undefined && !this.#closed && !this.#jobsHeld) this.#gatherWake();
+		if (notice !== undefined && this.#turn === undefined && !this.#closed && !this.#jobsHeld) this.#options.wake?.();
 	}
 
 	/** An event outside any turn: to its listener, and saved with the session as a turn's events are (`turnId` empty). */
 	#sayIdle(idle: (event: AtelierEventBody) => void, event: AtelierEventBody): void {
 		this.#options.record?.event({ ...event, seq: 0, turnId: "" } as AtelierEvent);
 		idle(event);
-	}
-
-	/** Wakes a turn once the notices of jobs that end together have come; a turn that starts first takes them. */
-	#gatherWake(): void {
-		if (this.#wakeTimer !== undefined) return;
-		this.#wakeTimer = setTimeout(() => {
-			this.#wakeTimer = undefined;
-			if (this.#turn === undefined && !this.#closed && this.#jobsWake && this.#jobNotices.length > 0)
-				this.#options.wake?.();
-		}, WAKE_GATHER_MS);
 	}
 
 	/** The waiting notices as the agent reads them, the clients told none waits now; undefined when none waited. */
