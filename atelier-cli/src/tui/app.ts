@@ -142,7 +142,7 @@ const ANSWER_GUARD_MS = 400;
 const COLOR_QUERY_MS = 500;
 
 const COMMANDS = [
-	{ name: "model", description: "Change the model, of any provider signed in to [provider/model]" },
+	{ name: "model", description: "Change the model, of any provider you are signed in to [provider/model]" },
 	{ name: "effort", description: "Change the thinking level from the next turn [level]" },
 	{ name: "profile", description: "Freeze another profile for this session [name]" },
 	{ name: "mode", description: "Change the permission mode: [normal|auto|yolo] | default <mode>" },
@@ -488,6 +488,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const questionOpen = () => questions.length > 0;
 	const queue = new QueuePanel(paint, questionOpen);
 	const editor = new PromptEditor(tui, editorTheme(paint), paint, shade, questionOpen);
+	/** What `options.list` answered last, or is answering: the models `/model ` completes. */
+	let listed: Promise<Options | undefined> = Promise.resolve(undefined);
 	/** `/model ` lists the models of the providers signed in to, as `options.list` answered them last. */
 	const completeModels = async (prefix: string): Promise<AutocompleteItem[] | null> => {
 		const options = await listed;
@@ -631,14 +633,16 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				true,
 			);
 		});
-	/** What `options.list` answered last, or is answering: the models the editor completes. */
-	let listed: Promise<Options | undefined> = Promise.resolve(undefined);
+	/** Asks for the options now, showing a failure as every request does; the answer is also what `/model ` completes. */
 	const listOptions = async () => {
 		const asked = request({ command: "options.list", cwd: args.cwd }) as Promise<Options | undefined>;
 		listed = asked;
 		return asked;
 	};
-	/** Asks again for the models in the background, as a sign-in may have changed them; a failure says nothing. */
+	/**
+	 * Asks again for the models in the background, as a sign-in may have changed them, for `/model ` to complete; a
+	 * failure says nothing and leaves nothing to complete.
+	 */
 	const refreshModels = () => {
 		listed = link.request({ command: "options.list", cwd: args.cwd }).then(
 			(answer) => answer as Options,
@@ -854,6 +858,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const read = readModel(value);
 		if (!read.ok) return conversation.note(`error: ${read.why}`, true);
 		const { backend, model } = read.entry;
+		// Only narrows the type: a name that reads well always names a model.
 		if (model === undefined) return;
 		if (backend !== undefined && backend !== on) return moveTo(backend, model);
 		if (model === now) return conversation.note(`model: ${shown(model).text} (unchanged)`);
