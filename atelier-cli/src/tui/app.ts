@@ -72,7 +72,7 @@ import {
 	footerWithMode,
 	type StatusItem,
 } from "./footer.ts";
-import { readGitBranch } from "./git-branch.ts";
+import { readGitBranch, readGitChanges } from "./git-branch.ts";
 import { Header, type HeaderState, StatusBar } from "./header.ts";
 import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
@@ -496,13 +496,22 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	);
 	const version = options.version === undefined ? {} : { version: options.version };
 	footer.place = { cwd: args.cwd, ...version };
-	/** Reads the branch again, without blocking: the agent may have changed it. Only the newest read is shown. */
-	let branchReads = 0;
+	/** Refresh without blocking: only the latest read can update the screen, and none can outlive it. */
+	let placeRead: AbortController | undefined;
+	let changes: number | undefined;
 	const readBranch = async () => {
-		const read = ++branchReads;
+		placeRead?.abort();
+		const pending = new AbortController();
+		placeRead = pending;
 		const branch = await readGitBranch(args.cwd);
-		if (read !== branchReads) return;
+		if (pending.signal.aborted) return;
 		footer.place = { cwd: args.cwd, ...version, ...(branch === undefined ? {} : { branch }) };
+		changes = undefined;
+		tui.requestRender();
+		if (!fullscreen) return;
+		const counted = await readGitChanges(args.cwd, pending.signal);
+		if (pending.signal.aborted) return;
+		changes = counted;
 		tui.requestRender();
 	};
 	// What the core answered, until the session's own events say more.
@@ -525,6 +534,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const bar = new StatusBar(paint, () => ({
 		...footer.state,
 		...footer.place,
+		...(changes === undefined ? {} : { changes }),
 		cwd: args.cwd,
 		...(options.home === undefined ? {} : { home: options.home }),
 	}));
@@ -1587,6 +1597,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		removeEvents();
 		removeExit();
 		removeTerminate?.();
+		placeRead?.abort();
 		loader.stop();
 		programStatus.clear();
 		// The editor and the footer stay behind; the transcript is printed where the terminal was.

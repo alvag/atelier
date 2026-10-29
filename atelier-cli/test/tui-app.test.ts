@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { PassThrough } from "node:stream";
 import {
 	type AtelierEvent,
@@ -659,6 +661,78 @@ describe("TUI", { timeout: 20_000 }, () => {
 			expect(h.screen.frame().at(-1)).toMatch(/^─+$/);
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
+		});
+
+		it("counts changed files without running fsmonitor or clean filters or writing the index", async () => {
+			const git = (...args: string[]) => execFileSync("git", args, { cwd });
+			git("init", "-q", "-b", "main");
+			await writeFile(join(cwd, "tracked"), "original\n");
+			await writeFile(join(cwd, ".gitattributes"), "tracked filter=probe\n");
+			git("add", ".");
+			git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base");
+			await writeFile(join(cwd, "tracked"), "staged\n");
+			git("add", "tracked");
+			await writeFile(join(cwd, "tracked"), "mutate\n");
+			await mkdir(join(cwd, "new"));
+			await writeFile(join(cwd, "new", "a\nb"), "one");
+			await writeFile(join(cwd, "new", "two"), "two");
+			const marker = join(home, "executed");
+			const probe = join(home, "probe.sh");
+			await writeFile(probe, `#!/bin/sh\ntouch '${marker}'\ncat\n`, { mode: 0o755 });
+			git("config", "core.fsmonitor", probe);
+			git("config", "filter.probe.clean", probe);
+			git("config", "filter.probe.required", "true");
+			const index = await readFile(join(cwd, ".git", "index"));
+			const h = harness([[{ event: started }, { event: finished }]], { columns: 120 });
+			const code = run(["--no-session", "--no-review"], h.io, () => h.backend);
+			try {
+				await until(() => h.screen.frame()[0]?.includes("main ±3 ·") === true);
+				await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+				expect(await readFile(join(cwd, ".git", "index"))).toEqual(index);
+				await rm(join(cwd, "new", "two"));
+				h.screen.type("refresh");
+				h.screen.type("\r");
+				await until(() => h.screen.frame()[0]?.includes("main ±2 ·") === true);
+				await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+			} finally {
+				h.screen.type("\x04");
+				expect(await code).toBe(0);
+			}
+		});
+
+		it("accepts commands and quits while git status is stuck, cancelling the child", async () => {
+			execFileSync("git", ["init", "-q", "-b", "main"], { cwd });
+			const pidFile = join(home, "pid");
+			const script = `#!${process.execPath}
+if (process.argv.includes('rev-parse')) process.stdout.write('sha1\\nfiles\\n');
+else if (process.argv.includes('status')) {
+ require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+ setInterval(() => {}, 1000);
+}
+`;
+			await writeFile(join(home, "git"), script, { mode: 0o755 });
+			vi.stubEnv("PATH", `${home}${delimiter}${process.env.PATH}`);
+			const h = harness([], { columns: 120 });
+			const code = run(["--no-session", "--no-review"], h.io, () => h.backend);
+			try {
+				await until(() => existsSync(pidFile));
+				expect(h.screen.frame()[0]).toContain("main ·");
+				h.screen.type("/status");
+				h.screen.type("\r");
+				await until(() => h.screen.screen().includes("cost: none yet"));
+			} finally {
+				h.screen.type("\x04");
+				expect(await code).toBe(0);
+			}
+			const pid = Number(await readFile(pidFile, "utf8"));
+			await until(() => {
+				try {
+					process.kill(pid, 0);
+					return false;
+				} catch {
+					return true;
+				}
+			});
 		});
 
 		it("keeps the main screen with --no-fullscreen or the setting", async () => {
