@@ -189,7 +189,8 @@ export class Jobs {
 			stopping: false,
 			done: Promise.resolve(),
 		};
-		entry.done = this.#watch(entry, request);
+		// Nothing of the end may reject: a stop or the session's close waits for it.
+		entry.done = this.#watch(entry, request).catch(() => {});
 		this.#entries.set(id, entry);
 		this.#options.onStarted?.({ ...info });
 		return { ...info };
@@ -264,7 +265,6 @@ export class Jobs {
 		}
 		child.stdin?.destroy();
 		entry.sink.close();
-		request.cleanup?.();
 		const { info } = entry;
 		info.durationMs = Date.now() - entry.startedAt;
 		entry.endOrder = ++this.#ends;
@@ -279,14 +279,21 @@ export class Jobs {
 			else if (ended.signal !== null) info.signal = ended.signal;
 		}
 		this.#forgetOld();
+		// The job is over now, whatever the callbacks below do: they are the caller's, and one that throws changes nothing.
+		quietly(() => request.cleanup?.());
 		if (info.status === "stopped") {
-			this.#options.onEnded({ job: { ...info } });
+			quietly(() => this.#options.onEnded({ job: { ...info } }));
 			return;
 		}
 		const tail = entry.sink.tail();
 		const failed = info.status === "failed" || info.exitCode !== 0;
-		const blocked = failed && request.blocked ? await request.blocked(tail.text).catch(() => []) : [];
-		this.#options.onEnded({ job: { ...info }, notice: noticeText(info, tail, blocked) });
+		const blocked =
+			failed && request.blocked
+				? await Promise.resolve()
+						.then(() => request.blocked?.(tail.text) ?? [])
+						.catch(() => [])
+				: [];
+		quietly(() => this.#options.onEnded({ job: { ...info }, notice: noticeText(info, tail, blocked) }));
 	}
 
 	/** Keeps the running jobs and the last MAX_FINISHED_JOBS to end, whenever they started. */
@@ -297,6 +304,13 @@ export class Jobs {
 		for (const entry of finished.slice(0, Math.max(0, finished.length - MAX_FINISHED_JOBS)))
 			this.#entries.delete(entry.info.id);
 	}
+}
+
+/** Runs a callback whose failure is not the job's. */
+function quietly(callback: () => void): void {
+	try {
+		callback();
+	} catch {}
 }
 
 /** SIGKILL to processes a stop found, a few seconds ago at most: too soon for their pids to be given to another. */

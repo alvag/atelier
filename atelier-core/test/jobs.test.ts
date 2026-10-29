@@ -352,6 +352,32 @@ describe("background jobs", () => {
 		expect(jobs.running).toBe(0);
 	});
 
+	it("ends a job whose cleanup or end callback throws, and still stops the rest", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atelier-jobs-throw-"));
+		dirs.push(dir);
+		let ends = 0;
+		const jobs = new Jobs({
+			scratchDir: dir,
+			onEnded: () => {
+				ends++;
+				throw new Error("the end callback failed");
+			},
+		});
+		open.push(jobs);
+		jobs.start({
+			...plain("true", dir),
+			cleanup: () => {
+				throw new Error("cleanup failed");
+			},
+		});
+		await until(() => ends === 1);
+		expect(jobs.running).toBe(0);
+		expect(jobs.list()).toEqual([expect.objectContaining({ status: "exited", exitCode: 0 })]);
+		jobs.start(plain("sleep 300", dir));
+		await expect(jobs.stopAll()).resolves.toBeUndefined();
+		expect(jobs.running).toBe(0);
+	});
+
 	it("keeps the last 20 jobs to end, whenever they started", async () => {
 		const { dir, jobs, ended } = harness();
 		const goFile = join(dir, "go");
