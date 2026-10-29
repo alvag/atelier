@@ -51,6 +51,23 @@ const savedName = z.string().refine((name) => name.trim() !== "" && name.trim().
 	message: `must have 1 to ${MAX_SESSION_NAME_CHARS} characters`,
 });
 
+const answerText = (max: number) =>
+	z
+		.string()
+		.min(1)
+		.max(max)
+		.refine((value) => value.trim() !== "");
+const userAnswers = z
+	.array(
+		z.union([
+			z.strictObject({ questionId: answerText(64), optionId: answerText(64) }),
+			z.strictObject({ questionId: answerText(64), other: answerText(2000) }),
+		]),
+	)
+	.min(1)
+	.max(4)
+	.nullable();
+
 const commandSchema = z.discriminatedUnion("command", [
 	z.object({
 		command: z.literal("session.start"),
@@ -63,6 +80,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		noSandbox: z.boolean().optional(),
 		profile: z.string().min(1).optional(),
 		noSession: z.boolean().optional(),
+		userQuestions: z.boolean().optional(),
 	}),
 	z.object({ command: z.literal("profiles.list"), cwd: z.string().min(1).optional() }),
 	z.object({ command: z.literal("session.send"), sessionId, prompt: z.string().min(1) }),
@@ -91,6 +109,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		remember: z.enum(["session", "project", "always"]).optional(),
 	}),
 	z.object({ command: z.literal("session.permissions"), sessionId }),
+	z.object({ command: z.literal("session.answer_user"), sessionId, callId: id, answers: userAnswers }),
 	z.object({ command: z.literal("session.permissions_remove"), sessionId, ruleId: z.string().min(1) }),
 	z.object({ command: z.literal("session.review"), sessionId, ref: z.string().min(1).optional() }),
 	z.object({
@@ -122,7 +141,12 @@ const commandSchema = z.discriminatedUnion("command", [
 	}),
 	z.object({ command: z.literal("options.list"), cwd: z.string().min(1).optional() }),
 	z.object({ command: z.literal("sessions.list"), cwd: z.string().min(1) }),
-	z.object({ command: z.literal("session.resume"), sessionId: savedId, cwd: z.string().min(1) }),
+	z.object({
+		command: z.literal("session.resume"),
+		sessionId: savedId,
+		cwd: z.string().min(1),
+		userQuestions: z.boolean().optional(),
+	}),
 	z.object({ command: z.literal("session.rename"), sessionId: savedId, cwd: z.string().min(1), name: savedName }),
 	z.object({ command: z.literal("session.delete"), sessionId: savedId, cwd: z.string().min(1) }),
 	z.object({ command: z.literal("session.close"), sessionId }),

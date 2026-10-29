@@ -1,6 +1,6 @@
 # Structured user questions
 
-Main sessions register `ask_user`; internal roles and subagents, including custom definitions, never receive it. RPC and client integration are separate deliveries; this page does not describe an available CLI feature yet.
+Main sessions register `ask_user`; internal roles and subagents, including custom definitions, never receive it. RPC clients can opt in to structured questions; built-in client integration is a separate delivery.
 
 ## Input and limits
 
@@ -33,6 +33,17 @@ Supply `Session.start({ askUser })` for a direct user-only callback, or `userQue
 A session registers the pending batch before emitting `user_question_requested { callId, questions }`, then emits exactly one `user_question_resolved { callId, result }` when it settles. Invalid replies leave the batch pending (`invalid_answer`); stale or duplicate replies fail with `unknown_question`. A second concurrent call returns `unavailable/question_pending`. No timeout or mode, including `yolo`, answers on the user's behalf.
 
 An accepted `steer` or `follow_up` supersedes the batch without changing queue semantics. Interrupting or abandoning the event stream cancels it as `interrupted`; closing the session cancels it as `closed`. Resolution aborts the direct callback's signal so its UI can stop reading input, and late callback results are ignored. A disconnected or failing callback returns `unavailable/no_interactive_client`. Pending questions are never restored from saved history.
+
+## RPC
+
+These additions keep protocol version 7:
+- `session.start` and `session.resume` take optional `userQuestions: true`. A resume must opt in again. Without the capability, `ask_user` returns `unavailable/no_interactive_client` immediately; older clients cannot hang waiting for an unknown question.
+- `user_question_requested { callId, questions }` opens the batch; `user_question_resolved { callId, result }` closes it. Clients must discard the associated dialog and drafts when resolved, even if they have not sent an answer.
+- `session.answer_user { sessionId, callId, answers }` returns `{}`. `answers` is the complete array of `{ questionId, optionId }` or `{ questionId, other }`, or `null` to cancel the whole batch. The codec enforces the input limits and exclusive answer forms; the session validates membership before consuming its pending batch.
+- Replies fail with `invalid_answer` (the batch stays pending), `unknown_question` (stale, duplicate or never asked) or `unknown_session`. Invalid command shapes fail with `invalid_command`.
+- Interrupt, accepted queued messages, close, shutdown and input disconnect resolve the core-owned pending batch. There is no second pending-question map in the RPC server.
+
+`UserQuestion`, `UserAnswer` and `UserQuestionResult` are available as type-only exports from `@atelier/core/protocol`, safe for browser clients.
 
 ## Exact model description
 
