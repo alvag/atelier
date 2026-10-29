@@ -30,6 +30,7 @@ import {
 	type JsonValue,
 	ZERO_USAGE,
 } from "../../events.ts";
+import { BACKEND_DEFAULTS } from "../../options.ts";
 import { summarizesThinking, type ThinkingSend, thinkingToSend } from "../../pricing.ts";
 import type { ToolDefinition } from "../../tools/types.ts";
 import { VERSION } from "../../version.ts";
@@ -37,7 +38,7 @@ import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./m
 import { claudeCodeName, isVersionedClaudeId, withoutWindow } from "./models.ts";
 
 /** The model a session runs without one chosen; Claude Code is sent the alias that stands for it, `opus`. */
-export const DEFAULT_MODEL = "claude-opus-5-5";
+export const DEFAULT_MODEL = BACKEND_DEFAULTS["claude-code"];
 export const DEFAULT_INTERRUPT_GRACE_MS = 5000;
 const ACCOUNT_INFO_TIMEOUT_MS = 3000;
 const TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;

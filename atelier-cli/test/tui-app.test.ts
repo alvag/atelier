@@ -1553,7 +1553,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 	});
 
 	/** A core on claude-code with two models and two profiles, which answers each change with the configuration it leaves. */
-	function listingCore(signedIn: string[] = ["claude-code", "openai-codex"]) {
+	function listingCore(signedIn: string[] = ["claude-code", "openai-codex"], fields: Record<string, unknown> = {}) {
 		let configuration: Record<string, unknown> = {
 			backend: "claude-code",
 			model: "opus",
@@ -1561,6 +1561,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			permissionMode: "normal",
 			profile: { name: "cheap", origin: "active" },
 			pending: false,
+			...fields,
 		};
 		const change = (fields: Record<string, unknown>) => {
 			configuration = { ...configuration, ...fields };
@@ -1574,9 +1575,10 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 					case "options.list":
 						return {
 							backends: [
-								{ name: "claude-code", models: ["opus", "sonnet"] },
-								{ name: "anthropic-api", models: ["api-model"] },
-								{ name: "openai-codex", models: ["gpt-luna"] },
+								// The default is said, not taken from the list's order.
+								{ name: "claude-code", default: "sonnet", models: ["opus", "sonnet"] },
+								{ name: "anthropic-api", default: "api-model", models: ["api-model"] },
+								{ name: "openai-codex", default: "gpt-luna", models: ["gpt-luna"] },
 							],
 							models: signedIn.flatMap((provider) =>
 								(provider === "claude-code" ? ["opus", "sonnet"] : ["gpt-luna"]).map((model) => ({ provider, model })),
@@ -1987,6 +1989,22 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		await until(() => !h.screen.screen().endsWith("│"));
 		await new Promise((resolve) => setTimeout(resolve, 30));
 		expect(stub.log.commands.map((command) => command.command)).not.toContain("session.set_model");
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
+	it("marks the backend's default current when no model was chosen, wherever the list has it", async () => {
+		const h = harness([]);
+		const stub = listingCore(undefined, { model: undefined });
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/model");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("gpt-luna [openai-codex]"));
+		expect(h.screen.screen()).toMatch(/sonnet \[claude-code\] +current/);
+		expect(h.screen.screen()).not.toMatch(/opus \[claude-code\] +current/);
+		h.screen.type("\x1b");
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
 	});

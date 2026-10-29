@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type AtelierEventBody,
+	BACKEND_DEFAULTS,
 	BACKEND_MODELS,
 	decodeServerMessage,
 	FakeBackend,
@@ -214,10 +215,18 @@ describe("options.list", () => {
 			ok: true,
 			result: {
 				backends: [
-					{ name: "claude-code", models: [...BACKEND_MODELS["claude-code"]] },
-					{ name: "anthropic-api", models: [...BACKEND_MODELS["anthropic-api"]] },
-					{ name: "opencode-go", models: [...BACKEND_MODELS["opencode-go"]] },
-					{ name: "openai-codex", models: [...BACKEND_MODELS["openai-codex"]] },
+					{ name: "claude-code", default: BACKEND_DEFAULTS["claude-code"], models: [...BACKEND_MODELS["claude-code"]] },
+					{
+						name: "anthropic-api",
+						default: BACKEND_DEFAULTS["anthropic-api"],
+						models: [...BACKEND_MODELS["anthropic-api"]],
+					},
+					{ name: "opencode-go", default: BACKEND_DEFAULTS["opencode-go"], models: [...BACKEND_MODELS["opencode-go"]] },
+					{
+						name: "openai-codex",
+						default: BACKEND_DEFAULTS["openai-codex"],
+						models: [...BACKEND_MODELS["openai-codex"]],
+					},
 				],
 				efforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
 				modes: ["normal", "auto", "yolo"],
@@ -249,6 +258,7 @@ describe("options.list", () => {
 		]);
 		expect(response.ok && response.result.backends).toContainEqual({
 			name: "opencode-go",
+			default: "minimax-m3",
 			models: ["opencode-go-one", "opencode-go-two"],
 		});
 		expect(asked).toContain("anthropic-api");
@@ -290,6 +300,7 @@ describe("options.list", () => {
 		const response = await h.ask({ command: "options.list" });
 		expect(response.ok && response.result.backends).toContainEqual({
 			name: "claude-code",
+			default: "claude-opus-5-5",
 			models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
 		});
 		expect(response.ok && response.result.models).toEqual([
@@ -316,10 +327,29 @@ describe("options.list", () => {
 		await h.close();
 	});
 
-	it("lists the first model of each backend as the default one the backends use", async () => {
+	it("says each backend's default, the model its backend runs without a choice, wherever it falls in the list", async () => {
 		const { DEFAULT_MODEL, DEFAULT_API_MODEL } = await import("../src/index.ts");
-		expect(BACKEND_MODELS["claude-code"][0]).toBe(DEFAULT_MODEL);
-		expect(BACKEND_MODELS["anthropic-api"][0]).toBe(DEFAULT_API_MODEL);
+		const { DEFAULT_OPENCODE_GO_MODEL } = await import("../src/backends/opencode-go/models.ts");
+		const { DEFAULT_CODEX_MODEL } = await import("../src/backends/openai-codex/models.ts");
+		const { catalogFile, DynamicModelCatalog } = await import("../src/model-catalog/index.ts");
+		const file = catalogFile(home);
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		// A newer model than the default, listed by the provider, comes first.
+		const listed = { checkedAt: Date.now(), models: { "opencode-go": [{ id: "minimax-m9" }] } };
+		await writeFile(file, JSON.stringify({ version: 1, sources: { "opencode-go": listed } }));
+		const h = serve(undefined, true, { catalog: new DynamicModelCatalog({ file, sources: [], network: false }) });
+		const response = await h.ask({ command: "options.list" });
+		const backends = response.ok
+			? (response.result.backends as { name: string; default: string; models: string[] }[])
+			: [];
+		expect(Object.fromEntries(backends.map(({ name, default: model }) => [name, model]))).toEqual({
+			"claude-code": DEFAULT_MODEL,
+			"anthropic-api": DEFAULT_API_MODEL,
+			"opencode-go": DEFAULT_OPENCODE_GO_MODEL,
+			"openai-codex": DEFAULT_CODEX_MODEL,
+		});
+		expect(backends.find(({ name }) => name === "opencode-go")?.models[0]).toBe("minimax-m9");
+		await h.close();
 	});
 });
 

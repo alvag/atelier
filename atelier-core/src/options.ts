@@ -1,17 +1,28 @@
 import { CLAUDE_CODE_MODELS } from "./backends/claude-code/models.ts";
-import { CODEX_MODELS } from "./backends/openai-codex/models.ts";
-import { OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
+import { CODEX_MODELS, DEFAULT_CODEX_MODEL } from "./backends/openai-codex/models.ts";
+import { DEFAULT_OPENCODE_GO_MODEL, OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
 import type { BackendName } from "./protocol/types.ts";
 
 /**
- * The models a client offers for each backend; the first one is the backend's default. A name outside the list
+ * The model each backend runs when none was chosen. Said here, not by a list's order: the lists offer the newest
+ * first. Pure: the desktop renderer imports it.
+ */
+export const BACKEND_DEFAULTS: Readonly<Record<BackendName, string>> = Object.freeze({
+	// Claude Code is sent the alias that stands for it, `opus`.
+	"claude-code": "claude-opus-5-5",
+	"anthropic-api": "claude-sonnet-5-5",
+	"opencode-go": DEFAULT_OPENCODE_GO_MODEL,
+	"openai-codex": DEFAULT_CODEX_MODEL,
+});
+
+/**
+ * The models a client offers for each backend, its default among them (`BACKEND_DEFAULTS`). A name outside the list
  * still works: it is a convenience for selectors, not a limit. Pure: the desktop renderer imports it.
  */
 export const BACKEND_MODELS: Readonly<Record<BackendName, readonly string[]>> = Object.freeze({
 	// Versioned ids; the aliases (`opus`, `sonnet`) still work written.
 	"claude-code": CLAUDE_CODE_MODELS,
 	"anthropic-api": ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
-	// The table's first model is the default, minimax-m3.
 	"opencode-go": Object.keys(OPENCODE_GO_MODELS),
 	"openai-codex": CODEX_MODELS,
 });

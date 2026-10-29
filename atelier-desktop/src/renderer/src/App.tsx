@@ -1,4 +1,5 @@
 import {
+	BACKEND_DEFAULTS,
 	BACKEND_MODELS,
 	type BackendName,
 	DEFAULT_BACKEND,
@@ -20,7 +21,6 @@ const MODE_HINTS: Partial<Record<PermissionMode, string>> = {
 	auto: "auto: a classifier model decides what normal would ask",
 };
 
-/** The first model of each backend is its default. */
 const MODELS = BACKEND_MODELS;
 const BACKENDS = Object.keys(MODELS) as BackendName[];
 
@@ -60,7 +60,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 	const chat = useChat(bridge);
 	const { state } = chat;
 	const [backend, setBackend] = useState<BackendName>(DEFAULT_BACKEND);
-	const [model, setModel] = useState(MODELS[DEFAULT_BACKEND][0] as string);
+	const [model, setModel] = useState(BACKEND_DEFAULTS[DEFAULT_BACKEND]);
 	const [noSandbox, setNoSandbox] = useState(false);
 	/** Empty: the core resolves the profile by layers. */
 	const [chosen, setProfile] = useState("");
@@ -125,7 +125,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 						onChange={(event) => {
 							const next = event.target.value as BackendName;
 							setBackend(next);
-							setModel(MODELS[next][0] as string);
+							setModel(BACKEND_DEFAULTS[next]);
 						}}
 						disabled={state.busy}
 					>
