@@ -604,6 +604,11 @@ export class Session {
 		return this.#turn !== undefined;
 	}
 
+	/** The background jobs running now, and the notices of ended ones the agent has not read yet. */
+	get jobs(): { running: number; waiting: number } {
+		return { running: this.#jobs?.running ?? 0, waiting: this.#jobNotices.length };
+	}
+
 	/** What is queued now, in the order it would enter. */
 	get queued(): readonly QueuedMessage[] {
 		return this.#queue.map((message) => ({ ...message }));

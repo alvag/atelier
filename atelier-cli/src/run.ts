@@ -442,7 +442,18 @@ export async function run(
 	}
 	const model = args.model ?? resumed?.config.model;
 	const mcp = connectMcp?.(args.cwd);
+	/** Settles when a job's notice asks for a turn while none runs, or the CLI is quitting; `rewake` renews it once taken. */
+	let wakeUp = () => {};
+	let woken = new Promise<void>((resolve) => {
+		wakeUp = resolve;
+	});
+	const rewake = () => {
+		woken = new Promise<void>((resolve) => {
+			wakeUp = resolve;
+		});
+	};
 	const session = await Session.start({
+		wake: () => wakeUp(),
 		backend,
 		...(mcp ? { mcp } : {}),
 		...(recorder === undefined ? {} : { record: recorder }),
@@ -562,6 +573,8 @@ export async function run(
 		quitting = true;
 		quitCode = code;
 		interrupted = true;
+		// Whatever waits for a job's notice stops waiting.
+		wakeUp();
 		cancelApproval?.();
 		lines.close();
 		// Back in line mode, a further Ctrl+C is a signal again and reaches this handler.
@@ -590,6 +603,20 @@ export async function run(
 		interrupted = false;
 		for await (const event of events) renderer.render(event);
 		renderer.endLine();
+	};
+
+	/** Runs the turns that job notices start, one after another, until none waits. */
+	const runWoken = async () => {
+		for (let next = session.nextQueued(); next !== undefined && !quitting; next = session.nextQueued())
+			await runTurn(next);
+	};
+
+	/** Says the notices a turn that was interrupted or failed left for the next prompt. */
+	const sayWaiting = () => {
+		const { waiting } = session.jobs;
+		if (waiting === 0) return;
+		renderer.endLine();
+		renderer.write(`jobs: ${waiting} notice${waiting === 1 ? " waits" : "s wait"} for your next prompt\n`);
 	};
 
 	/** `/login` and `/logout`: not a turn; Claude Code's sign-in gets the terminal while it runs. */
@@ -651,11 +678,39 @@ export async function run(
 			await runTurn(session.send(args.prompt));
 			if (quitting) return quitCode;
 			if (interrupted) return EXIT_INTERRUPTED;
+			// The jobs the prompt started, and the turns their notices wake, end before the CLI does; Ctrl+C stops them.
+			await runWoken();
+			for (let running = session.jobs.running; running > 0 && !interrupted; running = session.jobs.running) {
+				io.stderr(`waiting for ${running} background job${running === 1 ? "" : "s"} (Ctrl+C stops them)\n`);
+				await woken;
+				rewake();
+				await runWoken();
+			}
+			if (quitting) return quitCode;
+			if (interrupted) return EXIT_INTERRUPTED;
 			return renderer.failed ? EXIT_FAILED : EXIT_OK;
 		}
+		/** The read of the prompt's line, kept while a turn a job's notice woke runs without it. */
+		let reading: Promise<string | undefined> | undefined;
 		while (true) {
-			if (io.isTTY) renderer.write(PROMPT);
-			const line = await lines.next(PROMPT.length);
+			if (reading === undefined) {
+				if (io.isTTY) renderer.write(PROMPT);
+				reading = lines.next(PROMPT.length);
+			}
+			const read = await Promise.race([reading.then((line) => ({ line })), woken.then(() => undefined)]);
+			if (read === undefined) {
+				// A job's notice woke the session while it waited for a line: the turn may ask a question, which reads lines.
+				rewake();
+				if (quitting) return quitCode;
+				lines.abandon();
+				reading = undefined;
+				renderer.endLine();
+				await runWoken();
+				if (quitting) return quitCode;
+				continue;
+			}
+			reading = undefined;
+			const { line } = read;
 			// A raw terminal does not echo Enter: end the prompt line here.
 			if (rawMode) renderer.endLine();
 			if (quitting) return quitCode;
@@ -684,6 +739,9 @@ export async function run(
 			}
 			await runTurn(commandTurn(session, line) ?? session.send(line));
 			if (quitting) return quitCode;
+			await runWoken();
+			if (quitting) return quitCode;
+			sayWaiting();
 		}
 		return EXIT_OK;
 	} finally {

@@ -4,6 +4,7 @@ import {
 	type AtelierEvent,
 	cacheHitRate,
 	describeRefusal,
+	formatElapsed,
 	type JsonValue,
 	type PhaseAgent,
 	type PhaseSpent,
@@ -192,6 +193,37 @@ export function stepText(step: ReviewStep): string {
 }
 
 /** Turns core events into terminal output. Keeps track of the line so tool and token lines start clean. */
+/** The jobs running and the notices waiting, after a job's line; empty when there are none. */
+export function jobCounts(running: number, waiting: number): string {
+	const parts = [
+		...(running > 0 ? [`${running} running`] : []),
+		...(waiting > 0 ? [`${waiting} notice${waiting === 1 ? "" : "s"} waiting`] : []),
+	];
+	return parts.map((part) => ` · ${part}`).join("");
+}
+
+/**
+ * A background job's start or end, without its mark: `job 1 started · ci wait · 1 running`, `job 1 ended · exit 1 ·
+ * 4m 12s · ci wait`, `job 1 stopped · 12s · ci wait`. The label comes from the model: its hidden characters are shown.
+ */
+export function jobLine(
+	event: Extract<AtelierEvent, { type: "job_started" }> | Extract<AtelierEvent, { type: "job_finished" }>,
+): string {
+	const label = visibleText(event.label).text;
+	const counts = jobCounts(event.running, event.type === "job_finished" ? event.waiting : 0);
+	if (event.type === "job_started") return `job ${event.jobId} started · ${label}${counts}`;
+	const elapsed = formatElapsed(event.durationMs);
+	if (event.status === "stopped") return `job ${event.jobId} stopped · ${elapsed} · ${label}${counts}`;
+	if (event.status === "failed") return `job ${event.jobId} failed to start · ${label}${counts}`;
+	const how = event.signal === undefined ? `exit ${event.exitCode ?? "?"}` : `signal ${event.signal}`;
+	return `job ${event.jobId} ended · ${how} · ${elapsed} · ${label}${counts}`;
+}
+
+/** Whether a job's end is shown as a failure: it could not start, a signal killed it, or it exited with an error. */
+export function jobFailed(event: Extract<AtelierEvent, { type: "job_finished" }>): boolean {
+	return event.status === "failed" || (event.status === "exited" && event.exitCode !== 0);
+}
+
 export class Renderer {
 	readonly #options: RendererOptions;
 	/** The calls under way, by id: what each line names once the call finishes. */
@@ -436,6 +468,12 @@ export class Renderer {
 				return;
 			case "text_delta":
 				this.write(event.text);
+				return;
+			case "job_started":
+				this.#line(`${this.#style("cyan", "⧗")} ${jobLine(event)}`);
+				return;
+			case "job_finished":
+				this.#line(`${this.#style(jobFailed(event) ? "red" : "cyan", "■")} ${jobLine(event)}`);
 				return;
 			case "sandbox_status":
 				if (event.sandboxed) {

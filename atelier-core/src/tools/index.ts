@@ -24,7 +24,7 @@ export {
 } from "./command-rules.ts";
 export { createEditTool, type EditOptions, editTool } from "./edit.ts";
 export { createGrepTool, grepTool, openGrepTool } from "./grep.ts";
-export { type EndedJob, type JobInfo, Jobs, MAX_RUNNING_JOBS } from "./jobs.ts";
+export { type EndedJob, formatElapsed, type JobInfo, Jobs, MAX_RUNNING_JOBS } from "./jobs.ts";
 export { MAX_WRITE_BYTES } from "./limits.ts";
 export { PathOutsideError, PathProtectedError, resolveInside } from "./paths.ts";
 export { createReadTool, openReadTool, readTool } from "./read.ts";
