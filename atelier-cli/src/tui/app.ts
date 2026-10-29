@@ -806,6 +806,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 		// A queued message entering the conversation may be the session's first prompt.
 		if (event.type === "queued_message" && event.parentCallId === undefined) titleWith(event.text);
+		// Every event comes in a turn: a job's end with none running starts the turn its notice woke.
+		if (event.type === "job_finished" && !busy) {
+			interrupted = false;
+			setBusy(true);
+		}
 		if (event.type === "queue_update") {
 			queue.messages = event.messages;
 			if (event.returned) giveBack(event.returned);
