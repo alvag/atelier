@@ -1,4 +1,5 @@
-import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 /**
@@ -44,8 +45,25 @@ async function isBareRepository(dir: string): Promise<boolean | undefined> {
 	);
 	const [head, objects, refs] = kinds;
 	if (!head?.isFile() || !objects?.isDirectory() || !refs?.isDirectory()) return false;
-	const text = await readFile(join(dir, "config"), "utf8").catch(() => undefined);
+	const text = await readRegularFile(join(dir, "config"));
 	return text === undefined ? undefined : coreBare(text);
+}
+
+/**
+ * The text of a regular file, followed through links; undefined for anything else or what cannot be read. It opens
+ * without waiting, so a pipe or a device there never blocks.
+ */
+async function readRegularFile(path: string): Promise<string | undefined> {
+	const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK).catch(() => undefined);
+	if (handle === undefined) return undefined;
+	try {
+		if (!(await handle.stat()).isFile()) return undefined;
+		return await handle.readFile("utf8");
+	} catch {
+		return undefined;
+	} finally {
+		await handle.close();
+	}
 }
 
 /**
@@ -85,13 +103,13 @@ function booleanOf(value: string): boolean | undefined {
 /**
  * `core.bare` as git reads a config file: only in the `[core]` section (any case, no subsection), the last one wins,
  * `true`, `yes`, `on`, `1` or a key alone. Undefined when the file is not one this reads with certainty (a backslash
- * anywhere, an unclosed quote, a header or a line that is no section, key or comment, a `bare` that is no boolean).
+ * anywhere, an unclosed quote, a header or a line that is no section, key or comment, a `bare` that is no boolean, no `core.bare` at all).
  */
 function coreBare(text: string): boolean | undefined {
 	// A backslash anywhere, in a value or a comment, is an escape or a continuation this does not read.
 	if (text.includes("\\")) return undefined;
 	let inCore = false;
-	let bare = false;
+	let bare: boolean | undefined;
 	for (const raw of text.split(/\r?\n/)) {
 		let line = raw.trim();
 		if (line.startsWith("[")) {
@@ -112,6 +130,7 @@ function coreBare(text: string): boolean | undefined {
 			bare = known;
 		}
 	}
+	// Without `core.bare` git guesses from where the folder is: not read here with certainty.
 	return bare;
 }
 
