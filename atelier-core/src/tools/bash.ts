@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, lstatSync, openSync, readlinkSync, realpathSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { createScratchDirSync } from "../scratch.ts";
 import { commandRules, coveredBy } from "./command-rules.ts";
@@ -169,30 +169,36 @@ function confirmation(command: string): { confirm?: string; yoloWaived?: true } 
 const MAX_LINKS = 40;
 
 /**
- * The real path a place would have once created: its nearest existing folder followed through every link, and a
- * dangling link on the way followed to where it points, so writing through it lands where the result says.
- * Undefined for what cannot be read or loops.
+ * The real path a place would have once created, walked a part at a time as the system does: each link, dangling or
+ * not, is followed where it stands, so a `..` after a link goes up from where the link leads, and a part that does
+ * not exist yet is kept as written. Undefined for what cannot be read or loops.
  */
-function realPlace(path: string, links = 0): string | undefined {
-	if (links > MAX_LINKS) return undefined;
-	let existing = path;
-	const rest: string[] = [];
-	for (;;) {
-		try {
-			return join(realpathSync(existing), ...rest);
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== "ENOENT" && code !== "ENOTDIR") return undefined;
-			const link = lstatSync(existing, { throwIfNoEntry: false });
-			if (link?.isSymbolicLink()) {
-				const target = resolve(dirname(existing), readlinkSync(existing));
-				return realPlace(join(target, ...rest), links + 1);
+function realPlace(path: string): string | undefined {
+	const pending = path.split("/").filter((part) => part !== "");
+	let current = "/";
+	let links = 0;
+	try {
+		while (pending.length > 0) {
+			const part = pending.shift() as string;
+			if (part === ".") continue;
+			if (part === "..") {
+				current = dirname(current);
+				continue;
 			}
-			if (dirname(existing) === existing) return undefined;
-			rest.unshift(basename(existing));
-			existing = dirname(existing);
+			const next = join(current, part);
+			if (lstatSync(next, { throwIfNoEntry: false })?.isSymbolicLink()) {
+				if (++links > MAX_LINKS) return undefined;
+				const target = readlinkSync(next);
+				pending.unshift(...target.split("/").filter((piece) => piece !== ""));
+				if (target.startsWith("/")) current = "/";
+				continue;
+			}
+			current = next;
 		}
+	} catch {
+		return undefined;
 	}
+	return current;
 }
 
 /**
@@ -201,7 +207,8 @@ function realPlace(path: string, links = 0): string | undefined {
  */
 function insideProject(root: string, cwd: string): (place: string) => boolean {
 	return (place) => {
-		const real = realPlace(resolve(cwd, place));
+		// Not `resolve`: it would take a `..` in `cwd` before the links in it are followed.
+		const real = realPlace(place.startsWith("/") ? place : `${cwd}/${place}`);
 		return real !== undefined && isInside(root, real);
 	};
 }

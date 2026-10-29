@@ -153,6 +153,15 @@ describe("rules allowed always in this project", () => {
 		expect(questions.map(({ callId }) => callId)).toEqual(["c1"]);
 	});
 
+	it("follows a dangling link's target a part at a time, so a .. after a link goes up from where it leads", async () => {
+		await symlink(clone, join(app, "pivot"));
+		await symlink(`pivot/../victim-${process.pid}`, join(app, "out"));
+		const rules = new PermissionRules({ home, cwd: app });
+		await rules.allow([{ kind: "bash", value: "./run.sh" }], "project");
+		const { questions } = await run(app, [leave("./run.sh out", "c1")], { rules });
+		expect(questions).toHaveLength(1);
+	});
+
 	it("asks when the program itself is a link out of the project", async () => {
 		await symlink(join(clone, "run.sh"), join(app, "tool.sh"));
 		const rules = new PermissionRules({ home, cwd: app });
