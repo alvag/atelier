@@ -2677,27 +2677,28 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
-		it("holds back the live line between changes, and drops it once the turn ends", async () => {
-			const { h, stub, code } = stubbed(60_000);
+		// What a held line does once its time has passed after done or clear is driven in tui-program-status.test.ts.
+		it("holds back the live line between changes, and sends the newest when its time comes", async () => {
+			const { h, stub, code } = stubbed(100);
 			await until(h.screen.started);
 			h.screen.type("go");
 			h.screen.type("\r");
 			await until(() => h.screen.statuses.length === 2);
-			for (const id of ["c1", "c2", "c3"]) {
+			// Held while the interval runs: only the newest goes when it ends.
+			for (const id of ["c2", "c3"]) {
 				stub.emit(callStarted(id, "bash", { command: `echo ${id}` }));
 				stub.emit(callFinished(id));
 			}
-			stub.emit({ type: "text_delta", text: "Ran three." });
-			stub.emit({ type: "turn_finished", stopReason: "end_turn", usage });
-			await until(() => h.screen.statuses.at(-1)?.state === "done");
-			h.screen.type("\x03");
-			expect(await code).toBe(130);
+			stub.emit(callStarted("c4", "bash", { command: "echo c4" }));
+			await until(() => h.screen.statuses.length === 3);
 			expect(h.screen.statuses).toEqual([
 				atelier("idle"),
 				atelier("working"),
-				atelier("done", { message: "Ran three." }),
-				atelier("clear"),
+				atelier("working", { message: "bash echo c4" }),
 			]);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
 		});
 
 		it("titles the terminal without control or bidi characters, cut to 50 characters", async () => {
