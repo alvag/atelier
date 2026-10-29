@@ -1,3 +1,4 @@
+import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { danglingLink, foldPath, isInsideFolded, linkTargets, realpathAllowMissing } from "./paths.ts";
@@ -43,6 +44,23 @@ async function isProjectConfig(cwd: string, lexical: string, real: string): Prom
 	] as const)
 		if (firstSegments(base, path)?.[0] === ".atelier") return true;
 	return isUnder(join(cwd, ".atelier"), lexical, real);
+}
+
+/**
+ * In a `.git` below the working directory, as named or on disk, or in `.git` at its top when it has none: a new or
+ * changed one points git at another repository, whose configuration and hooks git runs. As the sandbox denies it.
+ */
+async function isOtherGitDir(cwd: string, lexical: string, real: string): Promise<boolean> {
+	const root = await realOrSelf(cwd);
+	const topIsMissing = (await lstat(join(cwd, ".git")).catch(() => undefined)) === undefined;
+	for (const [base, path] of [
+		[cwd, lexical],
+		[root, real],
+	] as const) {
+		const segments = firstSegments(base, path) ?? [];
+		if (segments.some((segment, i) => segment === ".git" && (i > 0 || topIsMissing))) return true;
+	}
+	return false;
 }
 
 /**
@@ -107,7 +125,7 @@ export async function projectRefusal(
 	const gitPaths = gitProtectedPaths(cwd, home);
 	if (await isProfilePin(gitPaths, lexical, real))
 		return `${path} is Atelier profile configuration: the agent does not write it.`;
-	if (await isGitState(cwd, home, gitPaths, lexical, real))
+	if ((await isOtherGitDir(cwd, lexical, real)) || (await isGitState(cwd, home, gitPaths, lexical, real)))
 		return `${path} is git state that runs code: the agent does not write it.`;
 	return undefined;
 }

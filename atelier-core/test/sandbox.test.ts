@@ -182,12 +182,21 @@ describe("agentPolicy", () => {
 		expect(added).toEqual(expect.arrayContaining(steps("/data/shared/.git")));
 	});
 
+	it("denies every .git below the working directory and the added directories, not one above the working directory", () => {
+		const additions = { allowWrite: ["/data/shared", "/work"], denyRead: [] };
+		const { denyWrite } = agentPolicy({ ...SESSION, additions }).filesystem;
+		expect(denyWrite).toEqual(expect.arrayContaining(["/work/project/*/**/.git", "/data/shared/*/**/.git"]));
+		expect(denyWrite).not.toContain("/work/*/**/.git");
+		expect(denyWrite).not.toContain("/work/project/.git");
+	});
+
 	it("does not let a command write the project's .atelier directory, where its configuration lives", () => {
 		expect(agentPolicy(SESSION).filesystem.denyWrite).toContain("/work/project/.atelier");
 	});
 
 	it("denies writing .env, .env.*, *.pem and *.key anywhere in the working directory, and other tools' credential files", () => {
 		expect(agentPolicy(SESSION).filesystem.denyWrite).toEqual([
+			"/work/project/*/**/.git",
 			"/work/project/.env",
 			"/work/project/.env.*",
 			"/work/project/**/.env",

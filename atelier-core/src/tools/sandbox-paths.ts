@@ -9,6 +9,16 @@ export function secretFilePatterns(dir: string): string[] {
 }
 
 /**
+ * Every `.git` below `dir`, not `dir/.git` itself: a directory, a file or a link of that name, existing or not, and
+ * everything in one. A new or changed one points git at another repository, whose configuration and hooks git runs
+ * when someone runs it there; the library denies the subtree a pattern names and keeps the name from being created,
+ * moved or replaced. The top `.git` keeps its own, narrower protections.
+ */
+export function nestedGitPattern(dir: string): string {
+	return join(dir, "*/**/.git");
+}
+
+/**
  * What the library protects by itself (git hooks and configuration, shell
  * start-up files, editor and tool configuration), but only in the directory the
  * process was started in, which is not the session's working directory when
