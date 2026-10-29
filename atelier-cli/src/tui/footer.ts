@@ -1,7 +1,9 @@
 import { basename } from "node:path";
 import {
 	type AtelierEvent,
+	type ContextLevel,
 	type ContextUsage,
+	contextGauge,
 	type Phase,
 	type SessionConfiguration,
 	visibleText,
@@ -93,6 +95,11 @@ export function footerAfter(state: FooterState, event: AtelierEvent): FooterStat
 				...(event.context === undefined ? {} : { context: event.context }),
 				...(event.costUsd === undefined ? {} : { costUsd: (state.costUsd ?? 0) + event.costUsd }),
 			};
+		// Until an answer measures the compacted history, its size is not known.
+		case "compaction_finished":
+			return event.ok && state.context !== undefined
+				? { ...state, context: { ...state.context, unknown: true } }
+				: state;
 		case "phase_changed":
 			return { ...state, phase: event.phase };
 		// The same progress as the feature panel's.
@@ -113,9 +120,12 @@ export function footerWithConfiguration(
 	state: FooterState,
 	configuration: Omit<SessionConfiguration, "pending" | "thinking" | "effort"> & { thinking?: string; effort?: string },
 ): FooterState {
-	const { model: _model, ...rest } = state;
+	const { model: _model, context, ...rest } = state;
+	// Another backend or model has another window: the gauge waits for a turn to measure it.
+	const sameModel = configuration.backend === state.backend && configuration.model === state.model;
 	return {
 		...rest,
+		...(sameModel && context !== undefined ? { context } : {}),
 		backend: configuration.backend,
 		...(configuration.model === undefined ? {} : { model: configuration.model }),
 		...(configuration.effort === undefined ? {} : { effort: configuration.effort }),
@@ -155,7 +165,7 @@ function itemText(item: StatusItem, state: FooterState, paint: Paint): string | 
 			return state.sandboxed ? "sandbox ✓" : paint("yellow", "sandbox ✗");
 		case "context":
 			if (state.context === undefined) return undefined;
-			return state.context.unknown ? "ctx ?" : `ctx ${contextShare(state.context)}%`;
+			return contextText(state.context, paint);
 		case "cost":
 			return state.costUsd === undefined ? undefined : `$${state.costUsd.toFixed(2)}`;
 		case "phase":
@@ -196,4 +206,11 @@ export function footerLine(
 /** Event strings shown with markers for control characters, as the line CLI shows them. */
 const shown = (text: string) => visibleText(text).text;
 
-const contextShare = ({ tokens, window }: ContextUsage) => (window > 0 ? Math.round((tokens / window) * 100) : 0);
+/** The color of each level of the gauge; a normal one has none. */
+const LEVEL_STYLES: Record<Exclude<ContextLevel, "normal">, "yellow" | "red"> = { warning: "yellow", danger: "red" };
+
+/** `ctx ▰▱▱▱▱▱▱▱ 11% · 1M`, yellow or red as compaction nears. */
+function contextText(context: ContextUsage, paint: Paint): string {
+	const { text, level } = contextGauge(context);
+	return level === "normal" ? `ctx ${text}` : paint(LEVEL_STYLES[level], `ctx ${text}`);
+}

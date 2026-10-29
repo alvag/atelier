@@ -48,7 +48,7 @@ describe("footer", () => {
 			{ type: "turn_finished", stopReason: "end_turn", usage, costUsd: 5, parentCallId: "task1" },
 		]);
 		expect(footerLine(state, 120, plain)).toBe(
-			" claude-opus-5-5 high · profile claude · auto · sandbox ✓ · ctx 34% · $0.42 · implementing · T2 1/3",
+			" claude-opus-5-5 high · profile claude · auto · sandbox ✓ · ctx ▰▰▰▱▱▱▱▱ 34% · 200k · $0.42 · implementing · T2 1/3",
 		);
 	});
 
@@ -60,8 +60,70 @@ describe("footer", () => {
 			context: { window: 1_000_000, compactAt: 967_000, ...context },
 		});
 		const compacted = after([turn({ tokens: 400_000 }), turn({ tokens: 3000, unknown: true })]);
-		expect(footerLine(compacted, 120, plain, ["context"])).toBe(" ctx ?");
-		expect(footerLine(after([turn({ tokens: 20_000 })], compacted), 120, plain, ["context"])).toBe(" ctx 2%");
+		expect(footerLine(compacted, 120, plain, ["context"])).toBe(" ctx ▱▱▱▱▱▱▱▱ ? · 1M");
+		expect(footerLine(after([turn({ tokens: 20_000 })], compacted), 120, plain, ["context"])).toBe(
+			" ctx ▱▱▱▱▱▱▱▱ 2% · 1M",
+		);
+	});
+
+	it("colors the gauge by how close compaction is, not by the share of the window", () => {
+		const tagged = (style: Parameters<typeof plain>[0], text: string) => `<${String(style)}>${text}</>`;
+		const at = (tokens: number) =>
+			footerLine({ context: { tokens, window: 1_000_000, compactAt: 200_000 } }, 120, tagged, ["context"]);
+		expect(at(100_000)).toBe(" ctx ▰▱▱▱▱▱▱▱ 10% · 1M");
+		expect(at(150_000)).toBe(" <yellow>ctx ▰▱▱▱▱▱▱▱ 15% · 1M</>");
+		expect(at(190_000)).toBe(" <red>ctx ▰▰▱▱▱▱▱▱ 19% · 1M</>");
+	});
+
+	it("says the size is unknown as soon as the main agent compacts, not when a subagent does", () => {
+		const measured = after([
+			{
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				context: { tokens: 400_000, window: 1_000_000, compactAt: 983_616 },
+			},
+		]);
+		const compacted: Body = {
+			type: "compaction_finished",
+			ok: true,
+			reason: "threshold",
+			tokensBefore: 400_000,
+			kept: 2,
+			usage,
+		};
+		expect(footerLine(after([compacted], measured), 120, plain, ["context"])).toBe(" ctx ▱▱▱▱▱▱▱▱ ? · 1M");
+		expect(footerLine(after([{ ...compacted, parentCallId: "task1" }], measured), 120, plain, ["context"])).toBe(
+			" ctx ▰▰▰▱▱▱▱▱ 40% · 1M",
+		);
+		expect(footerLine(after([{ ...compacted, ok: false }], measured), 120, plain, ["context"])).toBe(
+			" ctx ▰▰▰▱▱▱▱▱ 40% · 1M",
+		);
+	});
+
+	it("hides the gauge after the backend or the model changes, until a turn measures the new window", () => {
+		const measured = after([
+			{ type: "session_started", backend: "anthropic-api", model: "claude-opus-5-5", authSource: "api_key" },
+			{
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				context: { tokens: 400_000, window: 1_000_000, compactAt: 983_616 },
+			},
+		]);
+		const configured = (backend: string, model?: string): Body => ({
+			type: "session_configured",
+			backend,
+			...(model === undefined ? {} : { model }),
+			thinking: "high",
+			effort: "high",
+			permissionMode: "normal",
+		});
+		const context = (state: FooterState) => footerLine(state, 120, plain, ["context"]);
+		expect(context(after([configured("anthropic-api", "claude-opus-5-5")], measured))).toBe(" ctx ▰▰▰▱▱▱▱▱ 40% · 1M");
+		expect(context(after([configured("anthropic-api", "claude-haiku-5-5")], measured))).toBe(" ");
+		expect(context(after([configured("anthropic-api")], measured))).toBe(" ");
+		expect(context(after([configured("openai-codex", "claude-opus-5-5")], measured))).toBe(" ");
 	});
 
 	it("says the asked level when the model did not take it", () => {
