@@ -109,11 +109,13 @@ const PROJECT_PROGRAMS = new Set([
 const CHANGES_DIRECTORY = new Set(["cd", "pushd", "popd"]);
 /**
  * Whether a word may name a place outside the project, failing closed: an expansion the shell does (`$HOME`, `${x}`,
- * `~`, a brace list), any `..`, or an absolute path, by itself or attached to an option (`-C/x`, `--dir=/x`, `--dir/x`)
+ * `~`, a brace list, an unquoted glob), any `..`, or an absolute path, by itself or attached to an option (`-C/x`, `--dir=/x`, `--dir/x`)
  * or a value (`file:/x`, `foo@/x`).
  */
 function leavesProject({ value, raw }: { value: string; raw: string }): boolean {
 	if (/[$`~{]/.test(raw) || value.includes("~") || value.includes("..")) return true;
+	// A glob the shell expands (`l?nk`, `lin[k]`, `l*`) may name any place: only quoted or escaped it is literal.
+	if (/[*?[]/.test(raw.replace(/'[^']*'|"(?:\\.|[^"\\])*"|\\./g, ""))) return true;
 	return /(?:^|[=:,@])\/|^-[A-Za-z0-9]+\/|^--[\w-]+\//.test(value);
 }
 

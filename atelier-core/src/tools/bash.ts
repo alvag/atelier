@@ -192,15 +192,15 @@ function coveredByRules(
 		cwd,
 		bashRules = [],
 		projectBashRules = [],
-		projectRoot,
-	}: Pick<ToolContext, "cwd" | "bashRules" | "projectBashRules" | "projectRoot">,
+		projectBounds,
+	}: Pick<ToolContext, "cwd" | "bashRules" | "projectBashRules" | "projectBounds">,
 	{ withoutApproval, policy, sandbox }: { withoutApproval: boolean; policy: SandboxPolicyName; sandbox: Sandbox },
 ): boolean {
 	// Project rules apply only where the project is known.
-	const project = projectRoot === undefined ? [] : projectBashRules;
+	const project = projectBounds === undefined ? [] : projectBashRules;
 	if (withoutApproval || policy !== "agent" || (bashRules.length === 0 && project.length === 0)) return false;
 	if (findConfirmCommands(command).length > 0) return false;
-	const inProject = projectRoot === undefined ? undefined : insideProject(projectRoot, cwd);
+	const inProject = projectBounds === undefined ? undefined : insideProject(projectBounds, cwd);
 	if (!coveredBy(command, bashRules, project, inProject)) return false;
 	return sandbox.outsideAvailable();
 }

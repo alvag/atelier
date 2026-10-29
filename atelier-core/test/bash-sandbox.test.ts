@@ -853,7 +853,7 @@ describe.skipIf(!onMac)("the commands the user's rules cover", () => {
 		// A link out of the project is never covered by a project rule: the command runs in the sandbox, which denies it.
 		const linked = await tool.execute(
 			{ command: `touch settings/project-permi""ssions.json` },
-			{ cwd, projectBashRules: ["touch"], projectRoot: await realpath(cwd) },
+			{ cwd, projectBashRules: ["touch"], projectBounds: await realpath(cwd) },
 		);
 		expect(linked.output).not.toContain("[ran outside the sandbox");
 		expect(linked.ok).toBe(false);
@@ -867,7 +867,7 @@ describe.skipIf(!onMac)("the commands the user's rules cover", () => {
 		});
 		const covered = await createBashTool({ sandbox }).execute(
 			{ command: "./w.sh" },
-			{ cwd, projectBashRules: ["./w.sh"], projectRoot: await realpath(cwd) },
+			{ cwd, projectBashRules: ["./w.sh"], projectBounds: await realpath(cwd) },
 		);
 		expect(covered.output).toContain("[ran outside the sandbox");
 		expect(covered.ok).toBe(false);

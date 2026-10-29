@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -148,6 +149,23 @@ describe("rules allowed always in this project", () => {
 		await rules.allow([{ kind: "bash", value: "./tool.sh" }], "project");
 		const { questions } = await run(app, [leave("./tool.sh", "c1")], { rules });
 		expect(questions).toHaveLength(1);
+	});
+
+	it("covers the places of a linked worktree by the main checkout's rule", async () => {
+		const main = join(app, "..", "main");
+		const git = (cwd: string, ...args: string[]) =>
+			execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "pipe" });
+		await mkdir(main);
+		git(main, "init", "-q");
+		git(main, "commit", "-q", "--allow-empty", "-m", "x");
+		const wt = join(app, "..", "wt");
+		git(main, "worktree", "add", "-q", wt);
+		await writeFile(join(wt, "run.sh"), "#!/bin/sh\nprintf WORKTREE_RAN\n", { mode: 0o755 });
+		await mkdir(join(wt, "sub"));
+		await new PermissionRules({ home, cwd: main }).allow([{ kind: "bash", value: "./run.sh" }], "project");
+		const { questions, results } = await run(wt, [leave("./run.sh", "c1"), leave("./run.sh sub", "c2")]);
+		expect(questions).toEqual([]);
+		expect(results[0]?.output).toContain("WORKTREE_RAN");
 	});
 
 	it("covers an absolute executable allowed for the project", async () => {

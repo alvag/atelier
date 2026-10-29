@@ -4,31 +4,61 @@ import { basename, dirname, join, resolve } from "node:path";
 /**
  * The project a session works in, as rules allowed "in this project" name it: the real path of the git checkout
  * that holds the working directory (the main checkout for a linked worktree, so every worktree of a repository
- * shares its rules), a bare repository for the folders in it, or the working directory itself outside git. It reads the files git leaves, never runs git,
- * whose configuration the repository could set.
+ * shares its rules), a bare repository for the folders in it, or the working directory itself outside git. It reads
+ * the files git leaves, never runs git, whose configuration the repository could set.
  */
 export async function projectRoot(cwd: string): Promise<string> {
+	return (await projectOf(cwd)).project;
+}
+
+/**
+ * The project of `cwd` (`projectRoot`) and the checkout that holds it: the folder the session's commands work in,
+ * which for a linked worktree is the worktree itself, not the main checkout its rules are kept for.
+ */
+export async function projectOf(cwd: string): Promise<{ project: string; checkout: string }> {
 	const start = await realpath(cwd);
+	const own = (dir: string) => ({ project: dir, checkout: dir });
 	for (let dir = start; ; dir = dirname(dir)) {
 		const dotGit = join(dir, ".git");
 		// A `.git` that is a link is never followed to another checkout: the folder holding it is the project.
 		const info = await lstat(dotGit).catch(() => undefined);
-		if (info?.isDirectory() || info?.isSymbolicLink()) return dir;
-		if (info?.isFile()) return (await mainCheckout(dir, dotGit)) ?? dir;
-		if (await isBareRepository(dir)) return dir;
-		if (dirname(dir) === dir) return start;
+		if (info?.isDirectory() || info?.isSymbolicLink()) return own(dir);
+		if (info?.isFile()) return { project: (await mainCheckout(dir, dotGit)) ?? dir, checkout: dir };
+		if (await isBareRepository(dir)) return own(dir);
+		if (dirname(dir) === dir) return own(start);
 	}
 }
 
-/** Whether `dir` is a bare repository, as its files show: `HEAD`, `objects/`, `refs/` and `bare = true` in `config`. */
+/** Whether `dir` is a bare repository, as its files show: `HEAD`, `objects/`, `refs/` and `core.bare` true in `config`. */
 async function isBareRepository(dir: string): Promise<boolean> {
 	const kinds = await Promise.all(
 		["HEAD", "objects", "refs", "config"].map((name) => lstat(join(dir, name)).catch(() => undefined)),
 	);
 	const [head, objects, refs, config] = kinds;
 	if (!head?.isFile() || !objects?.isDirectory() || !refs?.isDirectory() || !config?.isFile()) return false;
-	const text = await readFile(join(dir, "config"), "utf8").catch(() => "");
-	return /^\s*bare\s*=\s*true\s*$/im.test(text);
+	return coreBare(await readFile(join(dir, "config"), "utf8").catch(() => ""));
+}
+
+/**
+ * The value of `core.bare` as git reads a config file: only in the `[core]` section (any case, no subsection), the
+ * last one wins, a key alone is true, comments (`#`, `;`) and quotes are not part of the value.
+ */
+function coreBare(text: string): boolean {
+	let inCore = false;
+	let bare = false;
+	for (const raw of text.split("\n")) {
+		let line = raw.trim();
+		const section = /^\[([^\]]*)\](.*)$/.exec(line);
+		if (section) {
+			inCore = (section[1] ?? "").trim().toLowerCase() === "core";
+			line = (section[2] ?? "").trim();
+		}
+		const entry = /^bare\s*(?:=(.*))?$/i.exec(line.replace(/\s*[#;].*$/, ""));
+		if (!inCore || entry === null) continue;
+		const value = (entry[1] ?? "true").trim().replace(/"/g, "").toLowerCase();
+		bare = ["true", "yes", "on", "1"].includes(value);
+	}
+	return bare;
 }
 
 /**

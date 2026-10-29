@@ -72,6 +72,23 @@ describe("projectRoot", () => {
 		expect(await projectRoot(bare)).toBe(bare);
 	});
 
+	it.each([
+		["[core]\n\tbare = false\n[other]\n\tbare = true\n", false],
+		['[core "x"]\n\tbare = true\n', false],
+		["[core]\n\tbare = true\n\tbare = false\n", false],
+		["[core]\n\t# bare = true\n", false],
+		["[core]\n\tbare = yes # a comment\n", true],
+		["[CORE]\n\tBare=On ; note\n", true],
+		["[core]\n\tbare\n", true],
+		["[core] bare = 1\n", true],
+	])("reads core.bare from %j as %s", async (config, bare) => {
+		const parent = join(root, "parent");
+		for (const dir of ["objects", "refs", "independent"]) await mkdir(join(parent, dir), { recursive: true });
+		await writeFile(join(parent, "HEAD"), "ref: refs/heads/main\n");
+		await writeFile(join(parent, "config"), config);
+		expect(await projectRoot(join(parent, "independent"))).toBe(bare ? parent : join(parent, "independent"));
+	});
+
 	it("is a submodule's own folder, and the folder holding a .git file it cannot follow", async () => {
 		await mkdir(join(root, "app", ".git", "modules", "lib"), { recursive: true });
 		await mkdir(join(root, "app", "lib"), { recursive: true });

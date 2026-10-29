@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { isAbsolute, join, normalize } from "node:path";
-import { projectRoot } from "./project-root.ts";
+import { projectOf } from "./project-root.ts";
 import { commandRuleScope } from "./tools/command-rules.ts";
 import { isInside } from "./tools/paths.ts";
 
@@ -241,13 +241,13 @@ export interface PermissionRulesOptions {
 export class PermissionRules {
 	readonly #home: string | undefined;
 	readonly #session = new Map<string, PermissionRule>();
-	readonly #project: Promise<string | undefined>;
+	readonly #where: Promise<{ project: string; checkout: string } | undefined>;
 
 	constructor({ home, cwd }: PermissionRulesOptions = {}) {
 		this.#home = home;
 		// Settled once, when the session opens: what the agent does later cannot move its project.
-		this.#project =
-			home === undefined || cwd === undefined ? Promise.resolve(undefined) : projectRoot(cwd).catch(() => undefined);
+		this.#where =
+			home === undefined || cwd === undefined ? Promise.resolve(undefined) : projectOf(cwd).catch(() => undefined);
 	}
 
 	/** Whether rules can be allowed always: there is a home to save them in. */
@@ -256,8 +256,16 @@ export class PermissionRules {
 	}
 
 	/** The project rules allowed "in this project" apply to; undefined when they cannot be saved. */
-	project(): Promise<string | undefined> {
-		return this.#project;
+	async project(): Promise<string | undefined> {
+		return (await this.#where)?.project;
+	}
+
+	/**
+	 * The real folder of the checkout the session works in, which bounds what its project's rules cover: the project
+	 * itself, or a linked worktree of it. Undefined when there is no project.
+	 */
+	async checkout(): Promise<string | undefined> {
+		return (await this.#where)?.checkout;
 	}
 
 	async #saved(): Promise<Saved> {
@@ -266,7 +274,7 @@ export class PermissionRules {
 
 	/** The rules saved for this session's project. */
 	async #projectSaved(): Promise<ProjectSaved> {
-		const project = await this.#project;
+		const project = (await this.#where)?.project;
 		if (this.#home === undefined || project === undefined) return { rules: [] };
 		const saved = await readProjectSaved(this.#home);
 		return { ...saved, rules: saved.rules.filter((rule) => rule.project === project) };
@@ -312,7 +320,7 @@ export class PermissionRules {
 		const home = this.#home;
 		if (home === undefined) throw new PermissionRulesError("there is no home directory to save the rule in");
 		if (scope === "project") {
-			const project = await this.#project;
+			const project = (await this.#where)?.project;
 			if (project === undefined) throw new PermissionRulesError("this session has no project to save the rule for");
 			await serialized(projectPermissionRulesPath(home), async () => {
 				const saved = await readProjectSaved(home);
@@ -363,7 +371,7 @@ export class PermissionRules {
 		const home = this.#home;
 		if (home === undefined) return false;
 		if (id.startsWith("project:")) {
-			const project = await this.#project;
+			const project = (await this.#where)?.project;
 			const key = id.slice("project:".length);
 			if (project === undefined || !key.startsWith("bash:")) return false;
 			const removed = projectKeyOf({ value: key.slice("bash:".length), project });
