@@ -393,6 +393,22 @@ describe("ClaudeCodeBackend model names", () => {
 		expect(calls.order).toContain("setModel:fable");
 	});
 
+	it("takes the levels of the versioned id an alias stands for, as the subscription's list says it", async () => {
+		useModelData(
+			new ModelData(
+				{ "claude-code": [{ id: "claude-fable-5-1", aliases: ["fable"] }] },
+				{ "claude-code": ["claude-fable-5-1"] },
+			),
+		);
+		const { query, calls } = fakeQuery([init], []);
+		await new ClaudeCodeBackend({ query, env: {} }).start({ ...plainStart, model: "fable", thinking: "xhigh" });
+		expect(calls.options.model).toBe("fable");
+		expect(calls.options.effort).toBe("xhigh");
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start({ ...plainStart, model: "claude-opus-4-6" });
+		await session.configure?.({ model: "fable", thinking: "xhigh" });
+		expect(calls.order).toEqual(["setModel:fable", 'flags:{"effortLevel":"xhigh"}']);
+	});
+
 	it("says the window Claude Code ran each model with, by its versioned id", async () => {
 		const windows: Record<string, number>[] = [];
 		const usage = (contextWindow: number, canonicalModel?: string) => ({

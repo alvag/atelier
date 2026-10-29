@@ -1,4 +1,5 @@
 import { currentModelData } from "../../model-catalog/current.ts";
+import type { ModelData } from "../../model-catalog/model-data.ts";
 
 /**
  * The models `claude-code` offers until a session lists the subscription's: the ones its aliases `opus`, `sonnet` and
@@ -30,7 +31,23 @@ export const withoutWindow = (id: string): string => id.replace(/\[1m\]$/i, "");
  */
 export function claudeCodeName(model: string): string {
 	const data = currentModelData();
-	const listed = data.listed("claude-code");
-	if (listed === undefined || !listed.every(isVersionedClaudeId)) return CODE_ALIASES[model] ?? model;
+	if (resolvedList(data) === undefined) return CODE_ALIASES[model] ?? model;
 	return data.model("claude-code", model)?.aliases?.[0] ?? model;
+}
+
+/** The subscription's list, once a session listed it with the aliases resolved; undefined before. */
+function resolvedList(data: ModelData): readonly string[] | undefined {
+	const listed = data.listed("claude-code");
+	return listed?.every(isVersionedClaudeId) ? listed : undefined;
+}
+
+/**
+ * The versioned id a name stands for, so an alias finds the levels of its model: the one the subscription's list
+ * keeps the alias with, else the code's; any other name is its own.
+ */
+export function claudeCodeIdOf(name: string): string {
+	const data = currentModelData();
+	const id = resolvedList(data)?.find((model) => data.model("claude-code", model)?.aliases?.includes(name));
+	if (id !== undefined) return id;
+	return Object.keys(CODE_ALIASES).find((id) => CODE_ALIASES[id] === name) ?? name;
 }
