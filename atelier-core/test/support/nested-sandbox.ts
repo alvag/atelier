@@ -1,9 +1,9 @@
 import { isInsideSandbox } from "../../src/tools/sandbox.ts";
 
-/** Said at the end of a run whose sandbox tests skipped: a green run inside a sandbox does not cover them. */
+/** Said at the end of a run whose Seatbelt tests skipped: a green run inside a sandbox does not cover them. */
 export const NESTED_SANDBOX_WARNING = [
 	"",
-	"WARNING: this test run was inside a sandbox, and macOS cannot nest one: the Seatbelt and PTY tests did not run,",
+	"WARNING: this test run was inside a sandbox, and macOS cannot nest one: the Seatbelt tests did not run,",
 	"so a green result does not cover them. Run them outside the sandbox with a new, empty HOME and TMPDIR:",
 	"  H=$(mktemp -d); mkdir $H/tmp; HOME=$H TMPDIR=$H/tmp NO_UPDATE_NOTIFIER=1 node_modules/.bin/vitest run <files>",
 	"",
