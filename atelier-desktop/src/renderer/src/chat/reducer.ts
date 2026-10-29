@@ -340,17 +340,22 @@ function withoutSession(state: ChatState): ChatState {
 	return { ...rest, busy: false, returned };
 }
 
+/** Another backend or model has another window: the context waits for a turn to measure it. */
+function withoutStaleContext(state: ChatState, backend: string, model: string | undefined): ChatState {
+	// An absent model is the default one, which only another backend changes.
+	if (backend === state.backend && (model === undefined || model === state.model)) return state;
+	const { context: _context, ...rest } = state;
+	return rest;
+}
+
 function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 	if (event.parentCallId !== undefined) return applySubagentEvent(state, event, event.parentCallId);
 	switch (event.type) {
 		case "session_started": {
 			// Claude Code says session_started on every init: a later one without a profile keeps the known one.
-			const { effort: _effort, context, ...rest } = state;
-			// Another backend or model has another window: the context waits for a turn to measure it.
-			const sameModel = event.backend === state.backend && event.model === state.model;
+			const { effort: _effort, ...rest } = withoutStaleContext(state, event.backend, event.model);
 			return {
 				...rest,
-				...(sameModel && context !== undefined ? { context } : {}),
 				backend: event.backend,
 				model: event.model,
 				authSource: event.authSource,
@@ -359,6 +364,12 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 				...(event.permissionMode === undefined ? {} : { permissionMode: event.permissionMode }),
 			};
 		}
+		case "session_configured":
+			return {
+				...withoutStaleContext(state, event.backend, event.model),
+				backend: event.backend,
+				...(event.model === undefined ? {} : { model: event.model }),
+			};
 		case "rate_limit": {
 			if (event.status === "allowed") return state;
 			return { ...state, notice: `Rate limit: ${event.status}${event.window ? ` (${event.window})` : ""}` };

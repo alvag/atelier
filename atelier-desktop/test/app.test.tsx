@@ -1678,6 +1678,24 @@ describe("App", () => {
 			await waitFor(() => expect(status.queryByText(/^ctx /)).toBeNull());
 		});
 
+		it("hides the context when the model changes during a turn, until the new model measures it", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
+			fake.emit({ type: "session_started", backend: "anthropic-api", model: "first", authSource: "api_key" });
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				context: { tokens: 182_000, window: 1_000_000, compactAt: 200_000 },
+			});
+			const status = within(screen.getByRole("status"));
+			expect(await status.findByText("ctx ▰▱▱▱▱▱▱▱ 18% · 1M")).toBeTruthy();
+			fake.emit({ type: "session_configured", backend: "anthropic-api", model: "other", permissionMode: "normal" });
+			fake.emit({ type: "turn_finished", stopReason: "end_turn", usage });
+			await waitFor(() => expect(screen.queryByText(/^ctx /)).toBeNull());
+		});
+
 		it("says the context size is unknown right after a compaction", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");
