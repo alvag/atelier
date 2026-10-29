@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { SECRET_TEMP_FOLDER } from "../secret-file.ts";
@@ -109,13 +109,17 @@ export interface ConfigFile {
 }
 
 const CONFIG_BUFFER_LIMIT = 1024 * 1024;
+const COMBINED_CONFIG_BUFFER_LIMIT = 3 * CONFIG_BUFFER_LIMIT + 64 * 1024;
 
-/** Raw NUL-delimited records: decoding first would expand invalid UTF-8 bytes when measuring the old query sizes. */
-function gitConfigRecords(file: string, args: string[], maxBuffer = CONFIG_BUFFER_LIMIT): Buffer[] | undefined {
-	const run = spawnSync("git", ["config", "--file", file, "--no-includes", "-z", ...args], {
+function gitConfig(file: string, args: string[], maxBuffer = CONFIG_BUFFER_LIMIT): SpawnSyncReturns<Buffer> {
+	return spawnSync("git", ["config", "--file", file, "--no-includes", "-z", ...args], {
 		timeout: 5000,
 		maxBuffer,
 	});
+}
+
+/** Raw NUL-delimited records: decoding first would expand invalid UTF-8 bytes when measuring the old query sizes. */
+function configRecords(run: SpawnSyncReturns<Buffer>): Buffer[] | undefined {
 	if (run.status === 1) return [];
 	// As before, status 0 is accepted even if Node also reports ENOBUFS after git has exited.
 	if (run.status !== 0) return undefined;
@@ -137,11 +141,14 @@ function gitConfigRecords(file: string, args: string[], maxBuffer = CONFIG_BUFFE
  */
 export function configFilePaths(file: string): ConfigFile {
 	if (!existsSync(file)) return { includes: [], malformed: false };
-	const records = gitConfigRecords(
+	const run = gitConfig(
 		file,
 		["--get-regexp", "^(include\\.path|includeif\\..*\\.path|core\\.hookspath)$"],
-		Infinity,
+		COMBINED_CONFIG_BUFFER_LIMIT,
 	);
+	// Even status 0 with ENOBUFS can leave truncated combined records; only the old queries decide their results.
+	if ((run.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS") return separateConfigFilePaths(file);
+	const records = configRecords(run);
 	if (records === undefined) return { ...parseConfigFile(file), malformed: true };
 	const plain: string[] = [];
 	const conditional: string[] = [];
@@ -172,9 +179,9 @@ export function configFilePaths(file: string): ConfigFile {
 
 /** Preserve the original commands and their actual exit/overflow behavior for large individual query outputs. */
 function separateConfigFilePaths(file: string): ConfigFile {
-	const plain = gitConfigRecords(file, ["--get-all", "include.path"]);
-	const conditional = gitConfigRecords(file, ["--get-regexp", "^includeif\\..*\\.path$"]);
-	const hooks = gitConfigRecords(file, ["--get", "core.hooksPath"]);
+	const plain = configRecords(gitConfig(file, ["--get-all", "include.path"]));
+	const conditional = configRecords(gitConfig(file, ["--get-regexp", "^includeif\\..*\\.path$"]));
+	const hooks = configRecords(gitConfig(file, ["--get", "core.hooksPath"]));
 	if (plain === undefined || conditional === undefined || hooks === undefined)
 		return { ...parseConfigFile(file), malformed: true };
 	const includes = [
