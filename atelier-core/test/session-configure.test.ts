@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { createBackend } from "../src/backend-factory.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -8,12 +9,51 @@ import {
 	type SessionOptions,
 } from "../src/index.ts";
 import { ModelData, useModelData } from "../src/model-catalog/index.ts";
+import { FakeProvider, sse } from "./support/fake-provider.ts";
 
 const usage = { input: 10, output: 5, cacheRead: 3, cacheWrite: 2 };
 const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage };
 const started = (model: string): FakeStep => ({
 	event: { type: "session_started", backend: "fake", model, authSource: "none", effort: "high" },
 });
+
+/** A Messages API stream with one text block, as OpenCode Go answers. */
+function messagesReply(text: string): { sse: string } {
+	return {
+		sse: sse(
+			[
+				{
+					type: "message_start",
+					message: {
+						id: "msg_1",
+						type: "message",
+						role: "assistant",
+						model: "minimax-m3",
+						content: [],
+						stop_reason: null,
+						stop_sequence: null,
+						usage: {
+							input_tokens: 1000,
+							output_tokens: 1,
+							cache_read_input_tokens: 0,
+							cache_creation_input_tokens: 0,
+						},
+					},
+				},
+				{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+				{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+				{ type: "content_block_stop", index: 0 },
+				{
+					type: "message_delta",
+					delta: { stop_reason: "end_turn", stop_sequence: null },
+					usage: { output_tokens: 20 },
+				},
+				{ type: "message_stop" },
+			],
+			{ named: true },
+		),
+	};
+}
 
 async function collect(events: AsyncIterable<AtelierEvent>): Promise<AtelierEvent[]> {
 	const out: AtelierEvent[] = [];
@@ -188,6 +228,40 @@ describe("Session.configure", () => {
 			expect(events.find((event) => event.type === "turn_finished")).toMatchObject({
 				phases: { main: { agents: [{ role: "orchestrator", model: "fable", effort: "xhigh" }] } },
 			});
+		});
+	});
+
+	describe("on opencode-go, when the thinking budget does not fit the output budget", () => {
+		it("labels the turn parts with the effort the backend reports, not the level asked", async () => {
+			const provider = await FakeProvider.start();
+			try {
+				provider.answer(messagesReply("a"), messagesReply("b"));
+				const backend = await createBackend("opencode-go", {
+					resolveOpenCodeGoKey: async () => `oc-${"test"}-key`,
+					opencodeGo: { baseUrl: provider.url, maxRetries: 0, maxTokens: 1000 },
+				});
+				const session = await Session.start({
+					backend,
+					cwd: "/work",
+					tools: [],
+					model: "minimax-m3",
+					thinking: "high",
+				});
+				const one = await collect(session.send("one"));
+				const announced = one.find((event) => event.type === "session_started");
+				// Half of 1000 tokens cannot hold even the smallest budget, so the level is not sent at all.
+				expect(announced).toMatchObject({ effort: "high not sent" });
+				await session.configure({ thinking: "high" });
+				const two = await collect(session.send("two"));
+				const done = two.find((event) => event.type === "turn_finished");
+				expect(done).toMatchObject({
+					phases: { main: { agents: [{ role: "orchestrator", model: "minimax-m3", effort: "high not sent" }] } },
+				});
+				// The same label `session_started` said, not one computed apart from the backend.
+				expect(done?.phases?.main?.agents?.[0]?.effort).toBe(announced?.effort);
+			} finally {
+				await provider.close();
+			}
 		});
 	});
 });

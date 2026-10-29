@@ -245,7 +245,8 @@ export type AtelierEventBody =
 	/**
 	 * `effort`: the thinking level asked for, as sent with every request: the reasoning effort, `off` when thinking
 	 * was turned off, `auto` when a level was asked for a model that reasons on its own and takes no level, or
-	 * `<level> not sent` when the model cannot take that level. Absent when no level was asked.
+	 * `<level> not sent` when the level does not apply: the model does not take it, its thinking cannot be turned
+	 * off, or its thinking budget cannot fit under half of the request's output budget. Absent when no level was asked.
 	 * `profile`: the main session's frozen profile, when it resolved one; set by the session.
 	 */
 	| {

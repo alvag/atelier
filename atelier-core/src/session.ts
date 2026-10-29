@@ -1171,9 +1171,14 @@ export class Session {
 		const next: PhaseAgent = { ...agent, ...(this.#model === undefined ? {} : { model: this.#model }) };
 		const backend = this.#options.backend.id;
 		if (this.#thinking !== undefined && THINKING_BACKENDS.has(backend)) {
-			const sent = thinkingToSend(next.model, this.#thinking, backend as ThinkingBackend);
-			if (sent !== undefined) {
-				next.effort = sent.report;
+			// What the backend itself reports, so a level it cannot send (a thinking budget that does not fit the
+			// output budget, for one) is said here the same way as in `session_started`; backends that track none
+			// fall back to the table.
+			const report =
+				this.#backendSession?.effortReport?.() ??
+				thinkingToSend(next.model, this.#thinking, backend as ThinkingBackend)?.report;
+			if (report !== undefined) {
+				next.effort = report;
 				delete next.effectiveEffort;
 			}
 		}

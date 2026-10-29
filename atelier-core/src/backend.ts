@@ -1,4 +1,5 @@
 import type { AtelierEventBody, Effort, JsonValue, Usage } from "./events.ts";
+import type { ThinkingSend } from "./pricing.ts";
 import type { ThinkingLevel } from "./profiles/index.ts";
 import type { ToolDefinition } from "./tools/types.ts";
 
@@ -89,6 +90,9 @@ export interface BackendSession {
 	configure?(change: SessionChange): Promise<void>;
 	/** What `resume` needs to continue the conversation as it stands; undefined while there is none. Absent when the backend cannot resume. */
 	resumeState?(): ResumeState | undefined;
+	/** The thinking level as sent for the turns after the last `configure`, what `session_started` would say about the
+	 * effort; absent when the backend does not track it. */
+	effortReport?(): ThinkingSend["report"] | undefined;
 	interrupt(): Promise<void>;
 	close(): Promise<void>;
 	/** The effort the backend applied to the last turn when no level was asked, when it reports one. */
