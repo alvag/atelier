@@ -8,6 +8,7 @@ const state = {
 	cwd: "/home/me/code/app",
 	home: "/home/me",
 	branch: "feature/fixed-status-bar",
+	changes: 3,
 	model: "claude-opus-5-5",
 	effort: "high",
 	profile: "claude",
@@ -23,15 +24,15 @@ const bar = (value: StatusBarState = state, color = false) =>
 
 describe("status bar", () => {
 	it("shows the full home-relative path and right-aligns the context and cost at 120 columns", () => {
-		const left = "~/code/app feature/fixed-status-bar · claude-opus-5-5 high · profile claude";
+		const left = "~/code/app feature/fixed-status-bar ±3 · claude-opus-5-5 high · profile claude";
 		expect(bar().render(120)).toEqual([left + " ".repeat(120 - left.length - right.length) + right]);
 	});
 
 	it("shortens the path before the branch, then cuts the branch before other fields", () => {
-		const left = "app feature/fixed-status-bar · claude-opus-5-5 high · profile claude";
+		const left = "app feature/fixed-status-bar ±3 · claude-opus-5-5 high · profile claude";
 		expect(bar().render(left.length + right.length + 1)).toEqual([`${left} ${right}`]);
 		expect(bar().render(80).map(stripTerminalSequences)).toEqual([
-			`app featu… · claude-opus-5-5 high · profile claude ${right}`,
+			`app fe… ±3 · claude-opus-5-5 high · profile claude ${right}`,
 		]);
 	});
 
@@ -65,6 +66,12 @@ describe("status bar", () => {
 		expect(bar({ ...state, context: { ...state.context, unknown: true } }).render(120)[0]).toContain(
 			"ctx ▱▱▱▱▱▱▱▱ ? · 1M",
 		);
+	});
+
+	it("omits the counter for clean or unknown status", () => {
+		expect(bar({ ...state, changes: 0 }).render(120)[0]).not.toContain("±");
+		const { changes: _changes, ...unknown } = state;
+		expect(bar(unknown).render(120)[0]).not.toContain("±");
 	});
 
 	it("preserves the scrolling header outside fullscreen", () => {

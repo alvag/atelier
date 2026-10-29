@@ -21,7 +21,7 @@ const shortPath = (cwd: string, home: string | undefined) =>
 
 const shown = (text: string) => visibleText(text).text;
 
-export type StatusBarState = FooterState & { cwd: string; home?: string };
+export type StatusBarState = FooterState & { cwd: string; home?: string; changes?: number };
 
 /** Newlines and tabs are useful in the transcript, but not in a fixed one-row summary. */
 const oneLine = (text: string) => shown(text).replaceAll("\n", "␊").replaceAll("\t", "␉");
@@ -45,8 +45,9 @@ export class StatusBar implements Component {
 			.replaceAll("\t", "␉");
 		let path = oneLine(shortPath(state.cwd, state.home));
 		let branch = state.branch === undefined ? "" : oneLine(state.branch);
+		const changes = state.changes !== undefined && state.changes > 0 ? ` ±${state.changes}` : "";
 		const left = () =>
-			[path + (branch ? ` ${this.#paint("cyan", branch)}` : ""), running].filter(Boolean).join(separator);
+			[path + (branch ? ` ${this.#paint("cyan", branch)}` : "") + changes, running].filter(Boolean).join(separator);
 		const budget = Math.max(0, width - visibleWidth(right) - (right ? 1 : 0));
 		if (visibleWidth(left()) > budget) path = oneLine(basename(state.cwd) || path);
 		if (branch && visibleWidth(left()) > budget) {
