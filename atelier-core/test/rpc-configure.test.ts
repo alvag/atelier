@@ -217,7 +217,8 @@ describe("options.list", () => {
 				backends: [
 					{
 						name: "claude-code",
-						default: BACKEND_DEFAULTS["claude-code"],
+						// What its default, the alias opus, stands for: one of its models.
+						default: "claude-opus-5-5",
 						models: [...BACKEND_MODELS["claude-code"]],
 						aliases: { opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-5-5" },
 					},
@@ -305,7 +306,7 @@ describe("options.list", () => {
 		const response = await h.ask({ command: "options.list" });
 		expect(response.ok && response.result.backends).toContainEqual({
 			name: "claude-code",
-			default: "opus",
+			default: "claude-opus-5-5",
 			models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
 			aliases: { opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-5-5" },
 		});
@@ -345,6 +346,7 @@ describe("options.list", () => {
 			},
 			"claude-code": {
 				checkedAt: now,
+				resolved: true,
 				models: {
 					"claude-code": [
 						{ id: "claude-opus-5-5", aliases: ["opus"], contextWindow: 1_000_000 },
@@ -373,8 +375,28 @@ describe("options.list", () => {
 			({ name }) => name === "claude-code",
 		);
 		expect(claudeCode?.aliases).toEqual({ opus: "claude-opus-5-5", fable: "claude-fable-5-1" });
-		// The default is the alias, which a client shows as the model it stands for now.
-		expect(claudeCode).toMatchObject({ default: "opus" });
+		useModelData(new ModelData());
+		await h.close();
+	});
+
+	it("says as claude-code's default the model its alias opus stands for now, one of its models", async () => {
+		const { catalogFile, DynamicModelCatalog, ModelData, useModelData } = await import("../src/model-catalog/index.ts");
+		const file = catalogFile(home);
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		const listed = {
+			checkedAt: Date.now(),
+			resolved: true,
+			models: { "claude-code": [{ id: "claude-opus-6", aliases: ["opus"] }, { id: "claude-sonnet-6" }] },
+		};
+		await writeFile(file, JSON.stringify({ version: 1, sources: { "claude-code": listed } }));
+		const h = serve(undefined, true, { catalog: new DynamicModelCatalog({ file, sources: [], network: false }) });
+		const response = await h.ask({ command: "options.list" });
+		const backends = response.ok
+			? (response.result.backends as { name: string; default: string; models: string[] }[])
+			: [];
+		const claudeCode = backends.find(({ name }) => name === "claude-code");
+		expect(claudeCode?.default).toBe("claude-opus-6");
+		expect(claudeCode?.models).toContain(claudeCode?.default);
 		useModelData(new ModelData());
 		await h.close();
 	});
@@ -394,8 +416,10 @@ describe("options.list", () => {
 		const backends = response.ok
 			? (response.result.backends as { name: string; default: string; models: string[] }[])
 			: [];
+		// claude-code runs the alias opus, and says the model it stands for.
+		expect(DEFAULT_MODEL).toBe("opus");
 		expect(Object.fromEntries(backends.map(({ name, default: model }) => [name, model]))).toEqual({
-			"claude-code": DEFAULT_MODEL,
+			"claude-code": "claude-opus-5-5",
 			"anthropic-api": DEFAULT_API_MODEL,
 			"opencode-go": DEFAULT_OPENCODE_GO_MODEL,
 			"openai-codex": DEFAULT_CODEX_MODEL,
