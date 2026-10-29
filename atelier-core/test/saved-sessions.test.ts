@@ -131,7 +131,7 @@ describe("recording a session", () => {
 		expect(lines[2]).toMatchObject({ type: "prompt", text: "say hello" });
 		expect(lines[4]).toMatchObject({ type: "text", text: "Hello" });
 		expect(lines[7]).toMatchObject({ type: "text", text: "done" });
-		expect(lines[8]).toEqual({ type: "state", backend: "claude-code", sessionId: "claude-1" });
+		expect(lines[8]).toEqual({ type: "state", backend: "claude-code", sessionId: "claude-1", yoloTold: false });
 		// Thinking is not kept.
 		expect(JSON.stringify(lines)).not.toContain("hmm");
 	});
@@ -215,7 +215,7 @@ describe("the backend state", () => {
 		await session.close();
 		const states = (await linesOf(record.path)).filter((line) => line.type === "state");
 		expect(states).toEqual([
-			{ type: "state", backend: "claude-code", messages: [user("a"), assistant("b")], replace: false },
+			{ type: "state", backend: "claude-code", messages: [user("a"), assistant("b")], replace: false, yoloTold: false },
 			{ type: "state", backend: "claude-code", messages: [user("c"), assistant("d")], replace: false },
 			{ type: "state", backend: "claude-code", messages: [user("summary"), user("c"), assistant("d")], replace: true },
 		]);
@@ -236,7 +236,7 @@ describe("the backend state", () => {
 		await session.close();
 		const states = (await linesOf(record.path)).filter((line) => line.type === "state");
 		expect(states).toEqual([
-			{ type: "state", backend: "claude-code", sessionId: "cc-1" },
+			{ type: "state", backend: "claude-code", sessionId: "cc-1", yoloTold: false },
 			{ type: "state", backend: "claude-code", sessionId: "cc-1", yoloTold: true },
 			{ type: "state", backend: "claude-code", sessionId: "cc-1", yoloTold: false },
 		]);
