@@ -201,16 +201,22 @@ export class QuestionDialog implements Component, Focusable {
 
 	handleInput(data: string): void {
 		if (this.#answered) return;
-		// Only a paste that starts on the text row is kept, and only while this question reads the input.
-		this.#paste.keeping = this.#typing;
-		const keys = this.#paste.feed(data);
-		this.#paste.keeping = false;
-		const pasted = this.#paste.takePasted();
-		if (this.#guarded()) return;
+		const guarded = this.#guarded();
 		this.#problem = "";
-		// A paste goes into the text only when it started there, never into an option.
-		if (this.#typing) for (const text of pasted) this.#insert(text.replace(/\r\n?/g, "\n"));
-		if (keys === "") return;
+		// Keys and pastes in the order they came: a paste goes into the text only when it starts there, never into an
+		// option, and nothing after the answer counts.
+		this.#paste.read(data, {
+			keys: (keys) => {
+				if (!guarded && !this.#answered) this.#key(keys);
+			},
+			keep: () => !guarded && !this.#answered && this.#typing,
+			pasted: (text) => {
+				if (!guarded && !this.#answered && this.#typing) this.#insert(text.replace(/\r\n?/g, "\n"));
+			},
+		});
+	}
+
+	#key(keys: string): void {
 		if (matchesKey(keys, "escape")) {
 			this.#answered = true;
 			this.#answer("cancel");
