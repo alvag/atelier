@@ -46,6 +46,19 @@ const modelsDev: CatalogSource = {
 };
 const hanging: CatalogSource = { name: "openai-codex", fetch: () => new Promise(() => {}) };
 const USAGE = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 };
+const PRICE = [{ input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }];
+
+/** A cache that lists `id` for anthropic-api, priced. */
+const listing = (id: string) => ({
+	sources: { "anthropic-api": { checkedAt: Date.now(), models: { "anthropic-api": [{ id, prices: PRICE }] } } },
+});
+
+async function until(condition: () => boolean): Promise<void> {
+	for (let tries = 0; !condition(); tries++) {
+		if (tries > 200) throw new Error("condition not met");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
 
 it("offers the code's lists until a provider lists more, then adds its models after them", async () => {
 	const catalog = new DynamicModelCatalog({
@@ -110,6 +123,54 @@ it("offers the code's lists when the cache cannot be read or makes no sense, and
 		const catalog = new DynamicModelCatalog({ file, sources: [], network: false, read });
 		expect(await catalog.models("anthropic-api")).toEqual(BACKEND_MODELS["anthropic-api"]);
 	}
+
+	// The next read, once the cache makes sense again, offers what it holds.
+	let broken = true;
+	const catalog = new DynamicModelCatalog({
+		file,
+		sources: [],
+		read: async () => {
+			if (broken) throw new Error("disk");
+			return listing("claude-new-6");
+		},
+	});
+	expect(await catalog.models("anthropic-api")).toEqual(BACKEND_MODELS["anthropic-api"]);
+	broken = false;
+	await catalog.refresh();
+	expect(await catalog.models("anthropic-api")).toContain("claude-new-6");
+	expect(costOfRequest("claude-new-6", USAGE)).toBe(3);
+});
+
+it("keeps the newest read when two reads of the cache overlap and the older one ends last", async () => {
+	const held: (() => void)[] = [];
+	let reads = 0;
+	const catalog = new DynamicModelCatalog({
+		file,
+		sources: [],
+		read: async () => {
+			reads++;
+			if (reads === 1) return listing("claude-first-6");
+			if (reads === 2) {
+				// The older read: it ends after the newer one.
+				await new Promise<void>((resolve) => held.push(resolve));
+				return listing("claude-older-6");
+			}
+			return listing("claude-newer-7");
+		},
+	});
+	expect(await catalog.models("anthropic-api")).toContain("claude-first-6");
+	const older = catalog.refresh();
+	await until(() => held.length === 1);
+	await catalog.listClaudeCode(async () => []);
+	expect(await catalog.models("anthropic-api")).toContain("claude-newer-7");
+	held[0]?.();
+	await older;
+	const models = await catalog.models("anthropic-api");
+	expect(models).toContain("claude-newer-7");
+	expect(models).not.toContain("claude-older-6");
+	// The backends see the same data as the lists.
+	expect(costOfRequest("claude-newer-7", USAGE)).toBe(3);
+	expect(costOfRequest("claude-older-6", USAGE)).toBeUndefined();
 });
 
 it("keeps offering the last lists while a new read of the cache is under way", async () => {

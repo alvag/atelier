@@ -81,11 +81,13 @@ export class DynamicModelCatalog implements ModelCatalog {
 
 	/** Reads the cache again; until the read ends, the lists of the last one are offered. */
 	async #reload(): Promise<void> {
-		const data = await this.#load();
-		this.#loaded = Promise.resolve(data);
+		await this.#load();
 	}
 
-	/** The cache's data; a read that fails, or a cache that makes no sense, is no data at all. */
+	/**
+	 * The cache's data; a read that fails, or a cache that makes no sense, is no data at all. Only the latest read
+	 * publishes it, to the lists and to the backends at once: an older one that ends after it changes neither.
+	 */
 	async #load(): Promise<ModelData> {
 		const read = ++this.#reads;
 		let data: ModelData;
@@ -94,7 +96,10 @@ export class DynamicModelCatalog implements ModelCatalog {
 		} catch {
 			data = new ModelData();
 		}
-		if (read === this.#reads) useModelData(data);
+		if (read === this.#reads) {
+			this.#loaded = Promise.resolve(data);
+			useModelData(data);
+		}
 		return data;
 	}
 }
