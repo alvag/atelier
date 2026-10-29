@@ -1696,6 +1696,33 @@ describe("App", () => {
 			await waitFor(() => expect(screen.queryByText(/^ctx /)).toBeNull());
 		});
 
+		it("keeps the model that answered a turn when a change of model lands as the turn ends", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
+			const send = (turnId: string, seq: number, body: AtelierEventBody) =>
+				fake.push({ type: "event", sessionId: "s1", event: { ...body, seq, turnId } as never });
+			send("t1", 1, { type: "session_started", backend: "anthropic-api", model: "first", authSource: "api_key" });
+			send("t1", 2, {
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				context: { tokens: 182_000, window: 1_000_000, compactAt: 200_000 },
+			});
+			const status = within(screen.getByRole("status"));
+			expect(await status.findByText("ctx ▰▱▱▱▱▱▱▱ 18% · 1M")).toBeTruthy();
+			send("t2", 1, { type: "text_delta", text: "answered by first" });
+			// The change asked during the turn lands as it ends, before its turn_finished.
+			send("t2", 2, { type: "session_configured", backend: "anthropic-api", model: "other", permissionMode: "normal" });
+			send("t2", 3, { type: "turn_finished", stopReason: "end_turn", usage });
+			const summaries = () =>
+				screen.getAllByTestId("usage").map((usage) => usage.querySelector("summary")?.textContent);
+			await waitFor(() => expect(summaries()).toHaveLength(2));
+			expect(summaries()[1]).toMatch(/^first · /);
+			expect(status.getByText("other")).toBeTruthy();
+			expect(status.queryByText(/^ctx /)).toBeNull();
+		});
+
 		it("says the context size is unknown right after a compaction", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");
