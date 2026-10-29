@@ -143,13 +143,14 @@ const DEPENDENCIES_SAID: Record<Dependencies, { parent: string; worker: string }
 		parent: " Its node_modules folders are copy-on-write copies of yours.",
 		worker: " Its node_modules folders are copy-on-write copies of the other agent's: use them, and install nothing.",
 	},
-	linked: {
-		parent: " Its node_modules folders are links to yours, which its sandbox cannot write.",
-		worker:
-			" Its node_modules folders are links to the other agent's, which you cannot write: use them, and install nothing.",
+	copied: {
+		parent: " Its node_modules folders are copies of yours.",
+		worker: " Its node_modules folders are copies of the other agent's: use them, and install nothing.",
 	},
 	none: { parent: "", worker: "" },
 };
+/** What a launch answers once the session closes before its task started. */
+const CLOSING_REFUSAL = "Refused: the session is closing.";
 /** The patches of background workers whose files a new patch is compared with. */
 const MAX_KEPT_PATCHES = 20;
 /** How long a stopped background subagent has to end its turn before its session is closed under it. */
@@ -2185,57 +2186,75 @@ export class Session {
 			if (error instanceof TaskRefusedError) return fail(error.message);
 			throw error;
 		}
-		// A worker writes in a worktree of its own, so two never write in the same folder, nor in the parent's.
+		// Whatever ends the launch before the task starts gives its place back once what it made is gone, so the
+		// session's close, which waits for the places, never removes the scratch directory under a worktree.
 		let worktree: TaskWorktree | undefined;
+		let child: Session | undefined;
+		const giveUp = async (output: string): Promise<ToolOutcome> => {
+			await child?.close().catch(() => {});
+			await worktree?.remove();
+			place.release();
+			return fail(output);
+		};
+		// A worker writes in a worktree of its own, so two never write in the same folder, nor in the parent's.
 		if (agent.name === "worker") {
 			try {
-				// A link to the parent's dependencies is only safe where the sandbox keeps the worker inside its worktree.
 				worktree = await createTaskWorktree(
 					this.#options.cwd,
 					join(this.#scratch?.path ?? tmpdir(), "worktrees", String(++this.#worktrees)),
-					{ link: this.#options.noSandbox !== true },
 				);
 			} catch (error) {
-				place.release();
-				if (error instanceof WorktreeRefusedError) return fail(error.message);
-				return fail(`The worker's worktree could not be made: ${describeError(error)}`);
+				if (error instanceof WorktreeRefusedError) return giveUp(error.message);
+				return giveUp(`The worker's worktree could not be made: ${describeError(error)}`);
 			}
 		}
+		// The session closed while the worktree was made: nothing more starts.
+		if (this.#closed) return giveUp(CLOSING_REFUSAL);
 		const settings = this.#subagentSettings(agent);
-		const child = await this.#startChild(options, agent, settings, true, worktree);
-		if (typeof child === "string") {
-			place.release();
-			await worktree?.remove();
-			return fail(child);
+		const started = await this.#startChild(options, agent, settings, true, worktree);
+		if (typeof started === "string") return giveUp(started);
+		child = started;
+		if (this.#closed) return giveUp(CLOSING_REFUSAL);
+		const running = started;
+		const tree = worktree;
+		let task: TaskInfo;
+		try {
+			task = place.start({
+				agent: agent.name,
+				...(label === undefined ? {} : { label }),
+				prompt,
+				run: async (signal, log): Promise<TaskResult> => {
+					// A backend that does not end its turn on the interrupt is closed after a grace.
+					let grace: NodeJS.Timeout | undefined;
+					const stop = () => {
+						void running.interrupt();
+						grace = setTimeout(() => void running.close().catch(() => {}), STOP_GRACE_MS);
+					};
+					signal.addEventListener("abort", stop, { once: true });
+					try {
+						const result = await this.#childReport(running, agent, settings, prompt, (body) => {
+							const line = activityLine(body);
+							if (line !== "") log(line);
+						});
+						// A stopped worker's changes are dropped with its worktree.
+						if (tree === undefined || signal.aborted) return result;
+						return { ...result, changes: await this.#collectChanges(task.id, tree) };
+					} finally {
+						signal.removeEventListener("abort", stop);
+						clearTimeout(grace);
+						// The worktree goes even when the subagent's session fails to close.
+						try {
+							await running.close();
+						} finally {
+							await tree?.remove();
+						}
+					}
+				},
+			});
+		} catch (error) {
+			if (error instanceof TaskRefusedError) return giveUp(error.message);
+			throw error;
 		}
-		const task: TaskInfo = place.start({
-			agent: agent.name,
-			...(label === undefined ? {} : { label }),
-			prompt,
-			run: async (signal, log): Promise<TaskResult> => {
-				// A backend that does not end its turn on the interrupt is closed after a grace.
-				let grace: NodeJS.Timeout | undefined;
-				const stop = () => {
-					void child.interrupt();
-					grace = setTimeout(() => void child.close(), STOP_GRACE_MS);
-				};
-				signal.addEventListener("abort", stop, { once: true });
-				try {
-					const result = await this.#childReport(child, agent, settings, prompt, (body) => {
-						const line = activityLine(body);
-						if (line !== "") log(line);
-					});
-					// A stopped worker's changes are dropped with its worktree.
-					if (worktree === undefined || signal.aborted) return result;
-					return { ...result, changes: await this.#collectChanges(task.id, worktree) };
-				} finally {
-					signal.removeEventListener("abort", stop);
-					clearTimeout(grace);
-					await child.close();
-					await worktree?.remove();
-				}
-			},
-		});
 		const where =
 			worktree === undefined
 				? ""

@@ -1,11 +1,19 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type AtelierEvent, type AtelierEventBody, FakeBackend, type FakeStep, Session } from "../src/index.ts";
+import {
+	type AtelierEvent,
+	type AtelierEventBody,
+	FakeBackend,
+	type FakeStep,
+	Session,
+	type SessionOptions,
+} from "../src/index.ts";
 import { BUILTIN_AGENTS } from "../src/subagents/definitions.ts";
+import { createTaskWorktree } from "../src/subagents/worktree.ts";
 import { createBackgroundTools } from "../src/tools/background.ts";
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
@@ -47,7 +55,12 @@ afterEach(async () => {
 });
 
 /** A parent in `cwd` playing `parentTurns`, whose worker children play `childTurns`; `seen` gets each child's folder. */
-async function started(parentTurns: FakeStep[][], childTurns: ((cwd: () => string) => FakeStep[])[], cwd = repo) {
+async function started(
+	parentTurns: FakeStep[][],
+	childTurns: ((cwd: () => string) => FakeStep[])[],
+	cwd = repo,
+	extra: Partial<SessionOptions> = {},
+) {
 	const parent = new FakeBackend(parentTurns);
 	const children: FakeBackend[] = [];
 	let woke = 0;
@@ -67,6 +80,7 @@ async function started(parentTurns: FakeStep[][], childTurns: ((cwd: () => strin
 			},
 		},
 		wake: () => woke++,
+		...extra,
 	});
 	sessions.push(session);
 	const play = async (turn: AsyncIterable<AtelierEvent> | undefined) => {
@@ -183,7 +197,10 @@ describe("a worker in the background", () => {
 		expect(parent.prompts[3]).toContain("Files it changed that also changed in your working tree since: a.txt.");
 	});
 
-	it("gets the parent's node_modules folders without being able to change them", async () => {
+	it.each([
+		["with the sandbox", false],
+		["with the sandbox off", true],
+	])("gets the parent's node_modules folders %s, without being able to change them", async (_how, noSandbox) => {
 		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
 		for (const dir of ["node_modules/pkg", "sub/node_modules/x"]) mkdirSync(join(repo, dir), { recursive: true });
 		writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
@@ -198,8 +215,40 @@ describe("a worker in the background", () => {
 							const pkg = join(cwd(), "node_modules/pkg/index.js");
 							seen.push(readFileSync(pkg, "utf8"), readFileSync(join(cwd(), "sub/node_modules/x/index.js"), "utf8"));
 							seen.push(String(lstatSync(join(cwd(), "node_modules")).isSymbolicLink()));
-							// A copy takes the write; a link is the parent's, which only the sandbox keeps the worker from writing.
-							if (seen[2] === "false") writeFileSync(pkg, "child\n");
+							writeFileSync(pkg, "child\n");
+						},
+					},
+					text("done"),
+					{ event: finished },
+				],
+			],
+			repo,
+			{ noSandbox },
+		);
+		await play(session.send("go"));
+		const started_ = parent.toolResults[0]?.output ?? "";
+		await until(() => woke() === 1);
+		// Its own copies, whatever the file system: never a link to the parent's.
+		expect(seen).toEqual(["parent\n", "parent x\n", "false"]);
+		expect(started_).toMatch(/Its node_modules folders are (copy-on-write )?copies of yours\./);
+		expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toContain("It changed no files.");
+	});
+
+	it("leaves the dependency folders out of the patch, whatever the worker made of them", async () => {
+		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
+		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
+		writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				(cwd) => [
+					{
+						run: () => {
+							// A link is not a folder: `node_modules/` no longer ignores it.
+							rmSync(join(cwd(), "node_modules"), { recursive: true, force: true });
+							symlinkSync(join(repo, "node_modules"), join(cwd(), "node_modules"));
 						},
 					},
 					text("done"),
@@ -208,16 +257,79 @@ describe("a worker in the background", () => {
 			],
 		);
 		await play(session.send("go"));
-		const started_ = parent.toolResults[0]?.output ?? "";
 		await until(() => woke() === 1);
-		expect(seen.slice(0, 2)).toEqual(["parent\n", "parent x\n"]);
-		if (seen[2] === "false") expect(started_).toContain("Its node_modules folders are copy-on-write copies of yours.");
-		else expect(started_).toContain("Its node_modules folders are links to yours, which its sandbox cannot write.");
-		expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
 		await play(session.nextQueued());
-		// Ignored in the worktree too: the dependencies are never part of the patch.
 		expect(parent.prompts[1]).toContain("It changed no files.");
-		expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
+	});
+
+	it("runs none of the repository's git filters for its snapshot, worktree or patch", async () => {
+		const marker = join(repo, "RAN_WITHOUT_APPROVAL");
+		for (const what of ["clean", "smudge"]) git(repo, "config", `filter.attack.${what}`, `touch ${marker}; cat`);
+		git(repo, "config", "filter.attack.required", "true");
+		git(repo, "config", "diff.attack.textconv", `touch ${marker}; cat`);
+		writeFileSync(join(repo, ".gitattributes"), "a.txt filter=attack diff=attack\n");
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[(cwd) => [{ run: () => writeFileSync(join(cwd(), "a.txt"), "changed\n") }, text("done"), { event: finished }]],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed/);
+		expect(existsSync(marker)).toBe(false);
+	});
+
+	it("removes its worktree even when its subagent's session fails to close", async () => {
+		const { children, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[() => [text("done"), { event: finished }]],
+		);
+		const failing = new Promise<void>((resolve) => {
+			const check = setInterval(() => {
+				if (children[0] === undefined) return;
+				children[0].closeError = "close exploded";
+				clearInterval(check);
+				resolve();
+			}, 1);
+		});
+		await play(session.send("go"));
+		await failing;
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(worktrees()).toBe(1);
+		expect(existsSync(children[0]?.startOptions?.cwd as string)).toBe(false);
+	});
+
+	it("starts no subagent and leaves no worktree when the session closes while it is being made", async () => {
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		const child = new FakeBackend([[text("late"), { event: finished }]]);
+		const parent = new FakeBackend([[work("c1"), { event: finished }]]);
+		const session = await Session.start({
+			backend: parent,
+			cwd: repo,
+			tools: createBackgroundTools(),
+			subagents: {
+				agents: BUILTIN_AGENTS,
+				createBackend: async () => {
+					await held;
+					return child;
+				},
+			},
+			wake: () => {},
+		});
+		const turn = (async () => {
+			for await (const _event of session.send("go")) {
+			}
+		})();
+		await until(() => worktrees() === 2);
+		const closing = session.close();
+		release();
+		await closing;
+		await turn;
+		expect(parent.toolResults[0]?.output).toBe("Refused: the session is closing.");
+		expect(child.prompts).toEqual([]);
+		expect(worktrees()).toBe(1);
 	});
 
 	it("names the files another task's patch also changed", async () => {
@@ -282,6 +394,27 @@ describe("a worker in the background", () => {
 			expect(children).toHaveLength(0);
 		} finally {
 			await rm(plain, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("a worker's worktree where the file system cannot clone", () => {
+	it("copies the parent's node_modules folders, which the worker then cannot change", async () => {
+		writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
+		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
+		writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
+		const dir = await realpath(await mkdtemp(join(tmpdir(), "atelier-copy-")));
+		const worktree = await createTaskWorktree(repo, join(dir, "w"), { clone: false });
+		try {
+			expect(worktree.dependencies).toBe("copied");
+			const pkg = join(worktree.cwd, "node_modules/pkg/index.js");
+			expect(lstatSync(join(worktree.cwd, "node_modules")).isSymbolicLink()).toBe(false);
+			writeFileSync(pkg, "child\n");
+			expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
+			expect(await worktree.collect(join(dir, "p.patch"))).toBeUndefined();
+		} finally {
+			await worktree.remove();
+			await rm(dir, { recursive: true, force: true });
 		}
 	});
 });
