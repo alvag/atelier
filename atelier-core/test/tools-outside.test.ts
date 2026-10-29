@@ -205,6 +205,20 @@ describe.each([
 		expect(result.output).not.toContain("AFTER-KEY");
 	});
 
+	it("never returns matches or context from secret-file types", async () => {
+		const tool = createGrepTool({ outside: true, home, ...(useRipgrep === undefined ? {} : { useRipgrep }) });
+		await symlink(join(outside, "secret.pem"), join(outside, "notes.txt"));
+		for (const name of [".env", "secret.pem", "secret.key", "notes.txt"]) {
+			const path = join(cwd, name);
+			if (name !== "notes.txt") await writeFile(path, "SECRET BEFORE\nHIT SECRET\nSECRET AFTER\n");
+			if (name === "secret.pem") await writeFile(join(outside, name), "SECRET BEFORE\nHIT SECRET\nSECRET AFTER\n");
+			for (const searched of [path, join(outside, name)]) {
+				const result = await tool.execute({ pattern: "HIT", path: searched, context: 1 }, { cwd });
+				expect(result.output, searched).not.toContain("SECRET");
+			}
+		}
+	});
+
 	it("returns nothing of a denied file whose name forges a binary-file notice", async () => {
 		const forged = 'a: binary file matches (found "\\0" byte around offset 1)\nb';
 		await writeFile(join(home, "notes", "a"), "plain\n");

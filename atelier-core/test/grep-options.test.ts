@@ -160,6 +160,17 @@ for (const [name, useRipgrep] of [
 			expect(result).toMatchObject({ truncated: true, summary: "HIT: 1+ matches" });
 		});
 
+		it("never returns matches or context from secret-file types", async () => {
+			for (const name of [".env", ".env.local", "secret.pem", "secret.key"]) {
+				await writeFile(join(cwd, name), "SECRET BEFORE\nHIT SECRET\nSECRET AFTER\n");
+				const result = await grep.execute({ pattern: "HIT", path: name, context: 1 }, ctx);
+				expect(result.output, name).not.toContain("SECRET");
+			}
+			await writeFile(join(cwd, "plain.txt"), "HIT plain\n");
+			const all = await grep.execute({ pattern: "HIT", context: 1 }, ctx);
+			expect(all.output).toBe("plain.txt:1:HIT plain");
+		});
+
 		it("refuses a limit or context out of range", async () => {
 			for (const input of [{ limit: 0 }, { limit: 1001 }, { context: -1 }, { context: 21 }])
 				await expect(grep.execute({ pattern: "hit", ...input }, ctx), JSON.stringify(input)).rejects.toThrow();

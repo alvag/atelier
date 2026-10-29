@@ -5,7 +5,14 @@ import { homedir } from "node:os";
 import { isAbsolute, matchesGlob, relative, resolve } from "node:path";
 import { z } from "zod";
 import { errorMessage, failure, MAX_GREP_MATCHES, MAX_LINE_CHARS, takeHead } from "./limits.ts";
-import { isInside, isProtected, protectedReadPaths, resolveInside, resolveOutside } from "./paths.ts";
+import {
+	isInside,
+	isProtected,
+	isSecretFileFolded,
+	protectedReadPaths,
+	resolveInside,
+	resolveOutside,
+} from "./paths.ts";
 import { defineTool, type ToolDefinition } from "./types.ts";
 
 const SEARCH_TIMEOUT_MS = 30_000;
@@ -288,15 +295,18 @@ function globFilter(glob: string): (path: string) => boolean {
 	return glob.startsWith("!") ? (path) => !matchesGlob(path, glob.slice(1)) : (path) => matchesGlob(path, glob);
 }
 
+/** Whether `path` is in a protected place or is a secret file (`.env`, `.env.*`, `*.pem`, `*.key`). */
+const isSecret = (path: string, secrets: readonly string[]) => isProtected(path, secrets) || isSecretFileFolded(path);
+
 /**
- * Whether a match may be returned: its real path, and the path as written,
- * are outside every protected place. A path that cannot be resolved is dropped.
+ * Whether a match or context line may be returned: its real path, and the path as written, are
+ * outside every protected place and are not secret files. A path that cannot be resolved is dropped.
  */
 function isReadable(path: string, root: string, secrets: readonly string[]): boolean {
 	const absolute = resolve(root, path);
-	if (isProtected(absolute, secrets)) return false;
+	if (isSecret(absolute, secrets)) return false;
 	try {
-		return !isProtected(realpathSync(absolute), secrets);
+		return !isSecret(realpathSync(absolute), secrets);
 	} catch {
 		return false;
 	}
@@ -417,8 +427,7 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 				const globPath = (match: string) =>
 					isAbsolute(match) && isInside(target, match) ? relative(target, match) : match;
 				const accept = (match: string) =>
-					(options.outside ? isReadable(match, root, secrets) : true) &&
-					(useRipgrep || (byGlob?.(globPath(match)) ?? true));
+					isReadable(match, root, secrets) && (useRipgrep || (byGlob?.(globPath(match)) ?? true));
 				const flags = { ignoreCase: ignoreCase ?? false, literal: literal ?? false, context };
 				const scan = { limit, context, dropSeparators: !useRipgrep && context > 0, notices: useRipgrep };
 				const result = useRipgrep
