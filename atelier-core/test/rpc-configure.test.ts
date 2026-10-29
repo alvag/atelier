@@ -263,8 +263,8 @@ describe("options.list", () => {
 			{ provider: "openai-codex", model: "openai-codex-two" },
 		]);
 		expect(response.ok && response.result.backends).toContainEqual({
-			// The default is said only when it is one of the models.
 			name: "opencode-go",
+			default: "minimax-m3",
 			models: ["opencode-go-one", "opencode-go-two"],
 		});
 		expect(asked).toContain("anthropic-api");
