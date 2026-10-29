@@ -1668,4 +1668,33 @@ describe("App and background jobs", () => {
 		fake.emit({ type: "jobs_status", running: 0, waiting: 0 });
 		await waitFor(() => expect(screen.getByRole("status").textContent).not.toContain("notice waiting"));
 	});
+
+	it("shows a job's end outside any turn and its notice waiting in the status bar", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "start");
+		fake.emit({
+			type: "turn_finished",
+			stopReason: "interrupted",
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+		});
+		fake.push({
+			type: "session_event",
+			sessionId: "s1",
+			event: {
+				type: "job_finished",
+				jobId: "1",
+				label: "ci wait",
+				outputPath: "/s/job-1.log",
+				status: "exited",
+				exitCode: 0,
+				durationMs: 3000,
+				notified: true,
+				running: 0,
+				waiting: 1,
+			},
+		});
+		expect(await screen.findByText("Job 1 ended — exit 0 after 3.0s")).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toContain("1 notice waiting");
+		expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+	});
 });

@@ -1,5 +1,5 @@
 import type { CoreExit } from "@atelier/core/client";
-import type { AtelierEvent, ClientCommand, JsonValue } from "@atelier/core/protocol";
+import type { AtelierEvent, AtelierEventBody, ClientCommand, JsonValue } from "@atelier/core/protocol";
 import type { CommandResult, CoreStatus, HostMessage } from "../shared/bridge.ts";
 
 /** The part of RpcClient the host uses; tests pass a fake. */
@@ -7,6 +7,8 @@ export interface CoreConnection {
 	readonly coreVersion: string;
 	request(command: ClientCommand): Promise<{ [key: string]: JsonValue }>;
 	onEvent(listener: (sessionId: string, event: AtelierEvent) => void): () => void;
+	/** Events outside any turn (`session_event`). */
+	onSessionEvent?(listener: (sessionId: string, event: AtelierEventBody) => void): () => void;
 	onProtocolError(listener: (message: string) => void): () => void;
 	onExit(listener: (exit: CoreExit) => void): () => void;
 	close(): Promise<void>;
@@ -103,6 +105,7 @@ export class CoreHost {
 		}
 		this.#connection = connection;
 		connection.onEvent((sessionId, event) => send({ type: "event", sessionId, event }));
+		connection.onSessionEvent?.((sessionId, event) => send({ type: "session_event", sessionId, event }));
 		connection.onProtocolError((message) => send({ type: "protocol_error", message }));
 		connection.onExit((exit) => {
 			if (this.#connection === connection) this.#connection = undefined;
