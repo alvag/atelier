@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type AtelierEvent, type ContextUsage, FakeBackend, type FakeStep, Session } from "../src/index.ts";
 import { contextGauge, contextWarningText, windowSize } from "../src/protocol/index.ts";
+import type { SubagentDefinition } from "../src/subagents/definitions.ts";
 
 const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 };
 const ended = (context?: ContextUsage): FakeStep[] => [
@@ -133,6 +134,41 @@ describe("context_warning", () => {
 		await session.setBackend(new FakeBackend([], "openai-codex"));
 		await session.setBackend(new FakeBackend([ended(at(190_000))], "anthropic-api"));
 		expect(warnings(await drain(session))).toHaveLength(1);
+		await session.close();
+	});
+
+	it("looks only at the main agent's context: a subagent's turn neither warns, nor rearms, nor uses up the warning", async () => {
+		const explorer: SubagentDefinition = {
+			name: "explorer",
+			description: "Reads code",
+			tools: [],
+			prompt: "EXPLORER PROMPT",
+			models: {},
+			maxRequests: 30,
+		};
+		const delegating = (callId: string, parent: number): FakeStep[] => [
+			{ toolCall: { tool: "task", input: { agent: "explorer", prompt: "Look." }, callId } },
+			...ended(at(parent)),
+		];
+		const child = (tokens: number): FakeStep[] => [
+			{ event: { type: "text_delta", text: "report" } },
+			...ended(at(tokens)),
+		];
+		// A child near compaction while the parent is not; then both near it; then a child far from it.
+		const children = [child(195_000), child(195_000), child(10_000)];
+		const backend = new FakeBackend([delegating("c1", 100_000), delegating("c2", 190_000), delegating("c3", 190_000)]);
+		const session = await Session.start({
+			backend,
+			cwd: "/w",
+			tools: [],
+			subagents: { agents: [explorer], createBackend: () => new FakeBackend([children.shift() ?? []]) },
+		});
+		const turns = [await drain(session), await drain(session), await drain(session)];
+		expect(turns.map((turn) => warnings(turn).length)).toEqual([0, 1, 0]);
+		expect(warnings(turns[1] ?? [])).toEqual([
+			expect.objectContaining({ tokens: 190_000, window: 1_000_000, compactAt: 200_000 }),
+		]);
+		expect(warnings(turns[1] ?? [])[0]).not.toHaveProperty("parentCallId");
 		await session.close();
 	});
 

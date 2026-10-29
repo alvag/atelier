@@ -977,7 +977,9 @@ export class Session {
 			for await (const body of turn) {
 				if (body.type === "compaction_finished" && body.ok && body.parentCallId === undefined)
 					this.#contextWarned = undefined;
-				const warning = body.type === "turn_finished" ? this.#contextWarning(body.context, turnEpoch) : undefined;
+				// Only the main agent's context: a subagent's turn neither warns, nor rearms, nor uses up the warning.
+				const main = body.type === "turn_finished" && body.parentCallId === undefined;
+				const warning = main ? this.#contextWarning(body.context, turnEpoch) : undefined;
 				if (warning !== undefined) {
 					const said = stamp(warning);
 					this.#options.record?.event(said);
@@ -1897,8 +1899,8 @@ export class Session {
 			let stopReason = "incomplete";
 			for await (const event of child.send(prompt)) {
 				// Clients see the child's work in the parent's turn; the parent model never does.
-				// The child's `bash` is the parent's: the status was already said.
-				if (event.type === "sandbox_status") continue;
+				// The child's `bash` is the parent's: the status was already said. The context warning is the main agent's.
+				if (event.type === "sandbox_status" || event.type === "context_warning") continue;
 				const { seq: _seq, turnId: _turnId, ...body } = event;
 				this.#turn?.push({ ...body, ...tag });
 				if (event.type === "text_delta") report += event.text;
