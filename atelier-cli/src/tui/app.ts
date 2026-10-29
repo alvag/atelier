@@ -667,6 +667,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			interrupted = false;
 			setBusy(true);
 		}
+		// Every event comes in a turn: a job's end with none running starts the turn its notice woke.
+		if (event.type === "job_finished" && !busy) {
+			interrupted = false;
+			setBusy(true);
+		}
 		if (event.type === "queue_update") {
 			queue.messages = event.messages;
 			if (event.returned) giveBack(event.returned);

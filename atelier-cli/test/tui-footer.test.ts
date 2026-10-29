@@ -141,4 +141,25 @@ describe("footer", () => {
 		expect(footerLine(state, 120, plain)).toBe(" m low · atelier · main · normal");
 		expect(footerLine(state, 120, plain, DEFAULT_STATUS_LINE)).toBe(" m low · atelier · main · normal");
 	});
+
+	it("says the background jobs running and the notices waiting, and nothing without them", () => {
+		const job = { jobId: "1", label: "ci", outputPath: "/s/job-1.log" };
+		const ended = {
+			...job,
+			type: "job_finished",
+			status: "exited",
+			exitCode: 1,
+			durationMs: 9000,
+			notified: true,
+		} as const;
+		const running = after([{ ...job, type: "job_started", command: "gh run watch", running: 2 }]);
+		expect(footerLine(running, 120, plain, ["jobs"])).toBe(" 2 jobs");
+		const waiting = after([{ ...ended, running: 1, waiting: 1 }], running);
+		expect(footerLine(waiting, 120, plain, ["jobs"])).toBe(" 1 job, 1 notice waiting");
+		const left = after([{ ...ended, jobId: "2", running: 0, waiting: 2 }], waiting);
+		expect(footerLine(left, 120, plain, ["jobs"])).toBe(" 2 notices waiting");
+		const read = after([{ type: "jobs_status", running: 0, waiting: 0 }], left);
+		expect(footerLine(read, 120, plain, ["jobs"])).toBe(" ");
+		expect(DEFAULT_STATUS_LINE.at(-1)).toBe("jobs");
+	});
 });
