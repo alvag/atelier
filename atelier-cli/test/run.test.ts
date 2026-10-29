@@ -2295,3 +2295,168 @@ describe("login warning at start", () => {
 		expect(quiet.err()).not.toContain("warning:");
 	});
 });
+
+describe("ask_user on the line terminal", () => {
+	const questions = [
+		{
+			id: "db",
+			question: "Which database?",
+			options: [
+				{ id: "sqlite", label: "SQLite", description: "One file" },
+				{ id: "pg", label: "Postgres", recommended: true },
+			],
+		},
+		{
+			id: "mode",
+			question: "Which mode?",
+			options: [
+				{ id: "fast", label: "Fast", recommended: true },
+				{ id: "safe", label: "Safe" },
+			],
+		},
+	];
+	const step: FakeStep = { toolCall: { tool: "ask_user", input: { questions } } };
+	const paste = (text: string) => `\x1b[200~${text}\x1b[201~`;
+	const start = (options: { raw?: boolean } = {}) => {
+		const h = harness([[step, { event: finished }]], { isTTY: true, keepStdinOpen: true, input: [], ...options });
+		const pending = run(["--no-review", "ask"], h.io, h.createBackend);
+		const type = (text: string) => (h.io.stdin as PassThrough).write(text);
+		/** Types once the prompt has been shown `count` times. */
+		const answer = async (prompt: string, count: number, text: string) => {
+			await vi.waitFor(() => expect(h.out().split(prompt).length - 1).toBeGreaterThanOrEqual(count), { timeout: 5000 });
+			type(text);
+		};
+		return { h, pending, type, answer, result: () => JSON.parse(h.backend.toolResults[0]?.output ?? "null") };
+	};
+	const CHOOSE = "Choose 1-3 or /cancel: ";
+	const until = (condition: () => boolean) => vi.waitFor(() => expect(condition()).toBe(true), { timeout: 5000 });
+
+	it("answers without a terminal as unavailable and says so on stderr", async () => {
+		const h = harness([[step, { event: finished }]]);
+		expect(await run(["--no-review", "ask"], h.io, h.createBackend)).toBe(0);
+		expect(JSON.parse(h.backend.toolResults[0]?.output ?? "")).toEqual({
+			status: "unavailable",
+			reason: "no_interactive_client",
+		});
+		expect(h.err()).toContain("ask_user needs an interactive terminal; no answer was collected.\n");
+		expect(h.out()).not.toContain("Which database?");
+	});
+
+	it("lists the recommended option first, descriptions below, Other last, and takes numbered answers", async () => {
+		const t = start();
+		await t.answer(CHOOSE, 1, "2\n");
+		await t.answer(CHOOSE, 2, "3\n");
+		await t.answer("Your answer: ", 1, "2\n");
+		await vi.waitFor(() => expect(t.h.backend.toolResults).toHaveLength(1), { timeout: 5000 });
+		t.h.io.stdin.end();
+		expect(await t.pending).toBe(0);
+		expect(t.h.out()).toContain(
+			"Question 1/2: Which database?\n  1. Postgres (Recommended)\n  2. SQLite\n     One file\n  3. Other...\n",
+		);
+		expect(t.result()).toEqual({
+			status: "answered",
+			answers: [
+				{ questionId: "db", optionId: "sqlite" },
+				{ questionId: "mode", other: "2" },
+			],
+		});
+	});
+
+	it("does not choose on a blank line, a paste or a number out of range", async () => {
+		const t = start({ raw: true });
+		await t.answer(CHOOSE, 1, "\r");
+		await t.answer(CHOOSE, 2, `${paste("1")}\r`);
+		await t.answer(CHOOSE, 3, "9\r");
+		await t.answer(CHOOSE, 4, "/cancel\r");
+		await vi.waitFor(() => expect(t.h.backend.toolResults).toHaveLength(1), { timeout: 5000 });
+		t.h.io.stdin.end();
+		expect(await t.pending).toBe(0);
+		expect(t.h.out()).toContain("pasted text does not answer this question\n");
+		expect(t.result()).toEqual({ status: "cancelled", reason: "user" });
+	});
+
+	it("needs a non-blank Other text of at most 2000 units and keeps it as written", async () => {
+		const t = start();
+		await t.answer(CHOOSE, 1, "3\n");
+		await t.answer("Your answer: ", 1, "   \n");
+		await t.answer("Your answer: ", 2, `${"x".repeat(2001)}\n`);
+		await t.answer("Your answer: ", 3, "  both, please \n");
+		await t.answer(CHOOSE, 2, "1\n");
+		await vi.waitFor(() => expect(t.h.backend.toolResults).toHaveLength(1), { timeout: 5000 });
+		t.h.io.stdin.end();
+		await t.pending;
+		expect(t.result().answers).toEqual([
+			{ questionId: "db", other: "  both, please " },
+			{ questionId: "mode", optionId: "fast" },
+		]);
+	});
+
+	it("supersedes the question with other text instead of reading it as an answer", async () => {
+		const t = start();
+		await t.answer(CHOOSE, 1, "use mysql instead\n");
+		await vi.waitFor(() => expect(t.h.backend.toolResults).toHaveLength(1), { timeout: 5000 });
+		t.h.io.stdin.end();
+		await t.pending;
+		expect(t.result()).toEqual({ status: "superseded" });
+	});
+
+	it("leaves nothing pending when the input ends", async () => {
+		const t = start();
+		await t.answer(CHOOSE, 1, "");
+		t.h.io.stdin.end();
+		expect(await t.pending).toBe(0);
+		expect(t.result().status).toBe("cancelled");
+	});
+
+	it("shows hidden characters in the question, labels and descriptions, and keeps the Other text raw", async () => {
+		const csi = "\x1b[31mred\x1b[0m";
+		const osc = "\x1b]0;title\x07";
+		const hostile = [
+			{
+				id: "x",
+				question: `Q ${csi} ${osc}`,
+				options: [
+					{ id: "a", label: `L ${csi} ${osc}`, description: `D ${csi} ${osc}`, recommended: true },
+					{ id: "b", label: "Plain" },
+				],
+			},
+		];
+		const h = harness([[{ toolCall: { tool: "ask_user", input: { questions: hostile } } }, { event: finished }]], {
+			isTTY: true,
+			keepStdinOpen: true,
+			input: [],
+		});
+		const pending = run(["--no-review", "ask"], h.io, h.createBackend);
+		await until(() => h.out().includes("Choose 1-3 or /cancel: "));
+		(h.io.stdin as PassThrough).write("3\n");
+		await until(() => h.out().includes("Your answer: "));
+		(h.io.stdin as PassThrough).write(`${csi}\n`);
+		await until(() => h.backend.toolResults.length === 1);
+		h.io.stdin.end();
+		await pending;
+		const shownCsi = "␛[31mred␛[0m";
+		const shownOsc = "␛]0;title⟨U+0007⟩";
+		for (const [prefix, suffix] of [
+			["Question 1/1: Q", ""],
+			["  1. L", " (Recommended)"],
+			["     D", ""],
+		]) {
+			expect(h.out()).toContain(`${prefix} ${shownCsi} ${shownOsc}${suffix}\n`);
+		}
+		expect(h.out()).not.toContain("\x1b");
+		expect(JSON.parse(h.backend.toolResults[0]?.output ?? "").answers).toEqual([{ questionId: "x", other: csi }]);
+	});
+
+	it.each([
+		["Ctrl+C", (h: ReturnType<typeof harness>) => h.ctrlC(), "interrupted"],
+		["SIGTERM", (h: ReturnType<typeof harness>) => h.terminate(15), "closed"],
+	])("gives up the pending question on %s and leaves no read pending", async (_name, send, reason) => {
+		const t = start();
+		await until(() => t.h.out().includes(CHOOSE));
+		send(t.h);
+		await until(() => t.h.backend.toolResults.length === 1 || t.h.exits.length > 0);
+		expect(await t.pending).toBeGreaterThan(0);
+		expect(t.result()).toEqual({ status: "cancelled", reason });
+		expect(t.h.out().split(CHOOSE)).toHaveLength(2);
+	});
+});

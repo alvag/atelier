@@ -110,6 +110,10 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 While a question or a list is open, the editor is hidden and every key goes to the question, Ctrl+C and Ctrl+D included: they close it as Esc does, without interrupting the turn or quitting. What you had typed comes back to the editor, unsent, when it closes.
 
+### Structured questions
+
+In a line-by-line run, the agent can offer numbered choices with `ask_user`, one question at a time. The recommended option comes first with `(Recommended)`, but Enter never chooses it for you. `Other...` lets you write your own answer (up to 2000 characters); `/cancel` cancels the whole batch. Only you can answer, even in `yolo`. Without an interactive terminal, the tool returns unavailable instead of guessing or waiting. See [structured questions](docs/ask-user.md).
+
 ### Permission modes
 
 - `normal`: commands run in the sandbox without asking; what the sandbox cannot cover (leaving it, writing outside the working directory, deleting or publishing work) asks you.
