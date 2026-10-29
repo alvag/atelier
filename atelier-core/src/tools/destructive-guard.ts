@@ -299,6 +299,12 @@ const RESERVED_WORDS = new Set(["then", "else", "elif", "do", "{", "!", "if", "w
 const REDIRECTION = new RegExp(`^${REDIRECTION_OPERATOR.source}`);
 const BARE_REDIRECTION = /^(?:\d+|\{[A-Za-z_]\w*\})?(?:&>>?|>>?\|?|<<?|<>|[<>]&)$/;
 
+/** How a word redirects: `"bare"` when the file is the next word (`>`, `2>`), `"attached"` when it carries it (`2>&1`). */
+export function redirectionOf(raw: string): "bare" | "attached" | undefined {
+	if (!REDIRECTION.test(raw)) return undefined;
+	return BARE_REDIRECTION.test(raw) ? "bare" : "attached";
+}
+
 /** `env` options that take a value; in a combined cluster (`-iu VAR`) the first one ends the cluster. */
 const ENV_VALUE_FLAGS = "uCP";
 

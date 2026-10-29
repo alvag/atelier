@@ -1,4 +1,4 @@
-import { type SimpleCommand, simpleCommands } from "./destructive-guard.ts";
+import { redirectionOf, type SimpleCommand, simpleCommands } from "./destructive-guard.ts";
 
 /**
  * The rules the user can allow a `bash` command by: one per program and
@@ -113,7 +113,9 @@ const CHANGES_DIRECTORY = new Set(["cd", "pushd", "popd"]);
  * or a value (`file:/x`, `foo@/x`).
  */
 function leavesProject({ value, raw }: { value: string; raw: string }): boolean {
-	if (/[$`~{]/.test(raw) || value.includes("~") || value.includes("..")) return true;
+	if (/[$`~{]/.test(raw) || value.includes("~")) return true;
+	// A `..` segment of any place the word names, also after `:`, `,` or `=` (`-C../x`, `file:../lib`); `./...` is none.
+	if (placesOf(value).some((place) => place.split(/[/:,=]/).includes(".."))) return true;
 	// A glob the shell expands (`l?nk`, `lin[k]`, `l*`) may name any place: only quoted or escaped it is literal.
 	if (/[*?[]/.test(raw.replace(/'[^']*'|"(?:\\.|[^"\\])*"|\\./g, ""))) return true;
 	return /(?:^|[=:,@])\/|^-[A-Za-z0-9]+\/|^--[\w-]+\//.test(value);
@@ -126,6 +128,57 @@ function placesOf(value: string): string[] {
 	if (equals > 0) places.push(value.slice(equals + 1));
 	if (/^-[A-Za-z0-9]/.test(value) && value.length > 2) places.push(value.slice(2));
 	return places.filter((place) => place !== "");
+}
+
+/**
+ * Options with which a project's program runs code its value names or holds, by program: never covered by a project
+ * rule, whatever their value. A two-character one (`-E`) counts also in a cluster of short options (`-kE`).
+ */
+const RUNS_CODE_OPTIONS: Record<string, readonly string[]> = {
+	make: ["--eval", "-E"],
+	gmake: ["--eval", "-E"],
+	npm: ["--node-options", "--script-shell", "--shell", "--userconfig", "--globalconfig"],
+	pnpm: ["--node-options", "--script-shell", "--shell", "--userconfig", "--globalconfig", "--config."],
+	yarn: ["--node-options", "--script-shell", "--shell", "--userconfig", "--globalconfig"],
+	cargo: ["--config", "-Z"],
+	go: ["-exec", "-toolexec", "--exec", "--toolexec"],
+	gradle: ["--init-script", "-I"],
+	gradlew: ["--init-script", "-I"],
+};
+
+/** Whether `word` is one of `options`: as it is, with `=value`, a prefix ending in `.` (`--config.x`), or a short one in a cluster. */
+function isRunsCodeOption(word: string, options: readonly string[]): boolean {
+	return options.some((option) => {
+		if (option.endsWith(".")) return word.startsWith(option);
+		if (option.length === 2) return new RegExp(`^-[A-Za-z0-9]*${option[1]}`).test(word);
+		return word === option || word.startsWith(`${option}=`);
+	});
+}
+
+/**
+ * Whether an argument is a simple word, the only kind a project rule covers: letters, digits and `. _ - @ + , : %`
+ * (`*` and `?` only when quoted, as globs unquoted already ask), `/` only inside a relative path (never first, nor
+ * after `=`, `:`, `,`, nor in an option, `-I/x`), no space or control character, and `=` only in a long option
+ * `--name=value` whose value is one too, never an assignment `NAME=value`.
+ */
+function isSimpleArgument(value: string): boolean {
+	const long = /^--[A-Za-z0-9][A-Za-z0-9._-]*=/.exec(value);
+	const text = long === null ? value : value.slice(long[0].length);
+	if (!/^[A-Za-z0-9._@+,:%*?/-]*$/.test(text)) return false;
+	if (text.startsWith("/") || /[:,]\//.test(text) || /^-[^/]*\//.test(text)) return false;
+	return true;
+}
+
+/** The arguments of a command: its words after the program, without redirections and the files they name. */
+function argumentsOf(words: SimpleCommand["words"]): SimpleCommand["words"] {
+	const args: SimpleCommand["words"] = [];
+	for (let at = 1; at < words.length; at++) {
+		const word = words[at] as SimpleCommand["words"][number];
+		const redirection = redirectionOf(word.raw);
+		if (redirection === "bare") at++;
+		else if (redirection === undefined) args.push(word);
+	}
+	return args;
 }
 
 /** Programs whose line is not one command the words show: they run a string, a file in this shell, or a structure. */
@@ -213,6 +266,8 @@ interface Key {
 	places: string[];
 	/** Its standard input comes from the line (a pipe, `<`, a heredoc, a here-string): code no project rule covers. */
 	readsInput: boolean;
+	/** Every argument is a simple word and none is an option that runs code: only then may a project rule cover the line. */
+	simpleArguments: boolean;
 }
 
 const ruleOf = ({ program, subcommand }: Key) => (subcommand === undefined ? program : `${program} ${subcommand}`);
@@ -279,6 +334,9 @@ function keyOf({ wrappers, words, writesFile, setsEnvironment, readsInput }: Sim
 			...words.slice(1).flatMap(({ value }) => placesOf(value)),
 		],
 		readsInput,
+		simpleArguments: argumentsOf(words).every(
+			({ value }) => isSimpleArgument(value) && !isRunsCodeOption(value, RUNS_CODE_OPTIONS[name] ?? []),
+		),
 	};
 }
 
@@ -339,7 +397,8 @@ export function coveredBy(
 	if (keys.every((key) => covers(rules, key))) return true;
 	// A project rule holds the whole line to the project: any command of it can hand a place to the one it covers.
 	const staysInProject = !keys.some(
-		(key) => CHANGES_DIRECTORY.has(key.program) || key.leavesProject || !key.places.every(inProject),
+		(key) =>
+			CHANGES_DIRECTORY.has(key.program) || key.leavesProject || !key.simpleArguments || !key.places.every(inProject),
 	);
 	// What a command reads from the line (`make -f - <<EOF`) is code the words do not show: only a session or global rule covers it.
 	return staysInProject && keys.every((key) => covers(rules, key) || (!key.readsInput && covers(projectRules, key)));

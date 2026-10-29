@@ -318,7 +318,66 @@ describe("coveredBy with project rules", () => {
 		expect(coveredBy("make -f - <<< 'all:'", ["make"])).toBe(true);
 		expect(coveredBy("printf x | (make -f -)", ["printf", "make"])).toBe(true);
 		expect(coveredBy("(make -f -) < payload.mk", ["make"])).toBe(true);
-		expect(coveredBy("make 'a<b'", [], ["make"])).toBe(true);
+		expect(coveredBy("make 'a.b'", [], ["make"])).toBe(true);
+	});
+
+	it.each([
+		["pnpm test", [], ["pnpm"]],
+		["pnpm -r build", [], ["pnpm"]],
+		['pnpm --filter "@app/*" build', [], ["pnpm"]],
+		["npm run lint -- --fix", [], ["npm run"]],
+		["make build", [], ["make"]],
+		["make -j4 test", [], ["make"]],
+		["make -C sub", [], ["make"]],
+		["cargo test -p foo", [], ["cargo test"]],
+		["go test ./...", [], ["go test"]],
+		["pytest tests/unit -k smoke", [], ["pytest"]],
+		["vitest run src/a.test.ts", [], ["vitest run"]],
+		["./gradlew build", [], ["./gradlew build"]],
+		["pnpm test 2>&1 | tail -5", ["tail"], ["pnpm test"]],
+		["pnpm test --reporter=dot", [], ["pnpm test"]],
+	] as const)("covers %j by a project rule: every argument is a simple word", (command, allowed, project) => {
+		expect(coveredBy(command, allowed, project)).toBe(true);
+	});
+
+	it.each([
+		"make MAKEFLAGS=-I/tmp/x",
+		"make -I/tmp/x",
+		"make --include-dir=/tmp/x",
+		"make --eval='include /tmp/x.mk'",
+		"make --eval=x",
+		"make -E 'x'",
+		"make -kE x",
+		"MAKEFLAGS=-I/tmp make",
+		"make CC=/tmp/cc",
+		"make V=1",
+		"npm --node-options=--require=/tmp/x run test",
+		"npm run test --script-shell=x",
+		"pnpm --config.script-shell=x test",
+		"cargo --config 'build.rustc-wrapper=\"/tmp/x\"' build",
+		"cargo --config=x build",
+		"go test -exec=x ./...",
+		"go test -toolexec x ./...",
+		"./gradlew --init-script x build",
+		"pytest --rootdir=/tmp",
+		"pnpm test $'\\x2f'tmp",
+		'pnpm test "a b"',
+		"pnpm test 'a\tb'",
+		"pnpm test a#b",
+		"pnpm test sub//x:/y",
+		"printf '%s' a=b; pnpm test",
+	])("asks for %j under a project rule: an argument is no simple word", (command) => {
+		expect(
+			coveredBy(
+				command,
+				["printf"],
+				["make", "npm", "npm run", "pnpm", "pnpm test", "cargo", "go test", "./gradlew", "pytest"],
+			),
+		).toBe(false);
+	});
+
+	it("still covers lines with other words by a session rule", () => {
+		expect(coveredBy("make V=1 --eval=x", ["make"])).toBe(true);
 	});
 
 	it("still covers such a line by a session rule", () => {
