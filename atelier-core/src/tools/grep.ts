@@ -137,8 +137,8 @@ function runSearch(
 			const nul = pending.indexOf("\0");
 			if (nl === -1 || (nul !== -1 && nul < nl)) return false;
 			const line = pending.slice(0, nl);
-			const warning = WARNING.test(line);
 			const found = NOTICE.exec(line);
+			const warning = !found && WARNING.test(line);
 			if (!warning && !found) return false;
 			const path = toRelative(found?.[1] ?? "");
 			if (!warning && !accept(path)) return false;
