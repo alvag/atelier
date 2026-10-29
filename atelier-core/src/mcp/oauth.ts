@@ -203,6 +203,10 @@ export class McpOAuthProvider implements OAuthClientProvider {
 	}
 
 	async redirectToAuthorization(url: URL): Promise<void> {
+		if (url.protocol !== "http:" && url.protocol !== "https:")
+			throw new Error(
+				`Refused to open OAuth URL for MCP server "${this.#server.name}": ${url.href}; only http: and https: URLs are allowed`,
+			);
 		await this.#onRedirect?.(url);
 	}
 
