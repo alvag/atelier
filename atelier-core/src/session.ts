@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type {
 	AgentBackend,
 	BackendSession,
@@ -100,8 +101,15 @@ import {
 	type EndedTask,
 	type TaskInfo,
 	TaskRefusedError,
+	type TaskResult,
 	taskStartedText,
 } from "./subagents/tasks.ts";
+import {
+	createTaskWorktree,
+	type TaskWorktree,
+	type WorktreeChanges,
+	WorktreeRefusedError,
+} from "./subagents/worktree.ts";
 import { ASK_USER_TOOL, type AskUser, createAskUserTool, type UserQuestionCapabilities } from "./tools/ask-user.ts";
 import { BASH_BACKGROUND_TOOL, JOB_LIST_TOOL, JOB_STOP_TOOL } from "./tools/background.ts";
 import { commandRuleScope } from "./tools/command-rules.ts";
@@ -125,6 +133,11 @@ const WAKE_GATHER_MS = 250;
 /** What a subagent in the background is told instead of a question to the user: nobody would answer it. */
 const UNATTENDED_DENIAL =
 	"Denied without asking: a background subagent cannot ask the user. Leave this out and say in your report what needs approval.";
+/** What a background worker is told of its folder. */
+const WORKTREE_NOTE =
+	"You work in a git worktree made for this task alone, from the other agent's working tree. Do not commit: your changes are collected from its files as a patch.";
+/** The patches of background workers whose files a new patch is compared with. */
+const MAX_KEPT_PATCHES = 20;
 /** How long a stopped background subagent has to end its turn before its session is closed under it. */
 const STOP_GRACE_MS = 2000;
 /** The characters of notices one delivery gives whole; past them a notice that has a short form gives that instead. */
@@ -507,6 +520,10 @@ export class Session {
 	#jobs: Jobs | undefined;
 	/** The subagents in the background, when the session has subagents and can be woken. */
 	#tasks: BackgroundTasks | undefined;
+	/** The worktrees made for background workers so far: each gets the next number as its folder. */
+	#worktrees = 0;
+	/** The files of the latest patches of background workers, by task id, oldest first. */
+	readonly #patches = new Map<string, string[]>();
 	/** Notices of ended background work the agent has not read yet, oldest first. */
 	#backgroundNotices: BackgroundNotice[] = [];
 	/** The waiting notices may start a turn of their own: not after a turn that ended interrupted or failed left them. */
@@ -2154,17 +2171,32 @@ export class Session {
 			if (error instanceof TaskRefusedError) return fail(error.message);
 			throw error;
 		}
+		// A worker writes in a worktree of its own, so two never write in the same folder, nor in the parent's.
+		let worktree: TaskWorktree | undefined;
+		if (agent.name === "worker") {
+			try {
+				worktree = await createTaskWorktree(
+					this.#options.cwd,
+					join(this.#scratch?.path ?? tmpdir(), "worktrees", String(++this.#worktrees)),
+				);
+			} catch (error) {
+				place.release();
+				if (error instanceof WorktreeRefusedError) return fail(error.message);
+				return fail(`The worker's worktree could not be made: ${describeError(error)}`);
+			}
+		}
 		const settings = this.#subagentSettings(agent);
-		const child = await this.#startChild(options, agent, settings, true);
+		const child = await this.#startChild(options, agent, settings, true, worktree?.cwd);
 		if (typeof child === "string") {
 			place.release();
+			await worktree?.remove();
 			return fail(child);
 		}
-		const task = place.start({
+		const task: TaskInfo = place.start({
 			agent: agent.name,
 			...(label === undefined ? {} : { label }),
 			prompt,
-			run: async (signal, log): Promise<SubagentResult> => {
+			run: async (signal, log): Promise<TaskResult> => {
 				// A backend that does not end its turn on the interrupt is closed after a grace.
 				let grace: NodeJS.Timeout | undefined;
 				const stop = () => {
@@ -2173,23 +2205,62 @@ export class Session {
 				};
 				signal.addEventListener("abort", stop, { once: true });
 				try {
-					return await this.#childReport(child, agent, settings, prompt, (body) => {
+					const result = await this.#childReport(child, agent, settings, prompt, (body) => {
 						const line = activityLine(body);
 						if (line !== "") log(line);
 					});
+					// A stopped worker's changes are dropped with its worktree.
+					if (worktree === undefined || signal.aborted) return result;
+					return { ...result, changes: await this.#collectChanges(task.id, worktree) };
 				} finally {
 					signal.removeEventListener("abort", stop);
 					clearTimeout(grace);
 					await child.close();
+					await worktree?.remove();
 				}
 			},
 		});
+		const where =
+			worktree === undefined
+				? ""
+				: ` It works in its own git worktree, from your working tree as it is now (HEAD ${worktree.head}${worktree.dirty ? " plus uncommitted changes" : ""}); its changes come back as a patch.`;
 		return {
 			ok: true,
-			output: taskStartedText(task),
+			output: `${taskStartedText(task)}${where}`,
 			summary: `${task.label} (task ${task.id} started)`,
 			truncated: false,
 		};
+	}
+
+	/**
+	 * What a worker changed, for its notice: the patch, and the files it shares with the parent's changes since the
+	 * snapshot and with the patches of the session's other tasks. A patch that cannot be made is said instead.
+	 */
+	async #collectChanges(id: string, worktree: TaskWorktree): Promise<string> {
+		let changes: WorktreeChanges | undefined;
+		try {
+			changes = await worktree.collect(join(this.#scratch?.path ?? tmpdir(), `${id}.patch`));
+		} catch (error) {
+			return `Its changes could not be collected: ${describeError(error)}`;
+		}
+		if (changes === undefined) return "It changed no files.";
+		const { files, insertions, deletions, patchPath } = changes;
+		const lines = [
+			`Its changes: ${files.length} file${files.length === 1 ? "" : "s"} changed, +${insertions} -${deletions}, as a patch against your working tree as it was when the task started: ${patchPath}. Apply it from ${worktree.top} with git apply and check it.`,
+		];
+		const since = await worktree.changedSince().catch((): string[] => []);
+		const shared = files.filter((file) => since.includes(file));
+		if (shared.length > 0)
+			lines.push(`Files it changed that also changed in your working tree since: ${shared.join(", ")}.`);
+		for (const [other, theirs] of this.#patches) {
+			const both = files.filter((file) => theirs.includes(file));
+			if (both.length > 0) lines.push(`Files the patch of ${other} also changed: ${both.join(", ")}.`);
+		}
+		this.#patches.set(id, files);
+		// Only the latest patches: those the agent may still apply.
+		for (const old of [...this.#patches.keys()].slice(0, Math.max(0, this.#patches.size - MAX_KEPT_PATCHES)))
+			this.#patches.delete(old);
+		return lines.join("\n");
 	}
 
 	/**
@@ -2217,12 +2288,16 @@ export class Session {
 		);
 	}
 
-	/** Starts a subagent's session, in `normal`; a failure answers the message the parent sees instead. */
+	/**
+	 * Starts a subagent's session, in `normal`, in the parent's folder or in `worktree` (a worker's own); a failure
+	 * answers the message the parent sees instead.
+	 */
 	async #startChild(
 		options: SubagentOptions,
 		agent: SubagentDefinition,
 		settings: ReturnType<typeof roleSettings>,
 		unattended: boolean,
+		worktree?: string,
 	): Promise<Session | string> {
 		try {
 			const backend = await options.createBackend(settings.backend);
@@ -2231,7 +2306,7 @@ export class Session {
 			return await Session.start({
 				backend,
 				userQuestions: false,
-				cwd: this.#options.cwd,
+				cwd: worktree ?? this.#options.cwd,
 				...(model === undefined ? {} : { model }),
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
 				...(childCompaction === undefined ? {} : { compaction: childCompaction }),
@@ -2240,7 +2315,7 @@ export class Session {
 					const tool = PARENT_ONLY.has(name) ? undefined : this.#tools.get(name);
 					return tool ? [tool] : [];
 				}),
-				systemPromptAppend: agent.prompt,
+				systemPromptAppend: worktree === undefined ? agent.prompt : `${agent.prompt}\n\n${WORKTREE_NOTE}`,
 				maxRequestsPerTurn: agent.maxRequests,
 				// The mode is not passed on: the child runs in normal.
 				...(this.#options.noSandbox ? { noSandbox: true } : {}),
