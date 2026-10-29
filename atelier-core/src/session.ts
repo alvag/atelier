@@ -453,15 +453,15 @@ export class Session {
 	#promptFailureSaid = false;
 	/** The background jobs, when the session's tools include `bash_background`. */
 	#jobs: Jobs | undefined;
-	/** Notices of ended jobs the agent has not read yet, oldest first. */
-	#jobNotices: string[] = [];
+	/** Notices of ended background work the agent has not read yet, oldest first. */
+	#backgroundNotices: string[] = [];
 	/** The waiting notices may start a turn of their own: not after a turn that ended interrupted or failed left them. */
-	#jobsWake = false;
+	#noticesWake = false;
 	/**
 	 * The last turn that answers the user ended interrupted or failed: notices, those it left and those that come after,
 	 * wait for the user's next prompt and start no turn of their own.
 	 */
-	#jobsHeld = false;
+	#noticesHeld = false;
 	/** Ends the wait of a woken turn for its notices: the session's close calls it. */
 	#gathering: (() => void) | undefined;
 
@@ -678,7 +678,7 @@ export class Session {
 
 	/** The background jobs running now, and the notices of ended ones the agent has not read yet. */
 	get jobs(): { running: number; waiting: number } {
-		return { running: this.#jobs?.running ?? 0, waiting: this.#jobNotices.length };
+		return { running: this.#runningBackground(), waiting: this.#backgroundNotices.length };
 	}
 
 	/** What is queued now, in the order it would enter. */
@@ -746,12 +746,12 @@ export class Session {
 	}
 
 	/**
-	 * `woken`: the turn of job notices with no prompt of the user's (`prompt` is empty): nothing is logged or kept as the
+	 * `woken`: the turn of background notices with no prompt of the user's (`prompt` is empty): nothing is logged or kept as the
 	 * user's words, the classifier has no request, and the review takes the user's last request.
 	 */
 	async *#send(prompt: string, turnId: string, entered?: QueuedMessage, woken = false): AsyncGenerator<AtelierEvent> {
 		yield* this.#stream(turnId, woken ? undefined : prompt, entered, async (turn, signal, backendSession) => {
-			// A woken turn waits a moment for the notices of jobs ending with the first, then takes all there are.
+			// A woken turn waits a moment for the notices of work ending with the first, then takes all there are.
 			if (woken) await this.#gatherNotices(signal);
 			// Interrupted or closed while it waited: it ends before the backend, and the notices wait for the next prompt.
 			if (woken && (signal.aborted || this.#closed))
@@ -762,7 +762,7 @@ export class Session {
 			const logged = woken ? undefined : this.#odd?.userMessage(prompt);
 			if (!woken) this.#keepPrompt(prompt);
 			// The user is back: the notices this prompt does not take may wake a turn again.
-			if (!woken) this.#jobsHeld = false;
+			if (!woken) this.#noticesHeld = false;
 			const request = woken ? (this.#previousTurn?.request ?? prompt) : prompt;
 			// What the agent declared in an earlier turn does not cover this one, and its candidate starts from today's HEAD.
 			this.#review?.startTurn(this.#options.cwd, request);
@@ -808,10 +808,10 @@ export class Session {
 			// The outcome of the latest review, once: the agent hears about it, and acts only if the user asks.
 			let reviewNotice = this.#review?.takeNotice();
 			if (reviewNotice !== undefined) sent = `${reviewNotice}\n\n${sent}`;
-			// The notices of ended jobs that waited: the whole prompt of a turn they woke, else before the user's words.
-			let jobNotices = this.#takeJobNotices(turn);
-			if (jobNotices !== undefined) {
-				const text = jobNotices.join("\n\n");
+			// The notices of ended background work that waited: the whole prompt of a turn they woke, else before the user's words.
+			let backgroundNotices = this.#takeNotices(turn);
+			if (backgroundNotices !== undefined) {
+				const text = backgroundNotices.join("\n\n");
 				sent = woken ? `${sent}${text}` : `${text}\n\n${sent}`;
 			}
 			const mcpStatus = this.mcpStatus();
@@ -830,7 +830,7 @@ export class Session {
 			let noteTaken = false;
 			this.#promptTaken = () => {
 				reviewNotice = undefined;
-				jobNotices = undefined;
+				backgroundNotices = undefined;
 				if (telling) this.#toldYolo = yolo;
 				noteTaken = true;
 			};
@@ -871,7 +871,7 @@ export class Session {
 				this.#recoveryInFlight = undefined;
 				if (reviewNotice !== undefined) this.#review?.returnNotice(reviewNotice);
 				// The model never saw them: they wait again, before any that came since, for the next prompt.
-				if (jobNotices !== undefined) this.#returnJobNotices(jobNotices, turn);
+				if (backgroundNotices !== undefined) this.#returnNotices(backgroundNotices, turn);
 			}
 			this.#previousTurn = { request, lastMessage: lastMessageTail(this.#lastMessage) };
 			await logged;
@@ -1029,9 +1029,9 @@ export class Session {
 			// it was ending; from here until it is over, nothing more is queued.
 			if (abort.signal.aborted || UNCLEAN_ENDS.has(finish.stopReason)) {
 				this.#givenBack = true;
-				// Job notices, those it left and later ones, wait for the user's next prompt instead of starting a turn.
-				this.#jobsWake = false;
-				this.#jobsHeld = true;
+				// Background notices, those it left and later ones, wait for the user's next prompt instead of starting a turn.
+				this.#noticesWake = false;
+				this.#noticesHeld = true;
 				const returned = this.#queue;
 				this.#queue = [];
 				if (returned.length > 0) this.#sayQueue(returned);
@@ -1591,8 +1591,8 @@ export class Session {
 		if (signal?.aborted) return { ok: false, output: "Not run: the turn was interrupted." };
 		const result = await this.#runTool(call);
 		if (!this.#steerable || this.#abort?.signal.aborted) return result;
-		// The notices of jobs that ended go with the result too, after the user's steers.
-		const notices = this.#takeJobNotices(this.#turn)?.join("\n\n");
+		// The notices of background work that ended go with the result too, after the user's steers.
+		const notices = this.#takeNotices(this.#turn)?.join("\n\n");
 		const steers = this.#queue.filter((message) => message.kind === "steer");
 		if (steers.length === 0) return notices === undefined ? result : { ...result, steering: notices };
 		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
@@ -1605,10 +1605,10 @@ export class Session {
 		return { ...result, steering: notices === undefined ? steering : `${steering}\n\n${notices}` };
 	}
 
-	/** The turn of the job notices that wait, when they may start one; it takes them, so a second call answers undefined. */
+	/** The turn of the notices that wait, when they may start one; it takes them, so a second call answers undefined. */
 	#wokenTurn(turnId: string): AsyncGenerator<AtelierEvent> | undefined {
-		if (!this.#jobsWake || this.#jobNotices.length === 0) return undefined;
-		this.#jobsWake = false;
+		if (!this.#noticesWake || this.#backgroundNotices.length === 0) return undefined;
+		this.#noticesWake = false;
 		return this.#send("", turnId, undefined, true);
 	}
 
@@ -1620,7 +1620,7 @@ export class Session {
 			label: job.label,
 			command: job.command,
 			outputPath: job.outputPath,
-			running: this.#jobs?.running ?? 0,
+			running: this.#runningBackground(),
 		});
 	}
 
@@ -1629,11 +1629,7 @@ export class Session {
 	 * turn running, the notice asks for a turn of its own (`wake`).
 	 */
 	#jobEnded({ job, notice }: EndedJob): void {
-		if (notice !== undefined) {
-			this.#jobNotices.push(notice);
-			if (!this.#jobsHeld) this.#jobsWake = true;
-		}
-		const ended: AtelierEventBody = {
+		this.#backgroundEnded(notice, (waiting) => ({
 			type: "job_finished",
 			jobId: job.id,
 			label: job.label,
@@ -1643,18 +1639,36 @@ export class Session {
 			durationMs: job.durationMs,
 			outputPath: job.outputPath,
 			notified: notice !== undefined,
-			running: this.#jobs?.running ?? 0,
-			waiting: this.#jobNotices.length,
-		};
-		// Held notices start no turn: the clients hear of the end now, not when the user's next prompt runs.
-		const idle = !this.#turnOpen() && this.#jobsHeld && !this.#closed ? this.#options.idleEvent : undefined;
-		if (idle !== undefined) this.#sayIdle(idle, ended);
-		else this.#say(ended);
-		if (notice !== undefined && this.#turn === undefined && !this.#closed && !this.#jobsHeld) this.#options.wake?.();
+			running: this.#runningBackground(),
+			waiting,
+		}));
 	}
 
 	/**
-	 * The woken turn's wait for the notices of jobs ending with the first: WAKE_GATHER_MS, cut short by an interrupt or
+	 * Background work ended (a job, or anything else that tells the agent when it ends): its notice, if any, waits for
+	 * the agent, and the clients hear `ended` (made with the notices now waiting) in the running turn or the next. With
+	 * no turn running, the notice asks for a turn of its own (`wake`).
+	 */
+	#backgroundEnded(notice: string | undefined, ended: (waiting: number) => AtelierEventBody): void {
+		if (notice !== undefined) {
+			this.#backgroundNotices.push(notice);
+			if (!this.#noticesHeld) this.#noticesWake = true;
+		}
+		const event = ended(this.#backgroundNotices.length);
+		// Held notices start no turn: the clients hear of the end now, not when the user's next prompt runs.
+		const idle = !this.#turnOpen() && this.#noticesHeld && !this.#closed ? this.#options.idleEvent : undefined;
+		if (idle !== undefined) this.#sayIdle(idle, event);
+		else this.#say(event);
+		if (notice !== undefined && this.#turn === undefined && !this.#closed && !this.#noticesHeld) this.#options.wake?.();
+	}
+
+	/** The background work running now: what `running` counts in the events and in `jobs`. */
+	#runningBackground(): number {
+		return this.#jobs?.running ?? 0;
+	}
+
+	/**
+	 * The woken turn's wait for the notices of work ending with the first: WAKE_GATHER_MS, cut short by an interrupt or
 	 * the session's close, and its timer cleared whichever comes first.
 	 */
 	#gatherNotices(signal: AbortSignal): Promise<void> {
@@ -1679,18 +1693,18 @@ export class Session {
 	}
 
 	/** The waiting notices as the agent reads them, the clients told none waits now; undefined when none waited. */
-	#takeJobNotices(turn: Channel<TurnEvent> | undefined): string[] | undefined {
-		if (this.#jobNotices.length === 0) return undefined;
-		const notices = this.#jobNotices.splice(0);
-		this.#jobsWake = false;
-		turn?.push({ type: "jobs_status", running: this.#jobs?.running ?? 0, waiting: 0 });
+	#takeNotices(turn: Channel<TurnEvent> | undefined): string[] | undefined {
+		if (this.#backgroundNotices.length === 0) return undefined;
+		const notices = this.#backgroundNotices.splice(0);
+		this.#noticesWake = false;
+		turn?.push({ type: "jobs_status", running: this.#runningBackground(), waiting: 0 });
 		return notices;
 	}
 
 	/** Notices a prompt took that the backend failed on before answering: they wait again, oldest first. */
-	#returnJobNotices(notices: readonly string[], turn: Channel<TurnEvent>): void {
-		this.#jobNotices.unshift(...notices);
-		turn.push({ type: "jobs_status", running: this.#jobs?.running ?? 0, waiting: this.#jobNotices.length });
+	#returnNotices(notices: readonly string[], turn: Channel<TurnEvent>): void {
+		this.#backgroundNotices.unshift(...notices);
+		turn.push({ type: "jobs_status", running: this.#runningBackground(), waiting: this.#backgroundNotices.length });
 	}
 
 	async #runTool(call: ToolCall): Promise<ToolCallResult> {
