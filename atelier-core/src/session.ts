@@ -1632,9 +1632,15 @@ export class Session {
 		};
 		// Held notices start no turn: the clients hear of the end now, not when the user's next prompt runs.
 		const idle = this.#turn === undefined && this.#jobsHeld && !this.#closed ? this.#options.idleEvent : undefined;
-		if (idle !== undefined) idle(ended);
+		if (idle !== undefined) this.#sayIdle(idle, ended);
 		else this.#say(ended);
 		if (notice !== undefined && this.#turn === undefined && !this.#closed && !this.#jobsHeld) this.#gatherWake();
+	}
+
+	/** An event outside any turn: to its listener, and saved with the session as a turn's events are (`turnId` empty). */
+	#sayIdle(idle: (event: AtelierEventBody) => void, event: AtelierEventBody): void {
+		this.#options.record?.event({ ...event, seq: 0, turnId: "" } as AtelierEvent);
+		idle(event);
 	}
 
 	/** Wakes a turn once the notices of jobs that end together have come; a turn that starts first takes them. */

@@ -10,6 +10,7 @@ import {
 	FakeBackend,
 	type FakeStep,
 	Session,
+	SessionStore,
 } from "../src/index.ts";
 import { createBackgroundTools } from "../src/tools/background.ts";
 import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
@@ -256,5 +257,35 @@ describe("closing a session with background jobs", () => {
 		expect(session.jobs).toEqual({ running: 0, waiting: 0 });
 		expect(() => process.kill(pid, 0)).toThrow();
 		await turn;
+	});
+});
+
+describe("a job's end outside any turn", () => {
+	it("is saved with the session, so it is there when the session is resumed", async () => {
+		const home = await realpath(await mkdtemp(join(tmpdir(), "atelier-session-jobs-home-")));
+		const record = new SessionStore(home).create(cwd);
+		const heard: AtelierEventBody[] = [];
+		const backend = new FakeBackend(
+			[[call("bash_background", { command: waitsForGo() }, "c1"), { throw: "backend failed" }]],
+			"anthropic-api",
+		);
+		const session = await Session.start({
+			backend,
+			cwd,
+			tools: createBackgroundTools({ sandbox: sandbox() }),
+			record,
+			idleEvent: (event) => heard.push(event),
+		});
+		for await (const _event of session.send("start it")) {
+		}
+		await go();
+		await until(() => heard.length === 1);
+		await session.close();
+		const loaded = await new SessionStore(home).load(cwd, record.id);
+		expect(loaded.entries).toContainEqual({
+			type: "event",
+			event: expect.objectContaining({ type: "job_finished", jobId: "1", notified: true, waiting: 1 }),
+		});
+		await rm(home, { recursive: true, force: true });
 	});
 });
