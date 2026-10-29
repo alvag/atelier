@@ -51,3 +51,18 @@ export function claudeCodeIdOf(name: string): string {
 	if (id !== undefined) return id;
 	return Object.keys(CODE_ALIASES).find((id) => CODE_ALIASES[id] === name) ?? name;
 }
+
+/**
+ * The aliases that stand for `ids` now, each with the id it stands for, so a client marks the model an alias in use
+ * runs: the subscription's list says them, else the code's.
+ */
+export function claudeCodeAliases(ids: readonly string[]): Record<string, string> {
+	const data = currentModelData();
+	const resolved = resolvedList(data) !== undefined;
+	const aliases: Record<string, string> = {};
+	for (const id of ids) {
+		const names = resolved ? (data.model("claude-code", id)?.aliases ?? []) : [CODE_ALIASES[id]];
+		for (const name of names) if (name !== undefined && !Object.hasOwn(aliases, name)) aliases[name] = id;
+	}
+	return aliases;
+}

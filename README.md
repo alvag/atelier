@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/alvag/atelier/main/install.sh | sh 
 | `atelier login`         | Sign in with an account or an API key, choosing the provider; shows each one's state.                             |
 | `atelier logout`        | Sign out of what is signed in: a stored API key, an OpenAI sign-in, or the Claude Code login.                     |
 | `atelier stats`         | Show what the saved sessions cost: totals and by day, project, model, phase and role (`--since 7d`, `--json`).    |
-| `atelier models`        | Show the models `/model` offers; `--refresh` asks models.dev and the providers you are signed in to for new ones. |
+| `atelier models`        | Show the models `/model` offers, newest first, with their names, windows and whether they take images; `--refresh` asks models.dev and the providers you are signed in to for new ones. |
 
 `atelier update` only touches a copy installed this way, and refuses one with local changes. To work on Atelier itself, clone the repository and run it with `pnpm install` and `pnpm atelier` (see [development](docs/development.md)).
 
@@ -74,7 +74,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 | Command                     | Effect                                                                                                                                                              |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/model [provider/model]`   | Change the model, of any provider you are signed in to; without a name, pick from a list. Another provider's moves the session there (it continues from a summary). |
+| `/model [provider/model]`   | Change the model, of any provider you are signed in to; without a name, pick from a list, newest first, which shows the selected model's name, window and whether it takes images. Another provider's moves the session there (it continues from a summary). |
 | `/effort [level]`           | Change the thinking level (`off`, `minimal`, `low` … `max`).                                                                                                        |
 | `/profile [name]`           | Change the agent profile.                                                                                                                                           |
 | `/mode [mode]`              | Change the permission mode; `/mode default <mode>` saves the default.                                                                                               |

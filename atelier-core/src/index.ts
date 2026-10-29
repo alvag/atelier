@@ -100,6 +100,7 @@ export {
 	catalogFile,
 	DynamicModelCatalog,
 	defaultCatalogSources,
+	modelDetail,
 	modelRefreshEnabled,
 	modelRefreshOff,
 	readCatalog,

@@ -30,6 +30,24 @@ export interface CatalogModel {
 	aliases?: readonly string[];
 }
 
+/** A window as a person reads it: `1M`, `1.05M`, `200K`. */
+function windowSize(tokens: number): string {
+	return tokens >= 1_000_000 ? `${+(tokens / 1_000_000).toFixed(2)}M` : `${+(tokens / 1_000).toFixed(1)}K`;
+}
+
+/**
+ * What is known of a model for a person, `Claude Opus 5.5 · 1M context · images`, each part left out when no source
+ * said it; undefined when none did. Pure: the TUI and `atelier models` show it.
+ */
+export function modelDetail(model: Pick<CatalogModel, "name" | "contextWindow" | "images">): string | undefined {
+	const parts = [
+		...(model.name === undefined ? [] : [model.name]),
+		...(model.contextWindow === undefined ? [] : [`${windowSize(model.contextWindow)} context`]),
+		...(model.images === undefined ? [] : [model.images ? "images" : "text only"]),
+	];
+	return parts.length === 0 ? undefined : parts.join(" · ");
+}
+
 export type CatalogModels = Partial<Record<CatalogBackend, readonly CatalogModel[]>>;
 export type CatalogListing = Partial<Record<CatalogBackend, readonly string[]>>;
 

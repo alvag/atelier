@@ -1,6 +1,7 @@
 import { CLAUDE_CODE_MODELS } from "./backends/claude-code/models.ts";
 import { CODEX_MODELS, DEFAULT_CODEX_MODEL } from "./backends/openai-codex/models.ts";
 import { DEFAULT_OPENCODE_GO_MODEL, OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
+import type { CatalogModel } from "./model-catalog/model-data.ts";
 import type { BackendName } from "./protocol/types.ts";
 
 /**
@@ -33,6 +34,8 @@ export const BACKEND_MODELS: Readonly<Record<BackendName, readonly string[]>> = 
  */
 export interface ModelCatalog {
 	models(backend: BackendName): Promise<readonly string[]>;
+	/** What it knows of a model; a catalog without it says nothing of any. */
+	model?(backend: BackendName, id: string): Promise<CatalogModel | undefined>;
 }
 
 /** The lists written in the code, `BACKEND_MODELS`. */

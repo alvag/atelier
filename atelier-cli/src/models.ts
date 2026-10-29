@@ -1,4 +1,11 @@
-import { catalogFile, DynamicModelCatalog, defaultCatalogSources, modelRefreshOff, readCatalog } from "@atelier/core";
+import {
+	catalogFile,
+	DynamicModelCatalog,
+	defaultCatalogSources,
+	modelDetail,
+	modelRefreshOff,
+	readCatalog,
+} from "@atelier/core";
 import { BACKEND_MODELS, BACKEND_NAMES } from "@atelier/core/protocol";
 
 export interface ModelsIO {
@@ -8,9 +15,9 @@ export interface ModelsIO {
 }
 
 /**
- * `atelier models [--refresh]`: each backend's models as `/model` offers them, the code's list first, then the ones
- * its provider listed (`(new)`), with when that list was checked, and whether each takes images where the catalog
- * knows it (`images`, `text only`). Without --refresh it reads the cache and asks
+ * `atelier models [--refresh]`: each backend's models as `/model` offers them, newest first, the ones only its provider
+ * listed marked `(new)`, with when that list was checked, and what the catalog knows of each: its long name, its window
+ * and whether it takes images (`Claude Opus 5.5 · 1M context · images`). Without --refresh it reads the cache and asks
  * nothing; --refresh asks every source now, Claude Code aside, whose sessions list its models.
  */
 export async function runModels(options: { refresh?: true }, io: ModelsIO): Promise<number> {
@@ -39,11 +46,9 @@ export async function runModels(options: { refresh?: true }, io: ModelsIO): Prom
 		lines.push(`${backend} · ${origin}`);
 		const own: readonly string[] = BACKEND_MODELS[backend];
 		for (const model of await catalog.models(backend)) {
-			const images = (await catalog.model(backend, model))?.images;
-			const marks = [
-				...(own.includes(model) ? [] : ["(new)"]),
-				...(images === undefined ? [] : [images ? "images" : "text only"]),
-			];
+			const known = await catalog.model(backend, model);
+			const detail = known === undefined ? undefined : modelDetail(known);
+			const marks = [...(own.includes(model) ? [] : ["(new)"]), ...(detail === undefined ? [] : [detail])];
 			lines.push(`  ${[model, ...marks].join("  ")}`);
 		}
 	}

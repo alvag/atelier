@@ -215,7 +215,12 @@ describe("options.list", () => {
 			ok: true,
 			result: {
 				backends: [
-					{ name: "claude-code", default: BACKEND_DEFAULTS["claude-code"], models: [...BACKEND_MODELS["claude-code"]] },
+					{
+						name: "claude-code",
+						default: BACKEND_DEFAULTS["claude-code"],
+						models: [...BACKEND_MODELS["claude-code"]],
+						aliases: { opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-5-5" },
+					},
 					{
 						name: "anthropic-api",
 						default: BACKEND_DEFAULTS["anthropic-api"],
@@ -302,6 +307,7 @@ describe("options.list", () => {
 			name: "claude-code",
 			default: "claude-opus-5-5",
 			models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
+			aliases: { opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-5-5" },
 		});
 		expect(response.ok && response.result.models).toEqual([
 			{ provider: "claude-code", model: "claude-opus-5-5" },
@@ -324,6 +330,50 @@ describe("options.list", () => {
 		const options = await h.ask({ command: "options.list", cwd: home });
 		expect(listed.ok && options.ok && options.result.effective).toEqual(listed.ok && listed.result.effective);
 		expect(options.ok && options.result.effective).toBeDefined();
+		await h.close();
+	});
+
+	it("says of each model its long name, its window and whether it takes images, and claude-code's aliases", async () => {
+		const { catalogFile, DynamicModelCatalog, ModelData, useModelData } = await import("../src/model-catalog/index.ts");
+		const file = catalogFile(home);
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		const now = Date.now();
+		const sources = {
+			"models.dev": {
+				checkedAt: now,
+				models: { "claude-code": [{ id: "claude-opus-5-5", name: "Claude Opus 5.5", images: true }] },
+			},
+			"claude-code": {
+				checkedAt: now,
+				models: {
+					"claude-code": [
+						{ id: "claude-opus-5-5", aliases: ["opus"], contextWindow: 1_000_000 },
+						{ id: "claude-fable-5-1", aliases: ["fable"] },
+					],
+				},
+			},
+		};
+		await writeFile(file, JSON.stringify({ version: 1, sources }));
+		const h = serve(undefined, true, {
+			signedIn: async () => ["claude-code"],
+			catalog: new DynamicModelCatalog({ file, sources: [], network: false }),
+		});
+		const response = await h.ask({ command: "options.list" });
+		const result = response.ok ? response.result : {};
+		expect(result.models).toContainEqual({
+			provider: "claude-code",
+			model: "claude-opus-5-5",
+			name: "Claude Opus 5.5",
+			contextWindow: 1_000_000,
+			images: true,
+		});
+		// What no source said is left out.
+		expect(result.models).toContainEqual({ provider: "claude-code", model: "claude-haiku-5-5" });
+		const claudeCode = (result.backends as { name: string; aliases?: Record<string, string> }[]).find(
+			({ name }) => name === "claude-code",
+		);
+		expect(claudeCode?.aliases).toEqual({ opus: "claude-opus-5-5", fable: "claude-fable-5-1" });
+		useModelData(new ModelData());
 		await h.close();
 	});
 

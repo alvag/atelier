@@ -1,17 +1,21 @@
-import { formatModel, type PermissionMode, type SavedSessionInfo, visibleText } from "@atelier/core";
+import { formatModel, modelDetail, type PermissionMode, type SavedSessionInfo, visibleText } from "@atelier/core";
 import { BACKEND_NAMES, type BackendName } from "@atelier/core/protocol";
 import type { Choice } from "./dialog.ts";
 
-/** A model of a provider signed in to, as `options.list` lists it. */
+/** A model of a provider signed in to, as `options.list` lists it, with what the catalog knows of it. */
 export interface ListedModel {
 	provider: BackendName;
 	model: string;
+	name?: string;
+	contextWindow?: number;
+	images?: boolean;
 }
 
 /** What `options.list` answers, as the selectors read it. */
 export interface Options {
 	/** `default`: the model the backend runs when none was chosen; absent from a core that does not say it. */
-	backends: { name: string; default?: string; models: string[] }[];
+	/** `aliases`: the names that stand for one of the models, as claude-code's `opus`, each with the model. */
+	backends: { name: string; default?: string; models: string[]; aliases?: Record<string, string> }[];
 	/** Absent from a core that does not list them. */
 	models?: ListedModel[];
 	efforts: string[];
@@ -42,8 +46,8 @@ export const choicesOf = (values: readonly string[], now: string | undefined): C
 	values.map((value) => choice(value, now));
 
 /**
- * The models of the providers signed in to, `model [provider]`, each valued `provider/model`. The one in use (the
- * backend's default when none was chosen) is marked current; when the list lacks it, it comes first all the same,
+ * The models of the providers signed in to, `model [provider]`, each valued `provider/model` and with what is known
+ * of it as its detail. The one in use (the backend's default when none was chosen, the model an alias stands for) is marked current; when the list lacks it, it comes first all the same,
  * `signed out` when its provider is not listed.
  */
 export function modelChoices(
@@ -53,21 +57,26 @@ export function modelChoices(
 ): Choice<string>[] {
 	const models = options.models ?? [];
 	const backend = BACKEND_NAMES.find((name) => name === sessionBackend);
-	const inUse = model ?? options.backends.find((listed) => listed.name === backend)?.default;
+	const own = options.backends.find((listed) => listed.name === backend);
+	const chosen = model ?? own?.default;
+	// An alias in use (`opus`) runs the model it stands for, which is the one marked.
+	const inUse =
+		chosen !== undefined && own?.aliases && Object.hasOwn(own.aliases, chosen) ? own.aliases[chosen] : chosen;
 	const now = backend === undefined || inUse === undefined ? undefined : formatModel(backend, inUse);
-	const row = (provider: BackendName, name: string, ...notes: (string | undefined)[]) => {
+	const row = (provider: BackendName, name: string, detail: string | undefined, ...notes: (string | undefined)[]) => {
 		const value = formatModel(provider, name);
 		const said = [value === now ? "current" : undefined, ...notes].filter((note) => note !== undefined);
 		return {
 			value,
 			label: `${shown(name)} [${provider}]`,
 			...(said.length === 0 ? {} : { description: said.join(" · ") }),
+			...(detail === undefined ? {} : { detail }),
 		};
 	};
-	const listed = models.map(({ provider, model: name }) => row(provider, name));
+	const listed = models.map((entry) => row(entry.provider, entry.model, modelDetail(entry)));
 	if (backend === undefined || inUse === undefined || listed.some((choice) => choice.value === now)) return listed;
 	const signedOut = !models.some(({ provider }) => provider === backend);
-	return [row(backend, inUse, signedOut ? "signed out" : undefined), ...listed];
+	return [row(backend, inUse, undefined, signedOut ? "signed out" : undefined), ...listed];
 }
 
 /** The permission modes, each with what it does. */
