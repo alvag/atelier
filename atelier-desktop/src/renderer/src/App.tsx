@@ -279,7 +279,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 				) : null}
 				{state.phase ? <span className="phase">{state.phase}</span> : null}
 				{state.jobs && state.jobs.running > 0 ? (
-					<span title="Background jobs running">
+					<span title="Background jobs and tasks running">
 						{state.jobs.running} {state.jobs.running === 1 ? "job" : "jobs"}
 					</span>
 				) : null}

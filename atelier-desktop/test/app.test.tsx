@@ -1857,6 +1857,31 @@ describe("App", () => {
 	});
 });
 
+describe("App and background tasks", () => {
+	it("shows a task's start, and its end with the tail of its report, and counts it in the status bar", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "find");
+		const task = { taskId: "task-1", agent: "explorer", label: "find", outputPath: "/s/task-1.md" };
+		fake.emit({ ...task, type: "task_started", running: 1 });
+		expect(await screen.findByText("Explorer task-1 started — find")).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toContain("1 job");
+		fake.emit({
+			...task,
+			type: "task_finished",
+			status: "finished",
+			durationMs: 62_000,
+			costUsd: 0.12,
+			reportTail: "Found it at a.ts:3",
+			notified: true,
+			running: 0,
+			waiting: 1,
+		});
+		expect(await screen.findByText("Explorer task-1 finished — find after 1m 2s · $0.12")).toBeTruthy();
+		expect(screen.getByText("Found it at a.ts:3")).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toContain("1 notice waiting");
+	});
+});
+
 describe("App and background jobs", () => {
 	it("shows a job's start and end in the turn and the jobs and the notices waiting in the status bar", async () => {
 		const fake = fakeBridge();
