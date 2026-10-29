@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Jobs } from "./jobs.ts";
 import type { SandboxStatus } from "./sandbox.ts";
 
 export interface ToolContext {
@@ -21,6 +22,8 @@ export interface ToolContext {
 	projectBounds?: string;
 	/** The folders the user allowed `edit` and `write` in, real paths: a file in one or below is written without asking. */
 	pathRules?: readonly string[];
+	/** The session's background jobs, for `bash_background`, `job_list` and `job_stop`; only the main agent's calls have them. */
+	jobs?: Jobs;
 }
 
 /** What a tool says about a call before it runs. */
