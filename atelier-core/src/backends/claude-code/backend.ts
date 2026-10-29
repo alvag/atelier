@@ -329,9 +329,9 @@ class ClaudeCodeSession implements BackendSession {
 	/** The Claude Code session the SDK messages name: what `resumeState` hands on. */
 	#sessionId: string | undefined;
 	readonly #contextTracker = new ContextTracker();
-	/** Whether the model in use was asked where Claude Code compacts it; counts the asks, so a late answer is dropped. */
-	#compactAtAsked = false;
-	#compactAtAsks = 0;
+	/** Whether Claude Code answered where it compacts the model in use; counts the models, so a late answer is dropped. */
+	#compactAtKnown = false;
+	#compactAtModels = 0;
 
 	constructor(
 		query: SdkQuery,
@@ -465,7 +465,7 @@ class ClaudeCodeSession implements BackendSession {
 			yield* early;
 			return;
 		}
-		if (!this.#compactAtAsked) this.#askCompactAt();
+		if (!this.#compactAtKnown) this.#askCompactAt();
 		const turn = new Channel<AtelierEventBody>();
 		for (const event of early) turn.push(event);
 		this.#turn = turn;
@@ -477,15 +477,19 @@ class ClaudeCodeSession implements BackendSession {
 		yield* turn;
 	}
 
-	/** Asks where Claude Code compacts the model in use, without waiting: until it answers, the window stands for it. */
+	/**
+	 * Asks where Claude Code compacts the model in use, without waiting: until it answers, the window stands for it. A
+	 * request that failed or has not answered yet is asked again with the next turn, once per turn.
+	 */
 	#askCompactAt(): void {
-		this.#compactAtAsked = true;
-		const ask = ++this.#compactAtAsks;
+		const model = this.#compactAtModels;
 		const { getContextUsage } = this.#query;
 		if (!getContextUsage) return;
 		getContextUsage.call(this.#query, { detail: "summary" }).then(
 			(usage) => {
-				if (ask === this.#compactAtAsks) this.#contextTracker.compactAt = compactThresholdOf(usage);
+				if (model !== this.#compactAtModels) return;
+				this.#compactAtKnown = true;
+				this.#contextTracker.compactAt = compactThresholdOf(usage);
 			},
 			() => {},
 		);
@@ -530,8 +534,8 @@ class ClaudeCodeSession implements BackendSession {
 		if (change.model !== undefined) {
 			await setModel.call(this.#query, claudeCodeName(change.model));
 			// Where Claude Code compacts the new model is asked with its first turn; an answer about the old one is dropped.
-			this.#compactAtAsked = false;
-			this.#compactAtAsks++;
+			this.#compactAtKnown = false;
+			this.#compactAtModels++;
 			this.#contextTracker.compactAt = undefined;
 		}
 		this.#model = model;
