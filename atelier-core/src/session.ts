@@ -94,6 +94,14 @@ import {
 	type SubagentResult,
 	TASK_TOOL,
 } from "./subagents/definitions.ts";
+import {
+	type BackgroundNotice,
+	BackgroundTasks,
+	type EndedTask,
+	type TaskInfo,
+	TaskRefusedError,
+	taskStartedText,
+} from "./subagents/tasks.ts";
 import { ASK_USER_TOOL, type AskUser, createAskUserTool } from "./tools/ask-user.ts";
 import { BASH_BACKGROUND_TOOL, JOB_LIST_TOOL, JOB_STOP_TOOL } from "./tools/background.ts";
 import { commandRuleScope } from "./tools/command-rules.ts";
@@ -117,6 +125,31 @@ const WAKE_GATHER_MS = 250;
 /** What a subagent in the background is told instead of a question to the user: nobody would answer it. */
 const UNATTENDED_DENIAL =
 	"Denied without asking: a background subagent cannot ask the user. Leave this out and say in your report what needs approval.";
+/** How long a stopped background subagent has to end its turn before its session is closed under it. */
+const STOP_GRACE_MS = 2000;
+/** The characters of notices one delivery gives whole; past them a notice that has a short form gives that instead. */
+const NOTICE_BUDGET = 24_000;
+
+/** The notices of one delivery, oldest first: each whole while they fit NOTICE_BUDGET, else its short form if it has one. */
+function noticesText(notices: readonly BackgroundNotice[]): string {
+	let used = 0;
+	return notices
+		.map((notice) => {
+			const whole = notice.short === undefined || used + notice.text.length <= NOTICE_BUDGET;
+			const text = whole ? notice.text : (notice.short as string);
+			used += text.length;
+			return text;
+		})
+		.join("\n\n");
+}
+
+/** A line of a background subagent's activity for its task's file: its tool calls and errors; nothing else. */
+function activityLine(body: AtelierEventBody): string {
+	if (body.type === "tool_call_started") return `- ${body.tool} ${JSON.stringify(body.input).slice(0, 200)}`;
+	if (body.type === "tool_call_finished" && !body.ok) return `  failed: ${body.summary}`;
+	if (body.type === "error") return `- error ${body.code}: ${body.message}`;
+	return "";
+}
 
 /** Tools a subagent never gets: delegation and the ODD document belong to the parent. */
 const PARENT_ONLY = new Set([
@@ -276,8 +309,9 @@ export interface SessionOptions {
 	 */
 	resumedYoloTold?: boolean | null;
 	/**
-	 * Called when a background job ended with no turn running: its notice waits, and the caller starts its turn with
-	 * `nextQueued`. A job that ends while a turn runs goes with its next tool result, or waits for `nextQueued` after it.
+	 * Called when a background job or task ended with no turn running: its notice waits, and the caller starts its turn
+	 * with `nextQueued`. One that ends while a turn runs goes with its next tool result, or waits for `nextQueued` after
+	 * it. Without it the session cannot receive a background result: `task` refuses `background`.
 	 */
 	wake?: () => void;
 	/**
@@ -468,8 +502,10 @@ export class Session {
 	#promptFailureSaid = false;
 	/** The background jobs, when the session's tools include `bash_background`. */
 	#jobs: Jobs | undefined;
+	/** The subagents in the background, when the session has subagents and can be woken. */
+	#tasks: BackgroundTasks | undefined;
 	/** Notices of ended background work the agent has not read yet, oldest first. */
-	#backgroundNotices: string[] = [];
+	#backgroundNotices: BackgroundNotice[] = [];
 	/** The waiting notices may start a turn of their own: not after a turn that ended interrupted or failed left them. */
 	#noticesWake = false;
 	/**
@@ -499,8 +535,12 @@ export class Session {
 		const tools = subagents
 			? [
 					...options.tools,
-					createTaskTool(subagents.agents, (agent, prompt, context) =>
-						this.#runSubagent(subagents, agent, prompt, context),
+					createTaskTool(
+						subagents.agents,
+						(agent, prompt, context) => this.#runSubagent(subagents, agent, prompt, context),
+						options.wake === undefined
+							? undefined
+							: (agent, prompt, label, context) => this.#startBackground(subagents, agent, prompt, label, context),
 					),
 				]
 			: options.tools;
@@ -583,6 +623,12 @@ export class Session {
 				scratchDir: scratch.path,
 				onStarted: (job) => session.#jobStarted(job),
 				onEnded: (ended) => session.#jobEnded(ended),
+			});
+		if (options.subagents !== undefined && options.wake !== undefined)
+			session.#tasks = new BackgroundTasks({
+				scratchDir: scratch.path,
+				onStarted: (task) => session.#taskStarted(task),
+				onEnded: (ended) => session.#taskEnded(ended),
 			});
 		session.#systemPrompt = [
 			options.systemPromptAppend ?? "",
@@ -826,7 +872,7 @@ export class Session {
 			// The notices of ended background work that waited: the whole prompt of a turn they woke, else before the user's words.
 			let backgroundNotices = this.#takeNotices(turn);
 			if (backgroundNotices !== undefined) {
-				const text = backgroundNotices.join("\n\n");
+				const text = noticesText(backgroundNotices);
 				sent = woken ? `${sent}${text}` : `${text}\n\n${sent}`;
 			}
 			const mcpStatus = this.mcpStatus();
@@ -1571,7 +1617,7 @@ export class Session {
 			const scratch = this.#scratch;
 			this.#gathering?.();
 			// The jobs stop whatever else fails below: apart from the chain, and waited for before their files go.
-			const stoppingJobs = this.#jobs?.stopAll().catch(() => {});
+			const stoppingJobs = Promise.all([this.#jobs?.stopAll(), this.#tasks?.stopAll()]).catch(() => {});
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
 			this.#closing = Promise.resolve()
 				.then(() => this.#child?.close())
@@ -1607,7 +1653,8 @@ export class Session {
 		const result = await this.#runTool(call);
 		if (!this.#steerable || this.#abort?.signal.aborted) return result;
 		// The notices of background work that ended go with the result too, after the user's steers.
-		const notices = this.#takeNotices(this.#turn)?.join("\n\n");
+		const taken = this.#takeNotices(this.#turn);
+		const notices = taken === undefined ? undefined : noticesText(taken);
 		const steers = this.#queue.filter((message) => message.kind === "steer");
 		if (steers.length === 0) return notices === undefined ? result : { ...result, steering: notices };
 		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
@@ -1644,7 +1691,7 @@ export class Session {
 	 * turn running, the notice asks for a turn of its own (`wake`).
 	 */
 	#jobEnded({ job, notice }: EndedJob): void {
-		this.#backgroundEnded(notice, (waiting) => ({
+		this.#backgroundEnded(notice === undefined ? undefined : { text: notice }, (waiting) => ({
 			type: "job_finished",
 			jobId: job.id,
 			label: job.label,
@@ -1664,7 +1711,7 @@ export class Session {
 	 * the agent, and the clients hear `ended` (made with the notices now waiting) in the running turn or the next. With
 	 * no turn running, the notice asks for a turn of its own (`wake`).
 	 */
-	#backgroundEnded(notice: string | undefined, ended: (waiting: number) => AtelierEventBody): void {
+	#backgroundEnded(notice: BackgroundNotice | undefined, ended: (waiting: number) => AtelierEventBody): void {
 		if (notice !== undefined) {
 			this.#backgroundNotices.push(notice);
 			if (!this.#noticesHeld) this.#noticesWake = true;
@@ -1679,7 +1726,7 @@ export class Session {
 
 	/** The background work running now: what `running` counts in the events and in `jobs`. */
 	#runningBackground(): number {
-		return this.#jobs?.running ?? 0;
+		return (this.#jobs?.running ?? 0) + (this.#tasks?.running ?? 0);
 	}
 
 	/**
@@ -1708,7 +1755,7 @@ export class Session {
 	}
 
 	/** The waiting notices as the agent reads them, the clients told none waits now; undefined when none waited. */
-	#takeNotices(turn: Channel<TurnEvent> | undefined): string[] | undefined {
+	#takeNotices(turn: Channel<TurnEvent> | undefined): BackgroundNotice[] | undefined {
 		if (this.#backgroundNotices.length === 0) return undefined;
 		const notices = this.#backgroundNotices.splice(0);
 		this.#noticesWake = false;
@@ -1717,7 +1764,7 @@ export class Session {
 	}
 
 	/** Notices a prompt took that the backend failed on before answering: they wait again, oldest first. */
-	#returnNotices(notices: readonly string[], turn: Channel<TurnEvent>): void {
+	#returnNotices(notices: readonly BackgroundNotice[], turn: Channel<TurnEvent>): void {
 		this.#backgroundNotices.unshift(...notices);
 		turn.push({ type: "jobs_status", running: this.#runningBackground(), waiting: this.#backgroundNotices.length });
 	}
@@ -1747,6 +1794,7 @@ export class Session {
 				...(this.#options.noSandbox ? { sandboxOff: true } : {}),
 				approvedPaths: this.#approvedPaths,
 				...(this.#jobs === undefined ? {} : { jobs: this.#jobs }),
+				...(this.#tasks === undefined ? {} : { tasks: this.#tasks }),
 				...(await this.#currentRules(emit)),
 			};
 			const gate = await this.#gate(tool, call.input, context);
@@ -2049,7 +2097,7 @@ export class Session {
 	): Promise<ToolOutcome> {
 		const fail = (output: string): ToolOutcome => ({ ok: false, output, summary: output, truncated: false });
 		const settings = this.#subagentSettings(agent);
-		const child = await this.#startChild(options, agent, settings);
+		const child = await this.#startChild(options, agent, settings, false);
 		if (typeof child === "string") return fail(child);
 		this.#child = child;
 		const stop = () => void child.interrupt();
@@ -2075,6 +2123,84 @@ export class Session {
 		}
 	}
 
+	/**
+	 * Starts a subagent in the background and answers at once with its task id; its report comes as a notice when it
+	 * ends. Whatever refuses it does so before its session is created: the session closing, the cap, an agent the
+	 * profile does not route, or a profile that cannot be confirmed. It never asks the user, and the turn's interrupt
+	 * does not reach it: only `job_stop` and the session's close stop it.
+	 */
+	async #startBackground(
+		options: SubagentOptions,
+		agent: SubagentDefinition,
+		prompt: string,
+		label: string | undefined,
+		_context: ToolContext,
+	): Promise<ToolOutcome> {
+		const fail = (output: string): ToolOutcome => ({ ok: false, output, summary: output, truncated: false });
+		const tasks = this.#tasks;
+		if (tasks === undefined)
+			return fail("Refused: this session cannot receive a background result; run the task without background.");
+		const refusal = this.#backgroundRefusal(agent);
+		if (refusal !== undefined) return fail(refusal);
+		let place: ReturnType<BackgroundTasks["reserve"]>;
+		try {
+			place = tasks.reserve();
+		} catch (error) {
+			if (error instanceof TaskRefusedError) return fail(error.message);
+			throw error;
+		}
+		const settings = this.#subagentSettings(agent);
+		const child = await this.#startChild(options, agent, settings, true);
+		if (typeof child === "string") {
+			place.release();
+			return fail(child);
+		}
+		const task = place.start({
+			agent: agent.name,
+			...(label === undefined ? {} : { label }),
+			prompt,
+			run: async (signal, log): Promise<SubagentResult> => {
+				// A backend that does not end its turn on the interrupt is closed after a grace.
+				let grace: NodeJS.Timeout | undefined;
+				const stop = () => {
+					void child.interrupt();
+					grace = setTimeout(() => void child.close(), STOP_GRACE_MS);
+				};
+				signal.addEventListener("abort", stop, { once: true });
+				try {
+					return await this.#childReport(child, agent, settings, prompt, (body) => {
+						const line = activityLine(body);
+						if (line !== "") log(line);
+					});
+				} finally {
+					signal.removeEventListener("abort", stop);
+					clearTimeout(grace);
+					await child.close();
+				}
+			},
+		});
+		return {
+			ok: true,
+			output: taskStartedText(task),
+			summary: `${task.label} (task ${task.id} started)`,
+			truncated: false,
+		};
+	}
+
+	/**
+	 * Why a subagent cannot run in the background with what the session knows of its routing: only the worker and the
+	 * explorer have an entry in the profile, and a profile that reported problems when it was read may not route them
+	 * as the user wrote. Undefined when it may.
+	 */
+	#backgroundRefusal(agent: SubagentDefinition): string | undefined {
+		if (agent.name !== "worker" && agent.name !== "explorer")
+			return `Refused: only the explorer and the worker run in the background, where the session's profile routes them; run ${agent.name} without background.`;
+		const [problem] = this.#options.profile?.resolved.reports ?? [];
+		if (problem !== undefined)
+			return `Refused: the session's profile had problems when it was read (${problem.path}: ${problem.message}), so the subagent's backend and model cannot be confirmed; fix the profile and start a new session, or run the task without background.`;
+		return undefined;
+	}
+
 	/** What a subagent runs with: its entry in the profile (only the worker and the explorer have one), else the parent's. */
 	#subagentSettings(agent: SubagentDefinition): ReturnType<typeof roleSettings> {
 		const role = agent.name === "worker" || agent.name === "explorer" ? agent.name : undefined;
@@ -2091,6 +2217,7 @@ export class Session {
 		options: SubagentOptions,
 		agent: SubagentDefinition,
 		settings: ReturnType<typeof roleSettings>,
+		unattended: boolean,
 	): Promise<Session | string> {
 		try {
 			const backend = await options.createBackend(settings.backend);
@@ -2112,7 +2239,9 @@ export class Session {
 				maxRequestsPerTurn: agent.maxRequests,
 				// The mode is not passed on: the child runs in normal.
 				...(this.#options.noSandbox ? { noSandbox: true } : {}),
-				...(this.#options.approve === undefined ? {} : { approve: this.#options.approve }),
+				// Nobody answers a background child: what would ask is denied instead.
+				...(unattended ? { unattended: true } : {}),
+				...(unattended || this.#options.approve === undefined ? {} : { approve: this.#options.approve }),
 				...(this.#options.permissionRules === undefined ? {} : { permissionRules: this.#options.permissionRules }),
 				createId: this.#createId,
 			});
@@ -2163,6 +2292,36 @@ export class Session {
 		}
 		if (report.trim() === "") return { ok: false, error: `The ${agent.name} subagent returned no report.`, ...cost };
 		return { ok: true, report, ...cost };
+	}
+
+	/** A background task started: the clients hear it in the turn whose call started it. */
+	#taskStarted(task: TaskInfo): void {
+		this.#say({
+			type: "task_started",
+			taskId: task.id,
+			agent: task.agent,
+			label: task.label,
+			outputPath: task.outputPath,
+			running: this.#runningBackground(),
+		});
+	}
+
+	/** A background task ended: as a job's end, its notice waits for the agent and may wake a turn. */
+	#taskEnded({ task, notice }: EndedTask): void {
+		this.#backgroundEnded(notice, (waiting) => ({
+			type: "task_finished",
+			taskId: task.id,
+			agent: task.agent,
+			label: task.label,
+			status: task.status === "running" ? "finished" : task.status,
+			...(task.error === undefined ? {} : { error: task.error }),
+			durationMs: task.durationMs,
+			outputPath: task.outputPath,
+			...(task.costUsd === undefined ? {} : { costUsd: task.costUsd }),
+			notified: notice !== undefined,
+			running: this.#runningBackground(),
+			waiting,
+		}));
 	}
 
 	/** Registers the session in memory, once; a failure is said in the first turn, and memory goes on without it. */

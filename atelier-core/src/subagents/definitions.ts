@@ -69,9 +69,30 @@ export type SubagentResult =
 	| { ok: false; error: string; costUsd?: number };
 
 export type RunSubagent = (agent: SubagentDefinition, prompt: string, context: ToolContext) => Promise<ToolOutcome>;
+/** Starts the subagent in the background and answers at once; `undefined` runs it as `task` without background. */
+export type StartSubagent = (
+	agent: SubagentDefinition,
+	prompt: string,
+	label: string | undefined,
+	context: ToolContext,
+) => Promise<ToolOutcome>;
 
-/** The task tool the parent sees. Its execution belongs to the session, which owns backends and events. */
-export function createTaskTool(agents: readonly SubagentDefinition[], run: RunSubagent): ToolDefinition {
+/** What the task tool says about `background`, depending on whether the session can receive a background result. */
+function backgroundDescription(available: boolean): string {
+	return available
+		? "Run it in the background while you keep working: you get its task id at once and its report in one notice when it ends."
+		: "Not available in this session: it cannot receive a background result.";
+}
+
+/**
+ * The task tool the parent sees. Its execution belongs to the session, which owns backends and events. `start` runs a
+ * call with `background` set; without it the session cannot receive a background result, and such a call is refused.
+ */
+export function createTaskTool(
+	agents: readonly SubagentDefinition[],
+	run: RunSubagent,
+	start?: StartSubagent,
+): ToolDefinition {
 	const names = agents.map((agent) => agent.name) as [string, ...string[]];
 	return defineTool({
 		name: TASK_TOOL,
@@ -79,16 +100,34 @@ export function createTaskTool(agents: readonly SubagentDefinition[], run: RunSu
 			"Delegates work to a subagent with its own, empty context; only its final report comes back to you.",
 			"The prompt must be self-contained: the subagent does not see this conversation.",
 			...delegationRules(names),
+			...(start === undefined
+				? []
+				: [
+						`With background: true at most ${MAX_BACKGROUND_TASKS} run at once; job_list lists them and job_stop stops one.`,
+					]),
 			"Agents:",
 			...agents.map((agent) => `- ${agent.name}: ${agent.description}`),
 		].join("\n"),
 		inputShape: {
 			agent: z.enum(names).describe("Which subagent to run"),
 			prompt: z.string().min(1).describe("Everything the subagent needs to do the work"),
+			background: z
+				.boolean()
+				.optional()
+				.describe(backgroundDescription(start !== undefined)),
+			label: z
+				.string()
+				.optional()
+				.describe("With background: a short name for the task; the prompt's first line without it"),
 		},
-		execute: async ({ agent, prompt }, context) => {
+		execute: async ({ agent, prompt, background, label }, context) => {
 			const definition = agents.find((candidate) => candidate.name === agent) as SubagentDefinition;
-			return run(definition, prompt, context);
+			if (background !== true) return run(definition, prompt, context);
+			if (start === undefined) {
+				const output = "Refused: this session cannot receive a background result; run the task without background.";
+				return { ok: false, output, summary: output, truncated: false };
+			}
+			return start(definition, prompt, label, context);
 		},
 	});
 }

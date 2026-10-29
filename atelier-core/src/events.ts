@@ -407,6 +407,29 @@ export type AtelierEventBody =
 			waiting: number;
 	  }
 	/**
+	 * A subagent started in the background (`task` with `background`). `outputPath`: its activity, then its whole report.
+	 * `running`: the session's background work running now (jobs and tasks), this one included.
+	 */
+	| { type: "task_started"; taskId: string; agent: string; label: string; outputPath: string; running: number }
+	/**
+	 * A background task ended: `finished` with a report, `failed` without one (`error` says why), `stopped` by `job_stop`
+	 * or the session's close. `notified`, `running` and `waiting` as in `job_finished`; said as `job_finished` is.
+	 */
+	| {
+			type: "task_finished";
+			taskId: string;
+			agent: string;
+			label: string;
+			status: "finished" | "failed" | "stopped";
+			error?: string;
+			durationMs: number;
+			outputPath: string;
+			costUsd?: number;
+			notified: boolean;
+			running: number;
+			waiting: number;
+	  }
+	/**
 	 * The agent read the notices that waited (with a tool result or a prompt), or they wait again because the backend
 	 * failed on that prompt before answering: the jobs running and the notices left.
 	 */
