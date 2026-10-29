@@ -1000,6 +1000,66 @@ describe("reduceChat: verification", () => {
 	});
 });
 
+describe("background tasks", () => {
+	const task = { taskId: "task-1", agent: "explorer", label: "find", outputPath: "/s/task-1.md" };
+	const ended = {
+		...task,
+		type: "task_finished",
+		status: "finished",
+		durationMs: 62_000,
+		costUsd: 0.12,
+		reportTail: "Found it at a.ts:3",
+		notified: true,
+		running: 0,
+		waiting: 1,
+	} as const;
+
+	it("shows a task's start and end in their turns and counts it with the jobs", () => {
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "find" },
+			{ type: "turn_accepted", turnId: "t1" },
+			event({ ...task, type: "task_started", running: 1 }),
+			event({ type: "turn_finished", stopReason: "end_turn", usage }),
+		]);
+		expect(state.jobs).toEqual({ running: 1, waiting: 0 });
+		expect(state.turns[0]?.items).toEqual([
+			{ kind: "task", taskId: "task-1", agent: "explorer", label: "find", status: "started" },
+		]);
+		const woken = run([event(ended, "t2")], state);
+		expect(woken.busy).toBe(true);
+		expect(woken.jobs).toEqual({ running: 0, waiting: 1 });
+		expect(woken.turns[1]?.items).toEqual([
+			{
+				kind: "task",
+				taskId: "task-1",
+				agent: "explorer",
+				label: "find",
+				status: "finished",
+				durationMs: 62_000,
+				costUsd: 0.12,
+				reportTail: "Found it at a.ts:3",
+			},
+		]);
+	});
+
+	it("shows a task's end outside any turn under the last turn, staying idle", () => {
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "find" },
+			{ type: "turn_accepted", turnId: "t1" },
+			event({ type: "turn_finished", stopReason: "interrupted", usage }),
+		]);
+		const idle = run(
+			[{ type: "session_event", sessionId: "s1", event: { ...ended, status: "failed", error: "boom" } }],
+			state,
+		);
+		expect(idle.busy).toBe(false);
+		expect(idle.jobs).toEqual({ running: 0, waiting: 1 });
+		expect(idle.turns[0]?.items.at(-1)).toMatchObject({ kind: "task", status: "failed", error: "boom" });
+	});
+});
+
 describe("background jobs", () => {
 	const job = { jobId: "1", label: "ci", outputPath: "/s/job-1.log" };
 	const ended = {

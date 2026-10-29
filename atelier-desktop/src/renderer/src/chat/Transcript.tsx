@@ -52,6 +52,22 @@ function jobText(item: JobItem): string {
 	return `${name} ended — ${how}${after}`;
 }
 
+type TaskItem = Extract<TurnItem, { kind: "task" }>;
+
+/**
+ * `Explorer task-1 started — find`, `Worker task-2 finished — fix after 1m 2s · $0.12`; the label comes from the model,
+ * its hidden characters shown.
+ */
+function taskText(item: TaskItem): string {
+	const name = `${item.agent.charAt(0).toUpperCase()}${item.agent.slice(1)} ${item.taskId}`;
+	const label = visibleText(item.label).text;
+	if (item.status === "started") return `${name} started — ${label}`;
+	const after = item.durationMs === undefined ? "" : ` after ${formatDuration(item.durationMs)}`;
+	const cost = item.costUsd === undefined ? "" : ` · $${item.costUsd.toFixed(2)}`;
+	const why = item.error === undefined ? "" : `: ${item.error}`;
+	return `${name} ${item.status} — ${label}${after}${cost}${why}`;
+}
+
 /** A job that could not start, was killed by a signal or exited with an error. */
 const jobFailed = (item: JobItem) => item.status === "failed" || (item.status === "exited" && item.exitCode !== 0);
 
@@ -537,6 +553,15 @@ function Items({
 				return (
 					<div key={key} className={jobFailed(item) ? "job warning" : "job"}>
 						{jobText(item)}
+					</div>
+				);
+			case "task":
+				return (
+					<div key={key} className={item.status === "failed" ? "job warning" : "job"}>
+						{taskText(item)}
+						{item.reportTail === undefined ? null : (
+							<div className="task-tail">{visibleText(item.reportTail).text}</div>
+						)}
 					</div>
 				);
 			case "sandbox_warning":

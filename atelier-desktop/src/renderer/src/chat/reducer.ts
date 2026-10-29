@@ -128,6 +128,18 @@ export type TurnItem =
 			signal?: string;
 			durationMs?: number;
 	  }
+	/** A background subagent's start or end (`task` with `background`). */
+	| {
+			kind: "task";
+			taskId: string;
+			agent: string;
+			label: string;
+			status: "started" | "finished" | "failed" | "stopped";
+			durationMs?: number;
+			costUsd?: number;
+			error?: string;
+			reportTail?: string;
+	  }
 	/** `bash` runs without a sandbox in this turn: every command asks. */
 	| { kind: "sandbox_warning"; reason: string }
 	/** The context reached 90% of where it compacts. */
@@ -551,6 +563,17 @@ function applyMainEvent(state: ChatState, event: AtelierEvent): ChatState {
 				...(event.type === "job_finished" ? { busy: true } : {}),
 			};
 		}
+		case "task_started":
+		case "task_finished": {
+			const waiting = event.type === "task_finished" ? event.waiting : (state.jobs?.waiting ?? 0);
+			const updated = updateTurn(state, event.turnId, (turn) => ({ ...turn, items: [...turn.items, taskItem(event)] }));
+			// As a job's: a task's end with no turn running starts the one its notice woke.
+			return {
+				...updated,
+				jobs: { running: event.running, waiting },
+				...(event.type === "task_finished" ? { busy: true } : {}),
+			};
+		}
 		case "jobs_status":
 			return { ...state, jobs: { running: event.running, waiting: event.waiting } };
 		case "error": {
@@ -870,11 +893,30 @@ function closeConsents(items: TurnItem[], reviewId?: string): TurnItem[] {
  * last turn, its counts to the status bar, and the chat stays idle.
  */
 function applyIdleEvent(state: ChatState, event: AtelierEventBody): ChatState {
-	if (event.type !== "job_finished") return state;
-	const stamped = { ...event, seq: 0, turnId: "" } as Extract<AtelierEvent, { type: "job_finished" }>;
+	if (event.type !== "job_finished" && event.type !== "task_finished") return state;
+	const item =
+		event.type === "job_finished"
+			? jobItem({ ...event, seq: 0, turnId: "" } as Extract<AtelierEvent, { type: "job_finished" }>)
+			: taskItem({ ...event, seq: 0, turnId: "" } as Extract<AtelierEvent, { type: "task_finished" }>);
 	return {
-		...updateLast(state, (turn) => ({ ...turn, items: [...turn.items, jobItem(stamped)] })),
+		...updateLast(state, (turn) => ({ ...turn, items: [...turn.items, item] })),
 		jobs: { running: event.running, waiting: event.waiting },
+	};
+}
+
+/** A background task's start or end as the transcript shows it. */
+function taskItem(
+	event: Extract<AtelierEvent, { type: "task_started" }> | Extract<AtelierEvent, { type: "task_finished" }>,
+): TurnItem {
+	const task = { kind: "task", taskId: event.taskId, agent: event.agent, label: event.label } as const;
+	if (event.type === "task_started") return { ...task, status: "started" };
+	return {
+		...task,
+		status: event.status,
+		durationMs: event.durationMs,
+		...(event.costUsd === undefined ? {} : { costUsd: event.costUsd }),
+		...(event.error === undefined ? {} : { error: event.error }),
+		...(event.reportTail === undefined ? {} : { reportTail: event.reportTail }),
 	};
 }
 
