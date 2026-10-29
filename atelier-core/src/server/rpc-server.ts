@@ -512,11 +512,13 @@ export class RpcServer {
 			const models = [...(lists[index] ?? [])];
 			// The aliases that stand for claude-code's models: a session that runs `opus` runs one of them.
 			const aliases = name === "claude-code" ? claudeCodeAliases(models) : {};
+			// claude-code's default, the alias opus, as the model it stands for now; its backend still runs the alias.
+			const fallback = name === "claude-code" ? claudeCodeIdOf(BACKEND_DEFAULTS[name]) : BACKEND_DEFAULTS[name];
 			return {
 				name,
-				// One of its models: claude-code's default, the alias opus, as the model it stands for now. Its backend still
-				// runs the alias.
-				default: name === "claude-code" ? claudeCodeIdOf(BACKEND_DEFAULTS[name]) : BACKEND_DEFAULTS[name],
+				// Always one of its models: absent when the list lacks it, as a subscription's list that does not say what
+				// opus stands for, rather than a guess.
+				...(models.includes(fallback) ? { default: fallback } : {}),
 				models,
 				...(Object.keys(aliases).length === 0 ? {} : { aliases }),
 			};

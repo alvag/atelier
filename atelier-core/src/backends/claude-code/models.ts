@@ -37,10 +37,12 @@ export function claudeCodeName(model: string): string {
 
 /**
  * The subscription's list, once a session listed it with the aliases resolved, as the cache says it; undefined before,
- * for a list kept in an older format too, which is asked again.
+ * for a list kept in an older format too, which is asked again, and for an empty one.
  */
 export function resolvedClaudeCodeList(data: ModelData): readonly string[] | undefined {
-	return data.resolved("claude-code") ? data.listed("claude-code") : undefined;
+	const listed = data.resolved("claude-code") ? data.listed("claude-code") : undefined;
+	// An empty list is no list: the code's is offered instead.
+	return listed !== undefined && listed.length > 0 ? listed : undefined;
 }
 
 /**
