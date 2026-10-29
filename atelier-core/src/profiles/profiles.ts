@@ -36,9 +36,10 @@ const SAFE_MODEL = /^[A-Za-z0-9._~:@/+%-]+$/;
 export const PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
- * Names that pass the pattern but are refused all the same: `__proto__`,
- * `constructor` and `prototype` mean something else to any code that takes a
- * name as a key of an object, so a profile must never carry one of them.
+ * Names that are refused whatever else they look like. `constructor` and
+ * `prototype` fit the pattern and are reserved all the same, because they mean
+ * something else to any code that takes a name as a key of an object; so is
+ * `__proto__`, which the pattern already refuses.
  */
 export const RESERVED_PROFILE_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 

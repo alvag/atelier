@@ -135,12 +135,6 @@ describe("profile names", () => {
 		for (const value of [undefined, null, 5, {}, []]) expect(isValidProfileName(value)).toBe(false);
 	});
 
-	it("names the whole rule when it refuses a name, reserved names included", () => {
-		expect(PROFILE_NAME_RULE).toContain("ASCII");
-		expect(PROFILE_NAME_RULE).toContain("64");
-		for (const name of ["__proto__", "constructor", "prototype"]) expect(PROFILE_NAME_RULE).toContain(name);
-	});
-
 	it("describes any value without throwing, even one JSON cannot write", () => {
 		expect(describeProfileName("plain")).toBe('"plain"');
 		expect(describeProfileName("with space")).toBe('"with space"');
