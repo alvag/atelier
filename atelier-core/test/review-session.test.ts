@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -33,6 +34,7 @@ import { reviewEnabled } from "../src/server/rpc-server.ts";
 import type { SubagentDefinition } from "../src/subagents/definitions.ts";
 import { isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
 import { defineTool } from "../src/tools/types.ts";
+import { writeTool } from "../src/tools/write.ts";
 
 /** Inside a sandbox (Atelier running its own tests), the verifier's real sandbox cannot start: those tests need one. */
 const NESTED = isInsideSandbox();
@@ -288,6 +290,14 @@ async function collect(stream: AsyncIterable<AtelierEvent>): Promise<AtelierEven
 	for await (const event of stream) events.push(event);
 	return events;
 }
+async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition()) {
+		if (Date.now() > deadline) throw new Error("condition not met in time");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
 const types = (events: AtelierEvent[]) => events.map((event) => event.type);
 const ofType = <T extends AtelierEventBody["type"]>(events: AtelierEvent[], type: T) =>
 	events.filter((event): event is Extract<AtelierEvent, { type: T }> => event.type === type);
@@ -1211,6 +1221,42 @@ describe("the turn's candidate", () => {
 					`HEAD no longer descends from ${from.slice(0, 7)}, where the turn started: the base is the current HEAD`,
 				);
 			} finally {
+				process.env.PATH = path;
+			}
+		},
+		15_000,
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"runs no tool once the turn is interrupted while git still has not said where it started",
+		async () => {
+			const cwd = await repo();
+			// A git that holds the turn's HEAD lookup until the test lets it go, at most ten seconds.
+			const shim = await mkdtemp(join(tmpdir(), "atelier-held-git-"));
+			dirs.push(shim);
+			const held = join(shim, "held");
+			const release = join(shim, "release");
+			const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+			await writeFile(
+				join(shim, "git"),
+				`#!/bin/sh\ncase "$*" in "rev-parse --verify --quiet HEAD^{commit}")\n : > "${held}"; n=0\n while [ ! -f "${release}" ] && [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done;;\nesac\nexec "${realGit}" "$@"\n`,
+			);
+			await chmod(join(shim, "git"), 0o755);
+			const path = process.env.PATH;
+			process.env.PATH = `${shim}:${path}`;
+			try {
+				const turn = [call("write", { path: "made.ts", content: "x\n" }), { waitForInterrupt: true as const }];
+				const s = await start({ cwd, turns: [turn], extra: { tools: [writeTool] } });
+				const running = s.send("write it");
+				await until(() => existsSync(held));
+				await s.session.interrupt();
+				const events = await running;
+				await writeFile(release, "");
+				expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "interrupted" });
+				expect(ofType(events, "tool_call_finished")).toEqual([]);
+				await expect(stat(join(cwd, "made.ts"))).rejects.toThrow();
+			} finally {
+				await writeFile(release, "");
 				process.env.PATH = path;
 			}
 		},
