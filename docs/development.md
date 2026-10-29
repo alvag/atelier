@@ -38,6 +38,7 @@ Release only what is verified: once a branch is merged into `main` with `pnpm ch
 pnpm check   # lint + typecheck + test (no network, no subscription usage)
 node atelier-core/scripts/measure-cache.ts       # measures the prompt cache on the real API (costs a few cents)
 node atelier-core/scripts/measure-subagents.ts   # same question with and without a subagent, on the real API
+node atelier-core/scripts/measure-delegation.ts --json before.json   # how the agent delegates on three tasks (costs a few dollars, stops at --max-usd, 6 by default); --compare before.json after a prompt change
 node atelier-core/scripts/measure-review.ts --backend anthropic-api   # reviews seeded changes in scratch repos (costs real money or subscription usage); also --backend claude-code
 node atelier-core/scripts/measure-compaction.ts --backend anthropic-api   # forces compactions with a low threshold and checks what the agent remembers (costs real money); also --backend claude-code
 ```
