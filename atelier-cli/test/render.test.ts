@@ -1,4 +1,5 @@
 import { type AtelierEvent, type AtelierEventBody, visibleText } from "@atelier/core";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { Renderer } from "../src/render.ts";
 
@@ -87,6 +88,20 @@ describe("Renderer", () => {
 			].join("\n"),
 		);
 		expect(stderr).toBe("");
+	});
+
+	it("cuts the session summary's first line to 120 columns, by width", () => {
+		const wide = "界".repeat(100);
+		const combining = "é".repeat(80);
+		const { stdout } = render([
+			{ type: "memory_summary_saved", id: 1, preview: wide },
+			{ type: "memory_summary_saved", id: 2, preview: combining },
+		]);
+		const [first = "", second] = stdout.split("\n");
+		const quoted = /"(.*)"/.exec(first)?.[1] ?? "";
+		expect(quoted).toBe(`${"界".repeat(59)}…`);
+		expect(visibleWidth(quoted)).toBe(119);
+		expect(second).toBe(`▸ memory session summary "${combining}" · saved #2 ✓`);
 	});
 
 	describe("the sandbox", () => {

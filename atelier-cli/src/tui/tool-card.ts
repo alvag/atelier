@@ -1,6 +1,6 @@
 import { type AtelierEvent, type JsonValue, visibleText } from "@atelier/core";
-import { type Component, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { MEMORY_TOOL, memoryCall, memoryCallText, memoryOutcome } from "../memory-call.ts";
+import { type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { cut, MEMORY_TOOL, memoryCall, memoryCallText, memoryOutcome } from "../memory-call.ts";
 import { clipLine, editView, highlightLines, writeView } from "./code-view.ts";
 import { hasColor, type Paint, type Style, Tones } from "./style.ts";
 
@@ -50,11 +50,6 @@ function target(input: JsonValue): string {
 		field(input, "agent") ??
 		(typeof first === "string" ? first : "");
 	return shown(value.split("\n")[0] ?? "");
-}
-
-/** Plain `text` cut to `width` columns with `…`, adding no escape: a terminal without color gets none. */
-function cut(text: string, width: number): string {
-	return visibleWidth(text) <= width ? text : `${sliceByColumn(text, 0, Math.max(0, width - 1), true)}…`;
 }
 
 /** At most `max` of `lines`, then how many were left out. */

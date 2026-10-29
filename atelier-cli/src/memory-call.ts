@@ -1,9 +1,18 @@
 import { type AtelierEvent, type JsonValue, visibleText } from "@atelier/core";
+import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
 
 /** The name of the core's memory tool, whose calls both clients show their own way. */
 export const MEMORY_TOOL = "memory";
 
 const shown = (text: string) => visibleText(text).text;
+
+/** The columns a saved session summary's first line takes at most, `…` included, before a card cuts it to its width. */
+export const SUMMARY_PREVIEW_WIDTH = 120;
+
+/** Plain `text` cut to `width` columns with `…`, adding no escape: a terminal without color gets none. */
+export function cut(text: string, width: number): string {
+	return visibleWidth(text) <= width ? text : `${sliceByColumn(text, 0, Math.max(0, width - 1), true)}…`;
+}
 
 /** A memory call's action and what it is about: the query or the title, on one line, or the id as `#7`. */
 export function memoryCall(input: JsonValue): { action: string; subject?: string; quoted: boolean } {
@@ -50,7 +59,7 @@ export function summaryCall(event: Extract<AtelierEvent, { type: "memory_summary
 } {
 	const warning = event.warning === undefined ? "" : ` Warning: ${event.warning}`;
 	return {
-		input: { action: "session summary", query: event.preview },
+		input: { action: "session summary", query: cut(event.preview, SUMMARY_PREVIEW_WIDTH) },
 		summary: `Saved memory #${event.id}.${warning}`,
 	};
 }
