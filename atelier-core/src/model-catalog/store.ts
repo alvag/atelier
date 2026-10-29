@@ -47,6 +47,10 @@ export function catalogFile(home: string): string {
 	return join(home, ".atelier", "models.json");
 }
 
+/** A time a date can hold: a check time out of that range is not one, and its source is dropped. */
+const isTime = (value: unknown): value is number =>
+	typeof value === "number" && !Number.isNaN(new Date(value).getTime());
+
 /** The catalog in `file`; a missing or broken file, or a source of another shape, reads as no answer. */
 export async function readCatalog(file: string): Promise<CatalogFile> {
 	let parsed: unknown;
@@ -58,7 +62,7 @@ export async function readCatalog(file: string): Promise<CatalogFile> {
 	if (!isRecord(parsed) || !isRecord(parsed.sources)) return { sources: {} };
 	// Built from entries, so a source named `__proto__` stays an entry and never becomes the object's prototype.
 	const entries = Object.entries(parsed.sources).flatMap(([name, entry]): [string, SourceEntry][] =>
-		isRecord(entry) && typeof entry.checkedAt === "number"
+		isRecord(entry) && isTime(entry.checkedAt)
 			? [
 					[
 						name,

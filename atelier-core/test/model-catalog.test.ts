@@ -187,6 +187,17 @@ it("fails without a server and writes the file whole, leaving no temporary behin
 	expect(await readdir(join(home, ".atelier"))).toEqual(["models.json"]);
 });
 
+it("drops a source whose check time is not a date", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	// As written in the file: the first two numbers are out of a date's range.
+	const entry = (checkedAt: string) => `{"checkedAt":${checkedAt},"models":{"opencode-go":[{"id":"grok-4.7"}]}}`;
+	await writeFile(
+		file,
+		`{"version":1,"sources":{"opencode-go":${entry("9999999999999999")},"openai-codex":${entry("-1e20")},"models.dev":${entry("5")}}}`,
+	);
+	expect(Object.keys((await readCatalog(file)).sources)).toEqual(["models.dev"]);
+});
+
 it("drops the entries of a hand-edited file that are not models", async () => {
 	await mkdir(join(home, ".atelier"), { recursive: true });
 	await writeFile(

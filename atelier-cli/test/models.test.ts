@@ -48,6 +48,17 @@ it("prints each backend's models: the code's, then the ones its provider listed,
 	expect(out).toContain("openai-codex · the code's list\n  gpt-6-sol\n");
 });
 
+it("prints the code's lists when the cache holds a check time that is not a date", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	// As written in the file: the number is out of a date's range.
+	const listed = '{"checkedAt":9999999999999999,"models":{"opencode-go":[{"id":"grok-4.7"}]}}';
+	await writeFile(join(home, ".atelier", "models.json"), `{"version":1,"sources":{"opencode-go":${listed}}}`);
+	const { code, out, err } = await models([]);
+	expect({ code, err }).toEqual({ code: 0, err: "" });
+	expect(out).toContain("opencode-go · the code's list\n  minimax-m3\n");
+	expect(out).not.toContain("grok-4.7");
+});
+
 it("asks nothing with ATELIER_MODEL_REFRESH=off, and says so", async () => {
 	const { code, out } = await models(["--refresh"], { ATELIER_MODEL_REFRESH: "off" });
 	expect(code).toBe(0);
