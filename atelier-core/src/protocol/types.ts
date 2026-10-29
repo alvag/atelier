@@ -1,4 +1,4 @@
-import type { AtelierEvent, JsonValue, QueueKind } from "../events.ts";
+import type { AtelierEvent, AtelierEventBody, JsonValue, QueueKind } from "../events.ts";
 import type { PermissionRuleScope } from "../permission-rules.ts";
 import type { ReviewConsentAnswer } from "../review/session-review.ts";
 import type { PermissionMode } from "../session.ts";
@@ -176,5 +176,10 @@ export type ServerMessage =
 	| { type: "response"; id: string; ok: true; result: { [key: string]: JsonValue } }
 	| { type: "response"; id: string; ok: false; error: ProtocolError }
 	| { type: "event"; sessionId: string; event: AtelierEvent }
+	/**
+	 * An event outside any turn, which starts none: the end of a background job after a turn that was interrupted or
+	 * failed (`job_finished`, its notice waiting for the next prompt). No `seq` or `turnId`.
+	 */
+	| { type: "session_event"; sessionId: string; event: AtelierEventBody }
 	/** A line the server could not attribute to any command. */
 	| { type: "protocol_error"; message: string };
