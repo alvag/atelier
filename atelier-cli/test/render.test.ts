@@ -68,6 +68,27 @@ describe("Renderer", () => {
 		);
 	});
 
+	it("says the session summary was saved as a memory call does, its warning once", () => {
+		const { stdout, stderr } = render([
+			{ type: "memory_summary_saved", id: 5519, preview: "## Goal" },
+			{ type: "memory_summary_saved", id: 5519, preview: "## Goal", warning: "slow" },
+			{
+				type: "error",
+				code: "memory_summary_warning",
+				message: "The compaction summary was saved to memory with a warning: slow",
+				recoverable: true,
+			},
+		]);
+		expect(stdout).toBe(
+			[
+				'▸ memory session summary "## Goal" · saved #5519 ✓',
+				'▸ memory session summary "## Goal" · saved #5519 · warning: slow ✓',
+				"",
+			].join("\n"),
+		);
+		expect(stderr).toBe("");
+	});
+
 	describe("the sandbox", () => {
 		it("says on stdout that bash is sandboxed", () => {
 			const { stdout, stderr } = render([{ type: "sandbox_status", sandboxed: true, mechanism: "macOS seatbelt" }]);

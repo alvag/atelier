@@ -1,4 +1,4 @@
-import { type JsonValue, visibleText } from "@atelier/core";
+import { type AtelierEvent, type JsonValue, visibleText } from "@atelier/core";
 
 /** The name of the core's memory tool, whose calls both clients show their own way. */
 export const MEMORY_TOOL = "memory";
@@ -39,3 +39,21 @@ export function memoryOutcome(input: JsonValue, summary: string): { outcome: str
 		return { outcome: shown(summary.slice(subject.length + 1)) };
 	return { outcome: shown(summary) };
 }
+
+/**
+ * The saved session summary as the memory call it reads like, `session summary "## Goal"` and `saved #5519`, so both
+ * clients show it with a call's own lines.
+ */
+export function summaryCall(event: Extract<AtelierEvent, { type: "memory_summary_saved" }>): {
+	input: JsonValue;
+	summary: string;
+} {
+	const warning = event.warning === undefined ? "" : ` Warning: ${event.warning}`;
+	return {
+		input: { action: "session summary", query: event.preview },
+		summary: `Saved memory #${event.id}.${warning}`,
+	};
+}
+
+/** The core says a summary's save warning twice, as an error too, for clients that do not know `memory_summary_saved`. */
+export const SUMMARY_WARNING = "memory_summary_warning";

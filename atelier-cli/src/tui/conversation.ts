@@ -1,5 +1,6 @@
 import { type AtelierEvent, visibleText } from "@atelier/core";
 import { type Component, Container, Markdown, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { MEMORY_TOOL, summaryCall } from "../memory-call.ts";
 import { API_KEY_BACKENDS, phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
 import { ActivityBlock } from "./activity-block.ts";
 import { PromptBlock } from "./prompt.ts";
@@ -242,6 +243,9 @@ export class Conversation extends Container {
 			case "tool_call_finished":
 				this.#cards.get(event.callId)?.finish(event);
 				return;
+			case "memory_summary_saved":
+				this.#summarySaved(event);
+				return;
 			case "session_started":
 				this.#started(event);
 				return;
@@ -298,6 +302,15 @@ export class Conversation extends Container {
 			default:
 				this.#rendered(event);
 		}
+	}
+
+	/** The saved session summary, as a finished memory call's card; its warning, said in it, is not said again. */
+	#summarySaved(event: Extract<AtelierEvent, { type: "memory_summary_saved" }>): void {
+		const { input, summary } = summaryCall(event);
+		const card = new ToolCard(MEMORY_TOOL, input, this.view, this.#paint, "", this.#now, this.#tones);
+		const { seq, turnId } = event;
+		card.finish({ seq, turnId, type: "tool_call_finished", callId: "", ok: true, summary, truncated: false });
+		this.#activityBlock().add(card);
 	}
 
 	#started(event: Extract<AtelierEvent, { type: "session_started" }>): void {
