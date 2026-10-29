@@ -120,6 +120,18 @@ describe.skipIf(!onMac)("bash cannot create, replace or write a .git below the w
 		expect(await present(join(cwd, "other", ".git"))).toBe(false);
 	});
 
+	it.each([".env.d", "x.pem", "x.key"])(
+		"under the profile of a command a saved rule covers, still writes in a folder named like a secret file: %s",
+		async (name) => {
+			const cwd = await repo(join(base, "main"));
+			await mkdir(join(cwd, name));
+			const { file, args } = sandbox.outside(`echo ok > ${name}/content`, cwd);
+			const ran = spawnSync(file, args, { cwd, encoding: "utf8" });
+			expect(ran.status, ran.stderr).toBe(0);
+			expect(await readFile(join(cwd, name, "content"), "utf8")).toBe("ok\n");
+		},
+	);
+
 	it("still cannot replace a .git at the top that is a link to the git directory", async () => {
 		const cwd = await repo(join(base, "main"));
 		const real = join(outside, "gitdir");
