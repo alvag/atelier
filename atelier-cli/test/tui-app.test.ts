@@ -2725,8 +2725,6 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => h.screen.screen().includes("◇ done"));
 			h.screen.type("/rename Mine");
 			h.screen.type("\r");
-			await new Promise((r) => setTimeout(r, 300));
-			console.log("DBG", JSON.stringify(stub.log.commands.map((c) => c.command)), JSON.stringify(h.screen.statuses));
 			await until(() => h.screen.screen().includes("this session is not saved"));
 			for (const id of ["abc", "def"]) {
 				h.screen.type(`/resume ${id}`);
