@@ -76,7 +76,7 @@ export function footerAfter(state: FooterState, event: AtelierEvent): FooterStat
 	switch (event.type) {
 		case "session_started":
 			return {
-				...state,
+				...withoutStaleContext(state, event.backend, event.model),
 				backend: event.backend,
 				model: event.model,
 				...(event.effort === undefined ? {} : { effort: event.effort }),
@@ -120,12 +120,9 @@ export function footerWithConfiguration(
 	state: FooterState,
 	configuration: Omit<SessionConfiguration, "pending" | "thinking" | "effort"> & { thinking?: string; effort?: string },
 ): FooterState {
-	const { model: _model, context, ...rest } = state;
-	// Another backend or model has another window: the gauge waits for a turn to measure it.
-	const sameModel = configuration.backend === state.backend && configuration.model === state.model;
+	const { model: _model, ...rest } = withoutStaleContext(state, configuration.backend, configuration.model);
 	return {
 		...rest,
-		...(sameModel && context !== undefined ? { context } : {}),
 		backend: configuration.backend,
 		...(configuration.model === undefined ? {} : { model: configuration.model }),
 		...(configuration.effort === undefined ? {} : { effort: configuration.effort }),
@@ -134,6 +131,14 @@ export function footerWithConfiguration(
 			: { profile: configuration.profile.name ?? configuration.profile.origin }),
 		mode: configuration.permissionMode,
 	};
+}
+
+/** Another backend or model has another window: the gauge waits for a turn to measure it. */
+function withoutStaleContext(state: FooterState, backend: string, model: string | undefined): FooterState {
+	// An absent model is the default one, which only another backend changes.
+	if (backend === state.backend && (model === undefined || model === state.model)) return state;
+	const { context: _context, ...rest } = state;
+	return rest;
 }
 
 /** Sets the mode a client changed, which the session reports only in its next turn. */
