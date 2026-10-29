@@ -1095,6 +1095,30 @@ describe("ClaudeCodeBackend context usage", () => {
 		expect(fourth).toMatchObject({ context: { compactAt: 180_000 } });
 	});
 
+	it("keeps the first valid answer when another request about the same model answers after it", async () => {
+		type Answer = { isAutoCompactEnabled: boolean; autoCompactThreshold: number };
+		const resolvers: ((value: Answer) => void)[] = [];
+		const pending = () => new Promise<Answer>((resolve) => resolvers.push(resolve));
+		const turn = [answer(2, 4000, 500), ranWith(1_000_000)];
+		const { query, calls } = withContextUsage([turn, turn, turn, turn], pending, pending);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		const compactAts: unknown[] = [];
+		const run = async (prompt: string) => {
+			const finish = finishOf(await collectBodies(session.send(prompt)));
+			compactAts.push(finish?.type === "turn_finished" ? finish.context?.compactAt : undefined);
+		};
+		await run("one");
+		await run("two");
+		resolvers[0]?.({ isAutoCompactEnabled: true, autoCompactThreshold: 400_000 });
+		await new Promise((resolve) => setImmediate(resolve));
+		await run("three");
+		resolvers[1]?.({ isAutoCompactEnabled: true, autoCompactThreshold: 600_000 });
+		await new Promise((resolve) => setImmediate(resolve));
+		await run("four");
+		expect(calls.order.filter((call) => call === "contextUsage")).toHaveLength(2);
+		expect(compactAts).toEqual([1_000_000, 1_000_000, 400_000, 400_000]);
+	});
+
 	it("asks again with the next turn when getContextUsage failed, and keeps the answer once one comes", async () => {
 		const failing = async () => {
 			throw new Error("control request failed");
