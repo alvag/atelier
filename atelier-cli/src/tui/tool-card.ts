@@ -1,5 +1,6 @@
 import { type AtelierEvent, type JsonValue, visibleText } from "@atelier/core";
 import { type Component, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { MEMORY_TOOL, memoryCall, memoryCallText, memoryOutcome } from "../memory-call.ts";
 import { clipLine, editView, highlightLines, writeView } from "./code-view.ts";
 import { hasColor, type Paint, type Style, Tones } from "./style.ts";
 
@@ -157,7 +158,6 @@ const STATES = {
 
 const stateOf = (ok: boolean | undefined) => STATES[ok === undefined ? "running" : ok ? "ok" : "failed"];
 
-const MEMORY_TOOL = "memory";
 const MEMORY_ICON = "🧠";
 /** Columns under which a memory card leaves its icon out, so a terminal that draws it wider never overflows. */
 const MEMORY_ICON_WIDTH = 24;
@@ -165,28 +165,6 @@ const MEMORY_ICON_WIDTH = 24;
 const MEMORY_SHOWN = new Set(["action", "query", "id", "title"]);
 /** What a memory call says while it runs, by its action. */
 const MEMORY_DOING: Record<string, string> = { search: "searching…", get: "reading…", save: "saving…" };
-
-/** A memory call's action and what it is about: the query or the title, on one line, or the id as `#7`. */
-function memoryCall(input: JsonValue): { action: string; subject?: string; quoted: boolean } {
-	const action = shown(field(input, "action") ?? "");
-	if (action === "get") {
-		const id = isRecord(input) ? input.id : undefined;
-		return { action, ...(typeof id === "number" ? { subject: `#${id}` } : {}), quoted: false };
-	}
-	const text = field(input, action === "save" ? "title" : "query");
-	if (text === undefined) return { action, quoted: false };
-	return { action, subject: shown(text).replace(/\s+/g, " ").trim(), quoted: true };
-}
-
-/** What a memory call came to: `saved #5518` and its warning apart, or the entry read without its id again. */
-function memoryOutcome(input: JsonValue, summary: string): { outcome: string; warning?: string } {
-	const saved = /^Saved memory #(\d+)\.(?: Warning: (.*))?$/s.exec(summary);
-	if (saved) return { outcome: `saved #${saved[1]}`, ...(saved[2] === undefined ? {} : { warning: shown(saved[2]) }) };
-	const { action, subject } = memoryCall(input);
-	if (action === "get" && subject !== undefined && summary.startsWith(`${subject} `))
-		return { outcome: shown(summary.slice(subject.length + 1)) };
-	return { outcome: shown(summary) };
-}
 
 /** What a subagent, the verifier or a review role did, grouped under the call or the step that started it. */
 export class AgentActivity {
@@ -319,7 +297,7 @@ export class ToolCard implements Component {
 
 	/** `bash pnpm test`, `memory search "query"`, or `task worker · edit src/a.ts` with the call its subagent runs now. */
 	current(): string {
-		const label = `${shown(this.tool)} ${this.pinned ? this.#memoryCallText() : target(this.#input)}`.trimEnd();
+		const label = `${shown(this.tool)} ${this.pinned ? memoryCallText(this.#input) : target(this.#input)}`.trimEnd();
 		const child = this.#activity?.current();
 		return child === undefined ? label : `${label} · ${child}`;
 	}
@@ -391,13 +369,6 @@ export class ToolCard implements Component {
 		lines.push(...indented(details, width, `   ${bar} `));
 		if (this.#activity) lines.push(...indented(this.#activity.details(paint), width, "     "));
 		return lines;
-	}
-
-	/** `search "query"`, `get #7`, `save "title"`. */
-	#memoryCallText(): string {
-		const { action, subject, quoted } = memoryCall(this.#input);
-		if (subject === undefined) return action;
-		return `${action} ${quoted ? `"${subject}"` : subject}`;
 	}
 
 	/**
