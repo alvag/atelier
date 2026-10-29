@@ -707,7 +707,10 @@ describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 		expect(result.output).toContain(`home=${verifierDir}/`);
 	});
 
-	it("compares its two copies with diff -u, which looks up the time zone through the /var link, without a block", async () => {
+	it.each([
+		["ls", "cat"],
+		["cat", "ls"],
+	])("compares copies through the /var link and denies outside reads, %s then %s", async (first, second) => {
 		const linked = await mkdtemp(join(tmpdir(), "atelier-verify-"));
 		try {
 			for (const copy of ["base", "candidate"]) {
@@ -731,35 +734,27 @@ describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 			expect(result.output).not.toContain("sandbox blocked");
 			expect(result.output).toContain("+candidate");
 			expect(result.output).toContain("base\nbase\ncandidate\n");
-		} finally {
-			await rm(linked, { recursive: true, force: true });
-		}
-	});
 
-	it.each([
-		["ls", "cat"],
-		["cat", "ls"],
-	])("reads the /var link but denies its contents, %s then %s", async (first, second) => {
-		// TMPDIR need not be under /var: make the denied file there instead of inventing a /var alias for it.
-		const deniedDir = await mkdtemp("/var/tmp/atelier-verify-denied-");
-		try {
-			const secret = join(deniedDir, "secret.txt");
-			await writeFile(secret, "OUTSIDE-SECRET\n");
-			expect(await realpath(secret)).toMatch(/^\/private\/var\//);
+			// Keep the TMPDIR sibling and link-spelled cwd: only genuine /private/var paths have a /var alias.
+			const secret = join(outside, "secret.txt").replace(/^\/private\/var\//, "/var/");
+			expect(await realpath(secret)).toBe(join(outside, "secret.txt"));
 			expect(await readFile(secret, "utf8")).toBe("OUTSIDE-SECRET\n");
-			const link = await run("readlink /var");
-			expect(link.ok, link.output).toBe(true);
-			expect(link.output, link.output).toMatch(/^private\/var$/m);
-			for (const operation of [first, second]) {
-				const command = operation === "ls" ? "ls /var/" : `cat ${secret}`;
-				const beyond = await run(command);
-				const diagnostic = `${command}\n${beyond.output}`;
-				expect(beyond.ok, diagnostic).toBe(false);
-				expect(beyond.output, diagnostic).not.toContain("OUTSIDE-SECRET");
-				expect(beyond.output.match(/Operation not permitted/g), diagnostic).toHaveLength(1);
+			const commands = [first, second].map((operation) => (operation === "ls" ? "ls /var/" : `cat ${secret}`));
+			const beyond = await verifier().execute({ command: `readlink /var; ${commands.join("; ")}` }, { cwd: linked });
+			const diagnostic = `cwd=${linked}\n${beyond.output}`;
+			expect(beyond.ok, diagnostic).toBe(false);
+			expect(beyond.output, diagnostic).toMatch(/^private\/var$/m);
+			expect(beyond.output, diagnostic).not.toContain("OUTSIDE-SECRET");
+			expect(beyond.output.match(/Operation not permitted/g), diagnostic).toHaveLength(2);
+			for (const command of commands) {
+				const denied = await verifier().execute({ command }, { cwd: linked });
+				const detail = `cwd=${linked}\n${command}\n${denied.output}`;
+				expect(denied.ok, detail).toBe(false);
+				expect(denied.output, detail).not.toContain("OUTSIDE-SECRET");
+				expect(denied.output.match(/Operation not permitted/g), detail).toHaveLength(1);
 			}
 		} finally {
-			await rm(deniedDir, { recursive: true, force: true });
+			await rm(linked, { recursive: true, force: true });
 		}
 	});
 
