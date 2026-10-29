@@ -122,8 +122,26 @@ describe("footer", () => {
 		const context = (state: FooterState) => footerLine(state, 120, plain, ["context"]);
 		expect(context(after([configured("anthropic-api", "claude-opus-5-5")], measured))).toBe(" ctx ▰▰▰▱▱▱▱▱ 40% · 1M");
 		expect(context(after([configured("anthropic-api", "claude-haiku-5-5")], measured))).toBe(" ");
-		expect(context(after([configured("anthropic-api")], measured))).toBe(" ");
+		// No model is the default one still running: a change of the effort alone keeps the gauge.
+		expect(context(after([configured("anthropic-api")], measured))).toBe(" ctx ▰▰▰▱▱▱▱▱ 40% · 1M");
 		expect(context(after([configured("openai-codex", "claude-opus-5-5")], measured))).toBe(" ");
+	});
+
+	it("hides the gauge when a session starts on another model or backend", () => {
+		const context = { tokens: 182_000, window: 1_000_000, compactAt: 200_000 };
+		const started = (backend: string, model: string): AtelierEvent => ({
+			type: "session_started",
+			backend,
+			model,
+			authSource: "subscription",
+			seq: 1,
+			turnId: "t",
+		});
+		const state: FooterState = { backend: "claude-code", model: "first", context };
+		expect(footerAfter(state, started("claude-code", "other")).context).toBeUndefined();
+		expect(footerAfter(state, started("anthropic-api", "first")).context).toBeUndefined();
+		// Claude Code says session_started on every init: the same model keeps what was measured.
+		expect(footerAfter(state, started("claude-code", "first")).context).toEqual(context);
 	});
 
 	it("keeps the gauge hidden when the model changes during a turn, until the new model measures it", async () => {
