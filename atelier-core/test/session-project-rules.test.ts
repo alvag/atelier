@@ -187,6 +187,23 @@ describe("rules allowed always in this project", () => {
 		expect(results[0]?.output).toContain("WORKTREE_RAN");
 	});
 
+	it("asks when the line gives the covered command its standard input", async () => {
+		const rules = new PermissionRules({ home, cwd: app });
+		await rules.allow([{ kind: "bash", value: "./run.sh" }], "project");
+		await rules.allow([{ kind: "bash", value: "printf" }], "session");
+		const { questions } = await run(
+			app,
+			[
+				leave("./run.sh <<'EOF'\ninclude /outside/Makefile\nEOF", "c1"),
+				leave("./run.sh <<< 'x'", "c2"),
+				leave("printf x | ./run.sh", "c3"),
+				leave("./run.sh", "c4"),
+			],
+			{ rules },
+		);
+		expect(questions.map(({ callId }) => callId)).toEqual(["c1", "c2", "c3"]);
+	});
+
 	it("covers an absolute executable allowed for the project", async () => {
 		const rules = new PermissionRules({ home, cwd: app });
 		await rules.allow([{ kind: "bash", value: "/usr/bin/make" }], "project");

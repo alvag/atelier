@@ -734,7 +734,22 @@ export interface SimpleCommand {
 	writesFile: boolean;
 	/** It changes the environment the command runs with: an assignment (`PATH=./bin open`) or an `env` option (`env -P`). */
 	setsEnvironment: boolean;
+	/**
+	 * Its standard input comes from the line: a pipe from an earlier command (`|`, `|&`, also into a subshell) or an
+	 * input redirection (`<`, `0<`, `<>`, `<&`, a heredoc `<<`, a here-string `<<<`).
+	 */
+	readsInput: boolean;
 }
+
+/** Whether a segment that starts at `start` takes a pipe: a `|` among the operators just before it (`|`, `|&`, `| (`). */
+function takesPipe(tokens: readonly Token[], start: number): boolean {
+	for (let at = start - 1; at >= 0 && tokens[at]?.operator; at--) if (tokens[at]?.value === "|") return true;
+	return false;
+}
+
+/** Whether a segment redirects its standard input, or any descriptor from a file or text (`<`, `<<`, `<<<`, `<>`). */
+const redirectsInput = (segment: readonly Token[]) =>
+	segment.some((token) => !token.operator && REDIRECTION.test(token.raw) && token.raw.includes("<"));
 
 /** Whether the words before a command assign a variable or give `env` an option, either of which can change what runs. */
 function setsEnvironment(prefix: readonly Token[], wrappers: readonly string[]): boolean {
@@ -771,6 +786,7 @@ export function simpleCommands(command: string): SimpleCommand[] | undefined {
 	for (let end = 0; end <= tokens.length; end++) {
 		if (end < tokens.length && !tokens[end]?.operator) continue;
 		const queue = [tokens.slice(start, end)];
+		const piped = takesPipe(tokens, start);
 		start = end + 1;
 		for (let at = 0; at < queue.length; at++) {
 			const { segment, cursor, wrappers, extra } = head(queue[at] as Token[]);
@@ -779,8 +795,10 @@ export function simpleCommands(command: string): SimpleCommand[] | undefined {
 			const words = segment.slice(cursor).map(({ value, raw }) => ({ value, raw }));
 			const writes = writesFile(segment);
 			const environment = setsEnvironment(segment.slice(0, cursor), wrappers);
-			if (words.length > 0 || wrappers.length > 0 || writes || environment)
-				commands.push({ wrappers, words, writesFile: writes, setsEnvironment: environment });
+			const readsInput = piped || redirectsInput(queue[0] as Token[]);
+			// An input redirection with no command (`(make) < file`) still feeds one: it stays, so the line is never covered.
+			if (words.length > 0 || wrappers.length > 0 || writes || environment || readsInput)
+				commands.push({ wrappers, words, writesFile: writes, setsEnvironment: environment, readsInput });
 		}
 	}
 	return commands;
