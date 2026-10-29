@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,6 +75,13 @@ async function started(parentTurns: FakeStep[][], childTurns: ((cwd: () => strin
 		return events;
 	};
 	return { parent, children, session, play, woke: () => woke };
+}
+
+/** A gate a child's turn waits on until the test opens it. */
+function gate() {
+	let open = () => {};
+	const opened = new Promise<void>((resolve) => (open = resolve));
+	return { open, step: { run: () => opened } as FakeStep };
 }
 
 const worktrees = () => git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)?.length ?? 0;
@@ -176,25 +183,68 @@ describe("a worker in the background", () => {
 		expect(parent.prompts[3]).toContain("Files it changed that also changed in your working tree since: a.txt.");
 	});
 
+	it("gets the parent's node_modules folders without being able to change them", async () => {
+		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
+		for (const dir of ["node_modules/pkg", "sub/node_modules/x"]) mkdirSync(join(repo, dir), { recursive: true });
+		writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
+		writeFileSync(join(repo, "sub/node_modules/x/index.js"), "parent x\n");
+		const seen: string[] = [];
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				(cwd) => [
+					{
+						run: () => {
+							const pkg = join(cwd(), "node_modules/pkg/index.js");
+							seen.push(readFileSync(pkg, "utf8"), readFileSync(join(cwd(), "sub/node_modules/x/index.js"), "utf8"));
+							seen.push(String(lstatSync(join(cwd(), "node_modules")).isSymbolicLink()));
+							// A copy takes the write; a link is the parent's, which only the sandbox keeps the worker from writing.
+							if (seen[2] === "false") writeFileSync(pkg, "child\n");
+						},
+					},
+					text("done"),
+					{ event: finished },
+				],
+			],
+		);
+		await play(session.send("go"));
+		const started_ = parent.toolResults[0]?.output ?? "";
+		await until(() => woke() === 1);
+		expect(seen.slice(0, 2)).toEqual(["parent\n", "parent x\n"]);
+		if (seen[2] === "false") expect(started_).toContain("Its node_modules folders are copy-on-write copies of yours.");
+		else expect(started_).toContain("Its node_modules folders are links to yours, which its sandbox cannot write.");
+		expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
+		await play(session.nextQueued());
+		// Ignored in the worktree too: the dependencies are never part of the patch.
+		expect(parent.prompts[1]).toContain("It changed no files.");
+		expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
+	});
+
 	it("names the files another task's patch also changed", async () => {
-		let release = () => {};
-		const held = new Promise<void>((resolve) => (release = resolve));
+		const first = gate();
+		const second = gate();
 		const { parent, session, play, woke } = await started(
 			[[work("c1"), work("c2", "other"), { event: finished }], [{ event: finished }], [{ event: finished }]],
 			[
-				(cwd) => [{ run: () => writeFileSync(join(cwd(), "a.txt"), "first\n") }, text("one"), { event: finished }],
+				(cwd) => [
+					{ run: () => writeFileSync(join(cwd(), "a.txt"), "first\n") },
+					first.step,
+					text("one"),
+					{ event: finished },
+				],
 				(cwd) => [
 					{ run: () => writeFileSync(join(cwd(), "a.txt"), "second\n") },
-					{ run: () => held },
+					second.step,
 					text("two"),
 					{ event: finished },
 				],
 			],
 		);
 		await play(session.send("go"));
+		first.open();
 		await until(() => woke() === 1);
 		await play(session.nextQueued());
-		release();
+		second.open();
 		await until(() => woke() === 2);
 		await play(session.nextQueued());
 		expect(parent.prompts[2]).toContain("Files the patch of task-1 also changed: a.txt.");
