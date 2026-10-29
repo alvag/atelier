@@ -47,27 +47,27 @@ it("prices a model only the catalog knows, and keeps the code's prices for the o
 });
 
 it("sends the levels the catalog gives a model the code does not know, and only those", () => {
-	expect(thinkingToSend("claude-new-6", "high", "anthropic-api")).toEqual({ report: "unsupported" });
+	expect(thinkingToSend("claude-new-6", "high", "anthropic-api")).toEqual({ report: "high not sent" });
 	useModelData(catalog);
 	expect(thinkingToSend("claude-new-6", "high", "anthropic-api")).toEqual({ report: "high", effort: "high" });
-	expect(thinkingToSend("claude-new-6", "max", "anthropic-api")).toEqual({ report: "unsupported" });
+	expect(thinkingToSend("claude-new-6", "max", "anthropic-api")).toEqual({ report: "max not sent" });
 	// Thinking is turned off as the catalog says the model takes it, and not where it says nothing.
-	expect(thinkingToSend("claude-new-6", "off", "anthropic-api")).toEqual({ report: "unsupported" });
+	expect(thinkingToSend("claude-new-6", "off", "anthropic-api")).toEqual({ report: "off not sent" });
 	expect(thinkingToSend("claude-off-6", "off", "anthropic-api")).toEqual({ report: "off", thinking: "between_tools" });
-	expect(thinkingToSend("claude-sonnet-4-6", "xhigh", "anthropic-api")).toEqual({ report: "unsupported" });
-	expect(thinkingToSend("claude-sonnet-4-6", "off", "anthropic-api")).toEqual({ report: "unsupported" });
+	expect(thinkingToSend("claude-sonnet-4-6", "xhigh", "anthropic-api")).toEqual({ report: "xhigh not sent" });
+	expect(thinkingToSend("claude-sonnet-4-6", "off", "anthropic-api")).toEqual({ report: "off not sent" });
 
 	expect(thinkingToSend("grok-4.7", "minimal", "opencode-go")).toEqual({ report: "low", effort: "low" });
 	expect(thinkingToSend("grok-4.7", "off", "opencode-go")).toEqual({ report: "off", thinking: "disabled" });
-	expect(thinkingToSend("bare-model", "high", "opencode-go")).toEqual({ report: "unsupported" });
-	expect(thinkingToSend("bare-model", "off", "opencode-go")).toEqual({ report: "unsupported" });
+	expect(thinkingToSend("bare-model", "high", "opencode-go")).toEqual({ report: "high not sent" });
+	expect(thinkingToSend("bare-model", "off", "opencode-go")).toEqual({ report: "off not sent" });
 });
 
 it("sends Claude Code the levels the catalog gives a model its tables lack, and the tables' for an alias", () => {
-	expect(thinkingToSend("claude-fable-5-2", "max", "claude-code")).toEqual({ report: "unsupported" });
+	expect(thinkingToSend("claude-fable-5-2", "max", "claude-code")).toEqual({ report: "max not sent" });
 	useModelData(catalog);
 	expect(thinkingToSend("claude-fable-5-2", "max", "claude-code")).toEqual({ report: "max", effort: "max" });
-	expect(thinkingToSend("claude-fable-5-2", "high", "claude-code")).toEqual({ report: "unsupported" });
+	expect(thinkingToSend("claude-fable-5-2", "high", "claude-code")).toEqual({ report: "high not sent" });
 	expect(thinkingToSend("opus", "high", "claude-code")).toEqual({ report: "high", effort: "high" });
 });
 
@@ -76,7 +76,7 @@ it("gives a Codex model the catalog doesn't know Codex's window and levels; the 
 	expect(codexReasoning("gpt-6.1-terra", "max")).toEqual({ report: "max", effort: "max" });
 	useModelData(catalog);
 	expect(codexContextWindow("gpt-6.1-terra")).toBe(400_000);
-	expect(codexReasoning("gpt-6.1-terra", "max")).toEqual({ report: "unsupported" });
+	expect(codexReasoning("gpt-6.1-terra", "max")).toEqual({ report: "max not sent" });
 	expect(codexReasoning("gpt-6.1-terra", "minimal")).toEqual({ report: "low", effort: "low" });
 	expect(codexReasoning("gpt-6.1-terra", "off")).toEqual({ report: "off", effort: "none" });
 	expect(codexContextWindow("gpt-6-sol")).toBe(272_000);

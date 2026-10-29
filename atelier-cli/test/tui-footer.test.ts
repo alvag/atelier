@@ -52,6 +52,19 @@ describe("footer", () => {
 		);
 	});
 
+	it("says the asked level when the model did not take it", () => {
+		const state = after([
+			{
+				type: "session_started",
+				backend: "opencode-go",
+				model: "glm-5.3",
+				authSource: "api_key",
+				effort: "medium not sent",
+			},
+		]);
+		expect(footerLine(state, 120, plain)).toBe(" glm-5.3 medium not sent");
+	});
+
 	it("takes what a configuration change left and cuts the line to the width", () => {
 		const state = after(
 			[{ type: "session_configured", backend: "anthropic-api", thinking: "low", permissionMode: "yolo" }],

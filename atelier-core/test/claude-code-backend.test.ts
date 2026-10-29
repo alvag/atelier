@@ -256,7 +256,7 @@ describe("ClaudeCodeBackend options", () => {
 		expect(plain.calls.options).not.toHaveProperty("effort");
 	});
 
-	it("does not pass an effort the model does not support, and marks it unsupported", async () => {
+	it("does not pass an effort the model does not support, and says the level was not sent", async () => {
 		const { query, calls } = fakeQuery([{ ...init, model: "claude-sonnet-4-6" } as SDKMessage], [[result(0.01)]]);
 		const session = await new ClaudeCodeBackend({ query, env: {} }).start({
 			cwd: "/w",
@@ -268,7 +268,7 @@ describe("ClaudeCodeBackend options", () => {
 		});
 		expect(calls.options).not.toHaveProperty("effort");
 		const [started] = await collectBodies(session.send("hi"));
-		expect(started).toMatchObject({ type: "session_started", model: "claude-sonnet-4-6", effort: "unsupported" });
+		expect(started).toMatchObject({ type: "session_started", model: "claude-sonnet-4-6", effort: "xhigh not sent" });
 	});
 
 	it("passes minimal as effort low", async () => {
@@ -292,7 +292,7 @@ describe("ClaudeCodeBackend options", () => {
 	);
 
 	it.each(["claude-sonnet-5-5", "claude-opus-5-5"])(
-		"does not turn thinking off on %s, which the Agent SDK cannot do there, and marks it unsupported",
+		"does not turn thinking off on %s, which the Agent SDK cannot do there, and says off was not sent",
 		async (model) => {
 			const { query, calls } = fakeQuery([{ ...init, model } as SDKMessage], [[result(0.01)]]);
 			const session = await new ClaudeCodeBackend({ query, env: {} }).start({ ...plainStart, model, thinking: "off" });
@@ -300,7 +300,7 @@ describe("ClaudeCodeBackend options", () => {
 			expect(calls.options.thinking).toEqual({ type: "adaptive", display: "summarized" });
 			expect(calls.options).not.toHaveProperty("effort");
 			const [started] = await collectBodies(session.send("hi"));
-			expect(started).toMatchObject({ type: "session_started", model, effort: "unsupported" });
+			expect(started).toMatchObject({ type: "session_started", model, effort: "off not sent" });
 		},
 	);
 
@@ -483,7 +483,7 @@ describe("ClaudeCodeBackend configure", () => {
 		expect(calls.order).toEqual(['flags:{"effortLevel":"low"}']);
 	});
 
-	it("clears the effort when the model does not take the level, and says it unsupported", async () => {
+	it("clears the effort when the model does not take the level, and reports it not sent", async () => {
 		const { query, calls } = fakeQuery([init], [[result(0.01)]]);
 		const session = await start(query, { model: "opus", thinking: "xhigh" });
 		await session.configure?.({ model: "claude-sonnet-4-6" });

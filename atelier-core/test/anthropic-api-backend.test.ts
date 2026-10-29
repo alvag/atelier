@@ -378,7 +378,7 @@ describe("AnthropicApiBackend", () => {
 		expect(events.at(-1)).toMatchObject({ type: "turn_finished", context: { window: expect.any(Number) } });
 	});
 
-	it("does not send an effort the model does not support, and marks it unsupported", async () => {
+	it("does not send an effort the model does not support, and says the level was not sent", async () => {
 		const { session, api } = await start(
 			[{ blocks: [{ type: "text", text: "ok" }] }],
 			undefined,
@@ -387,7 +387,7 @@ describe("AnthropicApiBackend", () => {
 			{ thinking: "xhigh" },
 		);
 		const events = await collect(session.send("Hi"));
-		expect(events[0]).toMatchObject({ type: "session_started", model: "claude-opus-4-6", effort: "unsupported" });
+		expect(events[0]).toMatchObject({ type: "session_started", model: "claude-opus-4-6", effort: "xhigh not sent" });
 		expect(api.bodies[0]).not.toHaveProperty("output_config");
 	});
 
@@ -420,7 +420,7 @@ describe("AnthropicApiBackend", () => {
 		expect(api.bodies[0]).not.toHaveProperty("output_config");
 	});
 
-	it("does not turn thinking off on Opus 5.5, which answers 400 to it, and marks it unsupported", async () => {
+	it("does not turn thinking off on Opus 5.5, which answers 400 to it, and says off was not sent", async () => {
 		const { session, api } = await start(
 			[{ blocks: [{ type: "text", text: "ok" }] }],
 			undefined,
@@ -429,7 +429,7 @@ describe("AnthropicApiBackend", () => {
 			{ thinking: "off" },
 		);
 		const events = await collect(session.send("Hi"));
-		expect(events[0]).toMatchObject({ type: "session_started", model: "claude-opus-5-5", effort: "unsupported" });
+		expect(events[0]).toMatchObject({ type: "session_started", model: "claude-opus-5-5", effort: "off not sent" });
 		expect(api.bodies[0]?.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(api.bodies[0]).not.toHaveProperty("output_config");
 	});
