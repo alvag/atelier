@@ -177,6 +177,25 @@ describe("background jobs in a session", () => {
 		expect(ofType(events, "jobs_status")).toEqual([expect.objectContaining({ running: 0, waiting: 0 })]);
 	});
 
+	it("ends a woken turn interrupted while it gathers notices, before the backend, and keeps them waiting", async () => {
+		const { backend, session, play, woke } = await started(() => [
+			[call("bash_background", { command: waitsForGo() }, "c1"), { event: finished }],
+			[{ waitForInterrupt: true }],
+		]);
+		await play(session.send("start it"));
+		await go();
+		await until(() => woke() === 1);
+		const turn = session.nextQueued() as AsyncGenerator<AtelierEvent>;
+		const first = await turn.next();
+		expect(first.value).toMatchObject({ type: "job_finished" });
+		await session.interrupt();
+		const rest: AtelierEvent[] = [];
+		for (let next = await turn.next(); !next.done; next = await turn.next()) rest.push(next.value);
+		expect(rest.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "interrupted" });
+		expect(backend.prompts).toHaveLength(1);
+		expect(session.jobs.waiting).toBe(1);
+	});
+
 	it.each(["interrupted", "error"])(
 		"keeps the notice of a job that ends after a turn that ended %s for the next prompt, without waking a turn",
 		async (how) => {

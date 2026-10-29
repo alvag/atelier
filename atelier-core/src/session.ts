@@ -751,6 +751,9 @@ export class Session {
 		yield* this.#stream(turnId, woken ? undefined : prompt, entered, async (turn, signal, backendSession) => {
 			// A woken turn waits a moment for the notices of jobs ending with the first, then takes all there are.
 			if (woken) await untilAborted(new Promise<void>((resolve) => setTimeout(resolve, WAKE_GATHER_MS)), signal);
+			// Interrupted while it waited: it ends before the backend, and the notices wait for the user's next prompt.
+			if (woken && signal.aborted)
+				return { type: "turn_finished", stopReason: "interrupted", usage: { ...ZERO_USAGE } };
 			// The user's words reach the feature log as the turn starts, without delaying the backend;
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
 			this.#turnPrompt = woken ? undefined : prompt;
