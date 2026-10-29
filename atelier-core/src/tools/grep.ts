@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, matchesGlob, relative, resolve } from "node:path";
@@ -59,6 +59,8 @@ function runSearch(
 		limit: number;
 		/** System grep prints `--` between context blocks and cannot be told not to; these lines are dropped. */
 		dropSeparators: boolean;
+		/** Only ripgrep prints binary-file notices; system grep skips binary files (`-I`), so its output has none. */
+		notices: boolean;
 	},
 	/** Keeps only matches whose relative path passes; applied before the match limit. */
 	accept: (path: string) => boolean = () => true,
@@ -105,9 +107,12 @@ function runSearch(
 		 * ripgrep's binary-match notice has no NUL: `<path>: binary file matches (found "\0" byte around offset N)`.
 		 * It counts as a notice only when the path before the final suffix passes `accept` (which, for the open
 		 * tools, means it exists and is not protected); otherwise it is the start of a file name that holds a
-		 * newline, and stays part of the next record's path, which is then checked as a whole.
+		 * newline, and stays part of the next record's path, which is then checked as a whole. A name that holds
+		 * a forged notice and a newline is told apart by the text up to the next NUL: when that is an existing
+		 * file, the line is the start of its name. Until that NUL arrives (or the output ends), nothing is decided.
 		 */
-		const takeNotice = (): boolean => {
+		const takeNotice = (ended: boolean): boolean => {
+			if (!scan.notices) return false;
 			const nl = pending.indexOf("\n");
 			const nul = pending.indexOf("\0");
 			if (nl === -1 || (nul !== -1 && nul < nl)) return false;
@@ -115,6 +120,7 @@ function runSearch(
 			if (!found) return false;
 			const path = toRelative(found[1] ?? "");
 			if (!accept(path)) return false;
+			if (nul === -1 ? !ended : exists(root, toRelative(pending.slice(0, nul)))) return false;
 			push({ path, line: undefined, match: true, text: clip(`${path}${found[2] ?? ""}`) });
 			pending = pending.slice(nl + 1);
 			return true;
@@ -128,7 +134,7 @@ function runSearch(
 					pending = pending.slice(3);
 					continue;
 				}
-				const notice = takeNotice();
+				const notice = takeNotice(false);
 				if (notice) {
 					if (found > scan.limit) return stop("limit");
 					continue;
@@ -153,6 +159,7 @@ function runSearch(
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", onAbort);
 			// A partial last line only counts when the command finished on its own.
+			if (!stopped) while (takeNotice(true));
 			const nul = pending.indexOf("\0");
 			if (!stopped && nul !== -1) add(pending, nul);
 			if (!stopped && code === 2 && hits.length === 0) {
@@ -163,6 +170,9 @@ function runSearch(
 		});
 	});
 }
+
+/** Whether something is at `path` (relative to `root`), without following a final symbolic link. */
+const exists = (root: string, path: string) => lstatSync(resolve(root, path), { throwIfNoEntry: false }) !== undefined;
 
 /** `path` as a literal ripgrep glob. */
 const escapeGlob = (path: string) => path.replace(/[\\*?[\]{}!]/g, "\\$&");
@@ -362,7 +372,7 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 					(options.outside ? isReadable(match, root, secrets) : true) &&
 					(useRipgrep || (byGlob?.(globPath(match)) ?? true));
 				const flags = { ignoreCase: ignoreCase ?? false, literal: literal ?? false, context };
-				const scan = { limit, dropSeparators: !useRipgrep && context > 0 };
+				const scan = { limit, dropSeparators: !useRipgrep && context > 0, notices: useRipgrep };
 				const result = useRipgrep
 					? await runSearch(
 							"rg",
