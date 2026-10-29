@@ -104,8 +104,8 @@ export type ThinkingBackend = "anthropic-api" | "claude-code" | "opencode-go";
 
 /** What a backend sends for a thinking level, and what `session_started.effort` says about it. */
 export interface ThinkingSend {
-	/** The effort sent, `off` when thinking was turned off, `auto` when the model reasons on its own and takes no
-	 * level, or the asked level with `not sent` when it could not be. */
+	/** The effort sent, `off` when thinking was turned off, `auto` when a level was asked for a model that reasons
+	 * on its own and takes no level, or the asked level with `not sent` when it could not be. */
 	report: Effort | "off" | "auto" | EffortNotSent;
 	effort?: Effort;
 	/** The `thinking.budget_tokens` a Messages model is sent; absent when the level sends no thinking. */
@@ -135,8 +135,12 @@ export function thinkingToSend(
 	// OpenCode Go's Claude models take what Anthropic's do; the rest take the levels of its table, or of the catalog.
 	if (backend === "opencode-go" && EFFORT_LEVELS[id] === undefined) {
 		const entry = knownOpenCodeGoModel(model);
-		// A model that reasons with nothing sent takes no level: whatever is asked, the model decides.
-		if (entry?.reasonsOnItsOwn === true) return { report: "auto" };
+		// A model that reasons with nothing sent takes no level: a level asked reports `auto`. Its reasoning cannot
+		// be turned off either, so `off` is not sent and reports so, like any other level that does not apply.
+		if (entry?.reasonsOnItsOwn === true) {
+			if (level === "off") return { report: effortNotSent(level) };
+			return { report: "auto" };
+		}
 		// A budget-thinking model reasons only with `thinking` enabled: `off` needs nothing, a level sends its budget.
 		if (entry?.budgetThinking === true) {
 			if (level === "off") return { report: "off" };

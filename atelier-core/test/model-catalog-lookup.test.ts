@@ -84,6 +84,13 @@ it("gives a Codex model the catalog doesn't know Codex's window and levels; the 
 	expect(codexContextWindow("unknown-model")).toBe(272_000);
 });
 
+it("reports a level sent on a model that always reasons, and its off as not sent", () => {
+	// gpt-6-astra takes levels, so a level is its reasoning effort; its reasoning cannot be turned off.
+	expect(codexReasoning("gpt-6-astra", "high")).toEqual({ report: "high", effort: "high" });
+	expect(codexReasoning("gpt-6-astra", "off")).toEqual({ report: "off not sent" });
+	expect(codexReasoning("gpt-6.1-sol", "off")).toEqual({ report: "off not sent" });
+});
+
 it("gives an OpenCode Go model the catalog's window, through Chat Completions, and the table's to the ones it has", () => {
 	expect(openCodeGoModel("grok-4.7").contextWindow).toBe(200_000);
 	useModelData(catalog);

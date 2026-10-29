@@ -172,7 +172,7 @@ describe("opencode-go on the Messages API", () => {
 	});
 
 	it("sends a level to minimax-m3 as enabled thinking with a budget, clipped to half of max_tokens", async () => {
-		provider.answer(messagesReply("a"), messagesReply("b"), messagesReply("c"));
+		provider.answer(messagesReply("a"), messagesReply("b"), messagesReply("c"), messagesReply("d"), messagesReply("e"));
 		const session = await start({ thinking: "high" });
 		const events = await collect(session.send("hi"));
 		expect(events[0]).toMatchObject({ type: "session_started", model: "minimax-m3", effort: "high" });
@@ -183,6 +183,14 @@ describe("opencode-go on the Messages API", () => {
 		expect(provider.received[1]?.body.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
 		await collect((await start({ thinking: "high", maxTokens: 3000 })).send("hi"));
 		expect(provider.received[2]?.body.thinking).toEqual({ type: "enabled", budget_tokens: 1500 });
+		// The border: half of 2048 is exactly the 1024 the API takes as the smallest budget.
+		await collect((await start({ thinking: "high", maxTokens: 2048 })).send("hi"));
+		expect(provider.received[3]?.body.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
+		// Below that not even the smallest budget fits, so the level is not sent at all.
+		const tight = await collect((await start({ thinking: "high", maxTokens: 1000 })).send("hi"));
+		expect(tight[0]).toMatchObject({ type: "session_started", model: "minimax-m3", effort: "high not sent" });
+		expect(provider.received[4]?.body).not.toHaveProperty("thinking");
+		expect(provider.received[4]?.body).not.toHaveProperty("output_config");
 	});
 
 	it("sends nothing for off on minimax-m3, which does not think without the field", async () => {
@@ -193,15 +201,16 @@ describe("opencode-go on the Messages API", () => {
 		expect(provider.received[0]?.body).not.toHaveProperty("output_config");
 	});
 
-	it("reports auto for a model that reasons on its own, whatever was asked", async () => {
+	it("reports auto for a level on a model that reasons on its own, and off not sent when it cannot stop", async () => {
 		provider.answer(messagesReply("a"), messagesReply("b"));
 		const qwen = await collect((await start({ model: "qwen3.8-max", thinking: "high" })).send("hi"));
 		expect(qwen[0]).toMatchObject({ type: "session_started", model: "qwen3.8-max", effort: "auto" });
 		expect(provider.received[0]?.body).not.toHaveProperty("thinking");
 		expect(provider.received[0]?.body).not.toHaveProperty("output_config");
 		const off = await collect((await start({ model: "qwen3.8-flash", thinking: "off" })).send("hi"));
-		expect(off[0]).toMatchObject({ type: "session_started", model: "qwen3.8-flash", effort: "auto" });
+		expect(off[0]).toMatchObject({ type: "session_started", model: "qwen3.8-flash", effort: "off not sent" });
 		expect(provider.received[1]?.body).not.toHaveProperty("thinking");
+		expect(provider.received[1]?.body).not.toHaveProperty("output_config");
 	});
 
 	it("keeps the thinking blocks minimax-m3 returned in the history, and drops the unsigned ones", async () => {
@@ -269,10 +278,12 @@ describe("the OpenCode Go models", () => {
 		expect(thinkingToSend("minimax-m3", "xhigh", "opencode-go")).toEqual({ report: "xhigh", budget: 16384 });
 		expect(thinkingToSend("minimax-m3", "off", "opencode-go")).toEqual({ report: "off" });
 		expect(thinkingToSend("qwen3.8-max", "high", "opencode-go")).toEqual({ report: "auto" });
-		expect(thinkingToSend("qwen3.7-plus", "off", "opencode-go")).toEqual({ report: "auto" });
+		expect(thinkingToSend("qwen3.7-plus", "low", "opencode-go")).toEqual({ report: "auto" });
 		expect(thinkingToSend("kimi-k2.7-code", "high", "opencode-go")).toEqual({ report: "auto" });
-		expect(thinkingToSend("mimo-v2.6-flash", "off", "opencode-go")).toEqual({ report: "auto" });
 		expect(thinkingToSend("longcat-2.0", "medium", "opencode-go")).toEqual({ report: "auto" });
+		// Their reasoning cannot be turned off either, so `off` is not sent.
+		expect(thinkingToSend("kimi-k2.7-code", "off", "opencode-go")).toEqual({ report: "off not sent" });
+		expect(thinkingToSend("mimo-v2.6-flash", "off", "opencode-go")).toEqual({ report: "off not sent" });
 	});
 
 	it("prices qwen3.7-plus by its tier", () => {

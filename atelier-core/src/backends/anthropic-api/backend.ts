@@ -37,6 +37,7 @@ import {
 import { BACKEND_DEFAULTS } from "../../options.ts";
 import {
 	costOfRequest,
+	effortNotSent,
 	summarizesThinking,
 	type ThinkingBackend,
 	type ThinkingOff,
@@ -102,9 +103,11 @@ function summaryRequest(
 	model: string,
 	thinking: SessionChange["thinking"],
 	entry: NonNullable<SessionChange["compaction"]>,
+	maxTokens: number,
 ): SummaryRequestState {
 	const summaryModel = entry.model ?? model;
-	const sent = thinkingToSend(summaryModel, entry.thinking ?? thinking, id);
+	const level = entry.thinking ?? thinking;
+	const sent = withBudgetRoom(thinkingToSend(summaryModel, level, id), level, maxTokens);
 	return {
 		model: summaryModel,
 		...(sent?.effort === undefined ? {} : { effort: sent.effort }),
@@ -112,6 +115,20 @@ function summaryRequest(
 		...(sent?.thinking === undefined ? {} : { thinking: sent.thinking }),
 		...(summarizesThinking(summaryModel, sent) ? { summarizeThinking: true as const } : {}),
 	};
+}
+
+/**
+ * A level as this session can send it: a thinking budget has to stay under `max_tokens`, and the API takes none
+ * below 1024, so when half of the output budget cannot hold even the smallest one the level is not sent at all
+ * and reports so.
+ */
+function withBudgetRoom(
+	sent: ThinkingSend | undefined,
+	level: SessionChange["thinking"],
+	maxTokens: number,
+): ThinkingSend | undefined {
+	if (sent?.budget === undefined || level === undefined || Math.floor(maxTokens / 2) >= 1024) return sent;
+	return { report: effortNotSent(level) };
 }
 
 /** Totals a turn's requests; the summary may run on another model, so it is priced on its own. */
@@ -162,11 +179,13 @@ export interface RequestState {
 	maxTokens: number;
 	/** Sent as `output_config.effort`; absent when none was asked or the model does not support it. */
 	effort?: Effort;
+	// The three fields below all write the request's single `thinking` field, and a level gives at most one of
+	// them; `buildRequest` would silently keep the last one if two were set.
 	/** Sent as `thinking`, to turn thinking off; absent when none was asked or the model cannot turn it off. */
 	thinking?: ThinkingOff;
 	/** Sent as `thinking: {type: "enabled", budget_tokens}` (a Messages model); absent when the level sends no thinking. */
 	thinkingBudget?: number;
-	/** Sent as adaptive thinking with `display: "summarized"`, so the thinking text is streamed; never with `thinking`. */
+	/** Sent as adaptive thinking with `display: "summarized"`, so the thinking text is streamed; never with either above. */
 	summarizeThinking?: true;
 	system: string;
 	tools: readonly Anthropic.Tool[];
@@ -212,11 +231,11 @@ function toParam(message: StoredMessage): Anthropic.MessageParam {
 }
 
 /**
- * The budget clipped so the answer keeps at least half of `max_tokens`, and never below 1024: on the models that
- * take one, the budget turns thinking on, it does not set how much they reason.
+ * The budget clipped so the answer keeps at least half of `max_tokens`: the session sets a budget only when
+ * that much fits (`withBudgetRoom`), so the clip alone keeps it valid, above the 1024 the API demands.
  */
 function budgetTokens(budget: number, maxTokens: number): number {
-	return Math.max(1024, Math.min(budget, Math.floor(maxTokens / 2)));
+	return Math.min(budget, Math.floor(maxTokens / 2));
 }
 
 function withBreakpoint(message: Anthropic.MessageParam): Anthropic.MessageParam {
@@ -263,10 +282,11 @@ export class AnthropicApiBackend implements AgentBackend {
 
 	async start(start: BackendStartOptions): Promise<BackendSession> {
 		const model = start.model ?? this.#options.model ?? DEFAULT_API_MODEL;
-		const sent = thinkingToSend(model, start.thinking, this.id);
+		const maxTokens = this.#options.maxTokens ?? DEFAULT_MAX_TOKENS;
+		const sent = withBudgetRoom(thinkingToSend(model, start.thinking, this.id), start.thinking, maxTokens);
 		const state: RequestState = {
 			model,
-			maxTokens: this.#options.maxTokens ?? DEFAULT_MAX_TOKENS,
+			maxTokens,
 			...(sent?.effort === undefined ? {} : { effort: sent.effort }),
 			...(sent?.budget === undefined ? {} : { thinkingBudget: sent.budget }),
 			...(sent?.thinking === undefined ? {} : { thinking: sent.thinking }),
@@ -277,7 +297,9 @@ export class AnthropicApiBackend implements AgentBackend {
 		};
 		// The summary request has its own model and level when the profile's compaction entry sets them.
 		const summary =
-			start.compaction === undefined ? undefined : summaryRequest(this.id, model, start.thinking, start.compaction);
+			start.compaction === undefined
+				? undefined
+				: summaryRequest(this.id, model, start.thinking, start.compaction, maxTokens);
 		const maxRequests = start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
 		const transportFor = this.#connect();
 		// The window lookup runs while the session starts; the first request waits for it, never the start.
@@ -489,7 +511,7 @@ class AnthropicApiSession implements BackendSession {
 		const state = this.#state;
 		const model = change.model ?? state.model;
 		const thinking = change.thinking ?? this.#thinking;
-		const sent = thinkingToSend(model, thinking, this.#id);
+		const sent = withBudgetRoom(thinkingToSend(model, thinking, this.#id), thinking, state.maxTokens);
 		delete state.effort;
 		delete state.thinking;
 		delete state.thinkingBudget;
@@ -503,7 +525,9 @@ class AnthropicApiSession implements BackendSession {
 		// A new entry replaces the summary request's model and level; none makes it the session's own request.
 		if (change.compaction !== undefined) {
 			this.#summary =
-				change.compaction === null ? undefined : summaryRequest(this.#id, model, thinking, change.compaction);
+				change.compaction === null
+					? undefined
+					: summaryRequest(this.#id, model, thinking, change.compaction, state.maxTokens);
 		}
 		if (model !== state.model) {
 			state.model = model;
