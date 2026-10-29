@@ -4,6 +4,8 @@ import { defineTool, type ToolContext, type ToolDefinition, type ToolOutcome } f
 export const TASK_TOOL = "task";
 /** Characters of a subagent report that reach the parent; enforced in code, not asked for in a prompt. */
 export const REPORT_LIMIT = 8000;
+/** Subagents that may run in the background at once in one session: each one is a model spending tokens. */
+export const MAX_BACKGROUND_TASKS = 4;
 
 export interface SubagentDefinition {
 	name: string;

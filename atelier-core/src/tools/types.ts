@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BackgroundTasks } from "../subagents/tasks.ts";
 import type { Jobs } from "./jobs.ts";
 import type { SandboxStatus } from "./sandbox.ts";
 
@@ -24,6 +25,8 @@ export interface ToolContext {
 	pathRules?: readonly string[];
 	/** The session's background jobs, for `bash_background`, `job_list` and `job_stop`; only the main agent's calls have them. */
 	jobs?: Jobs;
+	/** The session's background subagents, for `job_list` and `job_stop`; only the main agent's calls have them. */
+	tasks?: BackgroundTasks;
 }
 
 /** What a tool says about a call before it runs. */
