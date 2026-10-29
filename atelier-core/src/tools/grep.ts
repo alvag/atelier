@@ -22,9 +22,22 @@ function clip(line: string): string {
 
 const NOTICE = /^(.*)(: binary file matches \(found "\\0" byte around offset \d+\))$/s;
 
+/** The most matches one call may ask for, and the most context lines around each. */
+const MAX_LIMIT = 1000;
+const MAX_CONTEXT = 20;
+
+/** One line of output: a match (`path:N:text`), a context line (`path-N-text`) or a binary-file notice. */
+interface Hit {
+	path: string;
+	/** Absent for a binary-file notice. */
+	line: number | undefined;
+	match: boolean;
+	text: string;
+}
+
 interface SearchResult {
-	matches: string[];
-	/** The search stopped before the end: too many matches, timeout or abort. */
+	hits: Hit[];
+	/** The search stopped before the end: more matches than the limit, timeout or abort. */
 	stopped: "limit" | "timeout" | "aborted" | undefined;
 	/** Some files could not be read (permissions, broken links...). */
 	unreadable: boolean;
@@ -41,12 +54,19 @@ function runSearch(
 	args: string[],
 	root: string,
 	signal: AbortSignal | undefined,
+	scan: {
+		/** Stops after one match more than this, so the caller knows there are more. */
+		limit: number;
+		/** System grep prints `--` between context blocks and cannot be told not to; these lines are dropped. */
+		dropSeparators: boolean;
+	},
 	/** Keeps only matches whose relative path passes; applied before the match limit. */
 	accept: (path: string) => boolean = () => true,
 ): Promise<SearchResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
-		const matches: string[] = [];
+		const hits: Hit[] = [];
+		let found = 0;
 		let stopped: SearchResult["stopped"];
 		let pending = "";
 		let stderr = "";
@@ -63,9 +83,23 @@ function runSearch(
 
 		const toRelative = (path: string) =>
 			path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path.replace(/^\.\//, "");
+		const push = (hit: Hit) => {
+			hits.push(hit);
+			if (hit.match) found++;
+		};
 		const add = (record: string, nul: number) => {
 			const path = toRelative(record.slice(0, nul));
-			if (accept(path)) matches.push(clip(`${path}:${record.slice(nul + 1)}`));
+			if (!accept(path)) return;
+			const rest = record.slice(nul + 1);
+			// `N:text` is a match and `N-text` a context line.
+			const kind = /^(\d+)([:-])/.exec(rest);
+			const separator = kind?.[2] ?? ":";
+			push({
+				path,
+				line: kind ? Number(kind[1]) : undefined,
+				match: separator === ":",
+				text: clip(`${path}${separator}${rest}`),
+			});
 		};
 		/**
 		 * ripgrep's binary-match notice has no NUL: `<path>: binary file matches (found "\0" byte around offset N)`.
@@ -81,7 +115,7 @@ function runSearch(
 			if (!found) return false;
 			const path = toRelative(found[1] ?? "");
 			if (!accept(path)) return false;
-			matches.push(clip(`${path}${found[2] ?? ""}`));
+			push({ path, line: undefined, match: true, text: clip(`${path}${found[2] ?? ""}`) });
 			pending = pending.slice(nl + 1);
 			return true;
 		};
@@ -90,9 +124,13 @@ function runSearch(
 			pending += chunk;
 			// A record is `path NUL rest NL`; the path may hold newlines, the rest never does.
 			while (true) {
+				if (scan.dropSeparators && pending.startsWith("--\n")) {
+					pending = pending.slice(3);
+					continue;
+				}
 				const notice = takeNotice();
 				if (notice) {
-					if (matches.length > MAX_GREP_MATCHES) return stop("limit");
+					if (found > scan.limit) return stop("limit");
 					continue;
 				}
 				const nul = pending.indexOf("\0");
@@ -100,7 +138,7 @@ function runSearch(
 				if (end === -1) break;
 				add(pending.slice(0, end), nul);
 				pending = pending.slice(end + 1);
-				if (matches.length > MAX_GREP_MATCHES) return stop("limit");
+				if (found > scan.limit) return stop("limit");
 			}
 		});
 		child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -117,11 +155,11 @@ function runSearch(
 			// A partial last line only counts when the command finished on its own.
 			const nul = pending.indexOf("\0");
 			if (!stopped && nul !== -1) add(pending, nul);
-			if (!stopped && code === 2 && matches.length === 0) {
+			if (!stopped && code === 2 && hits.length === 0) {
 				reject(new Error(stderr.trim() || `${command} failed`));
 				return;
 			}
-			resolve({ matches, stopped, unreadable: code === 2 || stderr.trim() !== "" });
+			resolve({ hits, stopped, unreadable: code === 2 || stderr.trim() !== "" });
 		});
 	});
 }
@@ -129,8 +167,23 @@ function runSearch(
 /** `path` as a literal ripgrep glob. */
 const escapeGlob = (path: string) => path.replace(/[\\*?[\]{}!]/g, "\\$&");
 
-function ripgrepArgs(target: string, pattern: string, glob: string | undefined, skipped: string[]): string[] {
+/** What the caller asked of the search besides the pattern and where. */
+interface SearchFlags {
+	ignoreCase: boolean;
+	literal: boolean;
+	context: number;
+}
+
+function ripgrepArgs(
+	target: string,
+	pattern: string,
+	glob: string | undefined,
+	skipped: string[],
+	flags: SearchFlags,
+): string[] {
 	const args = [
+		// The user's RIPGREP_CONFIG_PATH must not change what the tool returns.
+		"--no-config",
 		"--line-number",
 		"--no-heading",
 		"--with-filename",
@@ -140,6 +193,9 @@ function ripgrepArgs(target: string, pattern: string, glob: string | undefined, 
 		"--glob",
 		"!node_modules",
 	];
+	if (flags.ignoreCase) args.push("--ignore-case");
+	if (flags.literal) args.push("--fixed-strings");
+	if (flags.context > 0) args.push("--context", String(flags.context), "--no-context-separator");
 	if (glob !== undefined) args.push("--glob", glob);
 	// Last, so they win over the user's glob: a later ripgrep glob overrides an earlier one.
 	for (const path of skipped) args.push("--glob", `!**/${escapeGlob(path)}`);
@@ -152,9 +208,22 @@ function ripgrepArgs(target: string, pattern: string, glob: string | undefined, 
  * excludes "." itself otherwise). --include only sees file names, so a glob with
  * a directory is applied to the relative paths instead (see execute).
  */
-function grepArgs(target: string, pattern: string, glob: string | undefined, skipped: string[]): string[] {
-	const args = ["-rnHIE", "--null", "--exclude-dir=node_modules", "--exclude-dir=.*", "--exclude=.*"];
+function grepArgs(
+	target: string,
+	pattern: string,
+	glob: string | undefined,
+	skipped: string[],
+	flags: SearchFlags,
+): string[] {
+	const args = [
+		`-rnHI${flags.literal ? "F" : "E"}${flags.ignoreCase ? "i" : ""}`,
+		"--null",
+		"--exclude-dir=node_modules",
+		"--exclude-dir=.*",
+		"--exclude=.*",
+	];
 	for (const path of skipped) args.push(`--exclude-dir=${path}`);
+	if (flags.context > 0) args.push("-C", String(flags.context));
 	if (glob !== undefined && !glob.includes("/"))
 		args.push(glob.startsWith("!") ? `--exclude=${glob.slice(1)}` : `--include=${glob}`);
 	args.push("-e", pattern, "--", target);
@@ -185,6 +254,47 @@ function isReadable(path: string, root: string, secrets: readonly string[]): boo
 	}
 }
 
+/** The hits up to the `limit`-th match, with its context after it but not the context before the next match. */
+function cutAtLimit(hits: Hit[], limit: number, context: number): Hit[] {
+	let seen = 0;
+	const end = hits.findIndex((hit) => hit.match && ++seen > limit);
+	if (end === -1) return hits;
+	const kept = hits.slice(0, end);
+	let last: Hit | undefined;
+	for (const hit of kept) if (hit.match) last = hit;
+	const after = (hit: Hit) =>
+		last !== undefined &&
+		hit.path === last.path &&
+		hit.line !== undefined &&
+		last.line !== undefined &&
+		hit.line <= last.line + context;
+	while (kept.length > 0) {
+		const tail = kept[kept.length - 1] as Hit;
+		if (tail.match || after(tail)) break;
+		kept.pop();
+	}
+	return kept;
+}
+
+/** The output lines; with context, a `--` line separates blocks that are not consecutive lines of one file. */
+function render(hits: Hit[], context: number): { text: string; match: boolean }[] {
+	const lines: { text: string; match: boolean }[] = [];
+	let previous: Hit | undefined;
+	for (const hit of hits) {
+		const follows =
+			previous !== undefined &&
+			previous.path === hit.path &&
+			previous.line !== undefined &&
+			hit.line === previous.line + 1;
+		if (context > 0 && previous !== undefined && !follows) lines.push({ text: "--", match: false });
+		lines.push({ text: hit.text, match: hit.match });
+		previous = hit;
+	}
+	return lines;
+}
+
+const countMatches = (lines: readonly { match: boolean }[]) => lines.filter((line) => line.match).length;
+
 export interface GrepOptions {
 	useRipgrep?: boolean;
 	/** Searches any path except the protected secret locations; without it the tool stays inside the working directory. */
@@ -196,7 +306,7 @@ export interface GrepOptions {
 export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 	return defineTool({
 		name: "grep",
-		description: `Search file contents with a regular expression${options.outside ? "" : " inside the working directory"}. Returns path:line:text, at most ${MAX_GREP_MATCHES} matches. Skips hidden files and node_modules.${options.outside ? " The path may be absolute or outside the working directory; the user's secret directories are protected." : ""}`,
+		description: `Search file contents with a regular expression${options.outside ? "" : " inside the working directory"}. Returns path:line:text, at most ${MAX_GREP_MATCHES} matches unless limit says otherwise. Skips hidden files and node_modules.${options.outside ? " The path may be absolute or outside the working directory; the user's secret directories are protected." : ""}`,
 		inputShape: {
 			pattern: z.string().min(1).describe("Regular expression"),
 			path: z
@@ -208,8 +318,27 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 						: "File or directory to search, relative to the working directory",
 				),
 			glob: z.string().optional().describe('File name filter, e.g. "*.ts"'),
+			ignoreCase: z.boolean().optional().describe("Match regardless of letter case"),
+			literal: z.boolean().optional().describe("Treat the pattern as a fixed string, not a regular expression"),
+			context: z
+				.number()
+				.int()
+				.min(0)
+				.max(MAX_CONTEXT)
+				.optional()
+				.describe("Lines to show before and after each match; they come as path-line-text"),
+			limit: z
+				.number()
+				.int()
+				.min(1)
+				.max(MAX_LIMIT)
+				.optional()
+				.describe(`Most matches to return (default ${MAX_GREP_MATCHES})`),
 		},
-		async execute({ pattern, path, glob }, { cwd, signal }) {
+		async execute(
+			{ pattern, path, glob, ignoreCase, literal, context = 0, limit = MAX_GREP_MATCHES },
+			{ cwd, signal },
+		) {
 			try {
 				if (signal?.aborted) return failure("Search aborted.");
 				const secrets = options.outside ? await protectedReadPaths(cwd, options.home ?? homedir()) : [];
@@ -232,6 +361,8 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 				const accept = (match: string) =>
 					(options.outside ? isReadable(match, root, secrets) : true) &&
 					(useRipgrep || (byGlob?.(globPath(match)) ?? true));
+				const flags = { ignoreCase: ignoreCase ?? false, literal: literal ?? false, context };
+				const scan = { limit, dropSeparators: !useRipgrep && context > 0 };
 				const result = useRipgrep
 					? await runSearch(
 							"rg",
@@ -240,28 +371,43 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 								pattern,
 								glob,
 								skipped.map((secret) => relative(root, secret)),
+								flags,
 							),
 							root,
 							signal,
+							scan,
 							accept,
 						)
-					: await runSearch("grep", grepArgs(target, pattern, searchedGlob, skipped), root, signal, accept);
+					: await runSearch(
+							"grep",
+							grepArgs(target, pattern, searchedGlob, skipped, flags),
+							root,
+							signal,
+							scan,
+							accept,
+						);
 				if (result.stopped === "aborted") return failure("Search aborted.");
 
-				const limited = result.matches.slice(0, MAX_GREP_MATCHES);
-				const shown = takeHead(limited).lines;
-				const truncated = result.stopped !== undefined || shown.length < limited.length;
+				const limited = render(cutAtLimit(result.hits, limit, context), context);
+				let shown = takeHead(limited.map((line) => line.text)).lines;
+				// A cut right after a block leaves its `--` last.
+				if (shown.length < limited.length && limited[shown.length - 1]?.text === "--") shown = shown.slice(0, -1);
+				const matches = countMatches(limited.slice(0, shown.length));
+				const clipped = shown.length < limited.length;
+				const truncated = result.stopped !== undefined || clipped;
 				const notes: string[] = [];
-				if (result.stopped === "limit" || shown.length < limited.length)
-					notes.push(`[Showing the first ${shown.length} matches. Narrow the pattern, path or glob.]`);
+				if (result.stopped === "limit" || clipped) {
+					const next =
+						clipped || limit >= MAX_LIMIT ? "" : `, or call grep again with limit: ${Math.min(limit * 2, MAX_LIMIT)}`;
+					notes.push(`[Showing the first ${matches} matches. Narrow the pattern, path or glob${next}.]`);
+				}
 				if (result.stopped === "timeout") notes.push("[Search timed out; results are partial.]");
 				if (result.unreadable) notes.push("[Some files could not be read.]");
 				const body = shown.length > 0 ? shown.join("\n") : "No matches.";
 				return {
 					ok: true,
 					output: notes.length > 0 ? `${body}\n\n${notes.join("\n")}` : body,
-					summary:
-						shown.length > 0 ? `${pattern}: ${shown.length}${truncated ? "+" : ""} matches` : `${pattern}: no matches`,
+					summary: matches > 0 ? `${pattern}: ${matches}${truncated ? "+" : ""} matches` : `${pattern}: no matches`,
 					truncated,
 				};
 			} catch (error) {

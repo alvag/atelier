@@ -192,6 +192,19 @@ describe.each([
 		expect((await grep("TOY", undefined)).output).not.toContain("TOY-CLI-CREDENTIAL");
 	});
 
+	it("shows no context line of a secret file", async () => {
+		await writeFile(join(home, ".ssh", "id_rsa"), "BEFORE-KEY\nPRIVATE-KEY-MATERIAL\nAFTER-KEY\n");
+		const result = await createGrepTool({
+			outside: true,
+			home,
+			...(useRipgrep === undefined ? {} : { useRipgrep }),
+		}).execute({ pattern: "PRIVATE", path: home, context: 2 }, { cwd });
+		expect(result.output).toContain("notes/todo.txt:1:PRIVATE-KEY-NOTE is fine to find");
+		expect(result.output).not.toContain("KEY-MATERIAL");
+		expect(result.output).not.toContain("BEFORE-KEY");
+		expect(result.output).not.toContain("AFTER-KEY");
+	});
+
 	it("skips what the configuration's denyRead lists", async () => {
 		await mkdir(join(home, ".atelier"));
 		await writeFile(join(home, ".atelier", "sandbox.json"), JSON.stringify({ denyRead: ["~/Documents"] }));
