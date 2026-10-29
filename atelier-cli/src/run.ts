@@ -652,11 +652,14 @@ export async function run(
 	// SIGTERM and SIGHUP end the session as a second Ctrl+C would, but exit with the signal's code.
 	const removeTerminate = io.onTerminate?.((signal) => quit(SIGNAL_EXIT + signal));
 
+	/** A turn of this run failed: `atelier run` with a prompt exits 1, whatever the turns after it did. */
+	let failedTurn = false;
 	const runTurn = async (events: AsyncIterable<AtelierEvent>) => {
 		renderer.resetTurn();
 		interrupted = false;
 		for await (const event of events) renderer.render(event);
 		renderer.endLine();
+		if (renderer.failed) failedTurn = true;
 	};
 
 	/** Runs the turns that job notices start, one after another, until none waits. */
@@ -732,9 +735,15 @@ export async function run(
 			await runTurn(session.send(args.prompt));
 			if (quitting) return quitCode;
 			if (interrupted) return EXIT_INTERRUPTED;
+			// A failed turn ends the run: the notices it leaves wait for a prompt that does not come, and closing stops the jobs.
+			if (failedTurn) return EXIT_FAILED;
 			// The jobs the prompt started, and the turns their notices wake, end before the CLI does; Ctrl+C stops them.
 			await runWoken();
-			for (let running = session.jobs.running; running > 0 && !interrupted; running = session.jobs.running) {
+			for (
+				let running = session.jobs.running;
+				running > 0 && !interrupted && !failedTurn;
+				running = session.jobs.running
+			) {
 				io.stderr(`waiting for ${running} background job${running === 1 ? "" : "s"} (Ctrl+C stops them)\n`);
 				await woken;
 				rewake();
@@ -742,7 +751,7 @@ export async function run(
 			}
 			if (quitting) return quitCode;
 			if (interrupted) return EXIT_INTERRUPTED;
-			return renderer.failed ? EXIT_FAILED : EXIT_OK;
+			return failedTurn ? EXIT_FAILED : EXIT_OK;
 		}
 		/** The read of the prompt's line, kept while a turn a job's notice woke runs without it. */
 		let reading: Promise<string | undefined> | undefined;
