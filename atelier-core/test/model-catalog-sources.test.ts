@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -220,6 +220,23 @@ it("lists the models Claude Code offers the subscription by their versioned ids,
 		aliases: ["claude-opus-4-6[1m]"],
 	});
 	expect(data.model("claude-code", "opus")).toBeUndefined();
+});
+
+it("keeps the resolved mark through an unchanged answer, and reads it only when it is exactly true", async () => {
+	await refreshCatalog(file, [
+		claudeCodeModelsSource(async () => [{ value: "opus", resolvedModel: "claude-opus-5-5" }]),
+	]);
+	const unchanged = { name: "claude-code", fetch: async () => ({ kind: "unchanged" as const }) };
+	expect(await refreshSource(file, unchanged, { force: true })).toBe("unchanged");
+	expect((await readCatalog(file)).sources["claude-code"]?.resolved).toBe(true);
+
+	for (const resolved of ["true", 1, false, null, {}]) {
+		const entry = { checkedAt: 1, resolved, models: { "claude-code": [{ id: "claude-opus-4-8" }] } };
+		await writeFile(file, JSON.stringify({ version: 1, sources: { "claude-code": entry } }));
+		const read = (await readCatalog(file)).sources["claude-code"];
+		expect(read).toBeDefined();
+		expect(read).not.toHaveProperty("resolved");
+	}
 });
 
 it("gives up on a source that hangs before its request, without holding up the others", async () => {
