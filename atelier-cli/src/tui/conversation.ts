@@ -1,8 +1,9 @@
-import { type AtelierEvent, visibleText } from "@atelier/core";
+import { type AtelierEvent, type JsonValue, type UserQuestion, visibleText } from "@atelier/core";
 import { type Component, Container, Markdown, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { MEMORY_TOOL, summaryCall } from "../memory-call.ts";
 import { API_KEY_BACKENDS, phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
 import { ActivityBlock } from "./activity-block.ts";
+import { AnsweredBlock, type AskOutcome, answerLines } from "./answered-block.ts";
 import { PromptBlock } from "./prompt.ts";
 import { ReviewBlock } from "./review-block.ts";
 import { markdownTheme, type Paint, Shade, Tones } from "./style.ts";
@@ -21,6 +22,20 @@ function withoutBlankEdges(lines: string[]): string[] {
 	while (start < end && isBlank(lines[start] ?? "")) start++;
 	while (end > start && isBlank(lines[end - 1] ?? "")) end--;
 	return lines.slice(start, end);
+}
+
+/** The questions of an `ask_user` call's input, or none when it holds something else. */
+function questionsOf(input: JsonValue): UserQuestion[] {
+	const questions = typeof input === "object" && input !== null && !Array.isArray(input) ? input.questions : undefined;
+	if (!Array.isArray(questions)) return [];
+	return questions.filter(
+		(question): question is UserQuestion & JsonValue =>
+			typeof question === "object" &&
+			question !== null &&
+			!Array.isArray(question) &&
+			typeof question.question === "string" &&
+			Array.isArray(question.options),
+	);
 }
 
 /** The local time `at`, in hours and minutes as the system says them (`14:42`, `2:42 PM`). */
@@ -112,6 +127,8 @@ export class Conversation extends Container {
 	readonly #reviews = new Map<string, ReviewBlock>();
 	#assessed: ReviewBlock | undefined;
 	readonly #verifications = new Map<string, VerifyCard>();
+	/** Each `ask_user` call's questions, by call, and the block that says what they came to once they settle. */
+	readonly #asked = new Map<string, { questions: UserQuestion[]; block?: AnsweredBlock }>();
 
 	/** `now` tells the time a turn ends at, and how long each call took; `tones` are the tool cards' backgrounds. */
 	constructor(
@@ -237,13 +254,22 @@ export class Conversation extends Container {
 				);
 				this.#cards.set(event.callId, card);
 				this.#activityBlock().add(card);
+				if (event.tool === "ask_user") this.#asking(event.callId, questionsOf(event.input));
 				return;
 			}
+			case "user_question_requested":
+				this.#asking(event.callId, event.questions);
+				return;
+			case "user_question_resolved":
+				this.#settled(event.callId, event.result);
+				return;
 			case "feature_changed":
 				this.#taskChanged(event);
 				return;
 			case "tool_call_finished":
 				this.#cards.get(event.callId)?.finish(event);
+				// A batch the core ended without asking it, such as one while another waited, has no resolution of its own.
+				if (this.#asked.has(event.callId)) this.#settled(event.callId, { status: "not_asked" });
 				return;
 			case "memory_summary_saved":
 				this.#summarySaved(event);
@@ -392,6 +418,28 @@ export class Conversation extends Container {
 			this.#add(card);
 		}
 		return card;
+	}
+
+	/** An `ask_user` call's questions: its open card shows them, with their answers once they settle. */
+	#asking(callId: string, questions: UserQuestion[]): void {
+		const asked = this.#asked.get(callId) ?? { questions };
+		asked.questions = questions;
+		this.#asked.set(callId, asked);
+		this.#cardShows(callId, questions, asked.block?.outcome ?? { status: "waiting" });
+	}
+
+	/** The block of what an `ask_user` batch came to, after everything so far, once; a later outcome changes nothing. */
+	#settled(callId: string, outcome: AskOutcome): void {
+		const asked = this.#asked.get(callId);
+		if (asked === undefined || asked.block !== undefined) return;
+		asked.block = new AnsweredBlock(asked.questions, outcome, this.#paint);
+		this.#add(asked.block);
+		this.#cardShows(callId, asked.questions, outcome);
+	}
+
+	#cardShows(callId: string, questions: UserQuestion[], outcome: AskOutcome): void {
+		const card = this.#cards.get(callId);
+		if (card) card.details = (room) => answerLines(questions, outcome, this.#paint, room);
 	}
 
 	/** The CLI's line for an event, as a block of its own. */

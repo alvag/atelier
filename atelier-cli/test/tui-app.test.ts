@@ -2500,6 +2500,15 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 					{ questionId: "q2", other: "   my cache" },
 				],
 			});
+			// What the user answered stays in the conversation once the core settles the batch.
+			stub.emit({
+				type: "user_question_resolved",
+				callId: "u1",
+				result: { status: "answered", answers: answers()[0]?.answers },
+			});
+			await until(() => h.screen.screen().includes("Answered 2 questions"));
+			expect(h.screen.screen()).toContain("→ SQLite");
+			expect(h.screen.screen()).toContain("→ Type something: my cache");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
