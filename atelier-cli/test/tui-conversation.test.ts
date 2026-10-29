@@ -246,6 +246,33 @@ describe("Conversation", () => {
 		);
 	});
 
+	it("shows the saved session summary as a memory card, folded or open, its warning inside it only", () => {
+		const bodies: Body[] = [
+			{ type: "tool_call_started", callId: "c1", tool: "read", input: { path: "a.ts" } },
+			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "a.ts (2 lines)", truncated: false },
+			{ type: "memory_summary_saved", id: 5519, preview: "## Goal", warning: "slow" },
+			{
+				type: "error",
+				code: "memory_summary_warning",
+				message: "The compaction summary was saved to memory with a warning: slow",
+				recoverable: true,
+			},
+		];
+		const card = ['   🧠 session summary "## Goal"', "      ↳ ✓ saved #5519 · warning: slow"];
+		expect(shown(bodies).text.trimEnd()).toBe([" ⎿ Read 1 file", ...card].join("\n"));
+		const open = shown(bodies, 80, true).text;
+		expect(open).toContain(card.join("\n"));
+		expect(open).not.toContain("with a warning");
+	});
+
+	it("cuts the saved session summary's first line inside its quotes", () => {
+		const { text } = shown([{ type: "memory_summary_saved", id: 1, preview: `## Goal ${"x".repeat(100)}` }], 40);
+		const [first = "", second] = text.trimEnd().split("\n");
+		expect(first).toMatch(/^ {3}🧠 session summary "## Goal x+…"$/);
+		expect(visibleWidth(first)).toBeLessThanOrEqual(40);
+		expect(second).toBe("      ↳ ✓ saved #1");
+	});
+
 	it("shows the call running now in the summary's place, a subagent's own call included", () => {
 		const { text } = shown([
 			{ type: "tool_call_started", callId: "c1", tool: "read", input: { path: "a.ts" } },

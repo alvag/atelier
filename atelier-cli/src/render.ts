@@ -11,7 +11,7 @@ import {
 	type TurnPhase,
 	visibleText,
 } from "@atelier/core";
-import { MEMORY_TOOL, memoryCallText, memoryOutcome } from "./memory-call.ts";
+import { MEMORY_TOOL, memoryCallText, memoryOutcome, SUMMARY_WARNING, summaryCall } from "./memory-call.ts";
 
 export interface RendererOptions {
 	stdout: (text: string) => void;
@@ -492,6 +492,13 @@ export class Renderer {
 					`cache miss: ${event.reason} (${numbers.format(event.missedTokens)} tokens not read from the cache)`,
 				);
 				return;
+			case "memory_summary_saved": {
+				const { input, summary } = summaryCall(event);
+				this.#line(
+					`${this.#style("cyan", "▸")} ${shownTool(MEMORY_TOOL, summary, input)} ${this.#style("green", "✓")}`,
+				);
+				return;
+			}
 			case "memory_status":
 				if (event.available) this.#line(this.#style("dim", `memory: ${event.project ?? "on"}`));
 				else this.#warn(`no memory: ${event.reason ?? "unavailable"}`);
@@ -577,6 +584,8 @@ export class Renderer {
 				return;
 			}
 			case "error":
+				// `memory_summary_saved` already said it.
+				if (event.code === SUMMARY_WARNING) return;
 				if (!event.recoverable) this.failed = true;
 				this.endLine();
 				this.#options.stderr(`${this.#style("red", `error: ${event.message}`)}\n`);
