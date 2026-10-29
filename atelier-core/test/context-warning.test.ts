@@ -98,6 +98,44 @@ describe("context_warning", () => {
 		await session.close();
 	});
 
+	it("measures a turn by the model that ran it when the model changes during the turn", async () => {
+		let session: Session | undefined;
+		const backend = new FakeBackend([
+			ended(at(190_000)),
+			[{ run: async () => void (await session?.configure({ model: "other" })) }, ...ended(at(190_000))],
+			ended({ tokens: 175_000, window: 200_000, compactAt: 183_616 }),
+		]);
+		session = await Session.start({ backend, cwd: "/w", tools: [] });
+		expect(warnings(await drain(session))).toHaveLength(1);
+		const changed = await drain(session);
+		// The turn measured the model before the change: no warning, and no context for the new one.
+		expect(warnings(changed)).toEqual([]);
+		expect(changed.map((event) => event.type).slice(-2)).toEqual(["session_configured", "turn_finished"]);
+		expect(changed.at(-1)).not.toHaveProperty("context");
+		expect(warnings(await drain(session))).toMatchObject([{ tokens: 175_000, window: 200_000, compactAt: 183_616 }]);
+		await session.close();
+	});
+
+	it("is said again after the model goes to another one and back", async () => {
+		const backend = new FakeBackend([ended(at(190_000)), ended(at(190_000))]);
+		const session = await Session.start({ backend, cwd: "/w", tools: [], model: "first" });
+		expect(warnings(await drain(session))).toHaveLength(1);
+		await session.configure({ model: "other" });
+		await session.configure({ model: "first" });
+		expect(warnings(await drain(session))).toHaveLength(1);
+		await session.close();
+	});
+
+	it("is said again on a new backend session, also of the backend it was said on", async () => {
+		const backend = new FakeBackend([ended(at(190_000))], "anthropic-api");
+		const session = await Session.start({ backend, cwd: "/w", tools: [] });
+		expect(warnings(await drain(session))).toHaveLength(1);
+		await session.setBackend(new FakeBackend([], "openai-codex"));
+		await session.setBackend(new FakeBackend([ended(at(190_000))], "anthropic-api"));
+		expect(warnings(await drain(session))).toHaveLength(1);
+		await session.close();
+	});
+
 	it("is said again after the model or the backend changes", async () => {
 		const backend = new FakeBackend([ended(at(190_000)), ended(at(190_000)), ended(at(190_000))]);
 		const session = await Session.start({ backend, cwd: "/w", tools: [] });

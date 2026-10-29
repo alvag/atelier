@@ -293,7 +293,7 @@ class OpenAiCodexSession implements BackendSession {
 					stopReason = "turn_limit";
 					break;
 				}
-				if (!thresholdFailed && !this.#unmeasured && this.#contextTokens() >= this.#compaction.compactAt) {
+				if (!thresholdFailed && !this.#unmeasured && this.#contextTokens() > this.#compaction.compactAt) {
 					thresholdFailed = !(yield* this.#compact("threshold", abort.signal, meter));
 					if (abort.signal.aborted) {
 						stopReason = "interrupted";

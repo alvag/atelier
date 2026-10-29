@@ -1010,6 +1010,28 @@ describe("AnthropicApiBackend compaction", () => {
 		expect(finished(events)[0]).toMatchObject({ context: { window: 1_000_000, compactAt: 983_616 } });
 	});
 
+	it("compacts only when the context passes the point, not when it reaches it", async () => {
+		const script = (): Scripted[] => [
+			{
+				blocks: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "a" } }],
+				stopReason: "tool_use",
+				usage: { input: 2000 },
+			},
+			summaryReply(),
+			{ blocks: [{ type: "text", text: "done" }] },
+		];
+		// The size the check sees before the second request, from a session that compacts there.
+		const probe = await compacting(script());
+		const [seen] = ofType(await collect(probe.session.send("Refactor")), "compaction_started");
+		const tokens = seen?.tokens ?? 0;
+		const reached = await compacting(script(), { compactAt: tokens });
+		expect(ofType(await collect(reached.session.send("Refactor")), "compaction_started")).toEqual([]);
+		const passed = await compacting(script(), { compactAt: tokens - 1 });
+		expect(ofType(await collect(passed.session.send("Refactor")), "compaction_started")).toMatchObject([
+			{ reason: "threshold", tokens },
+		]);
+	});
+
 	it("keeps the whole history when the summary is cut short, and does not retry it in the same turn", async () => {
 		const { session, api } = await compacting([
 			{
