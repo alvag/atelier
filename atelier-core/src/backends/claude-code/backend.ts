@@ -6,6 +6,7 @@ import {
 	type ModelInfo,
 	type ModelUsage,
 	type Options,
+	type SDKControlGetContextUsageResponse,
 	type SDKMessage,
 	type SDKUserMessage,
 	query as sdkQuery,
@@ -34,6 +35,7 @@ import { BACKEND_DEFAULTS } from "../../options.ts";
 import { summarizesThinking, type ThinkingSend, thinkingToSend } from "../../pricing.ts";
 import type { ToolDefinition } from "../../tools/types.ts";
 import { VERSION } from "../../version.ts";
+import { ContextTracker, compactThresholdOf } from "./context.ts";
 import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./map.ts";
 import { claudeCodeIdOf, claudeCodeName, isVersionedClaudeId, withoutWindow } from "./models.ts";
 
@@ -54,6 +56,10 @@ export interface SdkQuery extends AsyncIterable<SDKMessage> {
 	setModel?(model?: string): Promise<void>;
 	/** Merges settings into the open query; `effortLevel: null` goes back to the model's default effort. */
 	applyFlagSettings?(settings: { effortLevel?: Effort | null }): Promise<void>;
+	/** Claude Code's view of the context; `summary` answers from the last response's usage, without counting tokens. */
+	getContextUsage?(opts?: {
+		detail?: "summary" | "full";
+	}): Promise<Pick<SDKControlGetContextUsageResponse, "isAutoCompactEnabled" | "autoCompactThreshold">>;
 }
 
 export type QueryFunction = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => SdkQuery;
@@ -322,6 +328,10 @@ class ClaudeCodeSession implements BackendSession {
 	readonly #tap: SummaryTap;
 	/** The Claude Code session the SDK messages name: what `resumeState` hands on. */
 	#sessionId: string | undefined;
+	readonly #contextTracker = new ContextTracker();
+	/** Whether the model in use was asked where Claude Code compacts it; counts the asks, so a late answer is dropped. */
+	#compactAtAsked = false;
+	#compactAtAsks = 0;
 
 	constructor(
 		query: SdkQuery,
@@ -353,10 +363,15 @@ class ClaudeCodeSession implements BackendSession {
 		try {
 			for await (const message of this.#query) {
 				observe(message);
+				this.#contextTracker.observe(message);
 				if (typeof message.session_id === "string" && message.session_id !== "") this.#sessionId = message.session_id;
 				if (message.type === "system" && message.subtype === "compact_boundary") this.#stateDue = true;
 				const events = mapSdkMessage(message, this.#context);
 				for (const event of events) {
+					if (event.type === "turn_finished") {
+						const context = this.#contextTracker.usage();
+						if (context !== undefined) event.context = context;
+					}
 					if (event.type !== "session_started") continue;
 					if (this.#effort !== undefined) event.effort = this.#effort;
 					if (event.authSource === "other" && (await confirmSubscription(this.#query)))
@@ -450,6 +465,7 @@ class ClaudeCodeSession implements BackendSession {
 			yield* early;
 			return;
 		}
+		if (!this.#compactAtAsked) this.#askCompactAt();
 		const turn = new Channel<AtelierEventBody>();
 		for (const event of early) turn.push(event);
 		this.#turn = turn;
@@ -459,6 +475,20 @@ class ClaudeCodeSession implements BackendSession {
 			parent_tool_use_id: null,
 		} as SDKUserMessage);
 		yield* turn;
+	}
+
+	/** Asks where Claude Code compacts the model in use, without waiting: until it answers, the window stands for it. */
+	#askCompactAt(): void {
+		this.#compactAtAsked = true;
+		const ask = ++this.#compactAtAsks;
+		const { getContextUsage } = this.#query;
+		if (!getContextUsage) return;
+		getContextUsage.call(this.#query, { detail: "summary" }).then(
+			(usage) => {
+				if (ask === this.#compactAtAsks) this.#contextTracker.compactAt = compactThresholdOf(usage);
+			},
+			() => {},
+		);
 	}
 
 	/** Asks Claude Code to stop; if the turn does not end within the grace period, closes the query. */
@@ -497,7 +527,13 @@ class ClaudeCodeSession implements BackendSession {
 		// The Agent SDK has no way to turn thinking off in an open query; refuse before changing anything.
 		if (change.thinking !== undefined && sent?.report === "off")
 			throw new Error("claude-code cannot turn thinking off in an open session.");
-		if (change.model !== undefined) await setModel.call(this.#query, claudeCodeName(change.model));
+		if (change.model !== undefined) {
+			await setModel.call(this.#query, claudeCodeName(change.model));
+			// Where Claude Code compacts the new model is asked with its first turn; an answer about the old one is dropped.
+			this.#compactAtAsked = false;
+			this.#compactAtAsks++;
+			this.#contextTracker.compactAt = undefined;
+		}
 		this.#model = model;
 		// A new model only needs the effort again when it takes the level differently from the old one.
 		if (sent !== undefined && (change.thinking !== undefined || sent.report !== this.#effort)) {
