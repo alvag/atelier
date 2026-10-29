@@ -14,6 +14,8 @@ import type {
 	SessionProfile,
 	TurnPhases,
 	Usage,
+	UserQuestion,
+	UserQuestionResult,
 } from "@atelier/core/protocol";
 import type { HostMessage } from "../../../shared/bridge.ts";
 
@@ -56,6 +58,14 @@ export type TurnItem =
 			state: "pending" | "approved" | "denied";
 			/** How the answer was remembered, when it was. */
 			remembered?: "session" | "always";
+	  }
+	/** An `ask_user` batch; the core's resolved event closes its inputs. */
+	| {
+			kind: "question";
+			callId: string;
+			questions: UserQuestion[];
+			state: "pending" | "resolved";
+			result?: UserQuestionResult;
 	  }
 	| {
 			kind: "review_consent";
@@ -578,6 +588,14 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					state: "pending",
 				},
 			];
+		case "user_question_requested":
+			return [...items, { kind: "question", callId: event.callId, questions: event.questions, state: "pending" }];
+		case "user_question_resolved":
+			return items.map((item) =>
+				item.kind === "question" && item.callId === event.callId
+					? { ...item, state: "resolved", result: event.result }
+					: item,
+			);
 		case "sandbox_warning":
 			return [...items, { kind: "sandbox_warning", reason: event.reason }];
 		case "error":

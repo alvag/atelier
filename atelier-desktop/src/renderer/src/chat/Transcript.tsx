@@ -2,6 +2,7 @@ import { cacheHitRate, describeRefusal, type PhaseAgent, type ReviewConsentAnswe
 import { visibleText } from "@atelier/core/text";
 import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
+import { type OnAnswerUser, QuestionCard } from "./QuestionCard.tsx";
 import type { Subagent, Turn, TurnItem } from "./reducer.ts";
 
 export const UNSANDBOXED_EFFECT =
@@ -468,15 +469,17 @@ function Items({
 	onAnswer,
 	onConsent,
 	onUndo,
+	onAnswerUser,
 }: {
 	items: TurnItem[];
 	onAnswer: OnAnswer;
 	onConsent?: OnConsent;
+	onAnswerUser?: OnAnswerUser;
 	onUndo?: OnUndo | undefined;
 }) {
 	return items.map((item, index) => {
 		const key =
-			item.kind === "tool" || item.kind === "approval"
+			item.kind === "tool" || item.kind === "approval" || item.kind === "question"
 				? `${item.kind}-${item.callId}`
 				: item.kind === "review_consent"
 					? `${item.kind}-${item.reviewId}`
@@ -499,6 +502,8 @@ function Items({
 				);
 			case "approval":
 				return <ApprovalCard key={key} item={item} onAnswer={onAnswer} />;
+			case "question":
+				return <QuestionCard key={key} item={item} onAnswerUser={onAnswerUser ?? (async () => false)} />;
 			case "review_consent":
 				return <ConsentCard key={key} item={item} onConsent={onConsent ?? (() => {})} />;
 			case "review":
@@ -567,16 +572,24 @@ function TurnView({
 	onAnswer,
 	onConsent,
 	onUndo,
+	onAnswerUser,
 }: {
 	turn: Turn;
 	onAnswer: OnAnswer;
 	onConsent?: OnConsent;
+	onAnswerUser?: OnAnswerUser;
 	onUndo?: OnUndo | undefined;
 }) {
 	return (
 		<section className="turn">
 			{turn.prompt ? <div className="prompt">{turn.prompt}</div> : null}
-			<Items items={turn.items} onAnswer={onAnswer} onUndo={onUndo} {...(onConsent ? { onConsent } : {})} />
+			<Items
+				items={turn.items}
+				onAnswer={onAnswer}
+				onUndo={onUndo}
+				{...(onConsent ? { onConsent } : {})}
+				{...(onAnswerUser ? { onAnswerUser } : {})}
+			/>
 			{turn.finished ? <UsageSummary finished={turn.finished} model={turn.finished.model} /> : null}
 		</section>
 	);
@@ -590,14 +603,16 @@ export function Transcript({
 	onAnswer,
 	onConsent,
 	onUndo,
+	onAnswerUser,
 }: {
 	turns: Turn[];
+	onAnswerUser?: OnAnswerUser;
 	onAnswer: (callId: string, approved: boolean) => void;
 	onConsent?: OnConsent;
 	/** Undoes the correction an escalated review left in the worktree. */
 	onUndo?: OnUndo;
 }) {
-	const consent = onConsent ? { onConsent } : {};
+	const consent = { ...(onConsent ? { onConsent } : {}), ...(onAnswerUser ? { onAnswerUser } : {}) };
 	return (
 		<div className="transcript">
 			{turns.map((turn, index) =>
