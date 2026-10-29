@@ -87,7 +87,8 @@ export type ClientCommand =
 	| { command: "session.set_mode"; sessionId: string; mode: PermissionMode }
 	/**
 	 * Changes the model of the main agent for the next turn; answers the session's configuration (`backend`, `model`,
-	 * `thinking`, `permissionMode`, `profile`) and `pending`, true while a running turn holds the change until it ends.
+	 * `thinking`, `effort` as the backend sends the level, `permissionMode`, `profile`) and `pending`, true while a
+	 * running turn holds the change until it ends.
 	 */
 	| { command: "session.set_model"; sessionId: string; model: string }
 	/** Changes the thinking level of the main agent (`effort`, in the profiles' level names) like `session.set_model`. */

@@ -262,8 +262,9 @@ export type AtelierEventBody =
 	/**
 	 * The session's configuration after its model, thinking level or permission mode changed: what the next turns
 	 * run with, sent in the turn where the change took effect (the next turn after a change made between turns).
-	 * `thinking`: the level asked for, in the profiles' names (`off`, `minimal`, `low` ... `max`); `model` is absent
-	 * while the backend's default one runs and nothing changed it.
+	 * `thinking`: the level asked for, in the profiles' names (`off`, `minimal`, `low` ... `max`); `effort`: the level
+	 * as the backend sends it, the same `session_started.effort` says, absent when no level was asked or while the
+	 * change waits for the turn to end; `model` is absent while the backend's default one runs and nothing changed it.
 	 * `backendChange`: set when the backend changed (`session.set_backend`): the one it left, and whether a summary of
 	 * the conversation carried the history over (the new backend has the summary, not the messages).
 	 */
@@ -272,6 +273,7 @@ export type AtelierEventBody =
 			backend: string;
 			model?: string;
 			thinking?: string;
+			effort?: Effort | "off" | "auto" | EffortNotSent;
 			permissionMode: "normal" | "auto" | "yolo";
 			profile?: SessionProfile;
 			backendChange?: BackendChange;

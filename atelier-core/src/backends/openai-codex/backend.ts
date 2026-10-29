@@ -245,6 +245,11 @@ class OpenAiCodexSession implements BackendSession {
 		return this.#history.length === 0 ? undefined : { messages: this.#history as unknown as JsonValue[] };
 	}
 
+	/** The level as the start or the last `configure` left it: what `session_started` says about the effort. */
+	effortReport(): CodexReasoning["report"] | undefined {
+		return this.#reasoning?.report;
+	}
+
 	async configure(change: SessionChange): Promise<void> {
 		this.#model = change.model ?? this.#model;
 		this.#thinking = change.thinking ?? this.#thinking;

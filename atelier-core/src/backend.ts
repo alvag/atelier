@@ -90,8 +90,8 @@ export interface BackendSession {
 	configure?(change: SessionChange): Promise<void>;
 	/** What `resume` needs to continue the conversation as it stands; undefined while there is none. Absent when the backend cannot resume. */
 	resumeState?(): ResumeState | undefined;
-	/** The thinking level as sent for the turns after the last `configure`, what `session_started` would say about the
-	 * effort; absent when the backend does not track it. */
+	/** The thinking level as sent for the turns after the last `configure`, what `session_started` says about the
+	 * effort; every session that says an effort there tells it here, absent when none was asked. */
 	effortReport?(): ThinkingSend["report"] | undefined;
 	interrupt(): Promise<void>;
 	close(): Promise<void>;

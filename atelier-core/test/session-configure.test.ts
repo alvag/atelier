@@ -78,6 +78,7 @@ describe("Session.configure", () => {
 			backend: "fake",
 			model: "sonnet",
 			thinking: "high",
+			effort: "high",
 			permissionMode: "normal",
 			pending: false,
 		});
@@ -251,7 +252,8 @@ describe("Session.configure", () => {
 				const announced = one.find((event) => event.type === "session_started");
 				// Half of 1000 tokens cannot hold even the smallest budget, so the level is not sent at all.
 				expect(announced).toMatchObject({ effort: "high not sent" });
-				await session.configure({ thinking: "high" });
+				const answer = await session.configure({ thinking: "high" });
+				expect(answer).toMatchObject({ thinking: "high", effort: "high not sent" });
 				const two = await collect(session.send("two"));
 				const done = two.find((event) => event.type === "turn_finished");
 				expect(done).toMatchObject({
@@ -259,6 +261,32 @@ describe("Session.configure", () => {
 				});
 				// The same label `session_started` said, not one computed apart from the backend.
 				expect(done?.phases?.main?.agents?.[0]?.effort).toBe(announced?.effort);
+			} finally {
+				await provider.close();
+			}
+		});
+
+		it("answers and says the effort the backend will send, not only the level asked", async () => {
+			const provider = await FakeProvider.start();
+			try {
+				provider.answer(messagesReply("a"), messagesReply("b"));
+				const backend = await createBackend("opencode-go", {
+					resolveOpenCodeGoKey: async () => `oc-${"test"}-key`,
+					opencodeGo: { baseUrl: provider.url, maxRetries: 0 },
+				});
+				const session = await Session.start({ backend, cwd: "/work", tools: [], model: "kimi-k2.7-code" });
+				await collect(session.send("one"));
+				// kimi-k2.7-code reasons on its own: the level asked is not sent, and the answer says `auto`,
+				// the same `session_started` would say.
+				const answer = await session.configure({ thinking: "high" });
+				expect(answer).toMatchObject({ thinking: "high", effort: "auto" });
+				const two = await collect(session.send("two"));
+				expect(two[0]).toMatchObject({ type: "session_configured", effort: "auto" });
+				// glm-5.3 takes no `medium`, and the answer says it was not sent; nothing is asked of the provider.
+				expect(await session.configure({ model: "glm-5.3", thinking: "medium" })).toMatchObject({
+					thinking: "medium",
+					effort: "medium not sent",
+				});
 			} finally {
 				await provider.close();
 			}
