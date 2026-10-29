@@ -11,6 +11,8 @@ export interface LineReader {
 	next(column?: number, options?: { hidden?: boolean }): Promise<string | undefined>;
 	/** Stops waiting for a read that will not be consumed (a cancelled question); its line goes to the next caller. */
 	abandon(): void;
+	/** Shows again the line being typed for the pending read, after the caller wrote over it and its prompt again. */
+	redraw(): void;
 	/** Whether the line last returned had pasted text in it: a paste can fill in a form but never answer a question. */
 	pasted(): boolean;
 	/** Drops the lines typed so far, the one being typed included, and says how many. */
@@ -246,6 +248,9 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 			handed = undefined;
 		},
 		pasted: () => handedPasted,
+		redraw() {
+			echo(buffer);
+		},
 		discardTyped() {
 			this.open();
 			const count = typed.splice(0).length + (buffer !== "" || pasting ? 1 : 0);

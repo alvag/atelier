@@ -50,7 +50,7 @@ function tools() {
 	return coreTools.map((tool) => background.find((own) => own.name === tool.name) ?? tool);
 }
 
-function harness(turns: FakeStep[][], options: { input?: boolean } = {}) {
+function harness(turns: FakeStep[][], options: { input?: boolean; raw?: boolean } = {}) {
 	const backend = new FakeBackend(turns);
 	const stdin = new PassThrough();
 	let stdout = "";
@@ -58,7 +58,8 @@ function harness(turns: FakeStep[][], options: { input?: boolean } = {}) {
 	let interrupt: (() => void) | undefined;
 	const io = {
 		stdin,
-		isTTY: false,
+		isTTY: options.raw === true,
+		...(options.raw ? { setRawMode: () => {} } : {}),
 		stdout: (s: string) => {
 			stdout += s;
 		},
@@ -244,4 +245,23 @@ describe("background jobs in atelier run", () => {
 			expect(h.out().match(/■ job 1 ended/g)).toHaveLength(1);
 		},
 	);
+
+	it("shows again what was typed after the end of a job outside any turn, and Enter sends it", async () => {
+		const h = harness([[startJob(waitsForGo()), { throw: "backend failed" }], [{ event: finished }]], {
+			input: true,
+			raw: true,
+		});
+		const exited = run(["--no-session"], h.io, h.createBackend);
+		h.stdin.write("start it\r");
+		await until(() => h.err().includes("backend failed"));
+		h.stdin.write("abc");
+		await until(() => h.out().endsWith("> abc"));
+		await go();
+		await until(() => /■ job 1 ended[^\n]*\n> abc$/.test(h.out()));
+		h.stdin.write("\r");
+		await until(() => h.backend.prompts.length === 2);
+		expect(h.backend.prompts[1]).toMatch(/^Background job 1 [\s\S]*\n\nabc$/);
+		h.stdin.end();
+		expect(await exited).toBe(0);
+	});
 });
