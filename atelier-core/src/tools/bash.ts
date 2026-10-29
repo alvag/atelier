@@ -16,7 +16,7 @@ import {
 	sandbox as sharedSandbox,
 	verifierEnvironment,
 } from "./sandbox.ts";
-import { defineTool, ToolInputError } from "./types.ts";
+import { defineTool, type ToolContext, ToolInputError } from "./types.ts";
 
 export const DEFAULT_TIMEOUT_SEC = 120;
 const KILL_GRACE_MS = 2000;
@@ -166,11 +166,11 @@ function confirmation(command: string): { confirm?: string; yoloWaived?: true } 
  */
 function coveredByRules(
 	command: string,
-	rules: readonly string[] | undefined,
+	{ bashRules = [], projectBashRules = [] }: Pick<ToolContext, "bashRules" | "projectBashRules">,
 	{ withoutApproval, policy, sandbox }: { withoutApproval: boolean; policy: SandboxPolicyName; sandbox: Sandbox },
 ): boolean {
-	if (withoutApproval || policy !== "agent" || rules === undefined || rules.length === 0) return false;
-	if (findConfirmCommands(command).length > 0 || !coveredBy(command, rules)) return false;
+	if (withoutApproval || policy !== "agent" || (bashRules.length === 0 && projectBashRules.length === 0)) return false;
+	if (findConfirmCommands(command).length > 0 || !coveredBy(command, bashRules, projectBashRules)) return false;
 	return sandbox.outsideAvailable();
 }
 
@@ -179,11 +179,11 @@ function rememberOffer(
 	command: string,
 	confirm: string | undefined,
 	sandbox: Sandbox,
-): { remember?: { rules: string[]; always: boolean } } {
+): { remember?: { rules: string[]; always: boolean; project?: true } } {
 	// Without the profile covered commands run under, a rule would cover nothing: only Allow and Deny are offered.
 	if (confirm !== undefined || !sandbox.outsideAvailable()) return {};
-	const { rules, always } = commandRules(command);
-	return rules === undefined ? {} : { remember: { rules, always } };
+	const { rules, always, project } = commandRules(command);
+	return rules === undefined ? {} : { remember: { rules, always, ...(project ? { project } : {}) } };
 }
 
 /** The causes shown for one command; the rest are counted. */
@@ -245,10 +245,11 @@ export function createBashTool({
 			reason: z.string().optional().describe("Required with unsandboxed: why this command must leave the sandbox"),
 		},
 		approvalCommand: ({ command }) => (withoutApproval ? undefined : command),
-		async gate({ command, unsandboxed, reason }, { cwd, sandboxOff, bashRules }) {
+		async gate({ command, unsandboxed, reason }, context) {
+			const { cwd, sandboxOff } = context;
 			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
 			if (rule !== undefined) return { refusal: refusal(rule, command) };
-			if (coveredByRules(command, bashRules, { withoutApproval, policy, sandbox })) return {};
+			if (coveredByRules(command, context, { withoutApproval, policy, sandbox })) return {};
 			// The verifier's copy is thrown away, so nothing there is worth asking about.
 			const confirmed = withoutApproval ? {} : confirmation(command);
 			if (unsandboxed) {
@@ -281,7 +282,8 @@ export function createBashTool({
 				warning: status.reason,
 			};
 		},
-		async execute({ command, timeoutSec, unsandboxed }, { cwd, signal, scratchDir, sandboxOff, bashRules }) {
+		async execute({ command, timeoutSec, unsandboxed }, context) {
+			const { cwd, signal, scratchDir, sandboxOff } = context;
 			// The session asks the gate first; this keeps a direct call from running what the guard refuses.
 			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
 			if (rule !== undefined) return { ok: false, ...refusal(rule, command), truncated: false };
@@ -291,7 +293,7 @@ export function createBashTool({
 
 			if (unsandboxed && policy === "verifier")
 				return { ok: false, ...refusal(VERIFIER_UNSANDBOXED, command), truncated: false };
-			const covered = coveredByRules(command, bashRules, { withoutApproval, policy, sandbox });
+			const covered = coveredByRules(command, context, { withoutApproval, policy, sandbox });
 			const sandboxStatus: SandboxStatus = covered
 				? { available: false, reason: "the user's rules allow this command outside the sandbox" }
 				: unsandboxed

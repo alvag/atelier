@@ -449,7 +449,7 @@ export async function run(
 		tools: io.tools ?? coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
 		...(args.noSandbox ? { noSandbox: true } : {}),
-		permissionRules: new PermissionRules(io.home === undefined ? {} : { home: io.home }),
+		permissionRules: new PermissionRules(io.home === undefined ? {} : { home: io.home, cwd: args.cwd }),
 		approve: async ({ command, reason, tool, confirm, remember, sandboxFailed }) => {
 			// The command and the reason come from the model: show escape sequences and bidi controls instead of letting the terminal run them.
 			const shown = visibleText(command);

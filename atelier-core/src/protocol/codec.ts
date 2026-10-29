@@ -88,7 +88,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		sessionId,
 		callId: z.string().min(1),
 		approved: z.boolean(),
-		remember: z.enum(["session", "always"]).optional(),
+		remember: z.enum(["session", "project", "always"]).optional(),
 	}),
 	z.object({ command: z.literal("session.permissions"), sessionId }),
 	z.object({ command: z.literal("session.permissions_remove"), sessionId, ruleId: z.string().min(1) }),

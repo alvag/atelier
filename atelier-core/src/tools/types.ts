@@ -15,6 +15,8 @@ export interface ToolContext {
 	approvedPaths?: ReadonlySet<string>;
 	/** The `bash` rules the user allowed (`open`, `npm install`): a command they cover runs outside the sandbox without asking. */
 	bashRules?: readonly string[];
+	/** The `bash` rules the user allowed always in this session's project: they cover only a line that stays in it. */
+	projectBashRules?: readonly string[];
 	/** The folders the user allowed `edit` and `write` in, real paths: a file in one or below is written without asking. */
 	pathRules?: readonly string[];
 }
@@ -55,8 +57,9 @@ export interface ToolGate {
 		/**
 		 * What an answer may remember so the same call is not asked again: `bash` rules (`open`, `npm install`).
 		 * `always` is false when one runs arbitrary code (an interpreter or a launcher): it is allowed for the session only.
+		 * `project` is set when one runs code the repository defines: it is allowed always only in the session's project.
 		 */
-		remember?: { rules: string[]; always: boolean };
+		remember?: { rules: string[]; always: boolean; project?: true };
 	};
 	/** Said once per turn, before the first question: why the call runs without the protection it normally has. */
 	warning?: string;

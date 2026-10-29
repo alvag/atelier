@@ -63,7 +63,7 @@ export type ClientCommand =
 	| { command: "session.unqueue"; sessionId: string; messageId?: string }
 	/**
 	 * Answers an approval question. `remember` (with `approved: true`) also keeps the rules the question offered, for the
-	 * session or always; `always` is honored only when the question offered it.
+	 * session, always in the project or always; `project` and `always` are honored only when the question offered them.
 	 */
 	| {
 			command: "session.approve";
@@ -72,7 +72,10 @@ export type ClientCommand =
 			approved: boolean;
 			remember?: PermissionRuleScope;
 	  }
-	/** The rules in force for the session, its own and the saved ones: answers `{ rules: [{ id, scope, kind, value }] }`. */
+	/**
+	 * The rules in force for the session, its own and the saved ones: answers `{ rules: [{ id, scope, kind, value,
+	 * project?, ignored? }] }`; `project` names a project rule's project, `ignored` a saved rule no longer used.
+	 */
 	| { command: "session.permissions"; sessionId: string }
 	/** Removes the rule whose `id` `session.permissions` gave as `ruleId`; answers the rules left, or fails with `unknown_rule`. */
 	| { command: "session.permissions_remove"; sessionId: string; ruleId: string }

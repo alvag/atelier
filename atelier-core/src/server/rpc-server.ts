@@ -237,7 +237,14 @@ export class RpcServer {
 	/** The session's rules as the protocol carries them. */
 	async #rules(sessionId: string): Promise<JsonValue[]> {
 		const rules = await this.#session(sessionId).session.permissionRules();
-		return rules.map(({ id, scope, kind, value }) => ({ id, scope, kind, value }));
+		return rules.map(({ id, scope, kind, value, project, ignored }) => ({
+			id,
+			scope,
+			kind,
+			value,
+			...(project === undefined ? {} : { project }),
+			...(ignored === undefined ? {} : { ignored }),
+		}));
 	}
 
 	#session(sessionId: string): ServerSession {
@@ -724,7 +731,7 @@ export class RpcServer {
 				systemPromptAppend: this.#options.systemPromptAppend,
 				...(noSandbox ? { noSandbox: true } : {}),
 				approve: ({ callId }) => new Promise<ApprovalAnswer>((resolve) => approvals.set(callId, resolve)),
-				permissionRules: new PermissionRules({ home: this.#options.home ?? homedir() }),
+				permissionRules: new PermissionRules({ home: this.#options.home ?? homedir(), cwd }),
 				permissionClassifier: { createBackend: (name) => this.#options.createBackend(name ?? backend) },
 				odd: true,
 				...(this.#options.home === undefined
