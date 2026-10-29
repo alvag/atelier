@@ -8,11 +8,13 @@ import {
 	DynamicModelCatalog,
 	ModelData,
 	modelRefreshEnabled,
+	newestFirst,
 	readCatalog,
 	useModelData,
 } from "../src/model-catalog/index.ts";
 import { BACKEND_MODELS } from "../src/options.ts";
 import { costOfRequest } from "../src/pricing.ts";
+import type { BackendName } from "../src/protocol/types.ts";
 
 let home: string;
 let file: string;
@@ -45,6 +47,8 @@ const modelsDev: CatalogSource = {
 		};
 	},
 };
+/** The code's list of `backend`, newest first by the version in each name, as offered when nothing has a date. */
+const inTheCode = (backend: BackendName) => newestFirst(BACKEND_MODELS[backend], () => undefined);
 const hanging: CatalogSource = { name: "openai-codex", fetch: () => new Promise(() => {}) };
 const USAGE = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 };
 const PRICE = [{ input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }];
@@ -70,8 +74,9 @@ it("offers the code's lists until a provider lists more, then adds its models af
 	expect(costOfRequest("claude-new-6", USAGE)).toBeUndefined();
 
 	expect(await catalog.refresh()).toEqual({ "models.dev": "changed", "anthropic-api": "changed" });
-	expect(await catalog.models("anthropic-api")).toEqual([...BACKEND_MODELS["anthropic-api"], "claude-new-6"]);
-	expect(await catalog.models("openai-codex")).toEqual(BACKEND_MODELS["openai-codex"]);
+	// Without release dates, the version in the name orders them: 6 before 5.5.
+	expect(await catalog.models("anthropic-api")).toEqual(["claude-new-6", ...BACKEND_MODELS["anthropic-api"]]);
+	expect(await catalog.models("openai-codex")).toEqual(inTheCode("openai-codex"));
 	// The backends price and size the new model from the same catalog.
 	expect(costOfRequest("claude-new-6", USAGE)).toBe(3);
 
@@ -95,7 +100,10 @@ it("refreshes in the background: a source that hangs holds up neither the lists 
 });
 
 it("lists Claude Code's models from a session it is lent, unless the network is off", async () => {
-	const list = async () => [{ value: "opus" }, { value: "claude-fable-5-1", supportedEffortLevels: ["low"] }];
+	const list = async () => [
+		{ value: "opus", resolvedModel: "claude-opus-5-5" },
+		{ value: "claude-fable-5-1", supportedEffortLevels: ["low"] },
+	];
 	const offline = new DynamicModelCatalog({ file, sources: [], network: false });
 	await offline.listClaudeCode(list);
 	expect(await offline.models("claude-code")).toEqual(BACKEND_MODELS["claude-code"]);
@@ -229,11 +237,11 @@ it("drops an odd entry of the cache file alone", async () => {
 	);
 	const catalog = new DynamicModelCatalog({ file, sources: [], network: false });
 	expect(await catalog.models("anthropic-api")).toEqual([
-		...BACKEND_MODELS["anthropic-api"],
 		"claude-new-6",
+		...BACKEND_MODELS["anthropic-api"],
 		"__proto__",
 	]);
-	expect(await catalog.models("opencode-go")).toEqual(BACKEND_MODELS["opencode-go"]);
+	expect(await catalog.models("opencode-go")).toEqual(inTheCode("opencode-go"));
 	expect(Object.getPrototypeOf((await readCatalog(file)).sources)).toBe(Object.prototype);
 });
 
@@ -285,4 +293,71 @@ it("does not ask the network when it is off, and still offers what the cache hol
 	expect(await offline.start()).toEqual({});
 	expect(asked).toEqual([]);
 	expect(await offline.models("anthropic-api")).toContain("claude-new-6");
+});
+
+/** A cache whose sources say `models` of each backend, as the sources named after them and models.dev. */
+const cached = (sources: Record<string, Record<string, object[]>>) => async () => ({
+	sources: Object.fromEntries(
+		Object.entries(sources).map(([name, models]) => [name, { checkedAt: Date.now(), models }]),
+	),
+});
+
+it("offers every provider's models newest first: by release date, then by the version in the name", async () => {
+	const read = cached({
+		"models.dev": {
+			"anthropic-api": [
+				{ id: "claude-opus-5-5", released: "2026-09-10" },
+				{ id: "claude-fable-5-1", released: "2026-10-20" },
+				{ id: "claude-sonnet-5-5", released: "2026-09-10" },
+				{ id: "claude-opus-4-8", released: "2026-03" },
+			],
+			"opencode-go": [{ id: "grok-4.7", released: "2026-08-01" }],
+		},
+		"anthropic-api": {
+			"anthropic-api": [{ id: "claude-opus-4-8" }, { id: "claude-fable-5-1" }, { id: "claude-haiku-4-5-20251001" }],
+		},
+		"opencode-go": { "opencode-go": [{ id: "glm-5.3" }, { id: "grok-4.7" }, { id: "glm-5.2" }] },
+	});
+	const catalog = new DynamicModelCatalog({ file, sources: [], network: false, read });
+	// The models without a date come after the dated ones, by their version: a date in the id is not one.
+	expect(await catalog.models("anthropic-api")).toEqual([
+		"claude-fable-5-1",
+		"claude-sonnet-5-5",
+		"claude-opus-5-5",
+		"claude-opus-4-8",
+		"claude-haiku-5-5",
+		"claude-haiku-4-5-20251001",
+	]);
+	const go = await catalog.models("opencode-go");
+	expect(go[0]).toBe("grok-4.7");
+	expect(go.indexOf("glm-5.3")).toBeLessThan(go.indexOf("glm-5.2"));
+});
+
+it("lists Claude Code's versioned ids only, and asks again a session for a list cached with its aliases", async () => {
+	const offline = new DynamicModelCatalog({ file, sources: [], network: false });
+	expect(await offline.models("claude-code")).toEqual(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
+
+	// A list kept before Claude Code's aliases were resolved: the aliases are not offered, and the next session is asked.
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	const old = ["default", "opus", "fable", "sonnet", "haiku", "claude-opus-4-8"].map((id) => ({ id }));
+	await writeFile(
+		file,
+		JSON.stringify({
+			version: 1,
+			sources: { "claude-code": { checkedAt: Date.now(), models: { "claude-code": old } } },
+		}),
+	);
+	const catalog = new DynamicModelCatalog({ file, sources: [] });
+	expect(await catalog.models("claude-code")).toEqual([...BACKEND_MODELS["claude-code"], "claude-opus-4-8"]);
+	await catalog.listClaudeCode(async () => [
+		{ value: "opus", resolvedModel: "claude-opus-5-5" },
+		{ value: "fable", resolvedModel: "claude-fable-5-1" },
+		{ value: "claude-opus-4-8" },
+	]);
+	expect(await catalog.models("claude-code")).toEqual([
+		...BACKEND_MODELS["claude-code"],
+		"claude-fable-5-1",
+		"claude-opus-4-8",
+	]);
+	expect((await catalog.model("claude-code", "claude-fable-5-1"))?.aliases).toEqual(["fable"]);
 });

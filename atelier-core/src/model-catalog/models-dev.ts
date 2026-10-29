@@ -6,6 +6,7 @@ import {
 	isEffort,
 	isPrice,
 	isRecord,
+	isReleaseDate,
 	isSize,
 } from "./model-data.ts";
 import type { CatalogSource } from "./store.ts";
@@ -13,13 +14,25 @@ import type { CatalogSource } from "./store.ts";
 /** models.dev's open catalog of providers and models (MIT, github.com/sst/models.dev): no account, no credential. */
 export const MODELS_DEV_URL = "https://models.dev/api.json";
 
-/**
- * The models.dev provider each backend's models are read from. Codex serves its own windows, not those of OpenAI's
- * API, and Claude Code reports its own: neither is read here.
- */
+/** The models.dev provider each backend's models are read from. */
 const PROVIDERS: Readonly<Partial<Record<CatalogBackend, string>>> = Object.freeze({
 	"anthropic-api": "anthropic",
 	"opencode-go": "opencode-go",
+	"openai-codex": "openai",
+	"claude-code": "anthropic",
+});
+
+/**
+ * The backends that take only what describes a model: Codex serves its own windows and levels, not those of OpenAI's
+ * API, and Claude Code reports its own, and neither is billed by the token.
+ */
+const DESCRIBED_ONLY: ReadonlySet<CatalogBackend> = new Set(["openai-codex", "claude-code"]);
+
+const described = ({ id, name, released, images }: CatalogModel): CatalogModel => ({
+	id,
+	...(name === undefined ? {} : { name }),
+	...(released === undefined ? {} : { released }),
+	...(images === undefined ? {} : { images }),
 });
 
 /** A models.dev price, without its limit; a missing cache price is 0, as OpenCode's own table counts it. */
@@ -65,6 +78,8 @@ function pricesOf(cost: unknown): readonly PriceTier[] | undefined {
 function modelOf(value: unknown): CatalogModel | undefined {
 	if (!isRecord(value) || typeof value.id !== "string" || value.id === "") return undefined;
 	const model: CatalogModel = { id: value.id };
+	if (typeof value.name === "string" && value.name !== "") model.name = value.name;
+	if (isReleaseDate(value.release_date)) model.released = value.release_date;
 	if (isRecord(value.limit) && isSize(value.limit.context)) model.contextWindow = value.limit.context;
 	const prices = pricesOf(value.cost);
 	if (prices) model.prices = prices;
@@ -90,14 +105,18 @@ export function parseModelsDev(body: unknown): CatalogModels {
 	for (const [backend, provider] of Object.entries(PROVIDERS) as [CatalogBackend, string][]) {
 		const entry = body[provider];
 		if (!isRecord(entry) || !isRecord(entry.models)) continue;
-		models[backend] = Object.values(entry.models)
+		const read = Object.values(entry.models)
 			.map(modelOf)
 			.filter((model) => model !== undefined);
+		models[backend] = DESCRIBED_ONLY.has(backend) ? read.map(described) : read;
 	}
 	if (!Object.values(models).some((list) => list.length > 0))
 		throw new Error("models.dev answered no model of Atelier's providers");
 	return models;
 }
+
+const keptDates = (models: CatalogModels): boolean =>
+	Object.values(models).some((list) => list.some((model) => model.released !== undefined));
 
 export interface ModelsDevOptions {
 	url?: string;
@@ -113,7 +132,8 @@ export function modelsDevSource(options: ModelsDevOptions = {}): CatalogSource {
 		name: "models.dev",
 		async fetch(previous, signal) {
 			const headers: Record<string, string> = { accept: "application/json" };
-			if (previous?.etag !== undefined) headers["if-none-match"] = previous.etag;
+			// A cache kept before release dates were read lacks them: asked without its etag, models.dev sends them.
+			if (previous?.etag !== undefined && keptDates(previous.models)) headers["if-none-match"] = previous.etag;
 			const response = await fetch(url, { headers, signal });
 			if (response.status === 304 && previous) return { kind: "unchanged" };
 			if (!response.ok) throw new Error(`models.dev answered ${response.status}`);

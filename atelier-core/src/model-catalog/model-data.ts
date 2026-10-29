@@ -13,6 +13,10 @@ export const CATALOG_BACKENDS: readonly CatalogBackend[] = [
 /** What a source says of one model; each field is absent when it did not say it, so nothing is invented. */
 export interface CatalogModel {
 	id: string;
+	/** Its long name, as "Claude Opus 5.5". */
+	name?: string;
+	/** When it came out, `YYYY-MM` or `YYYY-MM-DD`: the lists offer the newest first. */
+	released?: string;
 	contextWindow?: number;
 	/** USD per million tokens, ordered as `pricing.ts` orders them. */
 	prices?: readonly PriceTier[];
@@ -22,6 +26,8 @@ export interface CatalogModel {
 	off?: ThinkingOff;
 	/** Whether it takes images in its input. */
 	images?: boolean;
+	/** The names Claude Code also takes for it, as `opus` for the model that alias stands for now, in its order. */
+	aliases?: readonly string[];
 }
 
 export type CatalogModels = Partial<Record<CatalogBackend, readonly CatalogModel[]>>;
@@ -56,6 +62,11 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 /** A token count: a positive whole number. */
 export const isSize = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
+/** A release date as models.dev writes it: `YYYY-MM` or `YYYY-MM-DD`. */
+export const isReleaseDate = (value: unknown): value is string =>
+	typeof value === "string" && /^\d{4}-\d{2}(-\d{2})?$/.test(value);
+const isName = (value: unknown): value is string => typeof value === "string" && value !== "";
+
 export const isPrice = (value: unknown): value is number =>
 	typeof value === "number" && Number.isFinite(value) && value >= 0;
 
@@ -77,6 +88,8 @@ function priceTier(value: unknown): PriceTier | undefined {
 export function catalogModel(value: unknown): CatalogModel | undefined {
 	if (!isRecord(value) || typeof value.id !== "string" || value.id === "") return undefined;
 	const model: CatalogModel = { id: value.id };
+	if (isName(value.name)) model.name = value.name;
+	if (isReleaseDate(value.released)) model.released = value.released;
 	if (isSize(value.contextWindow)) model.contextWindow = value.contextWindow;
 	if (Array.isArray(value.prices) && value.prices.length > 0) {
 		const tiers = value.prices.map(priceTier);
@@ -85,6 +98,7 @@ export function catalogModel(value: unknown): CatalogModel | undefined {
 	if (Array.isArray(value.efforts)) model.efforts = value.efforts.filter(isEffort);
 	if (value.off === "disabled" || value.off === "between_tools") model.off = value.off;
 	if (typeof value.images === "boolean") model.images = value.images;
+	if (Array.isArray(value.aliases)) model.aliases = value.aliases.filter(isName);
 	return model;
 }
 

@@ -33,7 +33,7 @@ async function models(argv: string[], env: Record<string, string> = {}) {
 	return { code, out, err };
 }
 
-it("prints each backend's models: the code's, then the ones its provider listed, from the cache only", async () => {
+it("prints each backend's models, the code's and the ones its provider listed, newest first, from the cache only", async () => {
 	await mkdir(join(home, ".atelier"), { recursive: true });
 	const listed = { checkedAt: Date.UTC(2026, 9, 28, 21, 0), models: { "opencode-go": [{ id: "grok-4.7" }] } };
 	await writeFile(
@@ -42,10 +42,10 @@ it("prints each backend's models: the code's, then the ones its provider listed,
 	);
 	const { code, out, err } = await models([]);
 	expect({ code, err }).toEqual({ code: 0, err: "" });
-	expect(out).toContain("claude-code · the code's list\n  opus\n  sonnet\n  haiku\n");
-	expect(out).toContain("opencode-go · listed 2026-10-28T21:00:00.000Z\n  minimax-m3\n");
+	expect(out).toContain("claude-code · the code's list\n  claude-opus-5-5\n  claude-sonnet-5-5\n  claude-haiku-5-5\n");
+	expect(out).toContain("opencode-go · listed 2026-10-28T21:00:00.000Z\n");
 	expect(out).toContain("  grok-4.7  (new)\n");
-	expect(out).toContain("openai-codex · the code's list\n  gpt-6-sol\n");
+	expect(out).toContain("openai-codex · the code's list\n  gpt-6.1-sol\n  gpt-6-sol\n");
 });
 
 it("says whether a model takes images, where the catalog knows it", async () => {
@@ -75,7 +75,8 @@ it("prints the code's lists when the cache holds a check time that is not a date
 	await writeFile(join(home, ".atelier", "models.json"), `{"version":1,"sources":{"opencode-go":${listed}}}`);
 	const { code, out, err } = await models([]);
 	expect({ code, err }).toEqual({ code: 0, err: "" });
-	expect(out).toContain("opencode-go · the code's list\n  minimax-m3\n");
+	expect(out).toContain("opencode-go · the code's list\n");
+	expect(out).toContain("  minimax-m3\n");
 	expect(out).not.toContain("grok-4.7");
 });
 

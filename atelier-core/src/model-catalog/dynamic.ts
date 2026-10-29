@@ -2,7 +2,8 @@ import { BACKEND_MODELS, type ModelCatalog } from "../options.ts";
 import type { BackendName } from "../protocol/types.ts";
 import { useModelData } from "./current.ts";
 import { type CatalogModel, ModelData } from "./model-data.ts";
-import { claudeCodeModelsSource } from "./providers.ts";
+import { newestFirst } from "./order.ts";
+import { claudeCodeModelsSource, isVersionedClaudeId } from "./providers.ts";
 import {
 	type CatalogFile,
 	type CatalogSource,
@@ -13,6 +14,9 @@ import {
 	refreshCatalog,
 	refreshSource,
 } from "./store.ts";
+
+/** Claude Code's aliases are not offered: the versioned id each stands for is. */
+const offered = (backend: BackendName, id: string) => backend !== "claude-code" || isVersionedClaudeId(id);
 
 export interface DynamicCatalogOptions {
 	/** The catalog file, `catalogFile(home)`. */
@@ -27,8 +31,8 @@ export interface DynamicCatalogOptions {
 }
 
 /**
- * The model lists of `options.list`: each backend's list in the code, then the models its provider listed that the
- * code lacks. It reads the cache once, and makes what it holds the process's model data, so the backends price and
+ * The model lists of `options.list`: each backend's list in the code and the models its provider listed that the code
+ * lacks, newest first; Claude Code's by their versioned ids, without its aliases. It reads the cache once, and makes what it holds the process's model data, so the backends price and
  * size the new models; a refresh replaces both as it lands.
  */
 export class DynamicModelCatalog implements ModelCatalog {
@@ -45,8 +49,9 @@ export class DynamicModelCatalog implements ModelCatalog {
 	/** Never fails: whatever the cache holds, the code's list stays. */
 	async models(backend: BackendName): Promise<readonly string[]> {
 		const base = BACKEND_MODELS[backend];
-		const listed = (await this.#latest()).listed(backend) ?? [];
-		return [...base, ...listed.filter((id) => !base.includes(id))];
+		const data = await this.#latest();
+		const listed = (data.listed(backend) ?? []).filter((id) => !base.includes(id) && offered(backend, id));
+		return newestFirst([...base, ...listed], (id) => data.model(backend, id)?.released);
 	}
 
 	/** What the catalog knows of a model: its window, price, levels and whether it takes images, each when a source said it. */
@@ -86,7 +91,13 @@ export class DynamicModelCatalog implements ModelCatalog {
 	async listClaudeCode(list: () => Promise<readonly unknown[]>): Promise<void> {
 		if (this.#options.network === false) return;
 		try {
-			await refreshSource(this.#options.file, claudeCodeModelsSource(list), this.#options.refresh);
+			// A list kept before Claude Code's aliases were resolved is asked again, whenever it was kept.
+			const kept = (await this.#latest()).listed("claude-code") ?? [];
+			const force = kept.some((id) => !isVersionedClaudeId(id));
+			await refreshSource(this.#options.file, claudeCodeModelsSource(list), {
+				...this.#options.refresh,
+				...(force ? { force } : {}),
+			});
 			await this.#reload();
 		} catch {
 			// The list stays as it was.

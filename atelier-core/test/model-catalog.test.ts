@@ -47,6 +47,8 @@ const MODELS_DEV = {
 		models: {
 			"claude-new-6": {
 				id: "claude-new-6",
+				name: "Claude New 6",
+				release_date: "2026-09-30",
 				reasoning: true,
 				reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "xhigh", "max"] }],
 				limit: { context: 1_000_000, output: 128_000 },
@@ -61,6 +63,8 @@ const MODELS_DEV = {
 		models: {
 			"grok-4.7": {
 				id: "grok-4.7",
+				name: "Grok 4.7",
+				release_date: "2026-08",
 				reasoning_options: [{ type: "effort", values: ["none", "minimal", "low", "high"] }],
 				limit: { context: 500_000 },
 				modalities: { input: ["text"], output: ["text"] },
@@ -78,7 +82,18 @@ const MODELS_DEV = {
 			},
 		},
 	},
-	openai: { id: "openai", models: { "gpt-6.1-terra": { id: "gpt-6.1-terra", limit: { context: 1_050_000 } } } },
+	openai: {
+		id: "openai",
+		models: {
+			"gpt-6.1-terra": {
+				id: "gpt-6.1-terra",
+				name: "GPT-6.1 Terra",
+				release_date: "2026-10-01",
+				limit: { context: 1_050_000 },
+				cost: { input: 2, output: 8 },
+			},
+		},
+	},
 };
 
 const json =
@@ -108,6 +123,8 @@ it("keeps what models.dev says of the providers' models in ~/.atelier/models.jso
 	const data = modelDataOf(catalog);
 	expect(data.model("anthropic-api", "claude-new-6")).toEqual({
 		id: "claude-new-6",
+		name: "Claude New 6",
+		released: "2026-09-30",
 		contextWindow: 1_000_000,
 		prices: [{ input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }],
 		efforts: ["low", "medium", "high", "xhigh", "max"],
@@ -116,6 +133,8 @@ it("keeps what models.dev says of the providers' models in ~/.atelier/models.jso
 	// `none` turns thinking off, as `disabled` stands for it; a level Atelier does not send is left out.
 	expect(data.model("opencode-go", "grok-4.7")).toEqual({
 		id: "grok-4.7",
+		name: "Grok 4.7",
+		released: "2026-08",
 		contextWindow: 500_000,
 		prices: [
 			{ upToPromptTokens: 200_000, input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
@@ -128,8 +147,21 @@ it("keeps what models.dev says of the providers' models in ~/.atelier/models.jso
 	// A window that is not a size, a tier that is not by prompt size, or unsaid modalities are not invented: left out.
 	expect(data.model("opencode-go", "odd-tier")).toEqual({ id: "odd-tier" });
 	expect(data.model("anthropic-api", "broken")).toBeUndefined();
-	// Codex serves its own windows, not the API's: models.dev's OpenAI models are not read.
-	expect(data.model("openai-codex", "gpt-6.1-terra")).toBeUndefined();
+	// Codex and Claude Code serve their own windows and prices, not the API's: of models.dev's OpenAI and Anthropic
+	// models they take the name, the release date and whether a model takes images.
+	expect(data.model("openai-codex", "gpt-6.1-terra")).toEqual({
+		id: "gpt-6.1-terra",
+		name: "GPT-6.1 Terra",
+		released: "2026-10-01",
+	});
+	expect(data.model("claude-code", "claude-new-6")).toEqual({
+		id: "claude-new-6",
+		name: "Claude New 6",
+		released: "2026-09-30",
+		images: true,
+	});
+	// What models.dev describes is not what a provider listed.
+	expect(data.listed("claude-code")).toBeUndefined();
 	expect(seen[0]?.headers.authorization).toBeUndefined();
 });
 
@@ -148,6 +180,16 @@ it("asks again only after the interval or when forced, with the etag, and keeps 
 	const catalog = await readCatalog(file);
 	expect(catalog.sources["models.dev"]?.checkedAt).toBe(1_400);
 	expect(modelDataOf(catalog).model("opencode-go", "grok-4.7")?.contextWindow).toBe(500_000);
+});
+
+it("asks without the etag when the cache was written before release dates were read, so they come", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	const old = { checkedAt: 1, etag: '"v1"', models: { "anthropic-api": [{ id: "claude-new-6" }] } };
+	await writeFile(file, JSON.stringify({ version: 1, sources: { "models.dev": old } }));
+	handler = json(MODELS_DEV, { etag: '"v1"' });
+	expect(await refreshSource(file, source(), { force: true })).toBe("changed");
+	expect(seen[0]?.headers["if-none-match"]).toBeUndefined();
+	expect(modelDataOf(await readCatalog(file)).model("anthropic-api", "claude-new-6")?.released).toBe("2026-09-30");
 });
 
 it("keeps the cached models when the answer fails, is broken or never comes", async () => {

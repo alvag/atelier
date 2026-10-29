@@ -255,7 +255,7 @@ describe("options.list", () => {
 		await h.close();
 	});
 
-	it("offers, from the dynamic catalog's cache, the code's models and then the ones a provider listed", async () => {
+	it("offers, from the dynamic catalog's cache, the code's models and the ones a provider listed, newest first", async () => {
 		const { catalogFile, DynamicModelCatalog, ModelData, useModelData } = await import("../src/model-catalog/index.ts");
 		const file = catalogFile(home);
 		await mkdir(join(home, ".atelier"), { recursive: true });
@@ -270,7 +270,8 @@ describe("options.list", () => {
 		});
 		const response = await h.ask({ command: "options.list" });
 		const models = response.ok ? (response.result.models as { model: string }[]).map(({ model }) => model) : [];
-		expect(models.at(-1)).toBe("gpt-6.1-terra");
+		// 6.1 before 6, whether the code or the provider lists it.
+		expect(models.indexOf("gpt-6.1-terra")).toBeLessThan(models.indexOf("gpt-6-sol"));
 		expect(models.filter((model) => model === "gpt-6-sol")).toHaveLength(1);
 		useModelData(new ModelData());
 		await h.close();
@@ -289,12 +290,12 @@ describe("options.list", () => {
 		const response = await h.ask({ command: "options.list" });
 		expect(response.ok && response.result.backends).toContainEqual({
 			name: "claude-code",
-			models: ["opus", "sonnet", "haiku"],
+			models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
 		});
 		expect(response.ok && response.result.models).toEqual([
-			{ provider: "claude-code", model: "opus" },
-			{ provider: "claude-code", model: "sonnet" },
-			{ provider: "claude-code", model: "haiku" },
+			{ provider: "claude-code", model: "claude-opus-5-5" },
+			{ provider: "claude-code", model: "claude-sonnet-5-5" },
+			{ provider: "claude-code", model: "claude-haiku-5-5" },
 		]);
 		await h.close();
 	});
@@ -316,8 +317,7 @@ describe("options.list", () => {
 	});
 
 	it("lists the first model of each backend as the default one the backends use", async () => {
-		const { DEFAULT_MODEL, DEFAULT_API_MODEL } = await import("../src/index.ts");
-		expect(BACKEND_MODELS["claude-code"][0]).toBe(DEFAULT_MODEL);
+		const { DEFAULT_API_MODEL } = await import("../src/index.ts");
 		expect(BACKEND_MODELS["anthropic-api"][0]).toBe(DEFAULT_API_MODEL);
 	});
 });

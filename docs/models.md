@@ -4,7 +4,9 @@ The models `/model` offers, and what Atelier knows of each (its window, its pric
 
 ## The lists
 
-Each backend offers its list in the code first (`BACKEND_MODELS`; its first model is the default), then the models its provider listed that the code lacks, in the provider's order. The code's lists never go away, whatever a provider answers or fails to answer, and the aliases `opus`, `sonnet` and `haiku` stay at the top of `claude-code`'s. `options.list` reads both (see [profiles](profiles.md)).
+Each backend offers its list in the code (`BACKEND_MODELS`; its first model is the default) and the models its provider listed that the code lacks, newest first: the models with a release date (models.dev's `release_date`) by it, then the rest by the version in their name (`claude-opus-5-5` is 5.5, `glm-5.3-flash` 5.3; a date in the id, as in `claude-haiku-4-5-20251001`, is not a version), ties in the order they came in. The code's lists never go away, whatever a provider answers or fails to answer. `options.list` reads both (see [profiles](profiles.md)).
+
+`claude-code` lists versioned ids only: `claude-opus-5-5`, `claude-sonnet-5-5` and `claude-haiku-5-5` in the code (what `opus`, `sonnet` and `haiku` stand for, which every plan has), and what the subscription offers once a session lists it. A row of an alias in `supportedModels()` (`opus`, `fable`) is listed as the model it stands for now (`resolvedModel`, without `[1m]`), and the model keeps the alias; `default` stands for the account's first model, so it only lists that model. The aliases are not listed, but they still work written: `--model sonnet`, `/model claude-code/sonnet`. A list cached before the aliases were resolved is asked again at the next session.
 
 | Backend         | Listed by                                                                                                                                                                                                                                      | Asked with                                                                                                                                                              |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -13,7 +15,7 @@ Each backend offers its list in the code first (`BACKEND_MODELS`; its first mode
 | `opencode-go`   | `GET https://opencode.ai/inference/go/v1/models`: the ids only.                                                                                                                                                                                | Nothing: the list needs no key. It is asked only when OpenCode Go has one (`OPENCODE_API_KEY` or `auth.json`).                                                          |
 | `openai-codex`  | The Codex model catalog, `GET https://chatgpt.com/backend-api/codex/models?client_version=0.162.1`: the models the account's picker shows (`visibility: list`), each with its window, levels and whether it takes images (`input_modalities`). | The OpenAI Codex sign-in's token and account id. Sign in with ChatGPT's token only ever goes to api.openai.com, so with that sign-in alone Codex keeps the code's list. |
 
-What a provider does not say comes from [models.dev](https://models.dev), an open catalog (`GET https://models.dev/api.json`, no credential): the window, the price (its tiers by prompt size included), the levels and whether it takes images (`modalities.input`) of Anthropic's and OpenCode Go's models. Codex's windows differ from OpenAI's API, so models.dev's OpenAI models are not read.
+What a provider does not say comes from [models.dev](https://models.dev), an open catalog (`GET https://models.dev/api.json`, no credential): the long name (`name`), the release date (`release_date`), the window, the price (its tiers by prompt size included), the levels and whether it takes images (`modalities.input`) of Anthropic's and OpenCode Go's models. Codex and Claude Code serve their own windows and levels, and bill no tokens, so of models.dev's OpenAI and Anthropic models they take only the name, the release date and whether a model takes images. A cache of models.dev kept before release dates were read is asked again without its etag, so they come.
 
 For a model in the code's tables (`pricing.ts`, the OpenCode Go table, the Codex list), the code's window, price and levels are used, whatever the catalog says: it only fills in the models the tables lack. A model only the catalog knows gets what the catalog says, each field left out when no source said it; a level the catalog does not list for it is not sent (`session_started.effort` says `unsupported`), and its thinking is turned off only where a source said how. OpenCode Go serves a model only the catalog knows through Chat Completions.
 
@@ -30,12 +32,13 @@ When the core starts (`atelier`, the TUI, the desktop) it reads the cache, offer
 `atelier models` prints each backend's models as `/model` offers them, from the code and the cache, without asking anything:
 
 ```
+claude-code · listed 2026-10-28T21:00:00.000Z
+  claude-fable-5-1  (new)  images
+  claude-opus-5-5  images
+  ...
 opencode-go · listed 2026-10-28T21:00:00.000Z
-  minimax-m3
   ...
   grok-4.7  (new)  text only
-openai-codex · the code's list
-  gpt-6-sol
   ...
 ```
 

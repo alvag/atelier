@@ -1,3 +1,4 @@
+import { CLAUDE_CODE_MODELS } from "./backends/claude-code/models.ts";
 import { CODEX_MODELS } from "./backends/openai-codex/models.ts";
 import { OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
 import type { BackendName } from "./protocol/types.ts";
@@ -7,7 +8,8 @@ import type { BackendName } from "./protocol/types.ts";
  * still works: it is a convenience for selectors, not a limit. Pure: the desktop renderer imports it.
  */
 export const BACKEND_MODELS: Readonly<Record<BackendName, readonly string[]>> = Object.freeze({
-	"claude-code": ["opus", "sonnet", "haiku"],
+	// Versioned ids; the aliases (`opus`, `sonnet`) still work written.
+	"claude-code": CLAUDE_CODE_MODELS,
 	"anthropic-api": ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
 	// The table's first model is the default, minimax-m3.
 	"opencode-go": Object.keys(OPENCODE_GO_MODELS),

@@ -140,9 +140,17 @@ function codexModel(value: unknown): (CatalogModel & { priority: number }) | und
 	return model;
 }
 
+/** Claude Code's ids are all `claude-...`: a name without that is an alias. */
+export const isVersionedClaudeId = (id: string): boolean => id.startsWith("claude-");
+
+/** The model an id is, without the `[1m]` that asks Claude Code for a 1M window. */
+const withoutWindow = (id: string) => id.replace(/\[1m\]$/i, "");
+
 /**
- * The models Claude Code offers the subscription, as `supportedModels()` of a running session lists them: the aliases
- * too, each with its levels. Claude Code says nothing of windows or prices: it counts them itself.
+ * The models Claude Code offers the subscription, as `supportedModels()` of a running session lists them, by their
+ * versioned ids: a row of an alias (`opus`) is the model it stands for now (`resolvedModel`), which keeps the alias, so
+ * Atelier can send it. `default` stands for whatever the account starts on, so it is never kept as an alias; an alias
+ * Claude Code does not resolve is no model. Claude Code says nothing of windows or prices: it counts them itself.
  */
 export function claudeCodeModelsSource(list: () => Promise<readonly unknown[]>): CatalogSource {
 	return {
@@ -150,13 +158,25 @@ export function claudeCodeModelsSource(list: () => Promise<readonly unknown[]>):
 		async fetch() {
 			const listed = await list();
 			if (!Array.isArray(listed)) throw new Error("Claude Code answered something else");
-			const models = listed.flatMap((entry): CatalogModel[] => {
-				if (!isRecord(entry) || typeof entry.value !== "string" || entry.value === "") return [];
+			const models = new Map<string, CatalogModel & { aliases: string[] }>();
+			for (const entry of listed) {
+				if (!isRecord(entry) || typeof entry.value !== "string" || entry.value === "") continue;
+				const resolved = typeof entry.resolvedModel === "string" ? entry.resolvedModel : entry.value;
+				const id = withoutWindow(resolved);
+				if (!isVersionedClaudeId(id)) continue;
 				const levels = entry.supportedEffortLevels;
-				return [{ id: entry.value, ...(Array.isArray(levels) ? { efforts: levels.filter(isEffort) } : {}) }];
-			});
-			if (models.length === 0) throw new Error("Claude Code listed no model");
-			return listing("claude-code", models);
+				const model = models.get(id) ?? { id, aliases: [] };
+				// The first row that says the levels says them for the model.
+				if (model.efforts === undefined && Array.isArray(levels)) model.efforts = levels.filter(isEffort);
+				if (entry.value !== id && entry.value !== "default" && !model.aliases.includes(entry.value))
+					model.aliases.push(entry.value);
+				models.set(id, model);
+			}
+			if (models.size === 0) throw new Error("Claude Code listed no model");
+			return listing(
+				"claude-code",
+				[...models.values()].map(({ aliases, ...model }) => (aliases.length === 0 ? model : { ...model, aliases })),
+			);
 		},
 	};
 }
