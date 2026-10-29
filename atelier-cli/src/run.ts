@@ -365,7 +365,10 @@ export async function run(
 	/** Asks a yes/no question on the terminal; only "y" or "yes" is a yes, and Ctrl+C is a no. */
 	const askYesNo = async (question: string): Promise<boolean> =>
 		/^y(es)?$/i.test((await askLine(question, ANSWER_PROMPT)) ?? "");
-	/** Asks an approval that may also remember its rules: `s` for this session, `a` always when offered; anything else is a no. */
+	/**
+	 * Asks an approval that may also remember its rules: `s` for this session, `a` always or `p` always in this project
+	 * when offered; anything else is a no.
+	 */
 	const askApproval = async (
 		question: string,
 		tool: string | undefined,
@@ -373,11 +376,18 @@ export async function run(
 	): Promise<ApprovalAnswer> => {
 		if (remember === undefined) return askYesNo(question);
 		const what = ruleText(tool, remember.rules);
-		const choices = `  s: Allow ${what} in this session\n${remember.always ? `  a: Allow ${what} always\n` : ""}`;
-		const answer = (await askLine(`${question}${choices}`, remember.always ? "[y/N/s/a] " : "[y/N/s] ")) ?? "";
+		const project = remember.project !== undefined;
+		const choices = [
+			`  s: Allow ${what} in this session\n`,
+			remember.always ? `  a: Allow ${what} always\n` : "",
+			project ? `  p: Allow ${what} always in this project\n` : "",
+		].join("");
+		const keys = `[y/N/s${remember.always ? "/a" : ""}${project ? "/p" : ""}] `;
+		const answer = (await askLine(`${question}${choices}`, keys)) ?? "";
 		if (/^y(es)?$/i.test(answer)) return true;
 		if (/^s(ession)?$/i.test(answer)) return { remember: "session" };
 		if (remember.always && /^a(lways)?$/i.test(answer)) return { remember: "always" };
+		if (project && /^p(roject)?$/i.test(answer)) return { remember: "project" };
 		return false;
 	};
 	const consent = async (): Promise<ReviewConsentAnswer> => {

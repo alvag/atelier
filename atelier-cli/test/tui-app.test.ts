@@ -2190,6 +2190,46 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
+	it("offers Allow always in this project when the question offers it, and sends project", async () => {
+		const { h, code, approvals, dialog, emit } = await approvalCore();
+		emit({
+			type: "approval_requested",
+			callId: "a1",
+			command: "pnpm install",
+			reason: "needs the network",
+			remember: { rules: ["pnpm install"], always: false, project: "/Users/ana/code/app" },
+		});
+		await until(() => dialog().includes('Allow "pnpm install" always in this project'));
+		h.screen.type("\x1b[B");
+		h.screen.type("\x1b[B");
+		h.screen.type("\r");
+		await until(() => approvals().length === 1);
+		expect(approvals()[0]).toMatchObject({ callId: "a1", approved: true, remember: "project" });
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
+	it("lists a project rule with its project and an old rule that is not used", async () => {
+		const h = harness([]);
+		const rules = [
+			{ id: "project:bash:make", scope: "project", kind: "bash", value: "make", project: "/Users/ana/code/app" },
+			{ id: "always:bash:npm install", scope: "always", kind: "bash", value: "npm install", ignored: true },
+		];
+		const stub = stubCore({
+			answer: (command) => (command.command === "session.permissions" ? { rules } : undefined),
+		});
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/permissions");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("1. project bash  make  (in /Users/ana/code/app)"));
+		expect(h.screen.screen()).toContain("2. always  bash  npm install  (not used: allow it in a project instead)");
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	});
+
 	it("lists the permission rules with /permissions and removes one", async () => {
 		const h = harness([]);
 		const rule = { id: "always:bash:open", scope: "always", kind: "bash", value: "open" };

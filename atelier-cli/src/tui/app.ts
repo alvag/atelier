@@ -232,6 +232,7 @@ function approvalChoices(event: Extract<AtelierEvent, { type: "approval_requeste
 		{ value: "allow", label: "Allow" },
 		...(remember === undefined ? [] : [{ value: "session", label: `Allow ${what} in this session` }]),
 		...(remember?.always ? [{ value: "always", label: `Allow ${what} always` }] : []),
+		...(remember?.project === undefined ? [] : [{ value: "project", label: `Allow ${what} always in this project` }]),
 		{ value: "deny", label: "Deny" },
 	];
 }
@@ -692,7 +693,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 						sessionId,
 						callId: event.callId,
 						approved: value !== "deny",
-						...(value === "session" || value === "always" ? { remember: value } : {}),
+						...(value === "session" || value === "project" || value === "always" ? { remember: value } : {}),
 					}),
 				false,
 				{ kind: "permission", message: approvalQuestion(event).title },

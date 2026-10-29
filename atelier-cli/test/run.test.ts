@@ -134,7 +134,7 @@ function harness(
 			: {}),
 		stdout: (s: string) => {
 			stdout += s;
-			const answer = /\[y\/N(\/[sa])*\] $/.test(s) ? answers.shift() : undefined;
+			const answer = /\[y\/N(\/[sap])*\] $/.test(s) ? answers.shift() : undefined;
 			if (answer !== undefined) setImmediate(() => stdin.write(`${answer}\n`));
 		},
 		stderr: (s: string) => {
@@ -2058,6 +2058,23 @@ describe("remembered answers", () => {
 		expect(h.out()).toContain('  s: Allow "node" in this session\n[y/N/s] ');
 		expect(h.out()).not.toContain("a: Allow");
 		expect(h.backend.toolResults[0]).toEqual({ ok: false, output: "The user denied this command." });
+	});
+
+	it("p saves a project's command for the project, in ~/.atelier/project-permissions.json", async () => {
+		const project = await realpath(await mkdtemp(join(tmpdir(), "atelier-cli-project-")));
+		await writeFile(join(project, "run.sh"), "#!/bin/sh\nprintf ran\n", { mode: 0o755 });
+		const h = harness([[leave("./run.sh"), { event: finished }]], { isTTY: true, answers: ["p"], home });
+		await run(["--no-review", "--cwd", project, "x"], h.io, h.createBackend);
+		expect(h.out()).toContain(
+			'  s: Allow "./run.sh" in this session\n  p: Allow "./run.sh" always in this project\n[y/N/s/p] ',
+		);
+		expect(JSON.parse(await readFile(join(home, ".atelier", "project-permissions.json"), "utf8")).allow).toEqual([
+			{ bash: "./run.sh", project },
+		]);
+		const listed = harness([], { input: ["/permissions"], home });
+		await run(["--no-review", "--cwd", project], listed.io, listed.createBackend);
+		expect(listed.out()).toContain(`1. project bash  ./run.sh  (in ${project})\n`);
+		await rm(project, { recursive: true, force: true });
 	});
 
 	it("/permissions lists the rules and /permissions remove deletes one", async () => {

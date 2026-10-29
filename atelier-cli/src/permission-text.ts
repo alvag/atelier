@@ -5,6 +5,10 @@ export interface ShownRule {
 	scope: string;
 	kind: string;
 	value: string;
+	/** The project a rule allowed always in a project applies to. */
+	project?: string;
+	/** A rule saved for every folder that is no longer used there. */
+	ignored?: boolean;
 }
 
 export const PERMISSIONS_USAGE = "usage: /permissions | /permissions remove <number>";
@@ -16,13 +20,19 @@ export function ruleText(tool: string | undefined, rules: readonly string[]): st
 	return visibleText(text).text;
 }
 
+/** What follows a rule in the list: its project, or why it is not used. */
+function ruleNote({ project, ignored }: ShownRule): string {
+	if (ignored === true) return "  (not used: allow it in a project instead)";
+	return project === undefined ? "" : `  (in ${visibleText(project).text})`;
+}
+
 /** The numbered list `/permissions` prints, one rule a line. */
 export function rulesListing(rules: readonly ShownRule[]): string {
 	if (rules.length === 0) return "No permission rules.";
 	return rules
 		.map(
-			({ scope, kind, value }, index) =>
-				`${index + 1}. ${scope.padEnd(7)} ${kind.padEnd(5)} ${visibleText(value).text}`,
+			(rule, index) =>
+				`${index + 1}. ${rule.scope.padEnd(7)} ${rule.kind.padEnd(5)} ${visibleText(rule.value).text}${ruleNote(rule)}`,
 		)
 		.join("\n");
 }
