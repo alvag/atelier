@@ -100,7 +100,7 @@ export function profileLine(
 export function phasesLine(
 	event: Extract<AtelierEvent, { type: "turn_finished" }>,
 	sessionBackend: string | undefined,
-	prices = true,
+	{ prices = true }: { prices?: boolean } = {},
 ): string | undefined {
 	const phases = Object.entries(event.phases ?? {}) as [TurnPhase, PhaseSpent][];
 	if (phases.length < 2) return undefined;

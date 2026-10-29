@@ -276,11 +276,13 @@ export class Conversation extends Container {
 				return;
 			case "project_instructions":
 				if (event.files.length > 0) this.#status.set("instructions", `instructions: ${shown(event.files.join(", "))}`);
+				// The files are in `/status` now: the renderer is left only what it warns about.
 				this.#rendered({ ...event, files: [] });
 				return;
 			case "skills_loaded":
 				if (event.skills.length > 0)
 					this.#status.set("skills", `skills: ${event.skills.map(({ name }) => shown(name)).join(", ")}`);
+				// The names are in `/status` now: the renderer is left only the warnings.
 				this.#rendered({ ...event, skills: [] });
 				return;
 			case "turn_finished": {
@@ -288,7 +290,7 @@ export class Conversation extends Container {
 				this.#renderer.render(event);
 				this.#renderer.endLine();
 				this.#notes = "";
-				const phases = phasesLine(event, this.#backend, false);
+				const phases = phasesLine(event, this.#backend, { prices: false });
 				const finished = finishedLine(event, this.#now());
 				this.note(phases === undefined ? finished : `${finished}\n${phases}`);
 				return;
