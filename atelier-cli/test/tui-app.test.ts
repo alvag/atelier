@@ -98,6 +98,7 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 		const input = new PassThrough();
 		const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 		const eventListeners = new Set<(sessionId: string, event: AtelierEvent) => void>();
+		const sessionEventListeners = new Set<(sessionId: string, event: AtelierEventBody) => void>();
 		exitListeners.clear();
 		const splitter = new LineSplitter();
 		const server = new RpcServer({
@@ -107,6 +108,8 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 					const message = decodeServerMessage(line);
 					if (message.type === "event")
 						for (const listener of eventListeners) listener(message.sessionId, message.event);
+					if (message.type === "session_event")
+						for (const listener of sessionEventListeners) listener(message.sessionId, message.event);
 					if (message.type !== "response") continue;
 					const waiting = pending.get(message.id);
 					pending.delete(message.id);
@@ -141,6 +144,10 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 			onEvent(listener) {
 				eventListeners.add(listener);
 				return () => eventListeners.delete(listener);
+			},
+			onSessionEvent(listener) {
+				sessionEventListeners.add(listener);
+				return () => sessionEventListeners.delete(listener);
 			},
 			onExit(listener) {
 				exitListeners.add(listener);
@@ -4129,6 +4136,38 @@ describe("TUI and background jobs", { timeout: 20_000 }, () => {
 		expect(h.backend.prompts[1]).toMatch(/^Background job 1 \("ci wait"\) ended: exit code 0/);
 		// Once the notice was read, the footer counts nothing; a command typed while a turn runs would wait in the editor.
 		await until(() => h.screen.screen().endsWith("sandbox ✗ · $1.50"));
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
+	it("shows the end of a job after an interrupted turn at once, with its notice waiting in the footer", async () => {
+		const go = join(cwd, "go");
+		const command = `while [ ! -f ${go} ]; do sleep 0.1; done; echo done`;
+		const h = harness([
+			[
+				{ event: started },
+				{ toolCall: { tool: "bash_background", input: { command, label: "ci wait" }, callId: "c1" } },
+				{ waitForInterrupt: true },
+			],
+			[{ event: finished }],
+		]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("start it");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("⧗ job 1 started · ci wait · 1 running"));
+		h.screen.type("\x1b");
+		await until(() => h.screen.screen().includes("interrupted"));
+		await writeFile(go, "");
+		await until(() => h.screen.screen().includes("■ job 1 ended · exit 0"));
+		await until(() => h.screen.screen().endsWith("sandbox ✗ · 1 notice waiting"));
+		expect(h.backend.prompts).toHaveLength(1);
+		h.screen.type("continue");
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 2);
+		expect(h.backend.prompts[1]).toMatch(/^Background job 1 /);
+		await until(() => h.screen.screen().endsWith("sandbox ✗ · $0.50"));
 		h.screen.type("/exit");
 		h.screen.type("\r");
 		expect(await code).toBe(0);
