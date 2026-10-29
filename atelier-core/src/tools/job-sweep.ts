@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -94,7 +94,7 @@ function jobProcesses(rows: readonly ProcessRow[], pgid: number): number[] {
 export type ProcessList = (entry: string) => Promise<ProcessRow[]>;
 
 async function listProcesses(entry: string): Promise<ProcessRow[]> {
-	return process.platform === "linux" ? linuxProcesses(entry) : psProcesses(entry);
+	return process.platform === "linux" ? procProcesses(entry) : psProcesses(entry);
 }
 
 /** `ps -E` adds each process's environment, when it may be read, after its command line. */
@@ -126,27 +126,36 @@ async function psProcesses(entry: string): Promise<ProcessRow[]> {
 	return rows;
 }
 
-function linuxProcesses(entry: string): ProcessRow[] {
+/**
+ * The processes as Linux's `/proc` (or a tree laid out like it, under `root`) says them. Read without blocking, so a
+ * read that does not answer leaves the sweep's timeout to run.
+ */
+export async function procProcesses(entry: string, root = "/proc"): Promise<ProcessRow[]> {
 	let names: string[] = [];
 	try {
-		names = readdirSync("/proc").filter((name) => /^\d+$/.test(name));
+		names = (await readdir(root)).filter((name) => /^\d+$/.test(name));
 	} catch {
 		return [];
 	}
-	return names.flatMap((name) => {
-		try {
-			// The fields after the command name, which may hold spaces and parentheses: state, ppid, pgrp.
-			const stat = readFileSync(`/proc/${name}/stat`, "utf8");
-			const [, ppid, pgid] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-			let marked = false;
+	const rows = await Promise.all(
+		names.map(async (name): Promise<ProcessRow | undefined> => {
 			try {
-				marked = readFileSync(`/proc/${name}/environ`, "latin1").split("\0").includes(entry);
-			} catch {}
-			return [{ pid: Number(name), ppid: Number(ppid), pgid: Number(pgid), marked }];
-		} catch {
-			return [];
-		}
-	});
+				// The fields after the command name, which may hold spaces and parentheses: state, ppid, pgrp.
+				const stat = await readFile(`${root}/${name}/stat`, "utf8");
+				const [, ppid, pgid] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+				const environ = await readFile(`${root}/${name}/environ`, "latin1").catch(() => "");
+				return {
+					pid: Number(name),
+					ppid: Number(ppid),
+					pgid: Number(pgid),
+					marked: environ.split("\0").includes(entry),
+				};
+			} catch {
+				return undefined;
+			}
+		}),
+	);
+	return rows.filter((row): row is ProcessRow => row !== undefined);
 }
 
 /** The watcher of a job runs this file when Atelier is gone: `node job-sweep.ts <pgid> <mark>`. */
