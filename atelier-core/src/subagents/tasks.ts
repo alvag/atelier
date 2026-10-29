@@ -89,8 +89,9 @@ export class BackgroundTasks {
 	readonly #entries = new Map<string, Entry>();
 	#next = 0;
 	#ends = 0;
-	/** Places taken by tasks whose subagent is starting: they count against the cap. */
+	/** Places taken by tasks whose subagent is starting: they count against the cap, and the close waits for them. */
 	#reserved = 0;
+	readonly #places = new Set<Promise<void>>();
 	#closing = false;
 
 	constructor(options: BackgroundTasksOptions) {
@@ -105,7 +106,9 @@ export class BackgroundTasks {
 
 	/**
 	 * Takes a place for a task before its subagent starts, so a refusal comes before anything is created; throws
-	 * TaskRefusedError past the cap or while closing. `release` gives the place back when the subagent did not start.
+	 * TaskRefusedError past the cap or while closing. `release` gives the place back when the subagent did not start,
+	 * once what was made for it is gone: `stopAll` waits for it. `start` throws TaskRefusedError once the close began,
+	 * keeping the place until the caller releases it.
 	 */
 	reserve(): { start: (request: TaskRequest) => TaskInfo; release: () => void } {
 		if (this.#closing) throw new TaskRefusedError("Refused: the session is closing.");
@@ -114,14 +117,21 @@ export class BackgroundTasks {
 				`Refused: ${MAX_BACKGROUND_TASKS} background tasks are running; stop one with job_stop or wait for one to end.`,
 			);
 		this.#reserved++;
+		let settle = () => {};
+		const settled = new Promise<void>((resolve) => (settle = resolve));
+		this.#places.add(settled);
 		let held = true;
 		const release = () => {
-			if (held) this.#reserved--;
+			if (!held) return;
 			held = false;
+			this.#reserved--;
+			this.#places.delete(settled);
+			settle();
 		};
 		return {
 			release,
 			start: (request) => {
+				if (this.#closing) throw new TaskRefusedError("Refused: the session is closing.");
 				release();
 				return this.#start(request);
 			},
@@ -144,9 +154,10 @@ export class BackgroundTasks {
 		return { outcome: "stopped", task: this.#snapshot(entry) };
 	}
 
-	/** Stops every running task and refuses new ones: for the session's close. */
+	/** Refuses new tasks, waits for the places of those starting, and stops every running one: for the session's close. */
 	async stopAll(): Promise<void> {
 		this.#closing = true;
+		await Promise.all([...this.#places]);
 		await Promise.all([...this.#entries.keys()].map((id) => this.stop(id)));
 	}
 
