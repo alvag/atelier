@@ -12,10 +12,12 @@ import type {
 } from "./backend.ts";
 import { Channel } from "./channel.ts";
 import { COMPACTED_HEADER } from "./compaction/compactor.ts";
+import { nearCompaction } from "./context-gauge.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
 	type BackendChange,
+	type ContextUsage,
 	describeError,
 	type Effort,
 	type EffortNotSent,
@@ -329,6 +331,8 @@ export class Session {
 	#handoffSpent: PhaseSpent | undefined;
 	/** What the last backend change did to the history, said once in `session_configured`. */
 	#backendChange: BackendChange | undefined;
+	/** The backend and model `context_warning` was said for, until the context goes below it again or compacts. */
+	#contextWarned: string | undefined;
 	/** Events from outside a turn (a summary that was not saved), said at the start of the next one. */
 	#notices: AtelierEventBody[] = [];
 	/** The main agent as its backend's `session_started` described it: what the turn's parts say it ran with. */
@@ -893,6 +897,14 @@ export class Session {
 
 		try {
 			for await (const body of turn) {
+				if (body.type === "compaction_finished" && body.ok && body.parentCallId === undefined)
+					this.#contextWarned = undefined;
+				const warning = body.type === "turn_finished" ? this.#contextWarning(body.context) : undefined;
+				if (warning !== undefined) {
+					const said = stamp(warning);
+					this.#options.record?.event(said);
+					yield said;
+				}
 				const event = stamp(body);
 				// The state goes after the turn's events and before its end, which is the last line of the turn.
 				if (event.type === "turn_finished") this.#options.record?.state(this.#endBackend, this.#endState);
@@ -911,6 +923,21 @@ export class Session {
 			this.#abort = undefined;
 			this.#givenBack = false;
 		}
+	}
+
+	/** The warning a turn's context brings: once near compaction, again after it went below or the model changed. */
+	#contextWarning(context: ContextUsage | undefined): AtelierEventBody | undefined {
+		if (context === undefined) return undefined;
+		if (!nearCompaction(context)) {
+			this.#contextWarned = undefined;
+			return undefined;
+		}
+		const { backend, model } = this.configuration();
+		const running = `${backend}/${model ?? ""}`;
+		if (this.#contextWarned === running) return undefined;
+		this.#contextWarned = running;
+		const { tokens, window, compactAt } = context;
+		return { type: "context_warning", tokens, window, compactAt };
 	}
 
 	/** The first turn saves the configuration it starts with; every turn saves its prompt. */

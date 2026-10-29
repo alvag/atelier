@@ -1,4 +1,13 @@
 export { claudeCodeAliases } from "../backends/claude-code/models.ts";
+export {
+	CONTEXT_WARNING_SHARE,
+	type ContextGauge,
+	type ContextLevel,
+	contextGauge,
+	contextWarningText,
+	nearCompaction,
+	windowSize,
+} from "../context-gauge.ts";
 export type {
 	AtelierEvent,
 	AtelierEventBody,
