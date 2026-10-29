@@ -53,6 +53,8 @@ atelier --continue                                               # resume the ne
 
 The interactive session runs full screen: the transcript scrolls above (mouse wheel, PageUp/PageDown) and the editor and the status line stay at the bottom; on exit the transcript is left in the terminal. It shows your prompts and the editor on a subtle background after `›`, as Codex does, and the agent's text as Markdown, with code blocks colored by language. What the session loaded (instructions, skills, memory) and its cost are in `/status` and the status line, not in the transcript; `/stats` breaks the cost down by model, phase and role. Text selected with the mouse is copied to the clipboard.
 
+The status line shows how full the context is, as a share of the model's window: `ctx ▰▱▱▱▱▱▱▱ 11% · 1M`. It turns yellow past 70% and red past 90% of the point where the session compacts, reads `?` right after a compaction until the next answer measures it, and a warning says once when the context reaches 90% of that point. Atelier compacts `anthropic-api`, `opencode-go` and `openai-codex` sessions when the context passes the window minus 16,384 tokens (Claude Code compacts on its own). With a 1M-token model, every request of a long session can carry close to a million tokens and each turn costs more: `ATELIER_COMPACT_AT` sets a lower point ([compaction](docs/architecture.md)).
+
 | Option                             | Effect                                                                                                                                                                       |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--mode <mode>`                    | Permission mode: `normal` (default), `auto` or `yolo` (see below).                                                                                                           |
@@ -151,6 +153,7 @@ A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent
 | `ATELIER_TUI=off`            | Line-by-line session instead of the TUI.                                                                                                |
 | `ATELIER_REVIEW=off`         | Same as `--no-review`.                                                                                                                  |
 | `ATELIER_SANDBOX=off`        | Same as `--no-sandbox`.                                                                                                                 |
+| `ATELIER_COMPACT_AT=<n>`     | Context tokens at which Atelier compacts a session, below its default (the window minus 16,384, and 32,000 more on `openai-codex`).     |
 | `ATELIER_MEMORY=off`         | No long-term memory.                                                                                                                    |
 | `ATELIER_MEMORY_PROMPTS=off` | Your prompts are not saved to long-term memory.                                                                                         |
 | `ATELIER_MCP=off`            | No MCP servers.                                                                                                                         |
