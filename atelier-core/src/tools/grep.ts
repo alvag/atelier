@@ -275,14 +275,16 @@ function grepArgs(
 	glob: string | undefined,
 	skipped: string[],
 	flags: SearchFlags,
+	targetIsFile: boolean,
 ): string[] {
 	const args = [
 		`-rnHI${flags.literal ? "F" : "E"}${flags.ignoreCase ? "i" : ""}`,
 		"--null",
 		"--exclude-dir=node_modules",
 		"--exclude-dir=.*",
-		"--exclude=.*",
 	];
+	// Like ripgrep, search an explicitly named file even when its name starts with a dot.
+	if (!targetIsFile) args.push("--exclude=.*");
 	for (const path of skipped) args.push(`--exclude-dir=${path}`);
 	if (flags.context > 0) args.push("-C", String(flags.context));
 	if (glob !== undefined && !glob.includes("/"))
@@ -396,7 +398,7 @@ export interface GrepOptions {
 export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 	return defineTool({
 		name: "grep",
-		description: `Search file contents with a regular expression${options.outside ? "" : " inside the working directory"}. Returns path:line:text, at most ${MAX_GREP_MATCHES} matches unless limit says otherwise. Skips hidden files and node_modules.${options.outside ? " The path may be absolute or outside the working directory; the user's secret directories are protected." : ""}`,
+		description: `Search file contents with a regular expression${options.outside ? "" : " inside the working directory"}. Returns path:line:text, at most ${MAX_GREP_MATCHES} matches unless limit says otherwise. Skips hidden files when searching directories, and node_modules.${options.outside ? " The path may be absolute or outside the working directory; the user's secret directories are protected." : ""}`,
 		inputShape: {
 			pattern: z.string().min(1).describe("Regular expression"),
 			path: z
@@ -442,7 +444,8 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 				if (signal?.aborted) return failure("Search aborted.");
 				const useRipgrep = options.useRipgrep ?? hasRipgrep();
 				// ripgrep never filters a file given as the target by a glob; the fallback drops the glob there too.
-				const searchedGlob = (await isFile(target)) ? undefined : glob;
+				const targetIsFile = await isFile(target);
+				const searchedGlob = targetIsFile ? undefined : glob;
 				// Only the fallback applies a glob with a directory itself; ripgrep takes it as given.
 				const byGlob = searchedGlob?.includes("/") ? globFilter(searchedGlob) : undefined;
 				// A match outside the working directory comes back absolute; its glob sees it from the searched folder, so
@@ -470,7 +473,7 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 						)
 					: await runSearch(
 							"grep",
-							grepArgs(target, pattern, searchedGlob, skipped, flags),
+							grepArgs(target, pattern, searchedGlob, skipped, flags, targetIsFile),
 							root,
 							signal,
 							scan,
