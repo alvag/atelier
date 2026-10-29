@@ -114,6 +114,27 @@ describe("ask_user input validation", () => {
 	});
 });
 
+it("accepts an optional header of up to 16 characters and passes it to the user callback", async () => {
+	const ask = vi.fn<AskUser>().mockResolvedValue({ status: "cancelled", reason: "user" });
+	const questions = [
+		{ ...question(), header: "x".repeat(16) },
+		{ ...question(), id: "q2" },
+	];
+	await createAskUserTool(ask).execute({ questions }, context);
+	expect(ask).toHaveBeenCalledExactlyOnceWith(questions, context);
+	expect(z.toJSONSchema(z.object(createAskUserTool().inputShape))).toMatchObject({
+		properties: { questions: { items: { properties: { header: { maxLength: 16 } } } } },
+	});
+});
+
+it.each(["", "  ", "x".repeat(17)])("rejects the header %j before asking anyone", async (header) => {
+	const ask = vi.fn<AskUser>();
+	await expect(createAskUserTool(ask).execute({ questions: [{ ...question(), header }] }, context)).rejects.toThrow(
+		ToolInputError,
+	);
+	expect(ask).not.toHaveBeenCalled();
+});
+
 it("accepts optional descriptions and omitted false recommendations", async () => {
 	const questions = [
 		{

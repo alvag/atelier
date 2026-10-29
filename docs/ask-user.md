@@ -11,6 +11,7 @@ One tool handles a single question or a batch:
 	"questions": [
 		{
 			"id": "q1",
+			"header": "Approach",
 			"question": "Which approach?",
 			"options": [
 				{ "id": "a", "label": "Minimal change", "description": "Keep the current interface.", "recommended": true },
@@ -22,7 +23,7 @@ One tool handles a single question or a batch:
 ```
 
 - 1–4 questions, each with 2–4 model-provided options. Question IDs must be unique in the batch; option IDs must be unique within their question.
-- IDs: 1–64 characters; question text: 1–500; labels: 1–200. None may be blank. Optional descriptions: 1–300 characters and nonblank when present; a blank description rejects the entire batch before the user callback runs.
+- IDs: 1–64 characters; question text: 1–500; labels: 1–200. None may be blank. An optional `header` (1–16 characters, not blank) is a short title for the question: the TUI uses it as the question's tab in a batch (`Q1`, `Q2`… without it); line mode and the desktop do not show it. Optional descriptions: 1–300 characters and nonblank when present; a blank description rejects the entire batch before the user callback runs.
 - Exactly one option per question must have `recommended: true`; the others may omit the field or set it to `false`. Clients must show it first and mark it recommended (`(Recommended)` in line mode and the desktop, a `Recommended` tag in the TUI), without selecting it automatically or preselecting it. Descriptions go below their labels, or beside them in the TUI when the width allows.
 - Every question also offers `Other...` (`Type something…` in the TUI), independently of the 2–4 model options. The model cannot disable it. The user writes 1–2000 characters, not only whitespace. The answer preserves their text, including leading/trailing spaces and newlines. String limits use JavaScript UTF-16 length.
 
