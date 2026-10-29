@@ -414,10 +414,13 @@ export function jobStartedText(job: JobInfo): string {
 	return `Started background job ${job.id} ("${job.label}"). Output: ${job.outputPath}\nYou get a notice when it ends; job_list shows it and job_stop stops it.`;
 }
 
-/** What `job_list` answers: one aligned row per job, or that there are none. */
-export function jobListText(jobs: readonly JobInfo[]): string {
-	if (jobs.length === 0) return "No background jobs.";
-	const rows = jobs.map((job) => [job.id, statusWord(job), formatElapsed(job.durationMs), job.label, job.outputPath]);
+/** What `job_list` answers: one aligned row per job, then the `others` (background tasks), or that there are none. */
+export function jobListText(jobs: readonly JobInfo[], others: readonly string[][] = []): string {
+	if (jobs.length === 0 && others.length === 0) return "No background jobs.";
+	const rows = [
+		...jobs.map((job) => [job.id, statusWord(job), formatElapsed(job.durationMs), job.label, job.outputPath]),
+		...others,
+	];
 	const widths = [0, 1, 2, 3].map((column) => Math.max(...rows.map((row) => (row[column] as string).length)));
 	return rows.map((row) => row.map((cell, column) => cell.padEnd(widths[column] ?? 0)).join("  ")).join("\n");
 }

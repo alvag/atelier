@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { type BackgroundTasks, taskListRows, taskStopText } from "../subagents/tasks.ts";
 import {
 	type BashOptions,
 	type CommandSettings,
@@ -8,7 +9,7 @@ import {
 	prepareCommand,
 	preparedBlocks,
 } from "./bash.ts";
-import { JobRefusedError, jobListText, jobStartedText, jobStopText, MAX_RUNNING_JOBS } from "./jobs.ts";
+import { JobRefusedError, type Jobs, jobListText, jobStartedText, jobStopText, MAX_RUNNING_JOBS } from "./jobs.ts";
 import { sandbox as sharedSandbox } from "./sandbox.ts";
 import { defineTool, type ToolDefinition, type ToolOutcome } from "./types.ts";
 
@@ -80,15 +81,17 @@ export function createBackgroundTools({
 	const list = defineTool({
 		name: JOB_LIST_TOOL,
 		description:
-			"List the background jobs of this session, running and recently finished: id, status, elapsed time, label and output file.",
+			"List the background jobs and background tasks (subagents) of this session, running and recently finished: id, status, elapsed time, label and output file.",
 		inputShape: {},
-		async execute(_input, { jobs }) {
-			if (jobs === undefined) return failed(NOT_AVAILABLE);
-			const all = jobs.list();
+		async execute(_input, { jobs, tasks }) {
+			if (jobs === undefined && tasks === undefined) return failed(NOT_AVAILABLE);
+			const all = jobs?.list() ?? [];
+			const started = tasks?.list() ?? [];
+			const count = all.length + started.length;
 			return {
 				ok: true,
-				output: jobListText(all),
-				summary: `${all.length} job${all.length === 1 ? "" : "s"}`,
+				output: jobListText(all, taskListRows(started)),
+				summary: `${count} job${count === 1 ? "" : "s"}`,
 				truncated: false,
 			};
 		},
@@ -96,20 +99,34 @@ export function createBackgroundTools({
 	const stop = defineTool({
 		name: JOB_STOP_TOOL,
 		description:
-			"Stop a background job: its whole process tree is killed, SIGTERM then SIGKILL. A stopped job sends no notice.",
-		inputShape: { id: z.string().min(1).describe("The job id bash_background answered") },
-		async execute({ id }, { jobs }) {
-			if (jobs === undefined) return failed(NOT_AVAILABLE);
-			const result = await jobs.stop(id);
-			const output = jobStopText(result);
-			if (result.outcome === "unknown") return failed(output);
+			"Stop a background job (its whole process tree is killed, SIGTERM then SIGKILL) or a background task (its subagent is stopped). Nothing stopped sends a notice.",
+		inputShape: { id: z.string().min(1).describe("The job id bash_background answered, or the task id task answered") },
+		async execute({ id }, { jobs, tasks }) {
+			if (jobs === undefined && tasks === undefined) return failed(NOT_AVAILABLE);
+			const { outcome, output, what } = await stopOne(id, jobs, tasks);
+			if (outcome === "unknown") return failed(output);
 			return {
 				ok: true,
 				output,
-				summary: result.outcome === "stopped" ? `job ${id} stopped` : `job ${id} had ended`,
+				summary: outcome === "stopped" ? `${what} ${id} stopped` : `${what} ${id} had ended`,
 				truncated: false,
 			};
 		},
 	});
 	return [background, list, stop];
+}
+
+/** Stops the job or the background task `id` names; a task's id starts with `task-`. */
+async function stopOne(
+	id: string,
+	jobs: Jobs | undefined,
+	tasks: BackgroundTasks | undefined,
+): Promise<{ outcome: "stopped" | "ended" | "unknown"; output: string; what: "job" | "task" }> {
+	if (id.startsWith("task-") && tasks !== undefined) {
+		const result = await tasks.stop(id);
+		return { outcome: result.outcome, output: taskStopText(result), what: "task" };
+	}
+	if (jobs === undefined) return { outcome: "unknown", output: `No job ${id}.`, what: "job" };
+	const result = await jobs.stop(id);
+	return { outcome: result.outcome, output: jobStopText(result), what: "job" };
 }
