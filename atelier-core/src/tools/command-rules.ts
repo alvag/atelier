@@ -107,8 +107,15 @@ const PROJECT_PROGRAMS = new Set([
 ]);
 /** Commands that change the directory later commands of the line run in. */
 const CHANGES_DIRECTORY = new Set(["cd", "pushd", "popd"]);
-/** A word that names a place outside the project: absolute, under `~`, or through `..`, also as an option's value (`-C/x`, `--dir=/x`). */
-const LEAVES_PROJECT = /^(?:-[A-Za-z]*|--?[\w-]+=|[\w-]*=)?[/~]|[=:,][/~]|(?:^|[/=:,])\.\.(?:\/|$)/;
+/**
+ * Whether a word may name a place outside the project, failing closed: an expansion the shell does (`$HOME`, `${x}`,
+ * `~`, a brace list), any `..`, or an absolute path, by itself or attached to an option (`-C/x`, `--dir=/x`, `--dir/x`)
+ * or a value (`file:/x`, `foo@/x`).
+ */
+function leavesProject({ value, raw }: { value: string; raw: string }): boolean {
+	if (/[$`~{]/.test(raw) || value.includes("~") || value.includes("..")) return true;
+	return /(?:^|[=:,@])\/|^-[A-Za-z0-9]+\/|^--[\w-]+\//.test(value);
+}
 
 /** Programs whose line is not one command the words show: they run a string, a file in this shell, or a structure. */
 const NEVER = new Set([
@@ -248,7 +255,7 @@ function keyOf({ wrappers, words, writesFile, setsEnvironment }: SimpleCommand):
 		runsCode: wrappers.includes("sudo") || isRunner(program, subcommand),
 		launcher: launcher !== undefined || runsInterpreter,
 		project: isProjectProgram(program),
-		leavesProject: words.some(({ value }) => LEAVES_PROJECT.test(value)),
+		leavesProject: words.some(leavesProject),
 	};
 }
 

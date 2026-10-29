@@ -219,6 +219,8 @@ describe("coveredBy with project rules", () => {
 		expect(coveredBy("pnpm -r build", [], ["pnpm"])).toBe(true);
 		expect(coveredBy("mkdir x && pnpm install", ["mkdir"], ["pnpm install"])).toBe(true);
 		expect(coveredBy("pnpm install src/lib", [], ["pnpm install"])).toBe(true);
+		expect(coveredBy("make -C sub -j4 test", [], ["make"])).toBe(true);
+		expect(coveredBy("pnpm --filter ./packages/web build", [], ["pnpm"])).toBe(true);
 		expect(coveredBy("pnpm dlx evil", [], ["pnpm"])).toBe(false);
 	});
 
@@ -234,6 +236,18 @@ describe("coveredBy with project rules", () => {
 		"make --directory=../other",
 		"pnpm install ../lib",
 		"../other/gradlew build",
+		"make -C../other",
+		"make -f../other/Makefile",
+		'make -C "$HOME/other"',
+		"make -C $HOME/other",
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell expands it, not JavaScript
+		"make -C ${HOME}/other",
+		"make -C~/other",
+		"make --directory/x",
+		"make -C {/tmp,x}",
+		"pnpm --dir=~/x install",
+		"npm install file:../lib",
+		"npm install foo@/x",
 	])("never covers %s by a project rule: it can leave the project", (command) => {
 		expect(
 			coveredBy(command, ["cd", "pushd", "popd"], ["pnpm", "pnpm install", "npm", "make", "../other/gradlew"]),
