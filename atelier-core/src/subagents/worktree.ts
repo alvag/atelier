@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 
@@ -14,6 +14,12 @@ const SNAPSHOT_IDENTITY = {
 	GIT_COMMITTER_NAME: "Atelier",
 	GIT_COMMITTER_EMAIL: "atelier@localhost",
 };
+/**
+ * What git would otherwise run of the repository's own configuration: hooks (`worktree add` runs post-checkout) and
+ * the file system monitor. Filters are turned off per driver (`filterOverrides`), and diffs take no textconv or
+ * external diff.
+ */
+const NO_PROGRAMS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
 
 /** A worktree refused before anything was made: the folder is not in a git repository with a commit. */
 export class WorktreeRefusedError extends Error {
@@ -30,10 +36,11 @@ export interface WorktreeChanges {
 }
 
 /**
- * How a worker got the parent's dependencies (each ignored `node_modules` folder): `cloned`, copies that share their
- * blocks until written; `linked`, links to the parent's, which the worker's sandbox cannot write; `none`.
+ * How a worker got the parent's dependencies (each ignored `node_modules` folder), always as its own: `cloned`, copies
+ * that share their blocks until written; `copied`, plain copies where the file system cannot clone; `none`, there were
+ * none.
  */
-export type Dependencies = "cloned" | "linked" | "none";
+export type Dependencies = "cloned" | "copied" | "none";
 
 /** A worker's own worktree of the parent's tree as it was when the task started. */
 export interface TaskWorktree {
@@ -45,7 +52,7 @@ export interface TaskWorktree {
 	head: string;
 	dirty: boolean;
 	dependencies: Dependencies;
-	/** Writes the patch of what changed to `patchPath`; undefined when nothing changed. */
+	/** Writes the patch of what changed to `patchPath`, the dependency folders left out; undefined when nothing changed. */
 	collect(patchPath: string): Promise<WorktreeChanges | undefined>;
 	/** The files of the parent's tree that differ from the snapshot now: what the parent changed since. */
 	changedSince(): Promise<string[]>;
@@ -53,9 +60,18 @@ export interface TaskWorktree {
 	remove(): Promise<void>;
 }
 
-/** Runs git without hooks: nothing of the repository's own code runs for a snapshot, a worktree or a patch. */
-async function git(cwd: string, args: readonly string[], env: Record<string, string> = {}): Promise<string> {
-	const { stdout } = await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
+export interface TaskWorktreeOptions {
+	/** Whether to try a copy-on-write clone of the dependencies before a plain copy; true unless a test says. */
+	clone?: boolean;
+}
+
+/** Runs git with none of the repository's programs: `overrides` turns its filter drivers off. */
+async function git(
+	cwd: string,
+	args: readonly string[],
+	{ env = {}, overrides = [] }: { env?: Record<string, string>; overrides?: readonly string[] } = {},
+): Promise<string> {
+	const { stdout } = await execFileAsync("git", [...NO_PROGRAMS, ...overrides, ...args], {
 		cwd,
 		env: { ...process.env, ...env },
 		encoding: "utf8",
@@ -65,21 +81,56 @@ async function git(cwd: string, args: readonly string[], env: Record<string, str
 }
 
 /**
- * The tree of `top`'s working tree as it is now, tracked and untracked files but not ignored ones, written with an
- * index of its own (`index`), so the user's index, branches and stash are never touched.
+ * Every filter driver git's configuration names (`filter.<driver>.*`, from any scope), turned off: no clean, smudge or
+ * process command, and not required. A file whose attributes name one is taken as it is on disk.
  */
-async function treeOfWorkingTree(top: string, base: string, index: string): Promise<string> {
-	const env = { GIT_INDEX_FILE: index };
-	await git(top, ["read-tree", base], env);
-	await git(top, ["add", "-A"], env);
-	return (await git(top, ["write-tree"], env)).trim();
+async function filterOverrides(cwd: string): Promise<string[]> {
+	// Exit 1 when no key matches: no driver to turn off.
+	const keys = await git(cwd, ["config", "--name-only", "--get-regexp", "^filter\\."]).catch(() => "");
+	const drivers = new Set(
+		keys
+			.split("\n")
+			.filter((key) => key.lastIndexOf(".") > "filter".length)
+			.map((key) => key.slice("filter.".length, key.lastIndexOf("."))),
+	);
+	return [...drivers].flatMap((driver) =>
+		["clean=", "smudge=", "process=", "required=false"].flatMap((setting) => ["-c", `filter.${driver}.${setting}`]),
+	);
+}
+
+/**
+ * The tree of `top`'s working tree as it is now, tracked and untracked files but not ignored ones nor the `excluded`
+ * folders, written with an index of its own (`index`), so the user's index, branches and stash are never touched.
+ */
+async function treeOfWorkingTree(
+	top: string,
+	base: string,
+	index: string,
+	excluded: readonly string[] = [],
+): Promise<string> {
+	const options = { env: { GIT_INDEX_FILE: index, GIT_LITERAL_PATHSPECS: "1" }, overrides: await filterOverrides(top) };
+	await git(top, ["read-tree", base], options);
+	await git(top, ["add", "-A"], options);
+	if (excluded.length > 0)
+		await git(top, ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...excluded], options);
+	return (await git(top, ["write-tree"], options)).trim();
+}
+
+/** The two trees' difference as `git diff` gives it, with nothing of the repository's own diff programs. */
+async function diffTrees(cwd: string, from: string, to: string, format: readonly string[]): Promise<string> {
+	return git(cwd, ["diff", "--no-textconv", "--no-ext-diff", "--no-renames", ...format, from, to]);
 }
 
 /**
  * Makes a worktree in `dir` of `cwd`'s repository, detached at a snapshot of its working tree: HEAD plus the changes
- * not committed yet. Throws WorktreeRefusedError when `cwd` is not in a repository with a commit.
+ * not committed yet, with the parent's dependencies as its own. Throws WorktreeRefusedError when `cwd` is not in a
+ * repository with a commit, and any other error when the worktree or its dependencies could not be made.
  */
-export async function createTaskWorktree(cwd: string, dir: string, { link }: { link: boolean }): Promise<TaskWorktree> {
+export async function createTaskWorktree(
+	cwd: string,
+	dir: string,
+	{ clone = true }: TaskWorktreeOptions = {},
+): Promise<TaskWorktree> {
 	const refused = () =>
 		new WorktreeRefusedError(
 			`Refused: a worker runs in the background in a git worktree of its own, and ${cwd} is not in a git repository with a commit; run it without background.`,
@@ -99,6 +150,7 @@ export async function createTaskWorktree(cwd: string, dir: string, { link }: { l
 	let snapshotTree: string;
 	let snapshot: string;
 	let place: string;
+	let folders: string[];
 	let dependencies: Dependencies;
 	try {
 		headTree = (await git(top, ["rev-parse", "HEAD^{tree}"])).trim();
@@ -106,14 +158,15 @@ export async function createTaskWorktree(cwd: string, dir: string, { link }: { l
 		snapshot = (
 			await git(
 				top,
-				["commit-tree", snapshotTree, "-p", head, "-m", "atelier: snapshot for a background worker"],
-				SNAPSHOT_IDENTITY,
+				["commit-tree", "--no-gpg-sign", snapshotTree, "-p", head, "-m", "atelier: snapshot for a background worker"],
+				{ env: SNAPSHOT_IDENTITY },
 			)
 		).trim();
 		// What a crash left of earlier worktrees (their folder gone) is cleared first.
 		await git(top, ["worktree", "prune"]).catch(() => "");
-		await git(top, ["worktree", "add", "--detach", tree, snapshot]);
-		dependencies = await shareDependencies(top, tree, link);
+		await git(top, ["worktree", "add", "--detach", tree, snapshot], { overrides: await filterOverrides(top) });
+		folders = await dependencyFolders(top);
+		dependencies = await shareDependencies(top, tree, folders, clone);
 		place = join(tree, relative(top, await realpath(cwd)));
 		await mkdir(place, { recursive: true });
 	} catch (error) {
@@ -130,11 +183,11 @@ export async function createTaskWorktree(cwd: string, dir: string, { link }: { l
 		dirty: snapshotTree !== headTree,
 		dependencies,
 		async collect(patchPath) {
-			const changed = await treeOfWorkingTree(tree, snapshot, index);
+			// The dependencies are never part of the patch, whatever the worker made of them (a link is not ignored as a folder is).
+			const changed = await treeOfWorkingTree(tree, snapshot, index, folders);
 			if (changed === snapshotTree) return undefined;
-			const patch = await git(tree, ["diff", "--binary", "--no-renames", snapshot, changed]);
-			await writeFile(patchPath, patch);
-			const counts = await git(tree, ["diff", "--numstat", "--no-renames", snapshot, changed]);
+			await writeFile(patchPath, await diffTrees(tree, snapshot, changed, ["--binary"]));
+			const counts = await diffTrees(tree, snapshot, changed, ["--numstat"]);
 			let insertions = 0;
 			let deletions = 0;
 			const files: string[] = [];
@@ -150,7 +203,7 @@ export async function createTaskWorktree(cwd: string, dir: string, { link }: { l
 		async changedSince() {
 			const now = await treeOfWorkingTree(top, snapshot, join(dir, "parent-index"));
 			if (now === snapshotTree) return [];
-			const names = await git(top, ["diff", "--name-only", "--no-renames", snapshot, now]);
+			const names = await diffTrees(top, snapshot, now, ["--name-only"]);
 			return names.split("\n").filter((name) => name !== "");
 		},
 		remove() {
@@ -192,31 +245,32 @@ async function cloneFolder(from: string, to: string): Promise<boolean> {
 }
 
 /**
- * Gives the worktree the parent's dependencies, so the worker can run its tests: each `node_modules` folder cloned,
- * or, where the file system cannot clone and `link` allows it (the worker's sandbox keeps it from writing outside its
- * worktree), linked. Nothing to share, or nothing allowed, is `none`.
+ * Gives the worktree the parent's dependencies as its own, so the worker can run its tests and nothing it writes there
+ * reaches the parent's: each folder cloned, or copied where the file system cannot clone (the links inside are copied
+ * as links). A folder that cannot be copied fails the whole worktree: the worker would not have what it needs.
  */
-async function shareDependencies(top: string, tree: string, link: boolean): Promise<Dependencies> {
-	const folders = await dependencyFolders(top).catch((): string[] => []);
+async function shareDependencies(
+	top: string,
+	tree: string,
+	folders: readonly string[],
+	clone: boolean,
+): Promise<Dependencies> {
 	let shared: Dependencies = "none";
 	for (const folder of folders) {
 		const from = join(top, folder);
 		const to = join(tree, folder);
-		if (
-			await lstat(to).then(
-				() => true,
-				() => false,
-			)
-		)
-			continue;
+		await rm(to, { recursive: true, force: true });
 		await mkdir(dirname(to), { recursive: true });
-		if (await cloneFolder(from, to)) {
+		if (clone && (await cloneFolder(from, to))) {
 			if (shared === "none") shared = "cloned";
 			continue;
 		}
-		if (!link) continue;
-		await symlink(from, to, "dir");
-		shared = "linked";
+		try {
+			await execFileAsync("cp", ["-R", from, to]);
+		} catch (error) {
+			throw new Error(`could not copy ${folder} into the worker's worktree: ${(error as Error).message}`);
+		}
+		shared = "copied";
 	}
 	return shared;
 }

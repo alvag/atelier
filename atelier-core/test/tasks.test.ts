@@ -69,6 +69,22 @@ describe("background tasks", () => {
 		);
 		places[0]?.release();
 		expect(() => tasks.reserve().release()).not.toThrow();
+		for (const place of places) place.release();
+	});
+
+	it("waits for a task being started before the close goes on, and refuses to start it once the close began", async () => {
+		const place = tasks.reserve();
+		let closed = false;
+		const closing = tasks.stopAll().then(() => (closed = true));
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(closed).toBe(false);
+		expect(() => place.start({ agent: "explorer", prompt: "p", run: untilStopped })).toThrow(
+			"Refused: the session is closing.",
+		);
+		expect(closed).toBe(false);
+		place.release();
+		await closing;
+		expect(started).toEqual([]);
 	});
 
 	it("lists tasks with job_list and stops one with job_stop, which sends no notice", async () => {
