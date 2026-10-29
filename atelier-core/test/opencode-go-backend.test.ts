@@ -126,7 +126,7 @@ describe("opencode-go on the Messages API", () => {
 	it("sends a level only to the models that take one", async () => {
 		provider.answer(messagesReply("a"), messagesReply("b"));
 		const minimax = await collect((await start({ thinking: "high" })).send("hi"));
-		expect(minimax[0]).toMatchObject({ type: "session_started", effort: "unsupported" });
+		expect(minimax[0]).toMatchObject({ type: "session_started", effort: "high not sent" });
 		await collect((await start({ model: "claude-haiku-5-5", thinking: "high" })).send("hi"));
 		expect(provider.received[0]?.body).not.toHaveProperty("output_config");
 		expect(provider.received[1]?.body.output_config).toEqual({ effort: "high" });
@@ -149,10 +149,10 @@ describe("the OpenCode Go models", () => {
 
 	it("sends the levels of Chat Completions models as reasoning_effort, and off where the model has a value for it", () => {
 		expect(thinkingToSend("glm-5.3", "high", "opencode-go")).toEqual({ report: "high", effort: "high" });
-		expect(thinkingToSend("glm-5.3", "medium", "opencode-go")).toEqual({ report: "unsupported" });
+		expect(thinkingToSend("glm-5.3", "medium", "opencode-go")).toEqual({ report: "medium not sent" });
 		expect(thinkingToSend("hy3", "off", "opencode-go")).toEqual({ report: "off", thinking: "disabled" });
-		expect(thinkingToSend("glm-5.3", "off", "opencode-go")).toEqual({ report: "unsupported" });
-		expect(thinkingToSend("kimi-k2.7-code", "high", "opencode-go")).toEqual({ report: "unsupported" });
+		expect(thinkingToSend("glm-5.3", "off", "opencode-go")).toEqual({ report: "off not sent" });
+		expect(thinkingToSend("kimi-k2.7-code", "high", "opencode-go")).toEqual({ report: "high not sent" });
 	});
 
 	it("prices qwen3.7-plus by its tier", () => {

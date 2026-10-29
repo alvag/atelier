@@ -1,5 +1,6 @@
-import type { Effort } from "../../events.ts";
+import type { Effort, EffortNotSent } from "../../events.ts";
 import { currentModelData } from "../../model-catalog/current.ts";
+import { effortNotSent } from "../../pricing.ts";
 import type { ThinkingLevel } from "../../profiles/index.ts";
 
 /** The models the ChatGPT subscription serves to Codex; the first is the default. Another name still works. */
@@ -30,7 +31,7 @@ const ALWAYS_REASONS: ReadonlySet<string> = new Set(["gpt-6-astra", "gpt-6.1-sol
 
 /** What a thinking level sends as `reasoning.effort`, and what `session_started.effort` says about it. */
 export interface CodexReasoning {
-	report: Effort | "off" | "unsupported";
+	report: Effort | "off" | EffortNotSent;
 	/** The API's effort: one of Atelier's levels, or `none` to turn reasoning off. */
 	effort?: Effort | "none";
 }
@@ -38,12 +39,15 @@ export interface CodexReasoning {
 /**
  * The reasoning effort for a profile level: nothing when none was asked, so the model reasons as it does by
  * default. `minimal` is sent as `low`, as pi does; `off` is `none`, except where the model always reasons. A model
- * only the Codex catalog knows takes the levels it lists.
+ * only the Codex catalog knows takes the levels it lists; a level it does not take reports `<level> not sent`.
  */
 export function codexReasoning(model: string, level: ThinkingLevel | undefined): CodexReasoning | undefined {
 	if (level === undefined) return undefined;
-	if (level === "off") return ALWAYS_REASONS.has(model) ? { report: "unsupported" } : { report: "off", effort: "none" };
+	if (level === "off")
+		return ALWAYS_REASONS.has(model) ? { report: effortNotSent(level) } : { report: "off", effort: "none" };
 	const effort = level === "minimal" ? "low" : level;
 	const levels = catalogModel(model)?.efforts;
-	return levels === undefined || levels.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
+	return levels === undefined || levels.includes(effort)
+		? { report: effort, effort }
+		: { report: effortNotSent(level) };
 }

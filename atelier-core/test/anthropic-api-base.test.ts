@@ -128,23 +128,23 @@ describe("thinkingToSend", () => {
 		expect(api("claude-haiku-5-5", "low")).toEqual({ report: "low", effort: "low" });
 		expect(code("haiku", "xhigh")).toEqual({ report: "xhigh", effort: "xhigh" });
 		expect(api("claude-fable-5-1", "max")).toEqual({ report: "max", effort: "max" });
-		expect(api("a-model-atelier-does-not-know", "high")).toEqual({ report: "unsupported" });
+		expect(api("a-model-atelier-does-not-know", "high")).toEqual({ report: "high not sent" });
 		expect(api("claude-opus-5-5", undefined)).toBeUndefined();
 	});
 
 	it("sends only the levels each model takes", () => {
 		expect(api("claude-opus-4-6", "max")).toEqual({ report: "max", effort: "max" });
-		expect(api("claude-opus-4-6", "xhigh")).toEqual({ report: "unsupported" });
-		expect(api("claude-sonnet-4-6", "xhigh")).toEqual({ report: "unsupported" });
+		expect(api("claude-opus-4-6", "xhigh")).toEqual({ report: "xhigh not sent" });
+		expect(api("claude-sonnet-4-6", "xhigh")).toEqual({ report: "xhigh not sent" });
 		expect(api("claude-opus-4-5", "high")).toEqual({ report: "high", effort: "high" });
-		expect(api("claude-opus-4-5-20251101", "max")).toEqual({ report: "unsupported" });
-		expect(api("claude-haiku-4-5", "low")).toEqual({ report: "unsupported" });
+		expect(api("claude-opus-4-5-20251101", "max")).toEqual({ report: "max not sent" });
+		expect(api("claude-haiku-4-5", "low")).toEqual({ report: "low not sent" });
 	});
 
 	it("sends minimal as low, as pi does", () => {
 		expect(api("claude-opus-5-5", "minimal")).toEqual({ report: "low", effort: "low" });
 		expect(api("claude-opus-4-5-20251101", "minimal")).toEqual({ report: "low", effort: "low" });
-		expect(api("claude-haiku-4-5", "minimal")).toEqual({ report: "unsupported" });
+		expect(api("claude-haiku-4-5", "minimal")).toEqual({ report: "minimal not sent" });
 	});
 
 	it("turns thinking off with disabled on Haiku 5.5 and Opus 5, in both backends", () => {
@@ -158,14 +158,14 @@ describe("thinkingToSend", () => {
 	it("turns thinking off on Sonnet 5.5 with between_tools, which only the API takes", () => {
 		expect(api("claude-sonnet-5-5", "off")).toEqual({ report: "off", thinking: "between_tools" });
 		expect(api("sonnet", "off")).toEqual({ report: "off", thinking: "between_tools" });
-		expect(code("claude-sonnet-5-5", "off")).toEqual({ report: "unsupported" });
-		expect(code("sonnet", "off")).toEqual({ report: "unsupported" });
+		expect(code("claude-sonnet-5-5", "off")).toEqual({ report: "off not sent" });
+		expect(code("sonnet", "off")).toEqual({ report: "off not sent" });
 	});
 
 	it("does not turn thinking off where the docs do not say how", () => {
-		expect(api("claude-opus-5-5", "off")).toEqual({ report: "unsupported" });
-		expect(code("opus", "off")).toEqual({ report: "unsupported" });
-		expect(api("claude-opus-4-6", "off")).toEqual({ report: "unsupported" });
-		expect(api("a-model-atelier-does-not-know", "off")).toEqual({ report: "unsupported" });
+		expect(api("claude-opus-5-5", "off")).toEqual({ report: "off not sent" });
+		expect(code("opus", "off")).toEqual({ report: "off not sent" });
+		expect(api("claude-opus-4-6", "off")).toEqual({ report: "off not sent" });
+		expect(api("a-model-atelier-does-not-know", "off")).toEqual({ report: "off not sent" });
 	});
 });

@@ -3,6 +3,8 @@
  * receive it over a pipe unchanged (M2).
  */
 
+import type { ThinkingLevel } from "./thinking.ts";
+
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 /** "other": no API key, but no confirmed subscription either (bearer token, cloud provider...). */
@@ -84,7 +86,7 @@ export interface PhaseAgent {
 	role: string;
 	backend: string;
 	model: string;
-	effort?: Effort | "off" | "unsupported";
+	effort?: Effort | "off" | EffortNotSent;
 	effectiveEffort?: Effort;
 }
 
@@ -186,6 +188,9 @@ export function describeRefusal(event: { cause?: RefusalCause; observed?: string
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = (typeof EFFORTS)[number];
 
+/** What `effort` says when the level asked could not be sent: the level asked, then ` not sent`. */
+export type EffortNotSent = `${ThinkingLevel} not sent`;
+
 /** What a profile entry sets for a role; an absent field is inherited. */
 export interface ProfileRoleEntry {
 	backend?: string;
@@ -239,7 +244,7 @@ export type QueuedMessage = {
 export type AtelierEventBody =
 	/**
 	 * `effort`: the thinking level asked for, as sent with every request: the reasoning effort, `off` when thinking
-	 * was turned off, or `unsupported` when the model cannot take that level. Absent when no level was asked.
+	 * was turned off, or `<level> not sent` when the model cannot take that level. Absent when no level was asked.
 	 * `profile`: the main session's frozen profile, when it resolved one; set by the session.
 	 */
 	| {
@@ -247,7 +252,7 @@ export type AtelierEventBody =
 			backend: string;
 			model: string;
 			authSource: AuthSource;
-			effort?: Effort | "off" | "unsupported";
+			effort?: Effort | "off" | EffortNotSent;
 			profile?: SessionProfile;
 			/** Set by the session: how much it asks before a tool call. */
 			permissionMode?: "normal" | "auto" | "yolo";

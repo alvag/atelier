@@ -1,6 +1,6 @@
 import { claudeCodeIdOf } from "./backends/claude-code/models.ts";
 import { knownOpenCodeGoModel, OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
-import type { Effort, Usage } from "./events.ts";
+import type { Effort, EffortNotSent, Usage } from "./events.ts";
 import { currentModelData } from "./model-catalog/current.ts";
 import type { ThinkingLevel } from "./profiles/index.ts";
 
@@ -104,16 +104,20 @@ export type ThinkingBackend = "anthropic-api" | "claude-code" | "opencode-go";
 
 /** What a backend sends for a thinking level, and what `session_started.effort` says about it. */
 export interface ThinkingSend {
-	/** The effort sent, `off` when thinking was turned off, `unsupported` when the level could not be sent. */
-	report: Effort | "off" | "unsupported";
+	/** The effort sent, `off` when thinking was turned off, or the asked level with `not sent` when it could not be. */
+	report: Effort | "off" | EffortNotSent;
 	effort?: Effort;
 	thinking?: ThinkingOff;
 }
 
+/** The report for a level the model cannot take: what was asked, so the label says what was not sent. */
+export const effortNotSent = (level: ThinkingLevel): EffortNotSent => `${level} not sent`;
+
 /**
  * What to send to `model` for a profile level: nothing when none was asked. `minimal` is sent as `low`, as pi
  * does. `off` is sent only where the docs say how; the Claude Agent SDK's `ThinkingConfig` has no
- * `between_tools`, so on `claude-code` Sonnet 5.5 cannot turn thinking off.
+ * `between_tools`, so on `claude-code` Sonnet 5.5 cannot turn thinking off. A level the model cannot take sends
+ * nothing and reports it as `<level> not sent`.
  */
 export function thinkingToSend(
 	model: string,
@@ -130,18 +134,19 @@ export function thinkingToSend(
 		const entry = knownOpenCodeGoModel(model);
 		// `disabled` stands for the model's own value, which Chat Completions sends as its reasoning_effort.
 		if (level === "off")
-			return entry?.off === undefined ? { report: "unsupported" } : { report: "off", thinking: "disabled" };
+			return entry?.off === undefined ? { report: effortNotSent(level) } : { report: "off", thinking: "disabled" };
 		const effort = level === "minimal" ? "low" : level;
-		return entry?.efforts.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
+		return entry?.efforts.includes(effort) ? { report: effort, effort } : { report: effortNotSent(level) };
 	}
 	if (level === "off") {
 		const off = THINKING_OFF[id] ?? catalogModel(id, backend)?.off;
-		if (off === undefined || (off === "between_tools" && backend === "claude-code")) return { report: "unsupported" };
+		if (off === undefined || (off === "between_tools" && backend === "claude-code"))
+			return { report: effortNotSent(level) };
 		return { report: "off", thinking: off };
 	}
 	const effort = level === "minimal" ? "low" : level;
 	const levels = EFFORT_LEVELS[id] ?? catalogModel(id, backend)?.efforts;
-	return levels?.includes(effort) ? { report: effort, effort } : { report: "unsupported" };
+	return levels?.includes(effort) ? { report: effort, effort } : { report: effortNotSent(level) };
 }
 
 /** What the model catalog says of a model Anthropic's tables lack, on Anthropic's API or Claude Code. */
