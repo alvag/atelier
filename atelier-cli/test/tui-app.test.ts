@@ -686,11 +686,12 @@ describe("TUI", { timeout: 20_000 }, () => {
 			expect(await code).toBe(0);
 		});
 
-		it("counts changed files without running fsmonitor or clean filters or writing the index", async () => {
+		it("counts unfiltered changes without running fsmonitor or clean filters or writing the index", async () => {
 			const git = (...args: string[]) => execFileSync("git", args, { cwd });
 			git("init", "-q", "-b", "main");
 			await writeFile(join(cwd, "tracked"), "original\n");
-			await writeFile(join(cwd, ".gitattributes"), "tracked filter=probe\n");
+			await writeFile(join(cwd, "filtered"), "unchanged\n");
+			await writeFile(join(cwd, ".gitattributes"), "filtered filter=probe\n");
 			git("add", ".");
 			git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base");
 			await writeFile(join(cwd, "tracked"), "staged\n");

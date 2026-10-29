@@ -66,6 +66,7 @@ export async function readGitChanges(cwd: string, signal?: AbortSignal): Promise
 			GIT_CEILING_DIRECTORIES: (await ceilingDirectories()).join(delimiter),
 			GIT_NO_LAZY_FETCH: "1",
 			GIT_OPTIONAL_LOCKS: "0",
+			GIT_ATTR_NOSYSTEM: "1",
 		});
 		const safety = [
 			"--no-pager",
@@ -75,20 +76,29 @@ export async function readGitChanges(cwd: string, signal?: AbortSignal): Promise
 			"-c",
 			"core.untrackedCache=false",
 		];
-		const query = async (args: string[]) => {
+		const query = async (args: string[], input?: string) => {
 			const timeout = deadline - Date.now();
 			if (timeout <= 0 || signal?.aborted) throw new Error("Git status expired");
-			return (
-				await runGit("git", [...safety, ...args], {
-					cwd,
-					env,
-					timeout,
-					maxBuffer: STATUS_MAX_BYTES,
-					killSignal: "SIGKILL",
-					encoding: "utf8",
-					...(signal === undefined ? {} : { signal }),
-				})
-			).stdout;
+			const pending = runGit("git", [...safety, ...args], {
+				cwd,
+				env,
+				timeout,
+				maxBuffer: STATUS_MAX_BYTES,
+				killSignal: "SIGKILL",
+				encoding: "utf8",
+				...(signal === undefined ? {} : { signal }),
+			});
+			let inputError: Error | undefined;
+			if (input !== undefined) {
+				pending.child.stdin
+					?.on("error", (error: Error) => {
+						inputError = error;
+					})
+					.end(input);
+			}
+			const { stdout } = await pending;
+			if (inputError !== undefined) throw inputError;
+			return stdout;
 		};
 		// Retain only non-executable settings that affect file comparisons and ignore/attribute rules.
 		const settings = await query(["config", "--null", "--list"]);
@@ -126,6 +136,7 @@ export async function readGitChanges(cwd: string, signal?: AbortSignal): Promise
 			["index", join(directory, "index")],
 			...["objects", "refs", "packed-refs", "reftable"].map((name): [string, string] => [name, join(common, name)]),
 			["info/exclude", join(common, "info", "exclude")],
+			["info/attributes", join(common, "info", "attributes")],
 			...(await readdir(directory))
 				.filter((name) => /^sharedindex\.[0-9a-f]+$/.test(name))
 				.map((name): [string, string] => [name, join(directory, name)]),
@@ -149,11 +160,28 @@ export async function readGitChanges(cwd: string, signal?: AbortSignal): Promise
 		if (!output.endsWith("\0")) return undefined;
 		const records = output.slice(0, -1).split("\0");
 		let count = 0;
+		const paths = new Set<string>();
 		for (let i = 0; i < records.length; i++) {
 			const record = records[i];
 			if (record === undefined || !/^[ MADRCUT?!]{2} .+/s.test(record)) return undefined;
-			if (/^[RC]|^.[RC]/.test(record) && !records[++i]) return undefined;
+			paths.add(record.slice(3));
+			if (/^[RC]|^.[RC]/.test(record)) {
+				const source = records[++i];
+				if (!source) return undefined;
+				paths.add(source);
+			}
 			count++;
+		}
+		// Filters are never run, so their raw worktree contents cannot give a trustworthy count.
+		// --all also distinguishes a literal filter=unspecified from an absent attribute.
+		const attributes = await query(["check-attr", "-z", "--all", "--stdin"], `${[...paths].join("\0")}\0`);
+		if (attributes === "") return count;
+		if (!attributes.endsWith("\0")) return undefined;
+		const fields = attributes.slice(0, -1).split("\0");
+		if (fields.length % 3 !== 0) return undefined;
+		for (let i = 0; i < fields.length; i += 3) {
+			if (!paths.has(fields[i] ?? "") || !fields[i + 1]) return undefined;
+			if (fields[i + 1] === "filter") return undefined;
 		}
 		return count;
 	} catch {
