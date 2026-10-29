@@ -203,6 +203,17 @@ main {
 	color: var(--at-warning);
 }
 
+/* A background job's start or end: a quiet line, in the warning color when it failed. */
+.job {
+	margin: 6px 0;
+	color: var(--at-muted);
+	font-size: 12px;
+}
+
+.job.warning {
+	color: var(--at-warning);
+}
+
 .usage {
 	margin-top: 6px;
 	font-size: 12px;

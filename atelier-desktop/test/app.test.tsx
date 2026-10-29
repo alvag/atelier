@@ -1644,3 +1644,28 @@ describe("App", () => {
 		});
 	});
 });
+
+describe("App and background jobs", () => {
+	it("shows a job's start and end in the turn and the jobs and the notices waiting in the status bar", async () => {
+		const fake = fakeBridge();
+		await openFolderAndSend(fake, "start");
+		const job = { jobId: "1", label: "ci wait", outputPath: "/s/job-1.log" };
+		fake.emit({ ...job, type: "job_started", command: "gh run watch", running: 1 });
+		expect(await screen.findByText("Job 1 started — ci wait")).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toContain("1 job");
+		fake.emit({
+			...job,
+			type: "job_finished",
+			status: "exited",
+			exitCode: 1,
+			durationMs: 252_000,
+			notified: true,
+			running: 0,
+			waiting: 1,
+		});
+		expect(await screen.findByText("Job 1 ended — exit 1 after 4m 12s")).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toContain("1 notice waiting");
+		fake.emit({ type: "jobs_status", running: 0, waiting: 0 });
+		await waitFor(() => expect(screen.getByRole("status").textContent).not.toContain("notice waiting"));
+	});
+});

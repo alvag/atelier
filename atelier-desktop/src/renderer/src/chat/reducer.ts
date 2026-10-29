@@ -107,6 +107,16 @@ export type TurnItem =
 			ended?: boolean;
 	  }
 	| { kind: "error"; code: string; message: string }
+	/** A background job started, or ended: on its own (`exited`), stopped, or without starting (`failed`). */
+	| {
+			kind: "job";
+			jobId: string;
+			label: string;
+			status: "started" | "exited" | "stopped" | "failed";
+			exitCode?: number;
+			signal?: string;
+			durationMs?: number;
+	  }
 	/** `bash` runs without a sandbox in this turn: every command asks. */
 	| { kind: "sandbox_warning"; reason: string }
 	/** `expected`: it follows a compaction, which rewrote the history on purpose. */
@@ -219,6 +229,8 @@ export interface ChatState {
 	queue?: QueuedMessage[];
 	/** The texts of the latest queue an interrupted or failed turn gave back, for the composer; `seq` tells one from the next. */
 	returned?: { seq: number; texts: string[] };
+	/** The background jobs running and the notices of ended ones the agent has not read, as the core last said. */
+	jobs?: { running: number; waiting: number };
 }
 
 /** Host messages plus what the renderer itself knows (it sent a prompt, a command failed...). */
@@ -446,6 +458,19 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 			);
 		case "feature_changed":
 			return { ...state, feature: { name: event.name, path: event.path, title: event.title, tasks: event.tasks } };
+		case "job_started":
+		case "job_finished": {
+			const waiting = event.type === "job_finished" ? event.waiting : (state.jobs?.waiting ?? 0);
+			const updated = updateTurn(state, event.turnId, (turn) => ({ ...turn, items: [...turn.items, jobItem(event)] }));
+			// Every event comes in a turn: a job's end with none running starts the one its notice woke.
+			return {
+				...updated,
+				jobs: { running: event.running, waiting },
+				...(event.type === "job_finished" ? { busy: true } : {}),
+			};
+		}
+		case "jobs_status":
+			return { ...state, jobs: { running: event.running, waiting: event.waiting } };
 		case "error": {
 			const updated = updateTurn(state, event.turnId, (turn) => ({ ...turn, items: reduceItems(turn.items, event) }));
 			return { ...updated, lastError: { code: event.code, message: event.message } };
@@ -746,6 +771,22 @@ function closeConsents(items: TurnItem[], reviewId?: string): TurnItem[] {
 }
 
 /** Updates the turn with this id; else adopts the turn still waiting for its id; else starts one. */
+/** A job's start or end as the transcript shows it. */
+function jobItem(
+	event: Extract<AtelierEvent, { type: "job_started" }> | Extract<AtelierEvent, { type: "job_finished" }>,
+): TurnItem {
+	if (event.type === "job_started") return { kind: "job", jobId: event.jobId, label: event.label, status: "started" };
+	return {
+		kind: "job",
+		jobId: event.jobId,
+		label: event.label,
+		status: event.status,
+		...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
+		...(event.signal === undefined ? {} : { signal: event.signal }),
+		durationMs: event.durationMs,
+	};
+}
+
 function updateTurn(state: ChatState, turnId: string, update: (turn: Turn) => Turn): ChatState {
 	const index = state.turns.findIndex((turn) => turn.id === turnId);
 	if (index !== -1) return { ...state, turns: state.turns.map((turn, i) => (i === index ? update(turn) : turn)) };
