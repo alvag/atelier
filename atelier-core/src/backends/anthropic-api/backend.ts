@@ -414,6 +414,11 @@ class AnthropicApiSession implements BackendSession {
 		return this.#state.messages.length === 0 ? undefined : { messages: this.#state.messages as unknown as JsonValue[] };
 	}
 
+	/** The level as the start or the last `configure` left it: what `session_started` says about the effort. */
+	effortReport(): ThinkingSend["report"] | undefined {
+		return this.#effort;
+	}
+
 	async *send(prompt: string): AsyncIterable<AtelierEventBody> {
 		if (this.#closed) throw new Error(`The ${this.#id} session is closed.`);
 		if (!this.#announced) {

@@ -105,7 +105,8 @@ export type ThinkingBackend = "anthropic-api" | "claude-code" | "opencode-go";
 /** What a backend sends for a thinking level, and what `session_started.effort` says about it. */
 export interface ThinkingSend {
 	/** The effort sent, `off` when thinking was turned off, `auto` when a level was asked for a model that reasons
-	 * on its own and takes no level, or the asked level with `not sent` when it could not be. */
+	 * on its own and takes no level, or the asked level with `not sent` when it does not apply: the model does not
+	 * take it, its thinking cannot be turned off, or its thinking budget cannot fit the output budget. */
 	report: Effort | "off" | "auto" | EffortNotSent;
 	effort?: Effort;
 	/** The `thinking.budget_tokens` a Messages model is sent; absent when the level sends no thinking. */
@@ -113,7 +114,7 @@ export interface ThinkingSend {
 	thinking?: ThinkingOff;
 }
 
-/** The report for a level the model cannot take: what was asked, so the label says what was not sent. */
+/** The report for a level that was not sent, whatever the reason: what was asked, so the label says what did not go. */
 export const effortNotSent = (level: ThinkingLevel): EffortNotSent => `${level} not sent`;
 
 /**
