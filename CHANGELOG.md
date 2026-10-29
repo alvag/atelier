@@ -2,6 +2,38 @@
 
 Each release of Atelier, newest first. A release is the `vX.Y.Z` tag on `main`; its GitHub release carries the same notes.
 
+## v0.5.0
+
+Sign in to more providers, one model list across them with a catalog that keeps up, and tighter protection of credentials and git state.
+
+Providers and models:
+- `/login` and `atelier login` sign in to Anthropic (the Claude Code account, or an API key) ([#14](https://github.com/alvag/atelier/pull/14)), to OpenCode Go with an API key, whose models run on the Messages API or Chat Completions ([#15](https://github.com/alvag/atelier/pull/15)), and to ChatGPT for Codex, legacy or Sign in with ChatGPT, through the new `openai-codex` backend ([#16](https://github.com/alvag/atelier/pull/16)). `/logout` signs out; the start warns when the session's backend is not signed in, and the new secrets are masked like the rest.
+- One `/model` list across every provider you are signed in to, as `provider/model`: `/model ` completes it, `/model` and Enter opens a picker you can search, and a model of another provider moves the session there with a summary of the conversation. `/backend` is gone; `--model` takes `provider/model`, and `--backend` and profiles keep working ([#18](https://github.com/alvag/atelier/pull/18)).
+- A model catalog keeps the lists current: each signed-in provider's own list, with names, context windows, prices, reasoning and images from models.dev, cached in `~/.atelier/models.json` and refreshed in the background without slowing the start. `atelier models [--refresh]` shows where each model comes from; `ATELIER_MODEL_REFRESH=off` or `ATELIER_OFFLINE=1` keeps it off the network ([#56](https://github.com/alvag/atelier/pull/56), [#22](https://github.com/alvag/atelier/issues/22)).
+- Claude Code's models are listed by their versioned names (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-fable-5-1`…), exactly the ones your subscription offers, and every provider's list goes newest first. The aliases (`opus`, `sonnet`, `fable`…) still work when typed, and a versioned model an alias stands for is sent as that alias, so it keeps the 1M context window. Under the `/model` picker, the selected model's name, context window and whether it takes images; `atelier models` shows the same ([#60](https://github.com/alvag/atelier/pull/60), [#59](https://github.com/alvag/atelier/issues/59)).
+
+Terminal interface:
+- Tool cards show their state in color, a diff with line numbers, and a background of their own ([#17](https://github.com/alvag/atelier/pull/17)).
+- Each stretch of thinking folds once the model moves on ([#6](https://github.com/alvag/atelier/pull/6)).
+- `/stats` shows the saved sessions' costs inside a session ([#9](https://github.com/alvag/atelier/pull/9)).
+- An open question takes every key; Ctrl+C or Ctrl+D close it as Esc does, and Shift+Up takes the queue back ([#12](https://github.com/alvag/atelier/pull/12), [#13](https://github.com/alvag/atelier/pull/13)).
+
+Agent:
+- The agent writes to you in your language ([#11](https://github.com/alvag/atelier/pull/11)) and knows the outcome of its last review ([#7](https://github.com/alvag/atelier/pull/7)).
+
+Protection:
+- The agent can no longer read or write other tools' credential files: `~/.codex/auth.json`, OpenCode's `auth.json`, `~/.netrc` and git's credential stores ([#19](https://github.com/alvag/atelier/pull/19)).
+- A `.git` below the working folder is git state: `bash`, `write` and `edit` refuse to create, replace or write inside one, also for commands a saved rule covers. `git init`, `git clone` or `git worktree add` inside the project now ask first ([#57](https://github.com/alvag/atelier/pull/57), [#43](https://github.com/alvag/atelier/issues/43)).
+
+Fixes:
+- `edit` and `write` launch about three times fewer git processes per call ([#54](https://github.com/alvag/atelier/pull/54), [#23](https://github.com/alvag/atelier/issues/23)).
+- The `auth.json` lock waits out a transient read error instead of taking a live process's lock, and no longer spins; a Chat Completions answer cut mid-stream says so ([#21](https://github.com/alvag/atelier/pull/21), [#24](https://github.com/alvag/atelier/issues/24)).
+- A turn reads where it started before the agent's first command runs, so a review no longer misses commits made early in the turn; an interrupt still stops the turn at once ([#61](https://github.com/alvag/atelier/pull/61), [#52](https://github.com/alvag/atelier/issues/52)).
+- Temporary folders that dead sessions leave behind are cleaned up ([#5](https://github.com/alvag/atelier/pull/5)); follow-ups to the prompt secret masks ([#8](https://github.com/alvag/atelier/pull/8)); `mcp-auth.json`, an empty status line and the git branch item ([#3](https://github.com/alvag/atelier/pull/3)); `mcp_call` files go to a scratch folder of their own ([#10](https://github.com/alvag/atelier/pull/10)).
+
+Development:
+- `pnpm check` holds up under heavy machine load ([#20](https://github.com/alvag/atelier/pull/20), [#61](https://github.com/alvag/atelier/pull/61)), and a run inside a sandbox says at its end which sandbox tests it skipped ([#51](https://github.com/alvag/atelier/issues/51)); a readability pass on the TUI keys, skills and the `/model` list ([#58](https://github.com/alvag/atelier/pull/58)).
+
 ## v0.4.0
 
 Queued messages, remembered permissions, a clearer conversation, a cost panel and notifications.
