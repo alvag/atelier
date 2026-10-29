@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 /**
@@ -34,16 +34,16 @@ export async function projectOf(cwd: string): Promise<{ project: string; checkou
 }
 
 /**
- * Whether `dir` is a bare repository: `true` or `false` when it does not look like one (`HEAD`, `objects/`, `refs/`,
- * `config`) or its `config` says so with certainty, `undefined` when it looks like one and the `config` cannot be read
- * with certainty.
+ * Whether `dir` is a bare repository: `false` when it does not look like one (`HEAD`, `objects/`, `refs/`, links
+ * followed) or its `config` says with certainty it is not, `true` when the `config` says it is, `undefined` when it
+ * looks like one and its `config`, followed through links, is missing or cannot be read with certainty.
  */
 async function isBareRepository(dir: string): Promise<boolean | undefined> {
 	const kinds = await Promise.all(
-		["HEAD", "objects", "refs", "config"].map((name) => lstat(join(dir, name)).catch(() => undefined)),
+		["HEAD", "objects", "refs"].map((name) => stat(join(dir, name)).catch(() => undefined)),
 	);
-	const [head, objects, refs, config] = kinds;
-	if (!head?.isFile() || !objects?.isDirectory() || !refs?.isDirectory() || !config?.isFile()) return false;
+	const [head, objects, refs] = kinds;
+	if (!head?.isFile() || !objects?.isDirectory() || !refs?.isDirectory()) return false;
 	const text = await readFile(join(dir, "config"), "utf8").catch(() => undefined);
 	return text === undefined ? undefined : coreBare(text);
 }
