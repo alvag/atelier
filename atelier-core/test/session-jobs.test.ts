@@ -244,6 +244,27 @@ describe("background jobs in a session", () => {
 		},
 	);
 
+	it("gives the notices back when the backend of the turn that took them fails before it answers", async () => {
+		const { backend, session, play, woke } = await started(() => [
+			[call("bash_background", { command: waitsForGo() }, "c1"), { event: finished }],
+			[{ throw: "backend failed" }],
+			[{ event: finished }],
+		]);
+		await play(session.send("start it"));
+		await go();
+		await until(() => woke() === 1);
+		const failed = await play(session.nextQueued() as AsyncIterable<AtelierEvent>);
+		expect(backend.prompts[1]).toMatch(/^Background job 1 /);
+		expect(failed.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "error" });
+		expect(ofType(failed, "jobs_status").at(-1)).toMatchObject({ running: 0, waiting: 1 });
+		expect(session.jobs.waiting).toBe(1);
+		// The failed turn holds them: they go with the user's next prompt, and wake nothing on their own.
+		expect(session.nextQueued()).toBeUndefined();
+		await play(session.send("continue"));
+		expect(backend.prompts[2]).toMatch(/^Background job 1 [\s\S]*\n\ncontinue$/);
+		expect(session.jobs.waiting).toBe(0);
+	});
+
 	it("sends no notice of a stopped job, and stops every job when the session closes", async () => {
 		const pidFile = join(cwd, "pid");
 		const { backend, session, play } = await started(() => [
