@@ -91,7 +91,10 @@ interface CompactionConfig {
 export type StoredMessage = Anthropic.MessageParam & { effort?: Effort | "off" };
 
 /** What the summary request changes in the request state: the model and how it thinks. */
-export type SummaryRequestState = Pick<RequestState, "model" | "effort" | "thinking" | "summarizeThinking">;
+export type SummaryRequestState = Pick<
+	RequestState,
+	"model" | "effort" | "thinking" | "thinkingBudget" | "summarizeThinking"
+>;
 
 /** The summary request's model and level: the compaction entry's, and the session's where the entry sets none. */
 function summaryRequest(
@@ -105,6 +108,7 @@ function summaryRequest(
 	return {
 		model: summaryModel,
 		...(sent?.effort === undefined ? {} : { effort: sent.effort }),
+		...(sent?.budget === undefined ? {} : { thinkingBudget: sent.budget }),
 		...(sent?.thinking === undefined ? {} : { thinking: sent.thinking }),
 		...(summarizesThinking(summaryModel, sent) ? { summarizeThinking: true as const } : {}),
 	};
@@ -160,6 +164,8 @@ export interface RequestState {
 	effort?: Effort;
 	/** Sent as `thinking`, to turn thinking off; absent when none was asked or the model cannot turn it off. */
 	thinking?: ThinkingOff;
+	/** Sent as `thinking: {type: "enabled", budget_tokens}` (a Messages model); absent when the level sends no thinking. */
+	thinkingBudget?: number;
 	/** Sent as adaptive thinking with `display: "summarized"`, so the thinking text is streamed; never with `thinking`. */
 	summarizeThinking?: true;
 	system: string;
@@ -187,6 +193,9 @@ export function buildRequest(state: RequestState): Anthropic.MessageCreateParams
 		...(tools.length === 0 ? {} : { tools }),
 		...(state.effort === undefined ? {} : { output_config: { effort: state.effort } }),
 		...(state.thinking === undefined ? {} : { thinking: { type: state.thinking } }),
+		...(state.thinkingBudget === undefined
+			? {}
+			: { thinking: { type: "enabled" as const, budget_tokens: budgetTokens(state.thinkingBudget, state.maxTokens) } }),
 		...(state.summarizeThinking ? { thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
 		messages: state.messages.map((message, index) =>
 			index === state.messages.length - 1 ? withBreakpoint(toParam(message)) : toParam(message),
@@ -200,6 +209,14 @@ function toParam(message: StoredMessage): Anthropic.MessageParam {
 	if (message.effort === undefined) return message;
 	const { effort: _effort, ...param } = message;
 	return param;
+}
+
+/**
+ * The budget clipped so the answer keeps at least half of `max_tokens`, and never below 1024: on the models that
+ * take one, the budget turns thinking on, it does not set how much they reason.
+ */
+function budgetTokens(budget: number, maxTokens: number): number {
+	return Math.max(1024, Math.min(budget, Math.floor(maxTokens / 2)));
 }
 
 function withBreakpoint(message: Anthropic.MessageParam): Anthropic.MessageParam {
@@ -251,6 +268,7 @@ export class AnthropicApiBackend implements AgentBackend {
 			model,
 			maxTokens: this.#options.maxTokens ?? DEFAULT_MAX_TOKENS,
 			...(sent?.effort === undefined ? {} : { effort: sent.effort }),
+			...(sent?.budget === undefined ? {} : { thinkingBudget: sent.budget }),
 			...(sent?.thinking === undefined ? {} : { thinking: sent.thinking }),
 			...(summarizesThinking(model, sent) ? { summarizeThinking: true as const } : {}),
 			system: systemPrompt(start.cwd, start.systemPromptAppend),
@@ -474,8 +492,10 @@ class AnthropicApiSession implements BackendSession {
 		const sent = thinkingToSend(model, thinking, this.#id);
 		delete state.effort;
 		delete state.thinking;
+		delete state.thinkingBudget;
 		delete state.summarizeThinking;
 		if (sent?.effort !== undefined) state.effort = sent.effort;
+		if (sent?.budget !== undefined) state.thinkingBudget = sent.budget;
 		if (sent?.thinking !== undefined) state.thinking = sent.thinking;
 		if (summarizesThinking(model, sent)) state.summarizeThinking = true;
 		this.#effort = sent?.report;
@@ -665,7 +685,13 @@ class AnthropicApiSession implements BackendSession {
 	/** The state the summary request is built from: the session's, with the compaction entry's model and level. */
 	#summaryState(): RequestState {
 		if (this.#summary === undefined) return this.#state;
-		const { effort: _effort, thinking: _thinking, summarizeThinking: _summarize, ...rest } = this.#state;
+		const {
+			effort: _effort,
+			thinking: _thinking,
+			thinkingBudget: _budget,
+			summarizeThinking: _summarize,
+			...rest
+		} = this.#state;
 		return { ...rest, ...this.#summary };
 	}
 

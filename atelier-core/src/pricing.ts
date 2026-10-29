@@ -1,5 +1,5 @@
 import { claudeCodeIdOf } from "./backends/claude-code/models.ts";
-import { knownOpenCodeGoModel, OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
+import { knownOpenCodeGoModel, OPENCODE_GO_MODELS, THINKING_BUDGETS } from "./backends/opencode-go/models.ts";
 import type { Effort, EffortNotSent, Usage } from "./events.ts";
 import { currentModelData } from "./model-catalog/current.ts";
 import type { ThinkingLevel } from "./profiles/index.ts";
@@ -104,9 +104,12 @@ export type ThinkingBackend = "anthropic-api" | "claude-code" | "opencode-go";
 
 /** What a backend sends for a thinking level, and what `session_started.effort` says about it. */
 export interface ThinkingSend {
-	/** The effort sent, `off` when thinking was turned off, or the asked level with `not sent` when it could not be. */
-	report: Effort | "off" | EffortNotSent;
+	/** The effort sent, `off` when thinking was turned off, `auto` when the model reasons on its own and takes no
+	 * level, or the asked level with `not sent` when it could not be. */
+	report: Effort | "off" | "auto" | EffortNotSent;
 	effort?: Effort;
+	/** The `thinking.budget_tokens` a Messages model is sent; absent when the level sends no thinking. */
+	budget?: number;
 	thinking?: ThinkingOff;
 }
 
@@ -132,6 +135,16 @@ export function thinkingToSend(
 	// OpenCode Go's Claude models take what Anthropic's do; the rest take the levels of its table, or of the catalog.
 	if (backend === "opencode-go" && EFFORT_LEVELS[id] === undefined) {
 		const entry = knownOpenCodeGoModel(model);
+		// A model that reasons with nothing sent takes no level: whatever is asked, the model decides.
+		if (entry?.reasonsOnItsOwn === true) return { report: "auto" };
+		// A budget-thinking model reasons only with `thinking` enabled: `off` needs nothing, a level sends its budget.
+		if (entry?.budgetThinking === true) {
+			if (level === "off") return { report: "off" };
+			const budget = level === "minimal" ? "low" : level;
+			return entry.efforts.includes(budget)
+				? { report: budget, budget: THINKING_BUDGETS[budget] }
+				: { report: effortNotSent(level) };
+		}
 		// `disabled` stands for the model's own value, which Chat Completions sends as its reasoning_effort.
 		if (level === "off")
 			return entry?.off === undefined ? { report: effortNotSent(level) } : { report: "off", thinking: "disabled" };

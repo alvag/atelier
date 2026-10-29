@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BackendSession } from "../src/backend.ts";
 import { createBackend } from "../src/backend-factory.ts";
 import { OPENCODE_GO_BASE_URL, OPENCODE_GO_MODELS } from "../src/backends/opencode-go/models.ts";
+import { SUMMARY_HEADINGS } from "../src/compaction/compactor.ts";
 import type { AtelierEventBody } from "../src/events.ts";
 import { BACKEND_MODELS } from "../src/options.ts";
 import { costOfRequest, thinkingToSend } from "../src/pricing.ts";
+import type { ThinkingLevel } from "../src/thinking.ts";
 import { VERSION } from "../src/version.ts";
 import { FakeProvider, sse } from "./support/fake-provider.ts";
 
@@ -58,10 +60,56 @@ function messagesReply(text: string, usage = { input: 1000, output: 20, cacheRea
 	};
 }
 
-async function start(options: { model?: string; thinking?: "high" } = {}): Promise<BackendSession> {
+/** A Messages API stream whose answer thinks twice: one block with a signature, one without. */
+function thinkingReply(): { sse: string } {
+	return {
+		sse: sse(
+			[
+				{
+					type: "message_start",
+					message: {
+						id: "msg_1",
+						type: "message",
+						role: "assistant",
+						model: "minimax-m3",
+						content: [],
+						stop_reason: null,
+						stop_sequence: null,
+						usage: { input_tokens: 1000, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+					},
+				},
+				{ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
+				{ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Plan." } },
+				{ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } },
+				{ type: "content_block_stop", index: 0 },
+				{ type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "", signature: "" } },
+				{ type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "Unsigned." } },
+				{ type: "content_block_stop", index: 1 },
+				{ type: "content_block_start", index: 2, content_block: { type: "text", text: "" } },
+				{ type: "content_block_delta", index: 2, delta: { type: "text_delta", text: "Hello" } },
+				{ type: "content_block_stop", index: 2 },
+				{
+					type: "message_delta",
+					delta: { stop_reason: "end_turn", stop_sequence: null },
+					usage: { output_tokens: 20 },
+				},
+				{ type: "message_stop" },
+			],
+			{ named: true },
+		),
+	};
+}
+
+async function start(
+	options: { model?: string; thinking?: ThinkingLevel; maxTokens?: number } = {},
+): Promise<BackendSession> {
 	const backend = await createBackend("opencode-go", {
 		resolveOpenCodeGoKey: async () => KEY,
-		opencodeGo: { baseUrl: provider.url, maxRetries: 0 },
+		opencodeGo: {
+			baseUrl: provider.url,
+			maxRetries: 0,
+			...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+		},
 	});
 	expect(backend.id).toBe("opencode-go");
 	return backend.start({
@@ -123,12 +171,71 @@ describe("opencode-go on the Messages API", () => {
 		expect(one?.headers["x-opencode-session"]).not.toBe(two?.headers["x-opencode-session"]);
 	});
 
+	it("sends a level to minimax-m3 as enabled thinking with a budget, clipped to half of max_tokens", async () => {
+		provider.answer(messagesReply("a"), messagesReply("b"), messagesReply("c"));
+		const session = await start({ thinking: "high" });
+		const events = await collect(session.send("hi"));
+		expect(events[0]).toMatchObject({ type: "session_started", model: "minimax-m3", effort: "high" });
+		expect(provider.received[0]?.body.thinking).toEqual({ type: "enabled", budget_tokens: 8000 });
+		expect(provider.received[0]?.body).not.toHaveProperty("output_config");
+		await session.configure?.({ thinking: "low" });
+		await collect(session.send("more"));
+		expect(provider.received[1]?.body.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+		await collect((await start({ thinking: "high", maxTokens: 3000 })).send("hi"));
+		expect(provider.received[2]?.body.thinking).toEqual({ type: "enabled", budget_tokens: 1500 });
+	});
+
+	it("sends nothing for off on minimax-m3, which does not think without the field", async () => {
+		provider.answer(messagesReply("a"));
+		const off = await collect((await start({ thinking: "off" })).send("hi"));
+		expect(off[0]).toMatchObject({ type: "session_started", model: "minimax-m3", effort: "off" });
+		expect(provider.received[0]?.body).not.toHaveProperty("thinking");
+		expect(provider.received[0]?.body).not.toHaveProperty("output_config");
+	});
+
+	it("reports auto for a model that reasons on its own, whatever was asked", async () => {
+		provider.answer(messagesReply("a"), messagesReply("b"));
+		const qwen = await collect((await start({ model: "qwen3.8-max", thinking: "high" })).send("hi"));
+		expect(qwen[0]).toMatchObject({ type: "session_started", model: "qwen3.8-max", effort: "auto" });
+		expect(provider.received[0]?.body).not.toHaveProperty("thinking");
+		expect(provider.received[0]?.body).not.toHaveProperty("output_config");
+		const off = await collect((await start({ model: "qwen3.8-flash", thinking: "off" })).send("hi"));
+		expect(off[0]).toMatchObject({ type: "session_started", model: "qwen3.8-flash", effort: "auto" });
+		expect(provider.received[1]?.body).not.toHaveProperty("thinking");
+	});
+
+	it("keeps the thinking blocks minimax-m3 returned in the history, and drops the unsigned ones", async () => {
+		provider.answer(thinkingReply(), messagesReply("b"));
+		const session = await start({ thinking: "high" });
+		const events = await collect(session.send("hi"));
+		expect(events).toContainEqual({ type: "thinking_delta", text: "Plan." });
+		await collect(session.send("more"));
+		const history = provider.received[1]?.body.messages as {
+			role: string;
+			content: { type: string; signature?: string }[];
+		}[];
+		const assistant = history.find((message) => message.role === "assistant");
+		expect(assistant?.content.map(({ type, signature }) => [type, signature])).toEqual([
+			["thinking", "sig"],
+			["text", undefined],
+		]);
+	});
+
+	it("asks the handoff summary with the same thinking budget", async () => {
+		provider.answer(messagesReply("a"), messagesReply(SUMMARY_HEADINGS.join("\n")));
+		const session = await start({ thinking: "high" });
+		await collect(session.send("hi"));
+		const summary = await session.summarize?.();
+		expect(summary?.usage).toMatchObject({ input: 1000 });
+		expect(provider.received[1]?.body.thinking).toEqual({ type: "enabled", budget_tokens: 8000 });
+		expect(provider.received[1]?.body.tool_choice).toEqual({ type: "none" });
+	});
+
 	it("sends a level only to the models that take one", async () => {
 		provider.answer(messagesReply("a"), messagesReply("b"));
-		const minimax = await collect((await start({ thinking: "high" })).send("hi"));
-		expect(minimax[0]).toMatchObject({ type: "session_started", effort: "high not sent" });
-		await collect((await start({ model: "claude-haiku-5-5", thinking: "high" })).send("hi"));
+		await collect((await start({ thinking: "high" })).send("hi"));
 		expect(provider.received[0]?.body).not.toHaveProperty("output_config");
+		await collect((await start({ model: "claude-haiku-5-5", thinking: "high" })).send("hi"));
 		expect(provider.received[1]?.body.output_config).toEqual({ effort: "high" });
 	});
 });
@@ -152,7 +259,18 @@ describe("the OpenCode Go models", () => {
 		expect(thinkingToSend("glm-5.3", "medium", "opencode-go")).toEqual({ report: "medium not sent" });
 		expect(thinkingToSend("hy3", "off", "opencode-go")).toEqual({ report: "off", thinking: "disabled" });
 		expect(thinkingToSend("glm-5.3", "off", "opencode-go")).toEqual({ report: "off not sent" });
-		expect(thinkingToSend("kimi-k2.7-code", "high", "opencode-go")).toEqual({ report: "high not sent" });
+	});
+
+	it("sends minimax-m3's levels as thinking budgets, and reports auto for the models that reason on their own", () => {
+		expect(thinkingToSend("minimax-m3", "high", "opencode-go")).toEqual({ report: "high", budget: 16384 });
+		expect(thinkingToSend("minimax-m3", "minimal", "opencode-go")).toEqual({ report: "low", budget: 2048 });
+		expect(thinkingToSend("minimax-m3", "xhigh", "opencode-go")).toEqual({ report: "xhigh", budget: 16384 });
+		expect(thinkingToSend("minimax-m3", "off", "opencode-go")).toEqual({ report: "off" });
+		expect(thinkingToSend("qwen3.8-max", "high", "opencode-go")).toEqual({ report: "auto" });
+		expect(thinkingToSend("qwen3.7-plus", "off", "opencode-go")).toEqual({ report: "auto" });
+		expect(thinkingToSend("kimi-k2.7-code", "high", "opencode-go")).toEqual({ report: "auto" });
+		expect(thinkingToSend("mimo-v2.6-flash", "off", "opencode-go")).toEqual({ report: "auto" });
+		expect(thinkingToSend("longcat-2.0", "medium", "opencode-go")).toEqual({ report: "auto" });
 	});
 
 	it("prices qwen3.7-plus by its tier", () => {
