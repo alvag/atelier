@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,6 +69,7 @@ describe.skipIf(!onMac)("bash cannot create, replace or write a .git below the w
 		["a link to another git directory", "ln -s ../.git sub/.git"],
 		["git init in a subfolder", "cd sub && git init -q"],
 		["a deeper one", "mkdir -p sub/a/b && mkdir sub/a/b/.git"],
+		["one in another letter case", "mkdir sub/.GIT"],
 		["one moved into place", "mkdir d && mv d sub/.git"],
 		["one created through a link to its name", "ln -s sub/.git alias && echo x > alias"],
 	])("refuses %s", async (_, command) => {
@@ -88,13 +89,35 @@ describe.skipIf(!onMac)("bash cannot create, replace or write a .git below the w
 		const config = await readFile(join(cwd, "sub", ".git", "config"), "utf8");
 		const result = await run(
 			cwd,
-			"echo x >> sub/.git/config; echo x > sub/.git/hooks/pre-commit; ln -sfn /tmp linked/.git; rm sub/.git/HEAD",
+			"echo x >> sub/.git/config; echo x > sub/.git/hooks/pre-commit; ln -sfn /tmp linked/.git; rm sub/.git/HEAD; echo x > sub/.git/description",
 		);
-		expect(result.output.match(/Operation not permitted/g)).toHaveLength(4);
+		expect(result.output.match(/Operation not permitted/g)).toHaveLength(5);
 		expect(await readFile(join(cwd, "sub", ".git", "config"), "utf8")).toBe(config);
+		expect(await readFile(join(cwd, "sub", ".git", "description"), "utf8")).not.toContain("x\n");
 		expect(await present(join(cwd, "sub", ".git", "hooks", "pre-commit"))).toBe(false);
 		expect(await readlink(join(cwd, "linked", ".git"))).toBe(join(cwd, "sub", ".git"));
 		expect(await present(join(cwd, "sub", ".git", "HEAD"))).toBe(true);
+	});
+
+	it("under the profile of a command a saved rule covers, cannot create one nor write in an existing one", async () => {
+		const cwd = await repo(join(base, "main"));
+		git(join(cwd, "sub"), "init", "-q");
+		const description = await readFile(join(cwd, "sub", ".git", "description"), "utf8");
+		const write = (command: string) => {
+			const { file, args } = sandbox.outside(command, cwd);
+			return spawnSync(file, args, { cwd, encoding: "utf8" });
+		};
+		for (const command of [
+			"echo breach > sub/.git/description",
+			"echo breach > sub/.git/hooks/pre-commit",
+			"echo breach > sub/.GIT/hooks/pre-commit",
+			"mkdir -p other && mkdir other/.git",
+			"mkdir -p other && mkdir other/.GIT",
+		])
+			expect(write(command).status, command).not.toBe(0);
+		expect(await readFile(join(cwd, "sub", ".git", "description"), "utf8")).toBe(description);
+		expect(await present(join(cwd, "sub", ".git", "hooks", "pre-commit"))).toBe(false);
+		expect(await present(join(cwd, "other", ".git"))).toBe(false);
 	});
 
 	it("still cannot replace a .git at the top that is a link to the git directory", async () => {
