@@ -395,6 +395,7 @@ class ClaudeCodeSession implements BackendSession {
 			this.#deliver([errorEvent("backend_crashed", this.#failure)]);
 		} finally {
 			this.#failure ??= "Claude Code session is closed.";
+			this.#dropCompactAtAsk();
 			this.#endTurn();
 		}
 	}
@@ -488,7 +489,7 @@ class ClaudeCodeSession implements BackendSession {
 	#askCompactAt(): void {
 		const { getContextUsage } = this.#query;
 		if (!getContextUsage) return;
-		const ask = { timer: setTimeout(() => this.#dropCompactAtAsk(ask), CONTEXT_USAGE_TIMEOUT_MS) };
+		const ask = { timer: setTimeout(() => this.#dropCompactAtAsk(ask), CONTEXT_USAGE_TIMEOUT_MS).unref() };
 		this.#compactAtAsk = ask;
 		getContextUsage.call(this.#query, { detail: "summary" }).then(
 			(usage) => {
@@ -517,6 +518,8 @@ class ClaudeCodeSession implements BackendSession {
 			if (this.#turn !== turn) return;
 			this.#deliver([errorEvent("interrupt_timeout", "Claude Code did not stop in time; the session was closed.")]);
 			this.#closing = true;
+			// A query that does not end once closed never reaches the end of `#read`, which forgets the request too.
+			this.#dropCompactAtAsk();
 			this.#query.close();
 		}, this.#interruptGraceMs);
 	}

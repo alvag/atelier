@@ -1139,6 +1139,86 @@ describe("ClaudeCodeBackend context usage", () => {
 			await session.close();
 		});
 
+		/**
+		 * A query that never answers `getContextUsage` and ends when the test says: `end` ends it, `crash` makes it throw;
+		 * a `dead` query does not even end when closed.
+		 */
+		function silentQuery(dead = false) {
+			const output = new Channel<SDKMessage>();
+			let crashed = false;
+			async function* run(): AsyncGenerator<SDKMessage, void> {
+				yield* output;
+				if (crashed) throw new Error("claude exited with code 1");
+			}
+			const query: QueryFunction = () =>
+				Object.assign(run(), {
+					interrupt: async () => {},
+					close: () => {
+						if (!dead) output.close();
+					},
+					getContextUsage: never,
+				}) as SdkQuery;
+			return {
+				query,
+				end: () => output.close(),
+				crash: () => {
+					crashed = true;
+					output.close();
+				},
+			};
+		}
+
+		it.each(["end", "crash"] as const)(
+			"leaves no timer pending once Claude Code's session ends with a request in flight (%s)",
+			async (how) => {
+				vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+				const silent = silentQuery();
+				const session = await new ClaudeCodeBackend({ query: silent.query, env: {} }).start(plainStart);
+				const turn = collectBodies(session.send("one"));
+				expect(vi.getTimerCount()).toBe(1);
+				silent[how]();
+				const events = await turn;
+				expect(events.map((event) => event.type === "error" && event.code)).toContain(
+					how === "end" ? "backend_ended" : "backend_crashed",
+				);
+				expect(vi.getTimerCount()).toBe(0);
+			},
+		);
+
+		it("leaves no timer pending once an interrupt that did not finish in time closes a query that never ends", async () => {
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			const silent = silentQuery(true);
+			const backend = new ClaudeCodeBackend({ query: silent.query, env: {}, interruptGraceMs: 50 });
+			const session = await backend.start(plainStart);
+			const turn = session.send("one")[Symbol.asyncIterator]();
+			const first = turn.next();
+			await session.interrupt();
+			expect(vi.getTimerCount()).toBe(2);
+			vi.advanceTimersByTime(50);
+			expect(await first).toMatchObject({ value: { type: "error", code: "interrupt_timeout" } });
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it("does not keep the process alive while a request is in flight", async () => {
+			const timers: ReturnType<typeof setTimeout>[] = [];
+			const real = globalThis.setTimeout;
+			const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, ms?: number) => {
+				const timer = real(callback, ms);
+				if (ms === 10_000) timers.push(timer);
+				return timer;
+			}) as typeof setTimeout);
+			try {
+				const silent = silentQuery();
+				const session = await new ClaudeCodeBackend({ query: silent.query, env: {} }).start(plainStart);
+				const turn = collectBodies(session.send("one"));
+				expect(timers.map((timer) => timer.hasRef())).toEqual([false]);
+				silent.end();
+				await turn;
+			} finally {
+				spy.mockRestore();
+			}
+		});
+
 		it("drops the answer of a request that went 10 s without one", async () => {
 			const { session, resolvers, compactAts, run, asks } = await pendingSession();
 			await run("one");
