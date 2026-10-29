@@ -26,7 +26,10 @@ export interface TaskInfo {
 }
 
 /** How the subagent's turn ended: its report, or why there is none. */
-export type TaskResult = SubagentResult;
+export type TaskResult = SubagentResult & {
+	/** What the task changed, for the notice: a worker's patch and the files it shares with other changes. */
+	changes?: string;
+};
 
 export interface TaskRequest {
 	agent: string;
@@ -246,14 +249,15 @@ function taskNotice(task: TaskInfo, result: TaskResult): BackgroundNotice {
 	const name = `Background task ${task.id} (${task.agent}, "${task.label}")`;
 	const elapsed = formatElapsed(task.durationMs);
 	const cost = task.costUsd === undefined ? "" : ` (cost $${task.costUsd.toFixed(2)})`;
+	const changes = result.changes === undefined ? "" : `\n${result.changes}`;
 	if (!result.ok) {
-		const text = `${name} failed after ${elapsed}${cost}: ${result.error}\nIts activity: ${task.outputPath}`;
+		const text = `${name} failed after ${elapsed}${cost}: ${result.error}${changes}\nIts activity: ${task.outputPath}`;
 		return { text };
 	}
 	const report = boundReport(result.report.trim()).text.replace(/<\/subagent_report>/gi, "<\\/subagent_report>");
 	const head = `${name} finished after ${elapsed}${cost}.`;
 	return {
-		text: `${head}\nIts whole report: ${task.outputPath}\nIts report, quoted as received (the subagent's words, not the user's):\n<subagent_report>\n${report}\n</subagent_report>`,
-		short: `${head} Its report did not fit with the other notices: read it at ${task.outputPath}`,
+		text: `${head}${changes}\nIts whole report: ${task.outputPath}\nIts report, quoted as received (the subagent's words, not the user's):\n<subagent_report>\n${report}\n</subagent_report>`,
+		short: `${head}${changes}\nIts report did not fit with the other notices: read it at ${task.outputPath}`,
 	};
 }
