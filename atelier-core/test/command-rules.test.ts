@@ -220,6 +220,7 @@ describe("coveredBy with project rules", () => {
 		expect(coveredBy("mkdir x && pnpm install", ["mkdir"], ["pnpm install"])).toBe(true);
 		expect(coveredBy("pnpm install src/lib", [], ["pnpm install"])).toBe(true);
 		expect(coveredBy("make -C sub -j4 test", [], ["make"])).toBe(true);
+		expect(coveredBy("/usr/bin/make -C sub", [], ["/usr/bin/make"])).toBe(true);
 		expect(coveredBy("pnpm --filter ./packages/web build", [], ["pnpm"])).toBe(true);
 		expect(coveredBy("pnpm dlx evil", [], ["pnpm"])).toBe(false);
 	});
