@@ -24,41 +24,79 @@ export async function projectOf(cwd: string): Promise<{ project: string; checkou
 		const info = await lstat(dotGit).catch(() => undefined);
 		if (info?.isDirectory() || info?.isSymbolicLink()) return own(dir);
 		if (info?.isFile()) return { project: (await mainCheckout(dir, dotGit)) ?? dir, checkout: dir };
-		if (await isBareRepository(dir)) return own(dir);
+		const bare = await isBareRepository(dir);
+		if (bare === true) return own(dir);
+		// A folder that looks like a bare repository whose config is not read with certainty ends the search: the
+		// session's own folder is the project, never the checkout around it nor that folder above the session.
+		if (bare === undefined) return own(start);
 		if (dirname(dir) === dir) return own(start);
 	}
 }
 
-/** Whether `dir` is a bare repository, as its files show: `HEAD`, `objects/`, `refs/` and `core.bare` true in `config`. */
-async function isBareRepository(dir: string): Promise<boolean> {
+/**
+ * Whether `dir` is a bare repository: `true` or `false` when it does not look like one (`HEAD`, `objects/`, `refs/`,
+ * `config`) or its `config` says so with certainty, `undefined` when it looks like one and the `config` cannot be read
+ * with certainty.
+ */
+async function isBareRepository(dir: string): Promise<boolean | undefined> {
 	const kinds = await Promise.all(
 		["HEAD", "objects", "refs", "config"].map((name) => lstat(join(dir, name)).catch(() => undefined)),
 	);
 	const [head, objects, refs, config] = kinds;
 	if (!head?.isFile() || !objects?.isDirectory() || !refs?.isDirectory() || !config?.isFile()) return false;
-	return coreBare(await readFile(join(dir, "config"), "utf8").catch(() => ""));
+	const text = await readFile(join(dir, "config"), "utf8").catch(() => undefined);
+	return text === undefined ? undefined : coreBare(text);
 }
 
 /**
- * Whether a config file sets `core.bare` true, read as git reads the simple files it writes: only in the `[core]`
- * section (any case, no subsection), the last one wins, `true`, `yes`, `on`, `1` or a key alone, comments (`#`, `;`)
- * left out. A quote or a backslash outside a section header (a quoted value, an escape, a continued line) is not
- * read: such a file is never taken as bare, so a folder in it stays its own project, which is the safe side.
+ * The value of a config line after its key, as git reads it: quotes delimit text in which `#` and `;` are not comments,
+ * spaces outside them at either end are dropped. Undefined for what is not read here: a backslash (an escape or a
+ * continued line) or an unclosed quote.
  */
-function coreBare(text: string): boolean {
+function configValue(text: string): string | undefined {
+	let value = "";
+	let quoted = false;
+	let pending = "";
+	for (const char of text) {
+		if (char === "\\") return undefined;
+		if (char === '"') {
+			value += pending;
+			pending = "";
+			quoted = !quoted;
+		} else if (!quoted && (char === "#" || char === ";")) break;
+		else if (!quoted && /\s/.test(char)) pending += value === "" ? "" : char;
+		else {
+			value += pending + char;
+			pending = "";
+		}
+	}
+	return quoted ? undefined : value;
+}
+
+/**
+ * `core.bare` as git reads a config file: only in the `[core]` section (any case, no subsection), the last one wins,
+ * `true`, `yes`, `on`, `1` or a key alone. Undefined when the file is not one this reads with certainty (a backslash
+ * anywhere, an unclosed quote, a line that is no section, key or comment).
+ */
+function coreBare(text: string): boolean | undefined {
+	// A backslash anywhere, in a value or a comment, is an escape or a continuation this does not read.
+	if (text.includes("\\")) return undefined;
 	let inCore = false;
 	let bare = false;
 	for (const raw of text.split(/\r?\n/)) {
 		let line = raw.trim();
-		const section = /^\[([^\]]*)\](.*)$/.exec(line);
+		const section = /^\[([^\]\\]*)\](.*)$/.exec(line);
 		if (section) {
 			inCore = (section[1] ?? "").trim().toLowerCase() === "core";
 			line = (section[2] ?? "").trim();
 		}
-		if (/["\\]/.test(line)) return false;
-		const entry = /^bare\s*(?:=(.*))?$/i.exec(line.replace(/\s*[#;].*$/, ""));
-		if (!inCore || entry === null) continue;
-		bare = ["true", "yes", "on", "1"].includes((entry[1] ?? "true").trim().toLowerCase());
+		if (line === "" || line.startsWith("#") || line.startsWith(";")) continue;
+		const entry = /^([A-Za-z][A-Za-z0-9-]*)\s*(=(.*))?$/.exec(line);
+		if (entry === null) return undefined;
+		const value = entry[2] === undefined ? "true" : configValue(entry[3] ?? "");
+		if (value === undefined) return undefined;
+		if (inCore && entry[1]?.toLowerCase() === "bare")
+			bare = ["true", "yes", "on", "1"].includes(value.trim().toLowerCase());
 	}
 	return bare;
 }

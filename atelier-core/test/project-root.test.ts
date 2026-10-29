@@ -72,6 +72,13 @@ describe("projectRoot", () => {
 		expect(await projectRoot(bare)).toBe(bare);
 	});
 
+	/** A folder that looks like a bare repository: `HEAD`, `objects/`, `refs/` and the given `config`. */
+	async function bareLike(dir: string, config: string) {
+		for (const sub of ["objects", "refs"]) await mkdir(join(dir, sub), { recursive: true });
+		await writeFile(join(dir, "HEAD"), "ref: refs/heads/main\n");
+		await writeFile(join(dir, "config"), config);
+	}
+
 	it.each([
 		["[core]\n\tbare = false\n[other]\n\tbare = true\n", false],
 		['[core "x"]\n\tbare = true\n', false],
@@ -83,20 +90,43 @@ describe("projectRoot", () => {
 		["[core] bare = 1\n", true],
 		["[core]\n\tbare = true # a comment\n", true],
 		['[remote "origin"]\n\turl = x\n[core]\n\tbare = true\r\n', true],
-		// Quotes and backslashes (escapes, continuations) are not read: such a config is never taken as bare.
-		["[other]\n\tx = a\\\n[core]\n\tbare = true\n", false],
-		["[core]\n\tbare = \\\ntrue\n", false],
-		["[core]\n\tbare = true\\\n\tbare = false\n", false],
-		["[core]\n bare = true\n # comment \\\n bare = false\n", false],
-		["[core]\n bare = true\n ; comment \\\n bare = false\n", false],
-		["[core]\n bare = true ; comment \\\n bare = false\n", false],
-		['[core]\n\tbare = "true"\n', false],
+		['[core]\n\tbare = "true"\n', true],
+		['[core]\n\tbare = "tr"ue ; note\n', true],
+		['[core]\n\tbare = "false # not a comment"\n', false],
 	])("reads core.bare from %j as %s", async (config, bare) => {
 		const parent = join(root, "parent");
-		for (const dir of ["objects", "refs", "independent"]) await mkdir(join(parent, dir), { recursive: true });
-		await writeFile(join(parent, "HEAD"), "ref: refs/heads/main\n");
-		await writeFile(join(parent, "config"), config);
+		await bareLike(parent, config);
+		await mkdir(join(parent, "independent"));
 		expect(await projectRoot(join(parent, "independent"))).toBe(bare ? parent : join(parent, "independent"));
+	});
+
+	it.each([
+		"[other]\n\tx = a\\\n[core]\n\tbare = true\n",
+		"[core]\n\tbare = \\\ntrue\n",
+		"[core]\n bare = true\n # comment \\\n bare = false\n",
+		"[core]\n bare = true ; comment \\\n bare = false\n",
+		'[core]\n\tbare = "true\n',
+		"[core]\n\tthis is not a config line\n",
+	])(
+		"stops at a bare-looking folder whose config %j it cannot read, never reaching the checkout around it",
+		async (config) => {
+			const app = join(root, "app");
+			await mkdir(join(app, ".git"), { recursive: true });
+			const cache = join(app, "cache.git");
+			await bareLike(cache, config);
+			await mkdir(join(cache, "sub"));
+			expect(await projectRoot(cache)).toBe(cache);
+			expect(await projectRoot(join(cache, "sub"))).toBe(join(cache, "sub"));
+		},
+	);
+
+	it("is a bare repository with a quoted core.bare inside a checkout, not the checkout", async () => {
+		const app = join(root, "app");
+		await mkdir(join(app, ".git"), { recursive: true });
+		const cache = join(app, "cache.git");
+		await bareLike(cache, '[core]\n\tbare = "true"\n');
+		await mkdir(join(cache, "objects", "probe"), { recursive: true });
+		expect(await projectRoot(join(cache, "objects", "probe"))).toBe(cache);
 	});
 
 	it("is a submodule's own folder, and the folder holding a .git file it cannot follow", async () => {
