@@ -126,36 +126,59 @@ async function psProcesses(entry: string): Promise<ProcessRow[]> {
 	return rows;
 }
 
+/** Files of /proc read at once: enough to list fast, few enough never to run out of descriptors. */
+const PROC_READS = 32;
+
+/** Reads a text file; tests pass a slow or failing one. */
+export type ReadText = (path: string, encoding: BufferEncoding) => Promise<string>;
+
+/** A read of /proc that failed because the process ended meanwhile, or because its environment is another user's. */
+const USUAL_PROC_ERRORS = new Set(["ENOENT", "ESRCH", "EACCES", "EPERM"]);
+
 /**
- * The processes as Linux's `/proc` (or a tree laid out like it, under `root`) says them. Read without blocking, so a
- * read that does not answer leaves the sweep's timeout to run.
+ * The processes as Linux's `/proc` (or a tree laid out like it, under `root`) says them, read without blocking and at
+ * most PROC_READS files at once, so a read that does not answer leaves the sweep's timeout to run. A process that ended
+ * during the listing is left out, and one whose environment cannot be read is taken as unmarked; any other failure
+ * (out of descriptors, say) rejects, since the listing would miss what it could not read.
  */
-export async function procProcesses(entry: string, root = "/proc"): Promise<ProcessRow[]> {
+export async function procProcesses(entry: string, root = "/proc", read: ReadText = readFile): Promise<ProcessRow[]> {
 	let names: string[] = [];
 	try {
 		names = (await readdir(root)).filter((name) => /^\d+$/.test(name));
 	} catch {
 		return [];
 	}
-	const rows = await Promise.all(
-		names.map(async (name): Promise<ProcessRow | undefined> => {
+	const usual = (error: unknown) => USUAL_PROC_ERRORS.has((error as NodeJS.ErrnoException)?.code ?? "");
+	const rows: ProcessRow[] = [];
+	let next = 0;
+	const reader = async () => {
+		for (let name = names[next++]; name !== undefined; name = names[next++]) {
+			let stat: string;
 			try {
-				// The fields after the command name, which may hold spaces and parentheses: state, ppid, pgrp.
-				const stat = await readFile(`${root}/${name}/stat`, "utf8");
-				const [, ppid, pgid] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-				const environ = await readFile(`${root}/${name}/environ`, "latin1").catch(() => "");
-				return {
-					pid: Number(name),
-					ppid: Number(ppid),
-					pgid: Number(pgid),
-					marked: environ.split("\0").includes(entry),
-				};
-			} catch {
-				return undefined;
+				stat = await read(`${root}/${name}/stat`, "utf8");
+			} catch (error) {
+				if (usual(error)) continue;
+				throw error;
 			}
-		}),
-	);
-	return rows.filter((row): row is ProcessRow => row !== undefined);
+			let environ = "";
+			try {
+				environ = await read(`${root}/${name}/environ`, "latin1");
+			} catch (error) {
+				if (!usual(error)) throw error;
+			}
+			// The fields after the command name, which may hold spaces and parentheses: state, ppid, pgrp.
+			const [, ppid, pgid] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+			rows.push({
+				pid: Number(name),
+				ppid: Number(ppid),
+				pgid: Number(pgid),
+				marked: environ.split("\0").includes(entry),
+			});
+		}
+	};
+	// Two reads of one process come one after the other: PROC_READS readers, PROC_READS files at once.
+	await Promise.all(Array.from({ length: Math.min(PROC_READS, names.length) }, reader));
+	return rows.sort((a, b) => a.pid - b.pid);
 }
 
 /** The watcher of a job runs this file when Atelier is gone: `node job-sweep.ts <pgid> <mark>`. */
