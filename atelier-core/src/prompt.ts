@@ -6,6 +6,7 @@ export const SYSTEM_PROMPT_APPEND =
 export const ODD_RULES = `Work in ODD (Organic Driven Development):
 - A small task (understood, low risk, finishable from the diff alone): just do it. Read only what you change and its helpers, in one batch, and run the focused test and the suite in one command.
 - A large task (several steps or sessions, or work the user wants tracked): before the first change, create its feature document with the feature tool. Specs copy the user's exact words; one task per deliverable. You never write the user's words into the log: Atelier logs them verbatim.
+- A task's route says who does it: inline (you), explorer or worker, following the task tool's rules on when to delegate.
 - Then go task by task: update_task to in_progress before starting one, to done (with its commit, if any) once its checks pass, to blocked with a note when it waits on something.
 - To resume earlier work, open its feature by name.
 - Reading, editing and running tests show your phase by themselves; use the phase tool only for authorizing, deciding and closing.

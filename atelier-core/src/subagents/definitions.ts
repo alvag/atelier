@@ -18,6 +18,14 @@ export interface SubagentDefinition {
 	maxRequests: number;
 }
 
+/** When the main agent delegates, in the task tool's description: it exists only when there are subagents. */
+const DELEGATION_RULES = [
+	"When to delegate:",
+	"- Read inline when it takes up to about 3 parallel calls or 10k tokens; beyond that, send one explorer and ask for an answer of at most about 2k tokens with path:line evidence.",
+	"- Pass paths, the spec reference and what to change, never file contents: the subagent reads them itself.",
+	"- Reading that prepares a delegated change belongs to the worker: do not read it first yourself.",
+];
+
 const REPORT_FORMAT =
 	"Your final message is the only thing the agent that delegated to you will see, so make it a self-contained report: answer first, then the evidence as path:line references. Do not paste whole files. Keep it under 1,500 words.";
 
@@ -34,7 +42,7 @@ export const BUILTIN_AGENTS: readonly SubagentDefinition[] = Object.freeze([
 	{
 		name: "worker",
 		description:
-			"Makes a well-specified, bounded change and checks it. Give it everything it needs: it does not see this conversation.",
+			"Makes a well-specified, bounded change and checks it. Give it the paths, the spec and what to change: it does not see this conversation.",
 		tools: ["read", "edit", "write", "grep", "bash", "web_fetch", "web_search"],
 		prompt: `You are a worker for another coding agent. Make exactly the change you are given, keep it as small as it allows, and check it. ${REPORT_FORMAT} Say what changed and how you checked it.`,
 		models: {},
@@ -52,6 +60,7 @@ export function createTaskTool(agents: readonly SubagentDefinition[], run: RunSu
 		description: [
 			"Delegates work to a subagent with its own, empty context; only its final report comes back to you.",
 			"The prompt must be self-contained: the subagent does not see this conversation.",
+			...DELEGATION_RULES,
 			"Agents:",
 			...agents.map((agent) => `- ${agent.name}: ${agent.description}`),
 		].join("\n"),
