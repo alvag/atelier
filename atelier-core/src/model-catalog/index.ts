@@ -8,6 +8,7 @@ export {
 	type CatalogModel,
 	type CatalogModels,
 	ModelData,
+	modelDetail,
 } from "./model-data.ts";
 export { MODELS_DEV_URL, type ModelsDevOptions, modelsDevSource, parseModelsDev } from "./models-dev.ts";
 export { newestFirst } from "./order.ts";

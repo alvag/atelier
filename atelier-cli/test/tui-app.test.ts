@@ -1553,7 +1553,11 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 	});
 
 	/** A core on claude-code with two models and two profiles, which answers each change with the configuration it leaves. */
-	function listingCore(signedIn: string[] = ["claude-code", "openai-codex"], fields: Record<string, unknown> = {}) {
+	function listingCore(
+		signedIn: string[] = ["claude-code", "openai-codex"],
+		fields: Record<string, unknown> = {},
+		listed: Record<string, unknown> = {},
+	) {
 		let configuration: Record<string, unknown> = {
 			backend: "claude-code",
 			model: "opus",
@@ -1587,6 +1591,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 							modes: ["normal", "auto", "yolo"],
 							profiles: ["cheap", "fast"],
 							active: "cheap",
+							...listed,
 						};
 					case "session.set_model":
 						return change({ model: command.model });
@@ -1989,6 +1994,51 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		await until(() => !h.screen.screen().endsWith("│"));
 		await new Promise((resolve) => setTimeout(resolve, 30));
 		expect(stub.log.commands.map((command) => command.command)).not.toContain("session.set_model");
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
+	it("marks current the versioned id an alias in use stands for, and shows under the list what is known of the selected model", async () => {
+		const h = harness([]);
+		const stub = listingCore(
+			undefined,
+			{},
+			{
+				backends: [
+					{
+						name: "claude-code",
+						default: "claude-opus-5-5",
+						models: ["claude-opus-5-5", "claude-sonnet-5-5"],
+						aliases: { opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5" },
+					},
+				],
+				models: [
+					{
+						provider: "claude-code",
+						model: "claude-opus-5-5",
+						name: "Claude Opus 5.5",
+						contextWindow: 1_000_000,
+						images: true,
+					},
+					{ provider: "claude-code", model: "claude-sonnet-5-5", contextWindow: 200_000, images: false },
+					{ provider: "claude-code", model: "claude-haiku-5-5" },
+				],
+			},
+		);
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("/model");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("claude-sonnet-5-5 [claude-code]"));
+		expect(h.screen.screen()).toMatch(/claude-opus-5-5 \[claude-code\] +current/);
+		expect(h.screen.screen()).not.toContain("opus [claude-code]");
+		expect(h.screen.screen()).toContain("Claude Opus 5.5 · 1M context · images");
+		h.screen.type("\x1b[B");
+		await until(() => h.screen.screen().includes("200K context · text only"));
+		h.screen.type("\x1b[B");
+		await until(() => h.screen.screen().includes("claude-code/claude-haiku-5-5"));
+		h.screen.type("\x1b");
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
 	});

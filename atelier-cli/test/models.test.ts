@@ -48,21 +48,27 @@ it("prints each backend's models, the code's and the ones its provider listed, n
 	expect(out).toContain("openai-codex · the code's list\n  gpt-6.1-sol\n  gpt-6-sol\n");
 });
 
-it("says whether a model takes images, where the catalog knows it", async () => {
+it("says a model's long name, its window and whether it takes images, where the catalog knows them", async () => {
 	await mkdir(join(home, ".atelier"), { recursive: true });
 	const sources = {
 		"models.dev": {
 			checkedAt: 1,
 			models: {
 				"anthropic-api": [{ id: "claude-sonnet-5-5", images: true }],
+				"claude-code": [{ id: "claude-opus-5-5", name: "Claude Opus 5.5", images: true }],
 				"opencode-go": [{ id: "grok-4.7", images: false }],
 			},
 		},
 		"opencode-go": { checkedAt: 1, models: { "opencode-go": [{ id: "grok-4.7" }] } },
+		"claude-code": {
+			checkedAt: 1,
+			models: { "claude-code": [{ id: "claude-opus-5-5", aliases: ["opus"], contextWindow: 1_000_000 }] },
+		},
 	};
 	await writeFile(join(home, ".atelier", "models.json"), JSON.stringify({ version: 1, sources }));
 	const { code, out } = await models([]);
 	expect(code).toBe(0);
+	expect(out).toContain("  claude-opus-5-5  Claude Opus 5.5 · 1M context · images\n");
 	expect(out).toContain("  claude-sonnet-5-5  images\n");
 	expect(out).toContain("  grok-4.7  (new)  text only\n");
 	expect(out).toContain("  claude-opus-5-5\n");

@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Readable } from "node:stream";
 import type { AgentBackend } from "../backend.ts";
+import { claudeCodeAliases } from "../backends/claude-code/models.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { McpManager } from "../mcp/index.ts";
@@ -507,19 +508,42 @@ export class RpcServer {
 			),
 			this.#signedIn(),
 		]);
-		const backends = BACKEND_NAMES.map((name, index) => ({
-			name,
-			default: BACKEND_DEFAULTS[name],
-			models: [...(lists[index] ?? [])],
-		}));
+		const backends = BACKEND_NAMES.map((name, index) => {
+			const models = [...(lists[index] ?? [])];
+			// The aliases that stand for claude-code's models: a session that runs `opus` runs one of them.
+			const aliases = name === "claude-code" ? claudeCodeAliases(models) : {};
+			return {
+				name,
+				default: BACKEND_DEFAULTS[name],
+				models,
+				...(Object.keys(aliases).length === 0 ? {} : { aliases }),
+			};
+		});
+		const listed = await Promise.all(
+			backends
+				.filter(({ name }) => signedIn.includes(name))
+				.flatMap(({ name, models }) => models.map((model) => this.#listedModel(catalog, name, model))),
+		);
 		return {
 			backends,
-			models: backends
-				.filter(({ name }) => signedIn.includes(name))
-				.flatMap(({ name, models }) => models.map((model) => ({ provider: name, model }))),
+			models: listed,
 			efforts: [...THINKING_LEVELS],
 			modes: [...PERMISSION_MODES],
 			...(await this.#profiles(cwd)),
+		};
+	}
+
+	/** A model of `options.list`, with its long name, window and whether it takes images, where the catalog knows them. */
+	async #listedModel(catalog: ModelCatalog, provider: BackendName, model: string): Promise<Result> {
+		const known = await Promise.resolve()
+			.then(() => catalog.model?.(provider, model))
+			.catch(() => undefined);
+		return {
+			provider,
+			model,
+			...(known?.name === undefined ? {} : { name: known.name }),
+			...(known?.contextWindow === undefined ? {} : { contextWindow: known.contextWindow }),
+			...(known?.images === undefined ? {} : { images: known.images }),
 		};
 	}
 

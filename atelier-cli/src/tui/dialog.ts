@@ -1,4 +1,4 @@
-import { isPastedRedirect } from "@atelier/core";
+import { isPastedRedirect, visibleText } from "@atelier/core";
 import {
 	type Component,
 	type Focusable,
@@ -70,6 +70,8 @@ export interface Choice<T extends string> {
 	label: string;
 	/** Shown dimmed after the label. */
 	description?: string;
+	/** Shown under the selected value in a search dialog, as what is known of it. */
+	detail?: string;
 }
 
 /** What a folded question shows: lines of one row each, and how many lines of the whole question it leaves out. */
@@ -298,6 +300,8 @@ export class SearchDialog implements Component, Focusable {
 			return `${paint("yellow", "│")} ${cut}${" ".repeat(Math.max(0, inner - visibleWidth(cut)))} ${paint("yellow", "│")}`;
 		};
 		const selected = this.#matches.length === 0 ? undefined : this.#list.getSelectedItem();
+		// The list holds the choices themselves.
+		const detail = (selected as Choice<string> | null | undefined)?.detail;
 		const at = selected === undefined || selected === null ? 0 : this.#matches.indexOf(selected as Choice<string>) + 1;
 		const rows =
 			this.#matches.length === 0
@@ -309,6 +313,7 @@ export class SearchDialog implements Component, Focusable {
 			...rows.map(line),
 			line(paint("dim", `  (${at}/${this.#matches.length})`)),
 			line(selected === undefined || selected === null ? "" : `  ${selected.value}`),
+			...(detail === undefined ? [] : [line(`  ${visibleText(detail).text}`)]),
 			line(paint("dim", this.#note)),
 			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
 		];
