@@ -39,6 +39,11 @@ export class PasteFilter {
 	/** The kept pastes that ended, not taken yet. */
 	#ended: string[] = [];
 
+	/** Whether nothing is pending: no paste open and no cut marker waiting for the rest of it. */
+	get idle(): boolean {
+		return !this.pasting && this.#pending === "";
+	}
+
 	/** The kept pastes that ended since the last call, in order. */
 	takePasted(): string[] {
 		return this.#ended.splice(0);
