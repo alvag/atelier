@@ -1723,6 +1723,39 @@ describe("App", () => {
 			expect(status.queryByText(/^ctx /)).toBeNull();
 		});
 
+		it.each([
+			["after the queue it gives back", true],
+			["in a turn with no event between the change and its end", false],
+		])("labels a finished turn with the model the core says answered it, %s", async (_, answered) => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
+			const first = { role: "orchestrator", backend: "anthropic-api", model: "first" };
+			const send = (turnId: string, seq: number, body: AtelierEventBody) =>
+				fake.push({ type: "event", sessionId: "s1", event: { ...body, seq, turnId } as never });
+			send("t1", 1, { type: "session_started", backend: "anthropic-api", model: "first", authSource: "api_key" });
+			send("t1", 2, { type: "turn_finished", stopReason: "end_turn", usage });
+			if (answered) send("t2", 1, { type: "text_delta", text: "answered by first" });
+			send("t2", 2, { type: "session_configured", backend: "anthropic-api", model: "other", permissionMode: "normal" });
+			if (answered)
+				send("t2", 3, {
+					type: "queue_update",
+					messages: [],
+					returned: [{ id: "q1", kind: "follow_up", text: "later" }],
+				});
+			send("t2", 4, {
+				type: "turn_finished",
+				stopReason: answered ? "interrupted" : "error",
+				usage,
+				phases: { main: { usage, agents: [first] } },
+			});
+			const summaries = () =>
+				screen.getAllByTestId("usage").map((usage) => usage.querySelector("summary")?.textContent);
+			await waitFor(() => expect(summaries()).toHaveLength(2));
+			expect(summaries()[1]).toMatch(/^first · /);
+			expect(within(screen.getByRole("status")).getByText("other")).toBeTruthy();
+		});
+
 		it("drops the model of the backend left when the configuration moves to another backend without one", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");

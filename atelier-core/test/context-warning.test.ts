@@ -117,6 +117,21 @@ describe("context_warning", () => {
 		await session.close();
 	});
 
+	it("names in the turn's phases the model that answered it, not a change that landed as it ended", async () => {
+		let session: Session | undefined;
+		const started: FakeStep = {
+			event: { type: "session_started", backend: "fake", model: "first", authSource: "api_key" },
+		};
+		const backend = new FakeBackend([
+			[started, { run: async () => void (await session?.configure({ model: "other" })) }, ...ended(at(10_000))],
+		]);
+		session = await Session.start({ backend, cwd: "/w", tools: [], model: "first" });
+		const turn = await drain(session);
+		expect(turn.map((event) => event.type).slice(-2)).toEqual(["session_configured", "turn_finished"]);
+		expect(turn.at(-1)).toMatchObject({ phases: { main: { agents: [{ role: "orchestrator", model: "first" }] } } });
+		await session.close();
+	});
+
 	it("is said again after the model goes to another one and back", async () => {
 		const backend = new FakeBackend([ended(at(190_000)), ended(at(190_000))]);
 		const session = await Session.start({ backend, cwd: "/w", tools: [], model: "first" });
