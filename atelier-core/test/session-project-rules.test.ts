@@ -115,6 +115,14 @@ describe("rules allowed always in this project", () => {
 		expect(questions).toHaveLength(1);
 	});
 
+	it("asks when another segment has an absolute argument", async () => {
+		const rules = new PermissionRules({ home, cwd: app });
+		await rules.allow([{ kind: "bash", value: "printf" }], "session");
+		await rules.allow([{ kind: "bash", value: "./run.sh" }], "project");
+		const { questions } = await run(app, [leave("printf '%s' /tmp | ./run.sh", "c1")], { rules });
+		expect(questions).toHaveLength(1);
+	});
+
 	it("covers an absolute executable allowed for the project", async () => {
 		const rules = new PermissionRules({ home, cwd: app });
 		await rules.allow([{ kind: "bash", value: "/usr/bin/make" }], "project");
