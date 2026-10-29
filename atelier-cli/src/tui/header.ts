@@ -37,7 +37,10 @@ export class StatusBar implements Component {
 	invalidate(): void {}
 	render(width: number): string[] {
 		const state = this.#state();
-		const right = footerLine(state, width, this.#paint, ["context", "cost"]).trimStart();
+		const right = truncateToWidth(
+			footerLine(state, Number.MAX_SAFE_INTEGER, this.#paint, ["context", "cost"]).trimStart(),
+			width,
+		);
 		const separator = this.#paint("dim", " · ");
 		const running = footerLine(state, Number.MAX_SAFE_INTEGER, this.#paint, ["model", "effort", "profile"])
 			.trimStart()
