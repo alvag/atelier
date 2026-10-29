@@ -1628,6 +1628,19 @@ describe("App", () => {
 			expect(within(screen.getByRole("status")).getByText("context 45,000 / 200,000 (23%)")).toBeTruthy();
 		});
 
+		it("says the context size is unknown right after a compaction", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+				context: { tokens: 3000, window: 1_000_000, compactAt: 967_000, unknown: true },
+			});
+			const label = await within(screen.getByRole("status")).findByText("context ? / 1,000,000");
+			expect(label.getAttribute("title")).toBe("compacts at 967,000 tokens");
+		});
+
 		it("says why a compaction failed", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "x");
