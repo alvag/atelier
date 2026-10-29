@@ -138,6 +138,7 @@ export {
 	PermissionRules,
 	PermissionRulesError,
 	permissionRulesPath,
+	projectPermissionRulesPath,
 } from "./permission-rules.ts";
 export {
 	costOfRequest,

@@ -22,9 +22,9 @@ describe("PermissionRules", () => {
 	it("keeps session rules in memory and writes nothing", async () => {
 		const rules = new PermissionRules({ home });
 		await rules.allow([{ kind: "bash", value: "node" }], "session");
-		expect(await rules.current()).toEqual({ bash: ["node"], paths: [] });
+		expect(await rules.current()).toEqual({ bash: ["node"], projectBash: [], paths: [] });
 		await expect(stat(file())).rejects.toThrow();
-		expect(await new PermissionRules({ home }).current()).toEqual({ bash: [], paths: [] });
+		expect(await new PermissionRules({ home }).current()).toEqual({ bash: [], projectBash: [], paths: [] });
 	});
 
 	it("saves always rules to ~/.atelier/permissions.json, 0600, seen by other sessions", async () => {
@@ -45,6 +45,7 @@ describe("PermissionRules", () => {
 		expect(await readdir(join(home, ".atelier"))).toEqual(["permissions.json"]);
 		expect(await new PermissionRules({ home }).current()).toEqual({
 			bash: ["ego-browser nodejs"],
+			projectBash: [],
 			paths: ["/Users/ana/notes"],
 		});
 	});
@@ -73,7 +74,7 @@ describe("PermissionRules", () => {
 		expect(await rules.remove((listed[1] as { id: string }).id)).toBe(true);
 		expect((await saved()).allow).toEqual([]);
 		expect(await rules.remove((listed[0] as { id: string }).id)).toBe(true);
-		expect(await rules.current()).toEqual({ bash: [], paths: [] });
+		expect(await rules.current()).toEqual({ bash: [], projectBash: [], paths: [] });
 		expect(await rules.remove("nothing")).toBe(false);
 	});
 
@@ -120,7 +121,7 @@ describe("PermissionRules", () => {
 		expect(rules.canSave).toBe(false);
 		expect(new PermissionRules({ home }).canSave).toBe(true);
 		await rules.allow([{ kind: "bash", value: "open" }], "session");
-		expect(await rules.current()).toEqual({ bash: ["open"], paths: [] });
+		expect(await rules.current()).toEqual({ bash: ["open"], projectBash: [], paths: [] });
 		await expect(rules.allow([{ kind: "bash", value: "ls" }], "always")).rejects.toThrow(PermissionRulesError);
 	});
 });
