@@ -1021,6 +1021,8 @@ describe("ClaudeCodeBackend context usage", () => {
 		autoCompactThreshold,
 	});
 	const never = () => new Promise<never>(() => {});
+	/** Lets answers that already came reach the session. */
+	const settle = () => new Promise((resolve) => setImmediate(resolve));
 	const finishOf = (events: AtelierEventBody[]) => events.find((event) => event.type === "turn_finished");
 
 	it("reports what the last main-thread request carried against the model's window, compacting where Claude Code does", async () => {
@@ -1064,14 +1066,14 @@ describe("ClaudeCodeBackend context usage", () => {
 		}
 	});
 
-	it("asks where Claude Code compacts each turn until it answers, again after configure changes the model, and drops a late answer", async () => {
+	it("asks where Claude Code compacts while no request is in flight, again after configure changes the model, and drops a late answer", async () => {
 		let answerFirst: (value: { isAutoCompactEnabled: boolean; autoCompactThreshold: number }) => void = () => {};
 		const first = () =>
 			new Promise<{ isAutoCompactEnabled: boolean; autoCompactThreshold: number }>((resolve) => {
 				answerFirst = resolve;
 			});
 		const turn = [answer(2, 4000, 500), ranWith(1_000_000)];
-		const { query, calls } = withContextUsage([turn, turn, turn, turn], first, never, threshold(180_000));
+		const { query, calls } = withContextUsage([turn, turn, turn, turn], first, threshold(180_000));
 		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
 		await collectBodies(session.send("one"));
 		await session.configure?.({ thinking: "high" });
@@ -1080,12 +1082,11 @@ describe("ClaudeCodeBackend context usage", () => {
 		const third = finishOf(await collectBodies(session.send("three")));
 		// The answer about the model before the change comes after the new one's, too late to count.
 		answerFirst({ isAutoCompactEnabled: true, autoCompactThreshold: 967_000 });
-		await Promise.resolve();
+		await settle();
 		const fourth = finishOf(await collectBodies(session.send("four")));
 		expect(calls.order.filter((call) => call === "contextUsage" || call.startsWith("prompt:"))).toEqual([
 			"contextUsage",
 			"prompt:one",
-			"contextUsage",
 			"prompt:two",
 			"contextUsage",
 			"prompt:three",
@@ -1093,30 +1094,70 @@ describe("ClaudeCodeBackend context usage", () => {
 		]);
 		expect(third).toMatchObject({ context: { compactAt: 180_000 } });
 		expect(fourth).toMatchObject({ context: { compactAt: 180_000 } });
+		await session.close();
 	});
 
-	it("keeps the first valid answer when another request about the same model answers after it", async () => {
+	describe("a request that does not answer", () => {
 		type Answer = { isAutoCompactEnabled: boolean; autoCompactThreshold: number };
-		const resolvers: ((value: Answer) => void)[] = [];
-		const pending = () => new Promise<Answer>((resolve) => resolvers.push(resolve));
-		const turn = [answer(2, 4000, 500), ranWith(1_000_000)];
-		const { query, calls } = withContextUsage([turn, turn, turn, turn], pending, pending);
-		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
-		const compactAts: unknown[] = [];
-		const run = async (prompt: string) => {
-			const finish = finishOf(await collectBodies(session.send(prompt)));
-			compactAts.push(finish?.type === "turn_finished" ? finish.context?.compactAt : undefined);
-		};
-		await run("one");
-		await run("two");
-		resolvers[0]?.({ isAutoCompactEnabled: true, autoCompactThreshold: 400_000 });
-		await new Promise((resolve) => setImmediate(resolve));
-		await run("three");
-		resolvers[1]?.({ isAutoCompactEnabled: true, autoCompactThreshold: 600_000 });
-		await new Promise((resolve) => setImmediate(resolve));
-		await run("four");
-		expect(calls.order.filter((call) => call === "contextUsage")).toHaveLength(2);
-		expect(compactAts).toEqual([1_000_000, 1_000_000, 400_000, 400_000]);
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		/** A session whose `getContextUsage` requests answer only when the test resolves them, in the order asked. */
+		async function pendingSession() {
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			const resolvers: ((value: Answer) => void)[] = [];
+			const pending = () => new Promise<Answer>((resolve) => resolvers.push(resolve));
+			const turn = [answer(2, 4000, 500), ranWith(1_000_000)];
+			const { query, calls } = withContextUsage([turn, turn, turn, turn, turn], pending, pending, pending);
+			const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+			const compactAts: unknown[] = [];
+			const run = async (prompt: string) => {
+				const finish = finishOf(await collectBodies(session.send(prompt)));
+				compactAts.push(finish?.type === "turn_finished" ? finish.context?.compactAt : undefined);
+			};
+			const asks = () => calls.order.filter((call) => call === "contextUsage" || call.startsWith("prompt:"));
+			return { session, resolvers, compactAts, run, asks };
+		}
+
+		it("keeps one request in flight over several turns, and asks again once it went 10 s without an answer", async () => {
+			const { session, run, asks } = await pendingSession();
+			await run("one");
+			await run("two");
+			vi.advanceTimersByTime(9_999);
+			await run("three");
+			vi.advanceTimersByTime(1);
+			await run("four");
+			expect(asks()).toEqual([
+				"contextUsage",
+				"prompt:one",
+				"prompt:two",
+				"prompt:three",
+				"contextUsage",
+				"prompt:four",
+			]);
+			await session.close();
+		});
+
+		it("drops the answer of a request that went 10 s without one", async () => {
+			const { session, resolvers, compactAts, run, asks } = await pendingSession();
+			await run("one");
+			vi.advanceTimersByTime(10_000);
+			await run("two");
+			resolvers[0]?.({ isAutoCompactEnabled: true, autoCompactThreshold: 600_000 });
+			await settle();
+			await run("three");
+			resolvers[1]?.({ isAutoCompactEnabled: true, autoCompactThreshold: 400_000 });
+			await settle();
+			await run("four");
+			// Once one answered, a late answer of a request before it does not replace it.
+			resolvers[0]?.({ isAutoCompactEnabled: true, autoCompactThreshold: 600_000 });
+			await settle();
+			await run("five");
+			expect(asks().filter((call) => call === "contextUsage")).toHaveLength(2);
+			expect(compactAts).toEqual([1_000_000, 1_000_000, 1_000_000, 400_000, 400_000]);
+			await session.close();
+		});
 	});
 
 	it("asks again with the next turn when getContextUsage failed, and keeps the answer once one comes", async () => {

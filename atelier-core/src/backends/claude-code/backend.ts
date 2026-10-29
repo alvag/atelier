@@ -43,6 +43,8 @@ import { claudeCodeIdOf, claudeCodeName, isVersionedClaudeId, withoutWindow } fr
 export const DEFAULT_MODEL = BACKEND_DEFAULTS["claude-code"];
 export const DEFAULT_INTERRUPT_GRACE_MS = 5000;
 const ACCOUNT_INFO_TIMEOUT_MS = 3000;
+/** How long a request for where Claude Code compacts may go unanswered before it counts as failed. */
+const CONTEXT_USAGE_TIMEOUT_MS = 10_000;
 const TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
 
 /** The part of the SDK's Query the backend uses. */
@@ -329,9 +331,10 @@ class ClaudeCodeSession implements BackendSession {
 	/** The Claude Code session the SDK messages name: what `resumeState` hands on. */
 	#sessionId: string | undefined;
 	readonly #contextTracker = new ContextTracker();
-	/** Whether Claude Code answered where it compacts the model in use; counts the models, so a late answer is dropped. */
+	/** Whether Claude Code answered where it compacts the model in use. */
 	#compactAtKnown = false;
-	#compactAtModels = 0;
+	/** The request in flight about the model in use, at most one: only its answer counts. */
+	#compactAtAsk: { timer: NodeJS.Timeout } | undefined;
 
 	constructor(
 		query: SdkQuery,
@@ -465,7 +468,7 @@ class ClaudeCodeSession implements BackendSession {
 			yield* early;
 			return;
 		}
-		if (!this.#compactAtKnown) this.#askCompactAt();
+		if (!this.#compactAtKnown && this.#compactAtAsk === undefined) this.#askCompactAt();
 		const turn = new Channel<AtelierEventBody>();
 		for (const event of early) turn.push(event);
 		this.#turn = turn;
@@ -478,22 +481,31 @@ class ClaudeCodeSession implements BackendSession {
 	}
 
 	/**
-	 * Asks where Claude Code compacts the model in use, without waiting: until it answers, the window stands for it. A
-	 * request that failed or has not answered yet is asked again with the next turn, once per turn; the first valid answer
-	 * stays for the model, and any other request about it that answers later is dropped.
+	 * Asks where Claude Code compacts the model in use, without waiting: until it answers, the window stands for it. One
+	 * request at a time: one that fails, or goes unanswered for CONTEXT_USAGE_TIMEOUT_MS, is asked again with the next
+	 * turn, and its late answer is dropped, as is one about a model the session left. The first valid answer stays.
 	 */
 	#askCompactAt(): void {
-		const model = this.#compactAtModels;
 		const { getContextUsage } = this.#query;
 		if (!getContextUsage) return;
+		const ask = { timer: setTimeout(() => this.#dropCompactAtAsk(ask), CONTEXT_USAGE_TIMEOUT_MS) };
+		this.#compactAtAsk = ask;
 		getContextUsage.call(this.#query, { detail: "summary" }).then(
 			(usage) => {
-				if (model !== this.#compactAtModels || this.#compactAtKnown) return;
+				if (this.#compactAtAsk !== ask) return;
+				this.#dropCompactAtAsk(ask);
 				this.#compactAtKnown = true;
 				this.#contextTracker.compactAt = compactThresholdOf(usage);
 			},
-			() => {},
+			() => this.#dropCompactAtAsk(ask),
 		);
+	}
+
+	/** Forgets the request in flight, when it is `ask`: the next turn asks again, and its answer, if any, is dropped. */
+	#dropCompactAtAsk(ask: { timer: NodeJS.Timeout } | undefined = this.#compactAtAsk): void {
+		if (ask === undefined || this.#compactAtAsk !== ask) return;
+		clearTimeout(ask.timer);
+		this.#compactAtAsk = undefined;
 	}
 
 	/** Asks Claude Code to stop; if the turn does not end within the grace period, closes the query. */
@@ -536,7 +548,7 @@ class ClaudeCodeSession implements BackendSession {
 			await setModel.call(this.#query, claudeCodeName(change.model));
 			// Where Claude Code compacts the new model is asked with its first turn; an answer about the old one is dropped.
 			this.#compactAtKnown = false;
-			this.#compactAtModels++;
+			this.#dropCompactAtAsk();
 			this.#contextTracker.compactAt = undefined;
 		}
 		this.#model = model;
@@ -551,6 +563,7 @@ class ClaudeCodeSession implements BackendSession {
 	async close(): Promise<void> {
 		this.#closing = true;
 		clearTimeout(this.#interruptTimer);
+		this.#dropCompactAtAsk();
 		this.#input.close();
 		this.#query.close();
 	}
