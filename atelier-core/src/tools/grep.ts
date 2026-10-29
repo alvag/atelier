@@ -29,6 +29,7 @@ function clip(line: string): string {
 }
 
 const NOTICE = /^(.*)(: binary file matches \(found "\\0" byte around offset \d+\))$/s;
+const WARNING = /^(?:.*: )?WARNING:/;
 
 /** The most matches one call may ask for, and the most context lines around each. */
 const MAX_LIMIT = 1000;
@@ -69,7 +70,7 @@ function runSearch(
 		context: number;
 		/** System grep prints `--` between context blocks and cannot be told not to; these lines are dropped. */
 		dropSeparators: boolean;
-		/** Only ripgrep prints binary-file notices; system grep skips binary files (`-I`), so its output has none. */
+		/** Only ripgrep prints stdout notices; system grep skips binary files (`-I`), so its output has none. */
 		notices: boolean;
 	},
 	/** Keeps only matches whose relative path passes; applied before the match limit. */
@@ -127,18 +128,22 @@ function runSearch(
 		 * newline, and stays part of the next record's path, which is then checked as a whole. A name that holds
 		 * a forged notice and a newline is told apart by the text up to the next NUL: when that is an existing
 		 * file, the line is the start of its name. Until that NUL arrives (or the output ends), nothing is decided.
+		 * Stdout WARNING lines (with or without a path) use the same name check, but are discarded, not counted.
+		 * They need no `accept` check: even a warning about an unreadable or protected file must be consumed.
 		 */
 		const takeNotice = (ended: boolean): boolean => {
 			if (!scan.notices) return false;
 			const nl = pending.indexOf("\n");
 			const nul = pending.indexOf("\0");
 			if (nl === -1 || (nul !== -1 && nul < nl)) return false;
-			const found = NOTICE.exec(pending.slice(0, nl));
-			if (!found) return false;
-			const path = toRelative(found[1] ?? "");
-			if (!accept(path)) return false;
+			const line = pending.slice(0, nl);
+			const warning = WARNING.test(line);
+			const found = NOTICE.exec(line);
+			if (!warning && !found) return false;
+			const path = toRelative(found?.[1] ?? "");
+			if (!warning && !accept(path)) return false;
 			if (nul === -1 ? !ended : exists(root, toRelative(pending.slice(0, nul)))) return false;
-			push({ path, line: undefined, match: true, text: clip(`${path}${found[2] ?? ""}`) });
+			if (!warning) push({ path, line: undefined, match: true, text: clip(`${path}${found?.[2] ?? ""}`) });
 			pending = pending.slice(nl + 1);
 			return true;
 		};
