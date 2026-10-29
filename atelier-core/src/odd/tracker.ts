@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { type AtelierEventBody, describeError, errorEvent, type JsonValue, PHASES, type Phase } from "../events.ts";
 import { writeAtomic } from "../tools/edit.ts";
+import { headBytes, MAX_BYTES, MAX_LINE_CHARS, MAX_LINES, tailBytes } from "../tools/limits.ts";
 import { defineTool, type ToolDefinition, type ToolOutcome } from "../tools/types.ts";
 import {
 	addTask,
@@ -186,6 +187,7 @@ export class OddTracker {
 				`Tracks a large piece of work in its feature document, ${ODD_DIR}/<name>.md. This tool is the only way to change it.`,
 				"start: create it (name, title, header, specs, tasks). Copy the user's exact words into the specs; the user's messages are logged verbatim for you.",
 				"open: resume an existing one by name. show: the active one. Both return its specs and tasks.",
+				`Output is bounded to ${MAX_LINES} lines and ${MAX_BYTES} UTF-8 bytes, including notices; oversized results keep the head and tail. Read omitted content from the feature document with grep and read.`,
 				"add_task (task), update_task (id, status, note, commit), log (text: your own note).",
 				`Statuses: ${TASK_STATUSES.join(", ")}; blocked needs a note.`,
 			].join("\n"),
@@ -237,12 +239,12 @@ export class OddTracker {
 			if (input.action === "start" || added) await this.#write(path, doc);
 			const active = { name, path, doc };
 			await this.#commit(active);
-			return done(`${input.action === "start" ? "Started" : "Opened"} ${path}.\n${summary(active, true)}`);
+			return featureResult(active, true, `${input.action === "start" ? "Started" : "Opened"} ${path}.\n`);
 		}
 
 		const active = this.#active;
 		if (!active) return failed("no feature is active; start or open one first.");
-		if (input.action === "show") return done(summary(active, true));
+		if (input.action === "show") return featureResult(active, true);
 		const doc = copy(active.doc);
 		switch (input.action) {
 			case "add_task":
@@ -267,7 +269,7 @@ export class OddTracker {
 		await this.#write(active.path, doc);
 		const next = { ...active, doc };
 		await this.#commit(next);
-		return done(summary(next, false));
+		return featureResult(next, false);
 	}
 
 	/** Appends, verbatim and in order, the user messages from `from` on. Returns whether it added any. */
@@ -342,6 +344,26 @@ function summary(active: Active, withSpecs: boolean): string {
 	return [`${active.doc.title} — ${active.path}`, ...specs, ...tasks, `Log: ${active.doc.log.length} entries.`].join(
 		"\n",
 	);
+}
+
+/** Bound only the tool response: the document and feature_changed events stay complete. */
+function featureResult(active: Active, withSpecs: boolean, prefix = ""): ToolOutcome {
+	const output = prefix + summary(active, withSpecs);
+	const lines = output.split("\n");
+	const first = Array.from(lines[0] ?? "");
+	const label = first.length > MAX_LINE_CHARS ? `${first.slice(0, MAX_LINE_CHARS - 1).join("")}…` : first.join("");
+	if (lines.length <= MAX_LINES && Buffer.byteLength(output) <= MAX_BYTES)
+		return { ok: true, output, summary: label, truncated: false };
+
+	const note = `[Output truncated. Use grep on "${active.path}" to find a task ID or section heading, then read that file with offset and limit. For an oversized single line, use bash byte ranges. Do not repeat a mutation to retrieve its output.]`;
+	// Reserve the notice and its two separators before splitting both budgets between the ends.
+	const contentBytes = MAX_BYTES - Buffer.byteLength(note) - 2;
+	const headBudget = Math.ceil(contentBytes / 2);
+	const headLines = Math.ceil((MAX_LINES - 1) / 2);
+	const tailLines = MAX_LINES - 1 - headLines;
+	const head = headBytes(lines.slice(0, headLines).join("\n"), headBudget);
+	const tail = tailBytes(lines.slice(-tailLines).join("\n"), contentBytes - headBudget);
+	return { ok: true, output: `${head}\n${note}\n${tail}`, summary: label, truncated: true };
 }
 
 function done(output: string): ToolOutcome {
