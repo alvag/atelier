@@ -2,6 +2,7 @@ import {
 	BACKEND_DEFAULTS,
 	BACKEND_MODELS,
 	type BackendName,
+	type ContextUsage,
 	claudeCodeAliases,
 	DEFAULT_BACKEND,
 	type QueueKind,
@@ -31,7 +32,9 @@ const numbers = new Intl.NumberFormat("en-US");
 /** The core's reason for a session started with `noSandbox`. */
 const SANDBOX_TURNED_OFF = "sandbox turned off for this session";
 
-function contextLabel({ tokens, window }: { tokens: number; window: number }): string {
+/** How full the context is; right after a compaction the size is not known until a request measures it. */
+function contextLabel({ tokens, window, unknown }: ContextUsage): string {
+	if (unknown) return `context ? / ${numbers.format(window)}`;
 	return `context ${numbers.format(tokens)} / ${numbers.format(window)} (${Math.round((tokens / window) * 100)}%)`;
 }
 
