@@ -1356,7 +1356,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	// The terminal's colors only refine the shade and make the cards' backgrounds: a question or an answer that fails
 	// leaves the palette's shade and no backgrounds.
 	if (shade.on) {
-		const shadeAs = (colors: TerminalColors) => {
+		const matchTerminalColors = (colors: TerminalColors) => {
 			if (quitting) return;
 			try {
 				shade.match(colors.background, getTerminalColorMode());
@@ -1367,8 +1367,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			tui.requestRender(true);
 		};
 		void tui
-			.queryTerminalColors({ timeoutMs: COLOR_QUERY_MS, onLateReply: shadeAs })
-			.then(shadeAs)
+			.queryTerminalColors({ timeoutMs: COLOR_QUERY_MS, onLateReply: matchTerminalColors })
+			.then(matchTerminalColors)
 			.catch(() => {});
 	}
 	options.terminal.setTitle(`Atelier - ${basename(args.cwd)}`);

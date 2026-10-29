@@ -94,14 +94,12 @@ export class PromptEditor extends Editor {
 		if (!this.#shade.on) return super.render(width);
 		const lines = super.render(Math.max(1, width - MARK.length));
 		const empty = this.getText() === "";
-		let borders = 0;
+		// The band ends at the bottom border; the rows under it are the completions, lined up with the text.
+		const bottom = lines.findLastIndex((line) => line.startsWith(BORDER));
 		let first = true;
-		return lines.map((line) => {
-			if (borders === 2) return `${INDENT}${line}`;
-			if (line.startsWith(BORDER)) {
-				borders++;
-				return this.#band(`${INDENT}${line.slice(BORDER.length)}`, width);
-			}
+		return lines.map((line, index) => {
+			if (index > bottom) return `${INDENT}${line}`;
+			if (line.startsWith(BORDER)) return this.#band(`${INDENT}${line.slice(BORDER.length)}`, width);
 			const text = first && empty ? `${line.trimEnd()}${this.#paint("dim", PLACEHOLDER)}` : line;
 			const row = `${first ? this.#paint("bold", MARK) : INDENT}${text}`;
 			first = false;
