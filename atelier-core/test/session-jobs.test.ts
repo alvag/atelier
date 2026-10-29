@@ -176,6 +176,28 @@ describe("background jobs in a session", () => {
 		expect(ofType(events, "jobs_status")).toEqual([expect.objectContaining({ running: 0, waiting: 0 })]);
 	});
 
+	it.each(["interrupted", "error"])(
+		"keeps the notice of a job that ends after a turn that ended %s for the next prompt, without waking a turn",
+		async (how) => {
+			const { backend, session, play, woke } = await started(() => [
+				[
+					call("bash_background", { command: waitsForGo() }, "c1"),
+					...(how === "interrupted"
+						? [{ run: () => void session.interrupt() }, { waitForInterrupt: true as const }]
+						: [{ throw: "backend failed" }]),
+				],
+				[{ event: finished }],
+			]);
+			await play(session.send("start it"));
+			await go();
+			await until(() => session.jobs.waiting === 1);
+			expect(woke()).toBe(0);
+			expect(session.nextQueued()).toBeUndefined();
+			await play(session.send("continue"));
+			expect(backend.prompts[1]).toMatch(/^Background job 1 [\s\S]*\n\ncontinue$/);
+		},
+	);
+
 	it("sends no notice of a stopped job, and stops every job when the session closes", async () => {
 		const pidFile = join(cwd, "pid");
 		const { backend, session, play } = await started(() => [

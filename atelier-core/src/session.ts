@@ -418,6 +418,11 @@ export class Session {
 	#jobNotices: string[] = [];
 	/** The waiting notices may start a turn of their own: not after a turn that ended interrupted or failed left them. */
 	#jobsWake = false;
+	/**
+	 * The last turn that answers the user ended interrupted or failed: notices, those it left and those that come after,
+	 * wait for the user's next prompt and start no turn of their own.
+	 */
+	#jobsHeld = false;
 
 	private constructor(options: SessionOptions) {
 		const subagents = options.subagents;
@@ -683,6 +688,8 @@ export class Session {
 			this.#turnPrompt = woken ? undefined : prompt;
 			const logged = woken ? undefined : this.#odd?.userMessage(prompt);
 			if (!woken) this.#keepPrompt(prompt);
+			// The user is back: the notices this prompt does not take may wake a turn again.
+			if (!woken) this.#jobsHeld = false;
 			const request = woken ? (this.#previousTurn?.request ?? prompt) : prompt;
 			// What the agent declared in an earlier turn does not cover this one, and its candidate starts from today's HEAD.
 			this.#review?.startTurn(this.#options.cwd, request);
@@ -919,8 +926,9 @@ export class Session {
 			// it was ending; from here until it is over, nothing more is queued.
 			if (abort.signal.aborted || UNCLEAN_ENDS.has(finish.stopReason)) {
 				this.#givenBack = true;
-				// Job notices it left wait for the user's next prompt instead of starting a turn.
+				// Job notices, those it left and later ones, wait for the user's next prompt instead of starting a turn.
 				this.#jobsWake = false;
+				this.#jobsHeld = true;
 				const returned = this.#queue;
 				this.#queue = [];
 				if (returned.length > 0) this.#sayQueue(returned);
@@ -1469,7 +1477,7 @@ export class Session {
 	#jobEnded({ job, notice }: EndedJob): void {
 		if (notice !== undefined) {
 			this.#jobNotices.push(notice);
-			this.#jobsWake = true;
+			if (!this.#jobsHeld) this.#jobsWake = true;
 		}
 		this.#say({
 			type: "job_finished",
@@ -1484,7 +1492,7 @@ export class Session {
 			running: this.#jobs?.running ?? 0,
 			waiting: this.#jobNotices.length,
 		});
-		if (notice !== undefined && this.#turn === undefined && !this.#closed) this.#options.wake?.();
+		if (notice !== undefined && this.#turn === undefined && !this.#closed && !this.#jobsHeld) this.#options.wake?.();
 	}
 
 	/** The waiting notices as the agent reads them, the clients told none waits now; undefined when none waited. */
