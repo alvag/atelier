@@ -32,7 +32,10 @@ export interface CatalogModel {
 
 /** A window as a person reads it: `1M`, `1.05M`, `200K`. */
 function windowSize(tokens: number): string {
-	return tokens >= 1_000_000 ? `${+(tokens / 1_000_000).toFixed(2)}M` : `${+(tokens / 1_000).toFixed(1)}K`;
+	const thousands = +(tokens / 1_000).toFixed(1);
+	// A window that rounds to a thousand thousands is a million: 999950 is 1M, not 1000K.
+	if (thousands >= 1_000) return `${+(tokens / 1_000_000).toFixed(2)}M`;
+	return `${thousands}K`;
 }
 
 /**

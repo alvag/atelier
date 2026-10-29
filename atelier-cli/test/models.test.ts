@@ -114,3 +114,38 @@ it("takes only --refresh, and --refresh only with models", async () => {
 	});
 	expect(other).toBe(2);
 });
+
+it("shows a name or an id from a source with markers for escape sequences and control characters", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	const sources = {
+		"models.dev": {
+			checkedAt: 1,
+			models: { "opencode-go": [{ id: "grok-\u001b[2Jx", name: "Grok\u0007 \u001b]0;owned\u0007" }] },
+		},
+		"opencode-go": { checkedAt: 1, models: { "opencode-go": [{ id: "grok-\u001b[2Jx" }] } },
+	};
+	await writeFile(join(home, ".atelier", "models.json"), JSON.stringify({ version: 1, sources }));
+	const { code, out } = await models([]);
+	expect(code).toBe(0);
+	expect([...out].filter((char) => char !== "\n" && (char < " " || char === "\u007f"))).toEqual([]);
+	expect(out).toContain("  grok-␛[2Jx  (new)  Grok⟨U+0007⟩ ␛]0;owned⟨U+0007⟩\n");
+});
+
+it("rounds a window just under a million to 1M, not 1000K", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	const sources = {
+		"opencode-go": {
+			checkedAt: 1,
+			models: {
+				"opencode-go": [
+					{ id: "edge-1", contextWindow: 999_950 },
+					{ id: "edge-2", contextWindow: 999_499 },
+				],
+			},
+		},
+	};
+	await writeFile(join(home, ".atelier", "models.json"), JSON.stringify({ version: 1, sources }));
+	const { out } = await models([]);
+	expect(out).toContain("  edge-1  (new)  1M context\n");
+	expect(out).toContain("  edge-2  (new)  999.5K context\n");
+});

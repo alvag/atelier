@@ -5,6 +5,7 @@ import {
 	modelDetail,
 	modelRefreshOff,
 	readCatalog,
+	visibleText,
 } from "@atelier/core";
 import { BACKEND_MODELS, BACKEND_NAMES } from "@atelier/core/protocol";
 
@@ -49,7 +50,8 @@ export async function runModels(options: { refresh?: true }, io: ModelsIO): Prom
 			const known = await catalog.model(backend, model);
 			const detail = known === undefined ? undefined : modelDetail(known);
 			const marks = [...(own.includes(model) ? [] : ["(new)"]), ...(detail === undefined ? [] : [detail])];
-			lines.push(`  ${[model, ...marks].join("  ")}`);
+			// An id or a name a source sent shows its escape sequences and control characters as markers, as the TUI does.
+			lines.push(`  ${visibleText([model, ...marks].join("  ")).text}`);
 		}
 	}
 	io.stdout(`${lines.join("\n")}\n`);
