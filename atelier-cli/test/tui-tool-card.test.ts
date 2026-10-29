@@ -516,6 +516,25 @@ describe("ToolCard for memory", () => {
 		expect(lines).toEqual([" 🧠 <bold>get</> #99", "    ↳ <red>✗</> <red>No memory #99.</> <dim>· 1.5s</>"]);
 	});
 
+	it("wraps a long outcome under its text instead of cutting it, folded and open", () => {
+		const error = "Memory failed: Engram mem_get timed out after 15 s while the server kept restarting";
+		const input = { action: "get", id: 9 };
+		const folded = memory(input, { ok: false, summary: error }, { width: 40 });
+		const open = card("memory", input, { ok: false, summary: error }, { width: 40 }).lines;
+		for (const lines of [folded, open]) {
+			expect(lines[0]).toBe(" 🧠 get #9");
+			expect(lines[1]).toMatch(/^ {4}↳ ✗ Memory failed/);
+			expect(lines.slice(2).every((line) => line.startsWith("      "))).toBe(true);
+			expect(
+				lines
+					.slice(1)
+					.map((line) => line.trim())
+					.join(" "),
+			).toBe(`↳ ✗ ${error}`);
+			expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+		}
+	});
+
 	it("says what a memory call is doing while it runs", () => {
 		expect(memory({ action: "search", query: "x" })).toEqual([' 🧠 search "x"', "    ↳ ◐ searching…"]);
 		expect(memory({ action: "save", title: "t" })[1]).toBe("    ↳ ◐ saving…");
