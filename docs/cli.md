@@ -109,6 +109,16 @@ rows = [
 ]
 ```
 
+### Fullscreen status bar
+
+The one-row session summary puts the working directory (under the home as `~`), branch, model and level, and profile on the left, and the context gauge and session cost on the right:
+
+```text
+~/code/app feature/fixed-status-bar · claude-opus-5-5 high · profile claude                ctx ▰▱▱▱▱▱▱▱ 11% · 1M · $0.42
+```
+
+On overflow, the path shrinks to its last segment first, then a long branch is cut with `…`. If that is not enough, the remaining left-hand text is cut; the right block keeps its space. A terminal narrower than the right block shows that block cut to its width, never wrapped. Unknown fields are omitted. The gauge has the same colors and compaction marker as the footer outside fullscreen.
+
 ### Settings
 
 `~/.atelier/settings.json` sets how the TUI looks and when it notifies, and whether your prompts go to memory; every field is optional (`fullscreen` is `true` and `hideThinking` `false` unless set):
