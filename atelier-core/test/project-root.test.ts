@@ -81,6 +81,9 @@ describe("projectRoot", () => {
 
 	it.each([
 		["[core]\n\tbare = false\n[other]\n\tbare = true\n", false],
+		["[core]\n\tbare =\n", false],
+		["[core]\n\tbare = Off\n", false],
+		["[core.sub]\n\tbare = true\n", false],
 		['[core "x"]\n\tbare = true\n', false],
 		["[core]\n\tbare = true\n\tbare = false\n", false],
 		["[core]\n\t# bare = true\n", false],
@@ -92,7 +95,7 @@ describe("projectRoot", () => {
 		['[remote "origin"]\n\turl = x\n[core]\n\tbare = true\r\n', true],
 		['[core]\n\tbare = "true"\n', true],
 		['[core]\n\tbare = "tr"ue ; note\n', true],
-		['[core]\n\tbare = "false # not a comment"\n', false],
+		['[core]\n\tbare = "no" # "a comment"\n', false],
 	])("reads core.bare from %j as %s", async (config, bare) => {
 		const parent = join(root, "parent");
 		await bareLike(parent, config);
@@ -107,6 +110,11 @@ describe("projectRoot", () => {
 		"[core]\n bare = true ; comment \\\n bare = false\n",
 		'[core]\n\tbare = "true\n',
 		"[core]\n\tthis is not a config line\n",
+		'[core]\n\tbare = "maybe"\n',
+		"[core]\n\tbare = maybe\n",
+		'[remote "origin]\n\turl = x\n[core]\n\tbare = false\n',
+		"[co re]\n\tbare = false\n",
+		'[core]\n\tbare = "false # not a comment"\n',
 	])(
 		"stops at a bare-looking folder whose config %j it cannot read, never reaching the checkout around it",
 		async (config) => {
@@ -116,7 +124,7 @@ describe("projectRoot", () => {
 			await bareLike(cache, config);
 			await mkdir(join(cache, "sub"));
 			expect(await projectRoot(cache)).toBe(cache);
-			expect(await projectRoot(join(cache, "sub"))).toBe(join(cache, "sub"));
+			expect(await projectRoot(join(cache, "sub"))).toBe(cache);
 		},
 	);
 
