@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { AtelierEvent } from "@atelier/core";
 import { oneLine, settledState } from "./program-status.ts";
-import { target } from "./tool-card.ts";
+import { callLabel } from "./tool-card.ts";
 
 /** The longest session name or first prompt the terminal's title shows. */
 export const MAX_TITLE_NAME_CHARS = 50;
@@ -18,7 +18,8 @@ export function terminalTitle(cwd: string, name: string | undefined): string {
  * turn runs; the first line of its last text when the turn ends, or of the error that ended it.
  */
 export class StatusLine {
-	#call: { id: string; line: string } | undefined;
+	/** The main agent's calls that run, by id, in the order they started: the newest one is told. */
+	readonly #calls = new Map<string, string>();
 	#task: string | undefined;
 	/** The main agent's last text, and whether a call came after it, so its next text starts a new one. */
 	#text = "";
@@ -27,7 +28,7 @@ export class StatusLine {
 
 	/** A turn starts: what the turn before said is not its. */
 	started() {
-		this.#call = undefined;
+		this.#calls.clear();
 		this.#text = "";
 		this.#textEnded = false;
 		this.#error = undefined;
@@ -37,9 +38,10 @@ export class StatusLine {
 		// A subagent's work shows as the task call that runs it.
 		if (event.parentCallId !== undefined) return;
 		if (event.type === "tool_call_started") {
-			this.#call = { id: event.callId, line: `${event.tool} ${target(event.input)}`.trim() };
+			this.#calls.delete(event.callId);
+			this.#calls.set(event.callId, callLabel(event.tool, event.input));
 			this.#textEnded = true;
-		} else if (event.type === "tool_call_finished" && event.callId === this.#call?.id) this.#call = undefined;
+		} else if (event.type === "tool_call_finished") this.#calls.delete(event.callId);
 		else if (event.type === "text_delta") {
 			// Spaces alone after a call do not start a new text.
 			if (this.#textEnded && event.text.trim() === "") return;
@@ -55,7 +57,7 @@ export class StatusLine {
 
 	/** The line while the turn runs; empty when there is nothing to say. */
 	working(): string {
-		return oneLine(this.#call?.line ?? this.#task ?? "");
+		return oneLine([...this.#calls.values()].at(-1) ?? this.#task ?? "");
 	}
 
 	/** The state a turn leaves behind and its line. */
