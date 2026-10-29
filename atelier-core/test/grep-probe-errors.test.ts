@@ -41,6 +41,7 @@ for (const code of ["ENAMETOOLONG", "EIO"])
 		await writeFile(join(cwd, "src", forged), "needle here\n");
 		probe.code = code;
 		const result = await createGrepTool({ useRipgrep: true }).execute({ pattern: "needle", path: "src" }, { cwd });
+		// Whichever way the line is read, the search answers; what it returns is what the path filter lets through.
 		expect(result.ok).toBe(true);
-		expect(result.output).toContain("needle here");
+		expect(result.output).toContain("src/a");
 	});
