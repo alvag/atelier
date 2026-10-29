@@ -17,6 +17,12 @@ export const CATALOG_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 export const CATALOG_REQUEST_TIMEOUT_MS = 4_000;
 const FILE_VERSION = 1;
 
+/**
+ * The entry that keeps the window Claude Code ran each model with, as its sessions say it: no source asks for it,
+ * and no refresh replaces it.
+ */
+export const CLAUDE_CODE_RUNS = "claude-code-runs";
+
 /** What one source said last, and when it was last asked. */
 export interface SourceEntry {
 	checkedAt: number;
@@ -91,17 +97,15 @@ function saveSource(file: string, name: string, entry: SourceEntry): Promise<voi
 }
 
 /**
- * Changes one source's entry as `update` says, from the file as it is now; nothing is written when the source has no
- * entry, or `update` answers undefined.
+ * Writes one source's entry as `update` makes it from the entry in the file now (undefined when there is none);
+ * nothing is written when `update` answers undefined.
  */
 export function updateSource(
 	file: string,
 	name: string,
-	update: (entry: SourceEntry) => SourceEntry | undefined,
+	update: (entry: SourceEntry | undefined) => SourceEntry | undefined,
 ): Promise<void> {
-	return queued(file, () =>
-		writeSource(file, name, (current) => (current === undefined ? undefined : update(current))),
-	);
+	return queued(file, () => writeSource(file, name, update));
 }
 
 function queued(file: string, write: () => Promise<void>): Promise<void> {
@@ -237,7 +241,9 @@ export function modelDataOf(catalog: CatalogFile): ModelData {
 		};
 		for (const model of listOf("models.dev") ?? []) merged.set(model.id, model);
 		const provided = listOf(backend);
-		for (const model of provided ?? []) merged.set(model.id, { ...merged.get(model.id), ...model });
+		// The windows Claude Code ran its models with come after its list, which says none; they list no model.
+		for (const model of [...(provided ?? []), ...(listOf(CLAUDE_CODE_RUNS) ?? [])])
+			merged.set(model.id, { ...merged.get(model.id), ...model });
 		models[backend] = [...merged.values()];
 		if (provided) listed[backend] = provided.map((model) => model.id);
 	}

@@ -145,13 +145,13 @@ function codexModel(value: unknown): (CatalogModel & { priority: number }) | und
  * The models Claude Code offers the subscription, as `supportedModels()` of a running session lists them, by their
  * versioned ids: a row of an alias (`opus`) is the model it stands for now (`resolvedModel`), which keeps the alias, so
  * Atelier can send it. `default` stands for whatever the account starts on, so it is never kept as an alias; an alias
- * Claude Code does not resolve is no model. Claude Code lists no windows or prices: the window each model ran with, which
- * its sessions say, stays from the last list.
+ * Claude Code does not resolve is no model. Claude Code lists no windows or prices: the window each model ran with,
+ * which its sessions say, is kept apart (`CLAUDE_CODE_RUNS`).
  */
 export function claudeCodeModelsSource(list: () => Promise<readonly unknown[]>): CatalogSource {
 	return {
 		name: "claude-code",
-		async fetch(previous) {
+		async fetch() {
 			const listed = await list();
 			if (!Array.isArray(listed)) throw new Error("Claude Code answered something else");
 			const models = new Map<string, CatalogModel & { aliases: string[] }>();
@@ -169,10 +169,6 @@ export function claudeCodeModelsSource(list: () => Promise<readonly unknown[]>):
 				models.set(id, model);
 			}
 			if (models.size === 0) throw new Error("Claude Code listed no model");
-			for (const kept of previous?.models["claude-code"] ?? []) {
-				const model = models.get(kept.id);
-				if (model && kept.contextWindow !== undefined) model.contextWindow = kept.contextWindow;
-			}
 			return listing(
 				"claude-code",
 				[...models.values()].map(({ aliases, ...model }) => (aliases.length === 0 ? model : { ...model, aliases })),

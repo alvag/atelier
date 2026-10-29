@@ -31,14 +31,19 @@ export const withoutWindow = (id: string): string => id.replace(/\[1m\]$/i, "");
  */
 export function claudeCodeName(model: string): string {
 	const data = currentModelData();
-	if (resolvedList(data) === undefined) return CODE_ALIASES[model] ?? model;
+	if (resolvedClaudeCodeList(data) === undefined) return CODE_ALIASES[model] ?? model;
 	return data.model("claude-code", model)?.aliases?.[0] ?? model;
 }
 
-/** The subscription's list, once a session listed it with the aliases resolved; undefined before. */
-function resolvedList(data: ModelData): readonly string[] | undefined {
+/**
+ * The subscription's list, once a session listed it with the aliases resolved: versioned ids only, and some kept with
+ * the alias that stands for it, as `supportedModels()` always lists `opus`. Undefined before, for a list kept in an
+ * older format too, which is asked again.
+ */
+export function resolvedClaudeCodeList(data: ModelData): readonly string[] | undefined {
 	const listed = data.listed("claude-code");
-	return listed?.every(isVersionedClaudeId) ? listed : undefined;
+	if (listed === undefined || listed.length === 0 || !listed.every(isVersionedClaudeId)) return undefined;
+	return listed.some((id) => (data.model("claude-code", id)?.aliases?.length ?? 0) > 0) ? listed : undefined;
 }
 
 /**
@@ -47,7 +52,7 @@ function resolvedList(data: ModelData): readonly string[] | undefined {
  */
 export function claudeCodeIdOf(name: string): string {
 	const data = currentModelData();
-	const id = resolvedList(data)?.find((model) => data.model("claude-code", model)?.aliases?.includes(name));
+	const id = resolvedClaudeCodeList(data)?.find((model) => data.model("claude-code", model)?.aliases?.includes(name));
 	if (id !== undefined) return id;
 	return Object.keys(CODE_ALIASES).find((id) => CODE_ALIASES[id] === name) ?? name;
 }
@@ -58,7 +63,7 @@ export function claudeCodeIdOf(name: string): string {
  */
 export function claudeCodeAliases(ids: readonly string[]): Record<string, string> {
 	const data = currentModelData();
-	const resolved = resolvedList(data) !== undefined;
+	const resolved = resolvedClaudeCodeList(data) !== undefined;
 	const aliases: Record<string, string> = {};
 	for (const id of ids) {
 		const names = resolved ? (data.model("claude-code", id)?.aliases ?? []) : [CODE_ALIASES[id]];
