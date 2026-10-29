@@ -229,6 +229,21 @@ export function jobLine(
 	return `job ${event.jobId} ended · ${how} · ${elapsed} · ${label}${counts}`;
 }
 
+/**
+ * A background task's start or end, without its mark: `task task-1 started · explorer: find · 1 running`, `task task-1
+ * finished · 1m 02s · $0.12 · explorer: find`, `task task-1 failed · 12s · worker: fix`. The label comes from the model:
+ * its hidden characters are shown.
+ */
+export function taskLine(
+	event: Extract<AtelierEvent, { type: "task_started" }> | Extract<AtelierEvent, { type: "task_finished" }>,
+): string {
+	const what = `${event.agent}: ${visibleText(event.label).text}`;
+	const counts = jobCounts(event.running, event.type === "task_finished" ? event.waiting : 0);
+	if (event.type === "task_started") return `task ${event.taskId} started · ${what}${counts}`;
+	const cost = event.costUsd === undefined ? "" : ` · $${event.costUsd.toFixed(2)}`;
+	return `task ${event.taskId} ${event.status} · ${formatElapsed(event.durationMs)}${cost} · ${what}${counts}`;
+}
+
 /** Whether a job's end is shown as a failure: it could not start, a signal killed it, or it exited with an error. */
 export function jobFailed(event: Extract<AtelierEvent, { type: "job_finished" }>): boolean {
 	return event.status === "failed" || (event.status === "exited" && event.exitCode !== 0);
@@ -484,6 +499,12 @@ export class Renderer {
 				return;
 			case "job_finished":
 				this.#line(`${this.#style(jobFailed(event) ? "red" : "cyan", "■")} ${jobLine(event)}`);
+				return;
+			case "task_started":
+				this.#line(`${this.#style("cyan", "⧗")} ${taskLine(event)}`);
+				return;
+			case "task_finished":
+				this.#line(`${this.#style(event.status === "failed" ? "red" : "cyan", "■")} ${taskLine(event)}`);
 				return;
 			case "sandbox_status":
 				if (event.sandboxed) {

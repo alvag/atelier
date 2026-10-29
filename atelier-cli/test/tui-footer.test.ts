@@ -273,4 +273,25 @@ describe("footer", () => {
 		expect(footerLine(read, 120, plain, ["jobs"])).toBe(" ");
 		expect(DEFAULT_STATUS_LINE.at(-1)).toBe("jobs");
 	});
+
+	it("counts background tasks with the jobs", () => {
+		const task = { taskId: "task-1", agent: "explorer", label: "find", outputPath: "/s/task-1.md" };
+		const running = after([{ ...task, type: "task_started", running: 2 }]);
+		expect(footerLine(running, 120, plain, ["jobs"])).toBe(" 2 jobs");
+		const ended = after(
+			[
+				{
+					...task,
+					type: "task_finished",
+					status: "finished",
+					durationMs: 9000,
+					notified: true,
+					running: 1,
+					waiting: 1,
+				},
+			],
+			running,
+		);
+		expect(footerLine(ended, 120, plain, ["jobs"])).toBe(" 1 job, 1 notice waiting");
+	});
 });

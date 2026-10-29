@@ -33,7 +33,7 @@ export interface FooterState {
 	branch?: string;
 	/** Atelier's version. */
 	version?: string;
-	/** The background jobs running and the notices of ended ones the agent has not read. */
+	/** The background jobs and tasks running and the notices of ended ones the agent has not read. */
 	jobs?: { running: number; waiting: number };
 }
 
@@ -110,8 +110,10 @@ export function footerAfter(state: FooterState, event: AtelierEvent): FooterStat
 		case "feature_changed":
 			return { ...state, task: featureProgress(event) };
 		case "job_started":
+		case "task_started":
 			return { ...state, jobs: { running: event.running, waiting: state.jobs?.waiting ?? 0 } };
 		case "job_finished":
+		case "task_finished":
 		case "jobs_status":
 			return { ...state, jobs: { running: event.running, waiting: event.waiting } };
 		default:
