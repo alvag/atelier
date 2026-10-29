@@ -67,7 +67,9 @@ for (const useRipgrep of [true, false]) {
 				const result = await grep.execute({ pattern: "MARKER", path: outside, glob: "*.txt" }, { cwd });
 				expect(result.output).not.toContain("DENIED_MARKER");
 				expect(result.summary).toBe("MARKER: 100+ matches");
-				expect(result.output).toContain("[Showing the first 100 matches. Narrow the pattern, path or glob.]");
+				expect(result.output).toContain(
+					"[Showing the first 100 matches. Narrow the pattern, path or glob, or call grep again with limit: 200.]",
+				);
 				expect(await hash(denied)).toBe(before);
 			}
 		} finally {
