@@ -77,8 +77,13 @@ export function anthropicModelsSource(options: AnthropicModelsOptions): CatalogS
 					signal,
 				});
 				if (!isRecord(body) || !Array.isArray(body.data)) throw new Error("Anthropic answered something else");
-				models.push(...body.data.map(anthropicModel).filter((model) => model !== undefined));
-				if (body.has_more !== true || typeof body.last_id !== "string") return listing("anthropic-api", models);
+				const page = body.data.map(anthropicModel).filter((model) => model !== undefined);
+				// A page without a valid model, or one that says there is more without saying from where, is broken.
+				if (page.length === 0) throw new Error("Anthropic answered a page without models");
+				models.push(...page);
+				if (body.has_more !== true) return listing("anthropic-api", models);
+				if (typeof body.last_id !== "string" || body.last_id === "")
+					throw new Error("Anthropic said there were more models without saying from where");
 				after = body.last_id;
 			}
 			throw new Error("Anthropic's model list did not end");
@@ -91,7 +96,10 @@ export interface OpenCodeGoModelsOptions {
 	fetch?: typeof globalThis.fetch;
 }
 
-/** The models OpenCode Go serves: its list answers without the key, so none is sent. It says nothing else of them. */
+/**
+ * The models OpenCode Go serves: its list answers without the key, so none is sent. It says nothing else of them. An
+ * answer without a model is broken, as for every provider: the cached list stays.
+ */
 export function openCodeGoModelsSource(options: OpenCodeGoModelsOptions = {}): CatalogSource {
 	const fetch = options.fetch ?? globalThis.fetch;
 	return {
@@ -105,6 +113,7 @@ export function openCodeGoModelsSource(options: OpenCodeGoModelsOptions = {}): C
 			const ids = body.data.flatMap((entry) =>
 				isRecord(entry) && typeof entry.id === "string" && entry.id !== "" ? [entry.id] : [],
 			);
+			if (ids.length === 0) throw new Error("OpenCode Go answered no model");
 			return listing(
 				"opencode-go",
 				ids.map((id) => ({ id })),
@@ -136,11 +145,14 @@ export function claudeCodeModelsSource(list: () => Promise<readonly unknown[]>):
 	return {
 		name: "claude-code",
 		async fetch() {
-			const models = (await list()).flatMap((entry): CatalogModel[] => {
+			const listed = await list();
+			if (!Array.isArray(listed)) throw new Error("Claude Code answered something else");
+			const models = listed.flatMap((entry): CatalogModel[] => {
 				if (!isRecord(entry) || typeof entry.value !== "string" || entry.value === "") return [];
 				const levels = entry.supportedEffortLevels;
 				return [{ id: entry.value, ...(Array.isArray(levels) ? { efforts: levels.filter(isEffort) } : {}) }];
 			});
+			if (models.length === 0) throw new Error("Claude Code listed no model");
 			return listing("claude-code", models);
 		},
 	};
@@ -170,6 +182,7 @@ export function codexModelsSource(options: CodexModelsOptions): CatalogSource {
 			const body = await getJson(fetch, url.href, { headers: { ...headers, accept: "application/json" }, signal });
 			if (!isRecord(body) || !Array.isArray(body.models)) throw new Error("The Codex catalog answered something else");
 			const models = body.models.map(codexModel).filter((model) => model !== undefined);
+			if (models.length === 0) throw new Error("The Codex catalog listed no model");
 			models.sort((a, b) => a.priority - b.priority);
 			return listing(
 				"openai-codex",

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,6 +14,7 @@ import {
 	openCodeGoModelsSource,
 	readCatalog,
 	refreshCatalog,
+	refreshSource,
 } from "../src/model-catalog/index.ts";
 
 let home: string;
@@ -204,6 +205,60 @@ it("gives up on a source that hangs before its request, without holding up the o
 		"opencode-go": "changed",
 	});
 	expect(modelDataOf(await readCatalog(file)).listed("opencode-go")).toEqual(["grok-4.7"]);
+});
+
+it("takes an empty answer, or one without a valid model, as broken: the cache stays byte for byte", async () => {
+	const good: Record<string, unknown> = {
+		"/api.json": { anthropic: { models: { "claude-new-6": { id: "claude-new-6", limit: { context: 1000 } } } } },
+		"/v1/models": { data: [{ id: "claude-new-6" }], has_more: false },
+		"/go/v1/models": { data: [{ id: "grok-4.7" }] },
+		"/backend-api/codex/models": { models: [{ slug: "gpt-6.1-terra", visibility: "list", priority: 1 }] },
+	};
+	const broken: Record<string, unknown[]> = {
+		"/api.json": [{}, { anthropic: { models: {} } }, { anthropic: { models: { x: { id: 7 } } } }],
+		"/v1/models": [
+			{ data: [{ bad: true }], has_more: true },
+			{ data: [], has_more: false },
+			{ data: [{ id: "claude-new-7" }], has_more: true },
+		],
+		"/go/v1/models": [{ data: [] }, { data: [{ bad: 1 }] }],
+		"/backend-api/codex/models": [
+			{ models: [] },
+			{ models: [{ bad: true }] },
+			{ models: [{ slug: "hidden", visibility: "hide" }] },
+		],
+	};
+	const sources = {
+		"/api.json": modelsDevSource({ url: `${base}/api.json` }),
+		"/v1/models": anthropicModelsSource({ apiKey: async () => "sk-ant-fake", baseUrl: base }),
+		"/go/v1/models": openCodeGoModelsSource({ baseUrl: `${base}/go` }),
+		"/backend-api/codex/models": codexModelsSource({
+			headers: async () => ({ authorization: "Bearer fake" }),
+			baseUrl: `${base}/backend-api`,
+		}),
+	};
+	for (const [path, body] of Object.entries(good)) routes[path] = json(body);
+	await refreshCatalog(file, Object.values(sources));
+	const before = await readFile(file, "utf8");
+	for (const [path, bodies] of Object.entries(broken))
+		for (const body of bodies) {
+			routes[path] = json(body);
+			const source = sources[path as keyof typeof sources];
+			expect([path, await refreshSource(file, source, { force: true })]).toEqual([path, "failed"]);
+			expect(await readFile(file, "utf8")).toBe(before);
+		}
+
+	await refreshCatalog(file, [claudeCodeModelsSource(async () => [{ value: "opus" }])]);
+	const withClaude = await readFile(file, "utf8");
+	for (const list of [[], [{ value: "" }]]) {
+		const outcome = await refreshSource(
+			file,
+			claudeCodeModelsSource(async () => list),
+			{ force: true },
+		);
+		expect(outcome).toBe("failed");
+		expect(await readFile(file, "utf8")).toBe(withClaude);
+	}
 });
 
 it("keeps the last list when a provider fails, and each source apart from the others", async () => {

@@ -28,7 +28,7 @@ const runSecurity: SecurityRunner = async (args) => {
 };
 
 const answers: Record<string, unknown> = {
-	"/api.json": { anthropic: { models: {} } },
+	"/api.json": { anthropic: { models: { "claude-new-6": { id: "claude-new-6", limit: { context: 1000 } } } } },
 	"/v1/models": { data: [{ id: "claude-new-6" }], has_more: false },
 	"/go/v1/models": { data: [{ id: "grok-4.7" }] },
 	"/backend-api/codex/models": { models: [{ slug: "gpt-6.1-terra", visibility: "list", priority: 1 }] },
