@@ -49,7 +49,7 @@ import {
 	ruleText,
 	type ShownRule,
 } from "../permission-text.ts";
-import { savedTranscript } from "../transcript.ts";
+import { savedParts } from "../transcript.ts";
 import { Attention } from "./attention.ts";
 import { Conversation } from "./conversation.ts";
 import {
@@ -368,7 +368,9 @@ async function resumeSession(
 		entries: JsonValue[];
 	};
 	const entries = resumed.entries as unknown as SavedEntry[];
-	conversation.plain(savedTranscript(savedId, resumed.name, entries));
+	for (const part of savedParts(savedId, resumed.name, entries))
+		if ("text" in part) conversation.plain(part.text);
+		else conversation.answered(part.questions, part.outcome);
 	const name = resumed.name ?? sentTexts(entries).find(namesSession);
 	return {
 		sessionId: resumed.sessionId,

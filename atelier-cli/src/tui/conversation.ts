@@ -1,9 +1,9 @@
-import { type AtelierEvent, type JsonValue, type UserQuestion, visibleText } from "@atelier/core";
+import { type AtelierEvent, type UserQuestion, visibleText } from "@atelier/core";
 import { type Component, Container, Markdown, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { MEMORY_TOOL, summaryCall } from "../memory-call.ts";
 import { API_KEY_BACKENDS, phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
 import { ActivityBlock } from "./activity-block.ts";
-import { AnsweredBlock, type AskOutcome, answerLines } from "./answered-block.ts";
+import { AnsweredBlock, type AskOutcome, answerLines, questionsOf } from "./answered-block.ts";
 import { PromptBlock } from "./prompt.ts";
 import { ReviewBlock } from "./review-block.ts";
 import { markdownTheme, type Paint, Shade, Tones } from "./style.ts";
@@ -22,20 +22,6 @@ function withoutBlankEdges(lines: string[]): string[] {
 	while (start < end && isBlank(lines[start] ?? "")) start++;
 	while (end > start && isBlank(lines[end - 1] ?? "")) end--;
 	return lines.slice(start, end);
-}
-
-/** The questions of an `ask_user` call's input, or none when it holds something else. */
-function questionsOf(input: JsonValue): UserQuestion[] {
-	const questions = typeof input === "object" && input !== null && !Array.isArray(input) ? input.questions : undefined;
-	if (!Array.isArray(questions)) return [];
-	return questions.filter(
-		(question): question is UserQuestion & JsonValue =>
-			typeof question === "object" &&
-			question !== null &&
-			!Array.isArray(question) &&
-			typeof question.question === "string" &&
-			Array.isArray(question.options),
-	);
 }
 
 /** The local time `at`, in hours and minutes as the system says them (`14:42`, `2:42 PM`). */
@@ -197,6 +183,11 @@ export class Conversation extends Container {
 	/** A line of the client's own, such as the answer to `/mode`; `warn` shows it in yellow. */
 	note(text: string, warn = false): void {
 		this.#add(new Text(warn ? this.#paint("yellow", text) : this.#paint("dim", text), 1, 0));
+	}
+
+	/** What an `ask_user` batch came to, as the block a settled batch leaves, such as one of a resumed session. */
+	answered(questions: UserQuestion[], outcome: AskOutcome): void {
+		this.#add(new AnsweredBlock(questions, outcome, this.#paint));
 	}
 
 	/** Text shown as it is, such as a resumed session's transcript. */
