@@ -2773,6 +2773,63 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("does not title the session with a slash command sent as a prompt", async () => {
+			const { h, code } = stubbed();
+			await until(h.screen.started);
+			h.screen.type("/help");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.at(-1)?.state === "working");
+			expect(h.screen.titles).toEqual([`Atelier - ${basename(cwd)}`]);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("titles the session with a first prompt that enters through the queue", async () => {
+			const { h, stub, code } = stubbed();
+			await until(h.screen.started);
+			h.screen.type("/review");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.at(-1)?.state === "working");
+			await until(() => h.screen.screen().includes("working…"));
+			h.screen.type("first queued prompt");
+			h.screen.type("\r");
+			await until(() => stub.log.commands.some((command) => command.command === "session.queue"));
+			stub.emit({ type: "turn_finished", stopReason: "end_turn", usage });
+			stub.emit({ type: "queued_message", seq: 1, kind: "steer", text: "first queued prompt" });
+			await until(() => h.screen.titles.length === 2);
+			expect(h.screen.titles.at(-1)).toBe(`Atelier - first queued prompt - ${basename(cwd)}`);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("skips the saved slash commands for the title of a resumed session", async () => {
+			const h = harness([]);
+			const stub = stubCore({
+				answer: (command) =>
+					command.command === "session.resume"
+						? {
+								sessionId: "s2",
+								entries: [
+									{ type: "prompt", turnId: "t1", text: "/help" },
+									{ type: "prompt", turnId: "t2", text: "real task" },
+								],
+							}
+						: undefined,
+			});
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("/resume abc");
+			h.screen.type("\r");
+			await until(() => h.screen.titles.length === 2);
+			expect(h.screen.titles.at(-1)).toBe(`Atelier - real task - ${basename(cwd)}`);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
 		it("does not report a list of the TUI's own as blocked", async () => {
 			const h = harness([]);
 			const stub = listingCore();

@@ -297,6 +297,9 @@ interface Chosen {
 	backend?: BackendName;
 }
 
+/** Whether a prompt can name the session in the terminal's title: a slash command does not. */
+const namesSession = (prompt: string) => !prompt.trim().startsWith("/");
+
 /** The core refused the level chosen for a session it had just started. */
 class EffortRefused extends Error {}
 
@@ -346,7 +349,8 @@ async function resumeSession(
 	};
 	const entries = resumed.entries as unknown as SavedEntry[];
 	conversation.plain(savedTranscript(savedId, resumed.name, entries));
-	const name = resumed.name ?? entries.find((entry) => entry.type === "prompt")?.text;
+	const prompts = entries.flatMap((entry) => (entry.type === "prompt" ? [entry.text] : []));
+	const name = resumed.name ?? prompts.find(namesSession);
 	return {
 		sessionId: resumed.sessionId,
 		savedId,
@@ -454,6 +458,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if (title === titled) return;
 		titled = title;
 		options.terminal.setTitle(title);
+	};
+	/** Names the session by its first prompt that is not a slash command, unless it has a name already. */
+	const titleWith = (prompt: string) => {
+		if (titleName === undefined && namesSession(prompt)) titleName = prompt;
+		showTitle();
 	};
 
 	const fullscreen = settings.fullscreen && !args.noFullscreen;
@@ -691,6 +700,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			interrupted = false;
 			setBusy(true);
 		}
+		// A queued message entering the conversation may be the session's first prompt.
+		if (event.type === "queued_message" && event.parentCallId === undefined) titleWith(event.text);
 		if (event.type === "queue_update") {
 			queue.messages = event.messages;
 			if (event.returned) giveBack(event.returned);
@@ -1317,8 +1328,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			await startTurn({ command: "session.compact", sessionId, ...(instructions === "" ? {} : { instructions }) });
 		} else if (usages.has(command ?? "")) conversation.note(`usage: ${usages.get(command ?? "")}`, true);
 		else {
-			titleName ??= line;
-			showTitle();
+			titleWith(line);
 			await startTurn({ command: "session.send", sessionId, prompt: line });
 		}
 	};
