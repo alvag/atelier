@@ -62,6 +62,48 @@ for (const [name, useRipgrep] of [
 			expect(result.output).toBe("src/c.txt:1:EMAIL upper");
 		});
 
+		it.each([".eslintrc", "src/.settings", ".hidden/config.txt"])(
+			"searches an explicitly named file %s, including with a conflicting glob",
+			async (path) => {
+				await mkdir(join(cwd, ".hidden"));
+				await writeFile(join(cwd, path), "TOKEN\n");
+				for (const outside of [false, true]) {
+					const tool = createGrepTool({ useRipgrep, outside });
+					for (const glob of [undefined, "*.nomatch"]) {
+						expect(await tool.execute({ pattern: "token", path, ignoreCase: true, glob }, ctx)).toEqual({
+							ok: true,
+							output: `${path}:1:TOKEN`,
+							summary: "token: 1 matches",
+							truncated: false,
+						});
+					}
+				}
+			},
+		);
+
+		it("still skips hidden files, hidden directories and node_modules during a folder search", async () => {
+			await mkdir(join(cwd, ".hidden"));
+			await mkdir(join(cwd, "node_modules"));
+			for (const path of [
+				".eslintrc",
+				"src/.settings",
+				".hidden/config.txt",
+				"node_modules/config.txt",
+				"src/public.txt",
+			])
+				await writeFile(join(cwd, path), "TOKEN\n");
+			for (const outside of [false, true]) {
+				expect(
+					await createGrepTool({ useRipgrep, outside }).execute({ pattern: "token", ignoreCase: true }, ctx),
+				).toEqual({
+					ok: true,
+					output: "src/public.txt:1:TOKEN",
+					summary: "token: 1 matches",
+					truncated: false,
+				});
+			}
+		});
+
 		it("takes the pattern as a fixed string when asked", async () => {
 			await writeFile(join(cwd, "src/d.txt"), "axb\na.b (x)\n");
 			expect((await grep.execute({ pattern: "a.b", path: "src/d.txt" }, ctx)).output).toBe(
@@ -164,7 +206,10 @@ for (const [name, useRipgrep] of [
 			for (const name of [".env", ".env.local", "secret.pem", "secret.key"]) {
 				await writeFile(join(cwd, name), "SECRET BEFORE\nHIT SECRET\nSECRET AFTER\n");
 				const result = await grep.execute({ pattern: "HIT", path: name, context: 1 }, ctx);
-				expect(result.output, name).not.toContain("SECRET");
+				expect(result, name).toMatchObject({
+					ok: false,
+					output: `Path is a protected secret location: ${name}`,
+				});
 			}
 			await writeFile(join(cwd, "plain.txt"), "HIT plain\n");
 			const all = await grep.execute({ pattern: "HIT", context: 1 }, ctx);
