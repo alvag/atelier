@@ -1288,7 +1288,7 @@ describe("memory tool text", () => {
 		expect(tool?.description).toBe(
 			[
 				"Long-term memory of project proj, shared across sessions.",
-				"search (query): find earlier decisions, fixes and discoveries. get (id): read one in full.",
+				"search (query, match_mode?): find earlier decisions, fixes and discoveries. match_mode is all by default (every word must match); any matches any word. If a search with all finds no results, retry once with the same query and match_mode: any before concluding there is no memory. Do not retry an empty any search or a failed search. get (id): read one in full.",
 				"save (title, type, content, topicKey?): keep verified knowledge worth knowing next time, one memory per topic, as **What** / **Why** / **Where** / **Learned**. The same topicKey replaces that memory, so keep its still-valid facts. Never save secrets.",
 			].join("\n"),
 		);

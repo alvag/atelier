@@ -16,6 +16,8 @@ export type MemoryType = (typeof MEMORY_TYPES)[number];
 /** Saved by the core itself, never by the agent: the summary of a compaction. */
 export const SESSION_SUMMARY_TYPE = "session_summary";
 
+export type MemoryMatchMode = "all" | "any";
+
 export interface MemoryHit {
 	id: number;
 	title: string;
@@ -52,7 +54,8 @@ export interface MemoryPort {
 	readonly warnings: readonly string[];
 	/** Recent memory of the project, at most `maxBytes` bytes. */
 	context(maxBytes: number): Promise<string>;
-	search(query: string, limit: number): Promise<MemoryHit[]>;
+	/** All words must match by default; `any` broadens the search to any word. */
+	search(query: string, limit: number, matchMode?: MemoryMatchMode): Promise<MemoryHit[]>;
 	get(id: number): Promise<MemoryEntry | undefined>;
 	save(entry: NewMemory): Promise<SavedMemory>;
 	summary(text: string): Promise<void>;
@@ -106,10 +109,15 @@ export class FakeMemory implements MemoryPort {
 		return buffer.subarray(0, end).toString("utf8");
 	}
 
-	async search(query: string, limit: number): Promise<MemoryHit[]> {
-		const needle = query.toLowerCase();
+	async search(query: string, limit: number, matchMode: MemoryMatchMode = "all"): Promise<MemoryHit[]> {
+		const words = query.toLowerCase().split(/\s+/).filter(Boolean);
 		return this.entries
-			.filter((entry) => `${entry.title}\n${entry.content}`.toLowerCase().includes(needle))
+			.filter((entry) => {
+				const text = `${entry.title}\n${entry.content}`.toLowerCase();
+				return matchMode === "any"
+					? words.some((word) => text.includes(word))
+					: words.every((word) => text.includes(word));
+			})
 			.slice(0, limit)
 			.map(({ id, title, type, content }) => ({ id, title, type, preview: content.slice(0, 200) }));
 	}

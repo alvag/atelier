@@ -279,12 +279,16 @@ export function createMemoryTool(memory: MemoryPort): ToolDefinition {
 		name: MEMORY_TOOL,
 		description: [
 			`Long-term memory of project ${memory.project}, shared across sessions.`,
-			"search (query): find earlier decisions, fixes and discoveries. get (id): read one in full.",
+			"search (query, match_mode?): find earlier decisions, fixes and discoveries. match_mode is all by default (every word must match); any matches any word. If a search with all finds no results, retry once with the same query and match_mode: any before concluding there is no memory. Do not retry an empty any search or a failed search. get (id): read one in full.",
 			"save (title, type, content, topicKey?): keep verified knowledge worth knowing next time, one memory per topic, as **What** / **Why** / **Where** / **Learned**. The same topicKey replaces that memory, so keep its still-valid facts. Never save secrets.",
 		].join("\n"),
 		inputShape: {
 			action: z.enum(["search", "get", "save"]),
 			query: z.string().optional().describe("search"),
+			match_mode: z
+				.enum(["all", "any"])
+				.optional()
+				.describe("search: all (default) requires every word; any matches any word"),
 			limit: z.number().int().min(1).max(SEARCH_LIMIT).optional().describe(`search: 1 to ${SEARCH_LIMIT}`),
 			id: z.number().int().optional().describe("get"),
 			title: z.string().optional().describe("save: short and searchable"),
@@ -300,7 +304,7 @@ export function createMemoryTool(memory: MemoryPort): ToolDefinition {
 				switch (input.action) {
 					case "search": {
 						if (!input.query?.trim()) return failed("search needs query.");
-						const hits = await memory.search(input.query, input.limit ?? SEARCH_LIMIT);
+						const hits = await memory.search(input.query, input.limit ?? SEARCH_LIMIT, input.match_mode ?? "all");
 						if (hits.length === 0) return done(`No memories match "${input.query}".`, "no results");
 						return done(
 							hits.map((hit) => `#${hit.id} [${hit.type}] ${hit.title} — ${oneLine(hit.preview)}`).join("\n"),

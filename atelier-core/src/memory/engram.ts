@@ -9,6 +9,7 @@ import {
 	type MemoryEntry,
 	MemoryError,
 	type MemoryHit,
+	type MemoryMatchMode,
 	type MemoryPort,
 	MemoryUnavailableError,
 	MemoryUncertainError,
@@ -56,6 +57,7 @@ export interface EngramOptions {
 
 /** The optional tools this Engram has and the user allows. */
 interface EngramFeatures {
+	matchMode?: boolean;
 	prompts?: boolean;
 	sessions?: boolean;
 	warnings?: readonly string[];
@@ -88,12 +90,15 @@ export async function connectEngram(options: EngramOptions): Promise<EngramMemor
 	const transport = new StdioClientTransport({ command, args: ["mcp"], env, cwd: options.cwd, stderr: "ignore" });
 	try {
 		await client.connect(transport);
-		const tools = new Set((await client.listTools()).tools.map((tool) => tool.name));
+		const listed = (await client.listTools()).tools;
+		const tools = new Set(listed.map((tool) => tool.name));
+		const searchSchema = listed.find((tool) => tool.name === "mem_search")?.inputSchema;
 		const missing = REQUIRED_TOOLS.filter((tool) => !tools.has(tool));
 		if (missing.length > 0) throw new MemoryUnavailableError(`Engram ${version} lacks ${missing.join(", ")}.`);
 		const memory = new EngramMemory(client, "");
 		const { project } = await memory.call("mem_current_project", {}, projectResponse);
 		return new EngramMemory(client, project, {
+			matchMode: Object.hasOwn(searchSchema?.properties ?? {}, "match_mode"),
 			prompts: options.prompts !== false && tools.has("mem_save_prompt"),
 			sessions: tools.has("mem_session_start") && tools.has("mem_session_end"),
 			warnings: options.warnings ?? [],
@@ -125,8 +130,19 @@ export class EngramMemory implements MemoryPort {
 		return headBytes(result, maxBytes);
 	}
 
-	async search(query: string, limit: number): Promise<MemoryHit[]> {
-		const response = await this.call("mem_search", { query, limit, response_format: "compact" }, searchResponse);
+	async search(query: string, limit: number, matchMode: MemoryMatchMode = "all"): Promise<MemoryHit[]> {
+		if (matchMode === "any" && !this.#features.matchMode)
+			throw new MemoryError("This Engram does not support match_mode: any; update it to use broader search.");
+		const response = await this.call(
+			"mem_search",
+			{
+				query,
+				limit,
+				response_format: "compact",
+				...(this.#features.matchMode ? { match_mode: matchMode } : {}),
+			},
+			searchResponse,
+		);
 		return (response.results ?? []).map((hit) => ({
 			id: hit.id,
 			title: hit.title,
