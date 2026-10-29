@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Readable } from "node:stream";
 import type { AgentBackend } from "../backend.ts";
-import { claudeCodeAliases } from "../backends/claude-code/models.ts";
+import { claudeCodeAliases, claudeCodeIdOf } from "../backends/claude-code/models.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
 import type { McpManager } from "../mcp/index.ts";
@@ -514,7 +514,9 @@ export class RpcServer {
 			const aliases = name === "claude-code" ? claudeCodeAliases(models) : {};
 			return {
 				name,
-				default: BACKEND_DEFAULTS[name],
+				// One of its models: claude-code's default, the alias opus, as the model it stands for now. Its backend still
+				// runs the alias.
+				default: name === "claude-code" ? claudeCodeIdOf(BACKEND_DEFAULTS[name]) : BACKEND_DEFAULTS[name],
 				models,
 				...(Object.keys(aliases).length === 0 ? {} : { aliases }),
 			};
