@@ -27,17 +27,17 @@ It needs git, Node 22.19+ and pnpm. It clones the newest release (`vX.Y.Z`) into
 curl -fsSL https://raw.githubusercontent.com/alvag/atelier/main/install.sh | sh -s -- --desktop
 ```
 
-| Command                 | Effect                                                                                                            |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `atelier update`        | Move to the newest release and reinstall its dependencies (and rebuild the desktop if it is installed).           |
-| `atelier update v0.1.0` | Move to that release, newer or older.                                                                             |
-| `atelier update --main` | Move to the latest `main` (`atelier --version` shows it); `atelier update` goes back to a release.                |
-| `atelier desktop`       | Open the desktop app of the same version; the first time it installs and builds it.                               |
-| `atelier mcp list`      | Connect to the MCP servers of `~/.atelier/mcp.json` and show their state, tools and errors.                       |
-| `atelier mcp login <s>` | Sign a remote MCP server in with OAuth, in the browser; `atelier mcp logout <s>` signs it out.                    |
-| `atelier login`         | Sign in with an account or an API key, choosing the provider; shows each one's state.                             |
-| `atelier logout`        | Sign out of what is signed in: a stored API key, an OpenAI sign-in, or the Claude Code login.                     |
-| `atelier stats`         | Show what the saved sessions cost: totals and by day, project, model, phase and role (`--since 7d`, `--json`).    |
+| Command                 | Effect                                                                                                                                                                                  |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `atelier update`        | Move to the newest release and reinstall its dependencies (and rebuild the desktop if it is installed).                                                                                 |
+| `atelier update v0.1.0` | Move to that release, newer or older.                                                                                                                                                   |
+| `atelier update --main` | Move to the latest `main` (`atelier --version` shows it); `atelier update` goes back to a release.                                                                                      |
+| `atelier desktop`       | Open the desktop app of the same version; the first time it installs and builds it.                                                                                                     |
+| `atelier mcp list`      | Connect to the MCP servers of `~/.atelier/mcp.json` and show their state, tools and errors.                                                                                             |
+| `atelier mcp login <s>` | Sign a remote MCP server in with OAuth, in the browser; `atelier mcp logout <s>` signs it out.                                                                                          |
+| `atelier login`         | Sign in with an account or an API key, choosing the provider; shows each one's state.                                                                                                   |
+| `atelier logout`        | Sign out of what is signed in: a stored API key, an OpenAI sign-in, or the Claude Code login.                                                                                           |
+| `atelier stats`         | Show what the saved sessions cost: totals and by day, project, model, phase and role (`--since 7d`, `--json`).                                                                          |
 | `atelier models`        | Show the models `/model` offers, newest first, with their names, windows and whether they take images; `--refresh` asks models.dev and the providers you are signed in to for new ones. |
 
 `atelier update` only touches a copy installed this way, and refuses one with local changes. To work on Atelier itself, clone the repository and run it with `pnpm install` and `pnpm atelier` (see [development](docs/development.md)).
@@ -72,24 +72,24 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 ### Commands
 
-| Command                     | Effect                                                                                                                                                              |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Command                     | Effect                                                                                                                                                                                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `/model [provider/model]`   | Change the model, of any provider you are signed in to; without a name, pick from a list, newest first, which shows the selected model's name, window and whether it takes images. Another provider's moves the session there (it continues from a summary). |
-| `/effort [level]`           | Change the thinking level (`off`, `minimal`, `low` … `max`).                                                                                                        |
-| `/profile [name]`           | Change the agent profile.                                                                                                                                           |
-| `/mode [mode]`              | Change the permission mode; `/mode default <mode>` saves the default.                                                                                               |
-| `/new`                      | Start another session.                                                                                                                                              |
-| `/resume [id]`              | Resume a saved session of this directory.                                                                                                                           |
-| `/feature`                  | Open or fold the active feature's tasks.                                                                                                                            |
-| `/mcp [login\|logout <s>]`  | Show the session's MCP servers, or sign one in or out.                                                                                                              |
-| `/login`, `/logout`         | Sign in or out with an account or an API key, as `atelier login` does.                                                                                              |
-| `/permissions [remove <n>]` | List the commands and folders you allowed, or remove one.                                                                                                           |
-| `/review [ref]`             | Review the working tree now, against `HEAD` or a git ref.                                                                                                           |
-| `/undo-correction`          | Undo the latest escalated review correction.                                                                                                                        |
-| `/compact [instructions]`   | Summarize the older history now.                                                                                                                                    |
-| `/status`                   | Show the model, sandbox, instructions, skills, memory and cost.                                                                                                     |
-| `/stats [project]`          | Show this session's cost by model and role, or the directory's.                                                                                                     |
-| `/exit`                     | Quit.                                                                                                                                                               |
+| `/effort [level]`           | Change the thinking level (`off`, `minimal`, `low` … `max`).                                                                                                                                                                                                 |
+| `/profile [name]`           | Change the agent profile.                                                                                                                                                                                                                                    |
+| `/mode [mode]`              | Change the permission mode; `/mode default <mode>` saves the default.                                                                                                                                                                                        |
+| `/new`                      | Start another session.                                                                                                                                                                                                                                       |
+| `/resume [id]`              | Resume a saved session of this directory.                                                                                                                                                                                                                    |
+| `/feature`                  | Open or fold the active feature's tasks.                                                                                                                                                                                                                     |
+| `/mcp [login\|logout <s>]`  | Show the session's MCP servers, or sign one in or out.                                                                                                                                                                                                       |
+| `/login`, `/logout`         | Sign in or out with an account or an API key, as `atelier login` does.                                                                                                                                                                                       |
+| `/permissions [remove <n>]` | List the commands and folders you allowed, or remove one.                                                                                                                                                                                                    |
+| `/review [ref]`             | Review the working tree now, against `HEAD` or a git ref.                                                                                                                                                                                                    |
+| `/undo-correction`          | Undo the latest escalated review correction.                                                                                                                                                                                                                 |
+| `/compact [instructions]`   | Summarize the older history now.                                                                                                                                                                                                                             |
+| `/status`                   | Show the model, sandbox, instructions, skills, memory and cost.                                                                                                                                                                                              |
+| `/stats [project]`          | Show this session's cost by model and role, or the directory's.                                                                                                                                                                                              |
+| `/exit`                     | Quit.                                                                                                                                                                                                                                                        |
 
 ### Keys
 
