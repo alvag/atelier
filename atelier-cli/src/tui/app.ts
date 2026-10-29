@@ -77,6 +77,7 @@ import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
 import { ProgramStatusReporter } from "./program-status.ts";
 import { PromptEditor } from "./prompt.ts";
+import { QuestionDialog } from "./question-dialog.ts";
 import { QueuePanel } from "./queue-panel.ts";
 import {
 	choicesOf,
@@ -175,10 +176,6 @@ const MODEL_NOTE = "Only showing models from configured providers. Use /login to
 
 /** The answer a list gives when Esc closes it. */
 const CANCELLED = "\0";
-/** The choices of an `ask_user` question are generated values, never the source ids, which may be any text. */
-const OTHER = "other";
-const ASK_CANCELLED = "cancel";
-const optionValue = (index: number) => `option-${index}`;
 
 const shown = (text: string) => visibleText(text);
 const isMode = (word: string | undefined): word is PermissionMode =>
@@ -530,7 +527,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const dialogs = new Container();
 	/** Questions waiting for an answer, the first one on screen. */
 	const questions: {
-		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog | SearchDialog | TextDialog;
+		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog | SearchDialog | TextDialog | QuestionDialog;
 		cancel: () => void;
 		local: boolean;
 		/** The `ask_user` batch it shows: the core's `user_question_resolved` closes it without an answer. */
@@ -704,37 +701,34 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const step = () => {
 			const item = batch[given.length];
 			if (item === undefined) return finish(given);
-			const title = `Question ${given.length + 1} of ${batch.length}`;
-			const lines = [shown(item.question).text];
+			const title = batch.length > 1 ? `Question ${given.length + 1} of ${batch.length}` : undefined;
+			const question = shown(item.question).text;
 			const ordered = [...item.options].sort((a, b) => Number(b.recommended === true) - Number(a.recommended === true));
-			const choices: Choice<string>[] = [
-				...ordered.map((option, index) => ({
-					value: optionValue(index),
-					label: `${shown(option.label).text}${option.recommended ? " (Recommended)" : ""}`,
-					...(option.description === undefined ? {} : { description: shown(option.description).text }),
-				})),
-				{ value: OTHER, label: "Other..." },
-			];
+			const options = ordered.map((option) => ({
+				label: shown(option.label).text,
+				...(option.description === undefined ? {} : { description: shown(option.description).text }),
+				...(option.recommended ? { recommended: true } : {}),
+			}));
 			const next = (answer: (typeof given)[number]) => {
 				if (closed) return;
 				given.push(answer);
 				step();
 			};
-			entry.dialog = new ChoiceDialog(
-				{ title, lines, choices, cancel: ASK_CANCELLED, guardMs, paste: input, descriptionsBelow: true },
+			entry.dialog = new QuestionDialog(
+				{ question, options, guardMs, paste: input, ...(title === undefined ? {} : { title }) },
 				paint,
-				(value) => {
+				(answer) => {
 					if (closed) return;
-					if (value === ASK_CANCELLED) return finish(null);
-					if (value !== OTHER) {
-						const chosen = ordered.find((_, index) => optionValue(index) === value);
+					if (answer === "cancel") return finish(null);
+					if (answer !== "other") {
+						const chosen = ordered[answer.option];
 						return chosen === undefined ? finish(null) : next({ questionId: item.id, optionId: chosen.id });
 					}
 					entry.dialog = new TextDialog(
-						title,
+						title ?? "Type something",
 						paint,
 						(text) => (text === undefined ? finish(null) : next({ questionId: item.id, other: text })),
-						lines,
+						[question],
 					);
 					showQuestion();
 				},

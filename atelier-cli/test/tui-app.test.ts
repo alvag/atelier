@@ -2330,8 +2330,10 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			askUser(stub.emit);
 			await until(() => h.screen.screen().includes("Question 1 of 2"));
 			const screen = h.screen.screen();
-			expect(screen).toContain("Postgres (Recommended)");
-			expect(screen).toContain("Other...");
+			expect(screen).toMatch(/1\. Postgres +Recommended/);
+			expect(screen).toContain("3. Type something…");
+			expect(screen).toContain("↑↓ move · 1-3 pick · enter select · esc cancel");
+			expect(screen).not.toContain("(Recommended)");
 			expect(screen).not.toContain("\x1b[31m");
 			expect(screen).toContain("␛[31mdb?");
 			expect(screen.indexOf("Postgres")).toBeLessThan(screen.indexOf("SQLite"));
@@ -2343,11 +2345,9 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("Question 2 of 2"));
 			expect(answers()).toHaveLength(0);
-			h.screen.type("\x1b[B");
-			h.screen.type("\x1b[B");
-			h.screen.type("\x1b[B");
-			h.screen.type("\r");
-			await until(() => h.screen.screen().includes("Other") && h.screen.screen().includes("Enter sends"));
+			// A number answers its row at once: 3 is Type something.
+			h.screen.type("3");
+			await until(() => h.screen.screen().includes("Enter sends"));
 			h.screen.type("   ");
 			h.screen.type("\r");
 			expect(answers()).toHaveLength(0);
@@ -2394,7 +2394,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 					},
 				],
 			});
-			await until(() => h.screen.screen().includes("Other..."));
+			await until(() => h.screen.screen().includes("Type something…"));
 			try {
 				expect(h.screen.screen()).not.toContain("\u061C");
 				for (const text of ["Q⟨U+061C⟩?", "L⟨U+061C⟩", "D⟨U+061C⟩"]) expect(h.screen.screen()).toContain(text);
@@ -2405,7 +2405,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			}
 		});
 
-		it("wraps complete questions, labels and descriptions at 80 columns, including Other input", async () => {
+		it("shows the whole question, labels and descriptions at 80 columns, and Ctrl+O opens no card behind it", async () => {
 			const h = harness([], { columns: 80 });
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
@@ -2428,34 +2428,20 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			];
 			stub.emit({ type: "tool_call_started", callId: "wide", tool: "ask_user", input: { questions } });
 			stub.emit({ type: "user_question_requested", callId: "wide", questions });
-			await until(() => h.screen.screen().includes("Other..."));
-			const dialog = () => {
-				const screen = h.screen.screen();
-				const start = screen.lastIndexOf("┌");
-				return screen.slice(start, screen.indexOf("┘", start) + 1);
-			};
-			const content = () =>
-				dialog()
-					.replace(/[│┌┐└┘─]/g, " ")
-					.replace(/\s+/g, " ");
+			await until(() => h.screen.screen().includes("Type something…"));
+			// Each row is written on its own: the words of a wrapped text meet across rows with blanks between them.
+			const content = () => h.screen.screen().replace(/\s+/g, " ");
 			try {
-				expect(dialog()).toContain("(Recommended)");
-				expect(dialog()).toContain("Question 1 of 1");
-				for (const text of [question, label, description]) expect(content()).toContain(text);
+				for (const text of [question, label, description])
+					expect(content()).toContain(text.split(" ").slice(0, 4).join(" "));
+				for (const word of [...question.split(" "), ...label.split(" "), ...description.split(" ")])
+					expect(content()).toContain(word);
+				expect(h.screen.screen()).not.toContain("Question 1 of 1");
 				const before = h.screen.screen().length;
 				h.screen.type("\x0f");
+				h.screen.type("\x1b[B");
 				await until(() => h.screen.screen().length > before);
 				expect(h.screen.screen().slice(before)).not.toContain('"recommended"');
-				for (const text of [question, label, description]) expect(content()).toContain(text);
-				// The wrapped rows do not add choices: three Down keys still select Other.
-				for (let i = 0; i < 3; i++) h.screen.type("\x1b[B");
-				h.screen.type("\r");
-				await until(() => h.screen.screen().includes("Enter sends"));
-				// Force a complete redraw: the fake terminal records incremental writes rather than a screen grid.
-				h.screen.type("\x0f");
-				await until(() => dialog().includes("Enter sends"));
-				expect(dialog()).toContain("Question 1 of 1");
-				expect(content()).toContain(question);
 			} finally {
 				h.screen.type("\x03");
 				h.screen.type("\x03");
@@ -2463,7 +2449,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			}
 		});
 
-		it("answers with the source id of the option selected, even an id that is a sentinel, and shows descriptions below", async () => {
+		it("answers with the source id of the option selected, even an id that is a sentinel", async () => {
 			const h = harness([]);
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
@@ -2471,50 +2457,30 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(h.screen.started);
 			await until(() => h.screen.screen().includes("profile cheap"));
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
-			stub.emit({
-				type: "user_question_requested",
-				callId: "u9",
-				questions: [
-					{
-						id: "q1",
-						question: "Pick",
-						options: [
-							{ id: "\0", label: "Zero", description: "first detail", recommended: true },
-							{ id: "\0other", label: "Zero other" },
-						],
-					},
-				],
-			});
-			await until(() => h.screen.screen().includes("Question 1 of 1"));
-			// The screen text has no line breaks: the frame's rows meet as "││".
-			const rows = h.screen.screen().slice(h.screen.screen().indexOf("┌ Question 1 of 1")).split("││");
-			expect(rows[1]).not.toContain("→");
-			const label = rows.findIndex((row) => row.includes("Zero") && !row.includes("Zero other"));
-			expect(rows[label]).not.toContain("first detail");
-			expect(rows[label + 1]).toContain("first detail");
-			expect(rows[label + 2]).toContain("Zero other");
+			const sentinels = [
+				{
+					id: "q1",
+					question: "Pick",
+					options: [
+						{ id: "\0", label: "Zero", description: "first detail", recommended: true },
+						{ id: "\0other", label: "Zero other" },
+					],
+				},
+			];
+			stub.emit({ type: "user_question_requested", callId: "u9", questions: sentinels });
+			await until(() => h.screen.screen().includes("first detail"));
 			h.screen.type("\x1b[B");
 			h.screen.type("\r");
 			await until(() => answers().length === 1);
 			expect(answers()[0]).toMatchObject({ answers: [{ questionId: "q1", optionId: "\0" }] });
+			stub.emit({ type: "user_question_resolved", callId: "u9", result: { status: "superseded" } });
 			stub.emit({
 				type: "user_question_requested",
 				callId: "u10",
-				questions: [
-					{
-						id: "q1",
-						question: "Pick",
-						options: [
-							{ id: "\0", label: "Zero", recommended: true },
-							{ id: "\0other", label: "Zero other" },
-						],
-					},
-				],
+				questions: [{ ...sentinels[0], question: "Pick again" }],
 			});
-			await until(() => h.screen.screen().includes("Question 1 of 1"));
-			h.screen.type("\x1b[A");
-			h.screen.type("\x1b[A");
-			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("Pick again"));
+			h.screen.type("2");
 			await until(() => answers().length === 2);
 			expect(answers()[1]).toMatchObject({ answers: [{ questionId: "q1", optionId: "\0other" }] });
 			h.screen.type("\x03");
