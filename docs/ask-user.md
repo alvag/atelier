@@ -1,6 +1,6 @@
 # Structured user questions
 
-Main sessions register `ask_user`; internal roles and subagents, including custom definitions, never receive it. RPC clients can opt in to structured questions. The [CLI](cli.md) offers framed TUI lists or numbered line prompts; the [desktop](desktop.md#structured-questions) shows a batch in an approval-style card. Every client offers Other input.
+Main sessions register `ask_user`; internal roles and subagents, including custom definitions, never receive it. RPC clients can opt in to structured questions. The [CLI](cli.md) offers numbered TUI questions between two rules or numbered line prompts; the [desktop](desktop.md#structured-questions) shows a batch in an approval-style card. Every client offers Other input.
 
 ## Input and limits
 
@@ -23,8 +23,8 @@ One tool handles a single question or a batch:
 
 - 1–4 questions, each with 2–4 model-provided options. Question IDs must be unique in the batch; option IDs must be unique within their question.
 - IDs: 1–64 characters; question text: 1–500; labels: 1–200. None may be blank. Optional descriptions: 1–300 characters and nonblank when present; a blank description rejects the entire batch before the user callback runs.
-- Exactly one option per question must have `recommended: true`; the others may omit the field or set it to `false`. Clients must show it first with `(Recommended)`, without selecting it automatically or preselecting it. Descriptions go below their labels.
-- Every question also offers `Other...`, independently of the 2–4 model options. The model cannot disable it. The user writes 1–2000 characters, not only whitespace. The answer preserves their text, including leading/trailing spaces and newlines. String limits use JavaScript UTF-16 length.
+- Exactly one option per question must have `recommended: true`; the others may omit the field or set it to `false`. Clients must show it first and mark it recommended (`(Recommended)` in line mode and the desktop, a `Recommended` tag in the TUI), without selecting it automatically or preselecting it. Descriptions go below their labels, or beside them in the TUI when the width allows.
+- Every question also offers `Other...` (`Type something…` in the TUI), independently of the 2–4 model options. The model cannot disable it. The user writes 1–2000 characters, not only whitespace. The answer preserves their text, including leading/trailing spaces and newlines. String limits use JavaScript UTF-16 length.
 
 All three clients neutralize terminal control sequences and the text-direction characters on the [shared sanitizer's explicit list](../atelier-core/src/text.ts), including Arabic Letter Mark (U+061C), by showing visible markers in questions, labels and descriptions (`⟨U+061C⟩`, for example). This does not cover every invisible Unicode character. Command approvals use the same sanitizer.
 
