@@ -126,7 +126,7 @@ export class SessionReview {
 
 	/**
 	 * A main-agent turn begins: what the agent declared before no longer counts, and the base of its candidate is
-	 * today's HEAD. The lookup runs beside the turn and is awaited when the turn ends.
+	 * today's HEAD. The lookup runs beside the turn; `turnStarted` lets the agent's commands wait for it.
 	 */
 	startTurn(cwd: string, prompt: string): void {
 		this.#requests.clear();
@@ -142,6 +142,14 @@ export class SessionReview {
 			// Not a git repository, or no git: the review reports it when the turn ends.
 			() => {},
 		);
+	}
+
+	/**
+	 * The current turn's HEAD lookup, which never rejects. A tool call waits for it, so a command that moves HEAD
+	 * (a reset, a commit) cannot run before HEAD is read where the turn started.
+	 */
+	turnStarted(): Promise<void> {
+		return this.#starting;
 	}
 
 	/** Ends a turn that finished well: assesses the change for free and, if it is due and the user agrees, reviews it. */

@@ -1335,6 +1335,8 @@ export class Session {
 
 	/** Runs a call of the main agent; in a turn that answers a prompt, the steers queued so far go with its result. */
 	async #executeTool(call: ToolCall): Promise<ToolCallResult> {
+		// HEAD is read where the turn started before any command of the agent can move it; the backend got the prompt at once.
+		await this.#review?.turnStarted();
 		const result = await this.#runTool(call);
 		if (!this.#steerable || this.#abort?.signal.aborted) return result;
 		const steers = this.#queue.filter((message) => message.kind === "steer");
