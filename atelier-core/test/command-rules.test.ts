@@ -268,6 +268,23 @@ describe("coveredBy with project rules", () => {
 		expect(coveredBy("printf x | make -f -", ["printf"], ["make"])).toBe(true);
 	});
 
+	it("asks the caller whether each place a word names stays in the project", () => {
+		const asked: string[] = [];
+		const inside = (path: string) => {
+			asked.push(path);
+			return path !== "link";
+		};
+		expect(coveredBy("make -C link", [], ["make"], inside)).toBe(false);
+		expect(coveredBy("printf x | make -Clink", ["printf"], ["make"], inside)).toBe(false);
+		expect(coveredBy("make --directory=link", [], ["make"], inside)).toBe(false);
+		expect(coveredBy("make -C sub", [], ["make"], inside)).toBe(true);
+		expect(asked).toContain("sub");
+		// A line no project rule needs to cover is never looked at.
+		asked.length = 0;
+		expect(coveredBy("make -C link", ["make"], ["make"], inside)).toBe(true);
+		expect(asked).toEqual([]);
+	});
+
 	it("still covers such a line by a session rule", () => {
 		expect(coveredBy("pnpm -C /other install", ["pnpm"])).toBe(true);
 	});

@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -120,6 +120,33 @@ describe("rules allowed always in this project", () => {
 		await rules.allow([{ kind: "bash", value: "printf" }], "session");
 		await rules.allow([{ kind: "bash", value: "./run.sh" }], "project");
 		const { questions } = await run(app, [leave("printf '%s' /tmp | ./run.sh", "c1")], { rules });
+		expect(questions).toHaveLength(1);
+	});
+
+	it("asks when an argument is a link out of the project, and not for a real folder in it", async () => {
+		await symlink(clone, join(app, "link"));
+		await mkdir(join(app, "sub"));
+		const rules = new PermissionRules({ home, cwd: app });
+		await rules.allow([{ kind: "bash", value: "./run.sh" }], "project");
+		const { questions, results } = await run(
+			app,
+			[
+				leave("./run.sh link", "c1"),
+				leave("./run.sh --dir=link/x", "c2"),
+				leave("./run.sh -Clink", "c3"),
+				leave("./run.sh sub", "c4"),
+			],
+			{ rules },
+		);
+		expect(questions.map(({ callId }) => callId)).toEqual(["c1", "c2", "c3"]);
+		expect(results[3]?.output).toContain("ran");
+	});
+
+	it("asks when the program itself is a link out of the project", async () => {
+		await symlink(join(clone, "run.sh"), join(app, "tool.sh"));
+		const rules = new PermissionRules({ home, cwd: app });
+		await rules.allow([{ kind: "bash", value: "./tool.sh" }], "project");
+		const { questions } = await run(app, [leave("./tool.sh", "c1")], { rules });
 		expect(questions).toHaveLength(1);
 	});
 

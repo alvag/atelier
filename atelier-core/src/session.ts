@@ -1650,7 +1650,7 @@ export class Session {
 	/** The rules in force now, as tools take them; a broken saved file is said once, as a recoverable error, and counts as none. */
 	async #currentRules(
 		emit: (event: AtelierEventBody) => void,
-	): Promise<{ bashRules: string[]; projectBashRules: string[]; pathRules: string[] }> {
+	): Promise<{ bashRules: string[]; projectBashRules: string[]; projectRoot?: string; pathRules: string[] }> {
 		const rules = this.#options.permissionRules;
 		if (rules === undefined) return { bashRules: [], projectBashRules: [], pathRules: [] };
 		const current = await rules.current();
@@ -1662,7 +1662,13 @@ export class Session {
 			this.#rulesIgnoredSaid = true;
 			emit(errorEvent("permission_rules_ignored", current.ignored, true));
 		}
-		return { bashRules: current.bash, projectBashRules: current.projectBash, pathRules: current.paths };
+		const projectRoot = await rules.project();
+		return {
+			bashRules: current.bash,
+			projectBashRules: current.projectBash,
+			...(projectRoot === undefined ? {} : { projectRoot }),
+			pathRules: current.paths,
+		};
 	}
 
 	/**

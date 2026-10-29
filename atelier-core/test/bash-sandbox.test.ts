@@ -840,7 +840,7 @@ describe.skipIf(!onMac)("the commands the user's rules cover", () => {
 		expect(await exists(join(home, ".atelier", "permissions.json"))).toBe(false);
 	});
 
-	it("never write the rules saved for projects, also when a project rule covers the command", async () => {
+	it("never write the rules saved for projects, by a global rule or through a link a project rule does not follow", async () => {
 		await mkdir(join(home, ".atelier"), { recursive: true });
 		await symlink(join(home, ".atelier"), join(cwd, "settings"));
 		const tool = createBashTool({ sandbox });
@@ -850,12 +850,27 @@ describe.skipIf(!onMac)("the commands the user's rules cover", () => {
 		);
 		expect(quoted.output).toContain("[ran outside the sandbox");
 		expect(quoted.ok).toBe(false);
+		// A link out of the project is never covered by a project rule: the command runs in the sandbox, which denies it.
 		const linked = await tool.execute(
 			{ command: `touch settings/project-permi""ssions.json` },
-			{ cwd, projectBashRules: ["touch"] },
+			{ cwd, projectBashRules: ["touch"], projectRoot: await realpath(cwd) },
 		);
-		expect(linked.output).toContain("[ran outside the sandbox");
+		expect(linked.output).not.toContain("[ran outside the sandbox");
 		expect(linked.ok).toBe(false);
+		expect(await exists(join(home, ".atelier", "project-permissions.json"))).toBe(false);
+	});
+
+	it("never write the rules saved for projects from a script a project rule covers", async () => {
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		await writeFile(join(cwd, "w.sh"), `#!/bin/sh\ntouch '${home}/.atelier/project-permissions.json'\n`, {
+			mode: 0o755,
+		});
+		const covered = await createBashTool({ sandbox }).execute(
+			{ command: "./w.sh" },
+			{ cwd, projectBashRules: ["./w.sh"], projectRoot: await realpath(cwd) },
+		);
+		expect(covered.output).toContain("[ran outside the sandbox");
+		expect(covered.ok).toBe(false);
 		expect(await exists(join(home, ".atelier", "project-permissions.json"))).toBe(false);
 	});
 

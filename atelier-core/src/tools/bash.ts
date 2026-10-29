@@ -1,13 +1,14 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, openSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, openSync, realpathSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { createScratchDirSync } from "../scratch.ts";
 import { commandRules, coveredBy } from "./command-rules.ts";
 import { findConfirmCommands, findDestructiveCommand } from "./destructive-guard.ts";
 import { MAX_BYTES, takeTail } from "./limits.ts";
+import { isInside } from "./paths.ts";
 import {
 	SANDBOX_OFF,
 	type Sandbox,
@@ -164,13 +165,43 @@ function confirmation(command: string): { confirm?: string; yoloWaived?: true } 
  * Whether the user's rules cover the command, so it runs outside the sandbox without asking: never what the guard
  * asks about, never the verifier's, and only where the profile that keeps `~/.atelier` unwritable runs.
  */
+/**
+ * Whether a place a command names, relative to `cwd`, really is inside `root`: its nearest existing folder is followed
+ * through every link, so a link in the project cannot lead a project rule out of it. Fails closed on what cannot be read.
+ */
+function insideProject(root: string, cwd: string): (place: string) => boolean {
+	return (place) => {
+		let existing = resolve(cwd, place);
+		const rest: string[] = [];
+		for (;;) {
+			try {
+				return isInside(root, join(realpathSync(existing), ...rest));
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if ((code !== "ENOENT" && code !== "ENOTDIR") || dirname(existing) === existing) return false;
+				rest.unshift(basename(existing));
+				existing = dirname(existing);
+			}
+		}
+	};
+}
+
 function coveredByRules(
 	command: string,
-	{ bashRules = [], projectBashRules = [] }: Pick<ToolContext, "bashRules" | "projectBashRules">,
+	{
+		cwd,
+		bashRules = [],
+		projectBashRules = [],
+		projectRoot,
+	}: Pick<ToolContext, "cwd" | "bashRules" | "projectBashRules" | "projectRoot">,
 	{ withoutApproval, policy, sandbox }: { withoutApproval: boolean; policy: SandboxPolicyName; sandbox: Sandbox },
 ): boolean {
-	if (withoutApproval || policy !== "agent" || (bashRules.length === 0 && projectBashRules.length === 0)) return false;
-	if (findConfirmCommands(command).length > 0 || !coveredBy(command, bashRules, projectBashRules)) return false;
+	// Project rules apply only where the project is known.
+	const project = projectRoot === undefined ? [] : projectBashRules;
+	if (withoutApproval || policy !== "agent" || (bashRules.length === 0 && project.length === 0)) return false;
+	if (findConfirmCommands(command).length > 0) return false;
+	const inProject = projectRoot === undefined ? undefined : insideProject(projectRoot, cwd);
+	if (!coveredBy(command, bashRules, project, inProject)) return false;
 	return sandbox.outsideAvailable();
 }
 
