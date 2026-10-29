@@ -190,6 +190,40 @@ describe("MCP OAuth browser URLs", () => {
 		}
 	});
 
+	it("keeps a session needing sign-in after a refused refresh, but rejects a file URL on explicit login", async () => {
+		const store = new McpAuthStore(mcpAuthFile(home));
+		await loginMcpServer(remote(), store, { openBrowser: browser });
+		fake.access = "access-rotated";
+		fake.refresh = "refresh-rotated";
+		fake.authorizationEndpoint = "file:///tmp/authorize";
+		fake.tokenRequests = [];
+		const openBrowser = vi.fn(() => {
+			throw new Error("unsafe browser callback invoked");
+		});
+		const manager = new McpManager(
+			{ file: "mcp.json", servers: [remote()], problems: [], secrets: [] },
+			{ auth: store, openBrowser },
+		);
+		manager.start();
+		await manager.ready();
+		try {
+			expect(fake.tokenRequests.map((params) => params.get("grant_type"))).toEqual(["refresh_token"]);
+			expect(manager.status()[0]).toMatchObject({
+				state: "needs_auth",
+				error: "sign-in required: run atelier mcp login remote",
+			});
+			expect(openBrowser).not.toHaveBeenCalled();
+			await expect(manager.login("remote")).rejects.toThrow(
+				/^Refused to open OAuth URL for MCP server "remote": file:\/\/\/tmp\/authorize\?.*; only http: and https: URLs are allowed$/,
+			);
+			expect(openBrowser).not.toHaveBeenCalled();
+			expect(fake.tokenRequests.map((params) => params.get("grant_type"))).toEqual(["refresh_token"]);
+			expect(manager.status()[0]?.state).toBe("needs_auth");
+		} finally {
+			await manager.close();
+		}
+	});
+
 	it.each([
 		["not a URL", "Invalid URL"],
 		["javascript:alert(1)", "URL cannot use javascript:, data:, or vbscript: scheme"],
