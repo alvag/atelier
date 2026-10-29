@@ -695,6 +695,36 @@ describe("the state of a session after a backend change", () => {
 		expect(states.map((line) => line.backend)).toEqual(["claude-code"]);
 		expect((await store.load(cwd, record.id)).resume).toEqual({ sessionId: "cc-1" });
 	});
+
+	it("saves with the turn's state what its backend was told about yolo, not what the queued new backend knows", async () => {
+		const { store, record, backend, session } = await started([[text("working"), { waitForInterrupt: true }]]);
+		backend.resumeState = { sessionId: "cc-1" };
+		session.setPermissionMode("yolo");
+		const next = new FakeBackend([[{ event: finished }]], "anthropic-api");
+		const turn = drain(session, "first");
+		for (let i = 0; i < 400 && !session.busy; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+		await session.setBackend(next);
+		await session.interrupt();
+		await turn;
+		// Closed before the new backend ran a turn.
+		await session.close();
+		const loaded = await store.load(cwd, record.id);
+		expect(loaded.resume).toEqual({ sessionId: "cc-1" });
+		expect(loaded.yoloTold).toBe(true);
+
+		const resumedBackend = new FakeBackend([[{ event: finished }]], "claude-code");
+		const resumed = await Session.start({
+			backend: resumedBackend,
+			cwd,
+			tools: [],
+			permissionMode: "normal",
+			...(loaded.resume === undefined ? {} : { resume: loaded.resume }),
+			...(loaded.yoloTold === undefined ? {} : { resumedYoloTold: loaded.yoloTold }),
+		});
+		await drain(resumed, "go");
+		await resumed.close();
+		expect(resumedBackend.prompts).toEqual([`${LEFT_YOLO}\n\ngo`]);
+	});
 });
 
 describe("whose file it is", () => {
