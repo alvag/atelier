@@ -1,5 +1,7 @@
+import { basename } from "node:path";
 import { visibleText } from "@atelier/core";
-import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type FooterState, footerLine } from "./footer.ts";
 import type { Paint } from "./style.ts";
 
 /** What the header says: Atelier's version, where it works, and the model and level the session runs with. */
@@ -18,6 +20,43 @@ const shortPath = (cwd: string, home: string | undefined) =>
 		: cwd;
 
 const shown = (text: string) => visibleText(text).text;
+
+export type StatusBarState = FooterState & { cwd: string; home?: string };
+
+/** Newlines and tabs are useful in the transcript, but not in a fixed one-row summary. */
+const oneLine = (text: string) => shown(text).replaceAll("\n", "␊").replaceAll("\t", "␉");
+
+/** The fullscreen session summary: shorten the path, then the branch, before sacrificing any other left-hand text. */
+export class StatusBar implements Component {
+	readonly #paint: Paint;
+	readonly #state: () => StatusBarState;
+	constructor(paint: Paint, state: () => StatusBarState) {
+		this.#paint = paint;
+		this.#state = state;
+	}
+	invalidate(): void {}
+	render(width: number): string[] {
+		const state = this.#state();
+		const right = footerLine(state, width, this.#paint, ["context", "cost"]).trimStart();
+		const separator = this.#paint("dim", " · ");
+		const running = footerLine(state, Number.MAX_SAFE_INTEGER, this.#paint, ["model", "effort", "profile"])
+			.trimStart()
+			.replaceAll("\n", "␊")
+			.replaceAll("\t", "␉");
+		let path = oneLine(shortPath(state.cwd, state.home));
+		let branch = state.branch === undefined ? "" : oneLine(state.branch);
+		const left = () =>
+			[path + (branch ? ` ${this.#paint("cyan", branch)}` : ""), running].filter(Boolean).join(separator);
+		const budget = Math.max(0, width - visibleWidth(right) - (right ? 1 : 0));
+		if (visibleWidth(left()) > budget) path = oneLine(basename(state.cwd) || path);
+		if (branch && visibleWidth(left()) > budget) {
+			const room = visibleWidth(branch) - (visibleWidth(left()) - budget);
+			branch = truncateToWidth(branch, Math.max(0, room), "…");
+		}
+		const kept = truncateToWidth(left(), budget, "…");
+		return [kept + " ".repeat(Math.max(0, width - visibleWidth(kept) - visibleWidth(right))) + right];
+	}
+}
 
 /**
  * The transcript's first lines, which scroll away with it and stay in the terminal on exit:
