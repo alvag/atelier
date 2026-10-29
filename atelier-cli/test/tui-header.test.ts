@@ -36,6 +36,12 @@ describe("status bar", () => {
 		]);
 	});
 
+	it("keeps the whole right block when it exactly fits the terminal", () => {
+		expect(bar().render(right.length)).toEqual([right]);
+		const halfDollar = right.replace("$0.42", "$0.50");
+		expect(bar({ ...state, costUsd: 0.5 }).render(halfDollar.length)).toEqual([halfDollar]);
+	});
+
 	it("protects the right block at tiny widths and measures styled Unicode in terminal cells", () => {
 		const unicode = bar({ ...state, cwd: "/work/日本語", branch: "開発/界" }, true);
 		for (const width of [0, 1, 10, 31, 40, 60, 80, 120]) {

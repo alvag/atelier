@@ -117,7 +117,7 @@ Fixed at the top in fullscreen only, the one-row session summary puts the workin
 ~/code/app feature/fixed-status-bar ±3 · claude-opus-5-5 high · profile claude             ctx ▰▱▱▱▱▱▱▱ 11% · 1M · $0.42
 ```
 
-On overflow, the path shrinks to its last segment first, then a long branch is cut with `…`. If that is not enough, the remaining left-hand text is cut; the right block keeps its space. A terminal narrower than the right block shows that block cut to its width, never wrapped. Unknown fields are omitted. The gauge has the same colors and compaction marker as the footer outside fullscreen.
+On overflow, the path shrinks to its last segment first, then a long branch is cut with `…`. If that is not enough, the remaining left-hand text is cut; the right block keeps its space. When the right block exactly fits, it is shown in full without leading padding. A narrower terminal shows that block cut to its width, never wrapped. Unknown fields are omitted. The gauge has the same colors and compaction marker as the footer outside fullscreen.
 
 `±N` counts staged, unstaged and untracked files once per path (a rename counts once). It is omitted when clean, outside Git, or if Git is missing or the query fails. Branch and count refresh asynchronously at startup and after each turn; a newer read or shutdown cancels the previous query. Both respect `GIT_CEILING_DIRECTORIES`, including symlinked ceilings. Submodule changes are ignored.
 
