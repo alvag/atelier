@@ -73,18 +73,28 @@ describe("the cause of a sandbox block", () => {
 		expect(result.blocked).toEqual(["write to /Users/ana/outside.txt (not an allowed write path)"]);
 	});
 
-	it("says a blocked write in a .git is git state that runs code", async () => {
+	it("says a blocked write in a .git of the working directory is git state that runs code, and only there", async () => {
 		const sandbox = sandboxWith((command) => [
-			{ command, line: "mkdir(41) deny(1) file-write-create /Users/ana/project/sub/.git" },
-			{ command, line: "bash(41) deny(1) file-write-data /Users/ana/project/.git/hooks/pre-commit" },
-			{ command, line: "bash(41) deny(1) file-write-create /Users/ana/project/.gitignore-x/.github" },
+			{ command, line: `mkdir(41) deny(1) file-write-create ${cwd}/sub/.git` },
+			{ command, line: `bash(41) deny(1) file-write-data ${cwd}/.git/hooks/pre-commit` },
+			{ command, line: `bash(41) deny(1) file-write-create ${cwd}/.gitignore-x/.github` },
+			{ command, line: "bash(41) deny(1) file-write-data /Users/ana/elsewhere/.git/config" },
 		]);
 		const result = await createBashTool({ sandbox }).execute({ command: failing }, { cwd });
 		expect(result.blocked).toEqual([
-			"write to /Users/ana/project/sub/.git (git state that runs code)",
-			"write to /Users/ana/project/.git/hooks/pre-commit (git state that runs code)",
-			"write to /Users/ana/project/.gitignore-x/.github (not an allowed write path)",
+			`write to ${cwd}/sub/.git (git state that runs code)`,
+			`write to ${cwd}/.git/hooks/pre-commit (git state that runs code)`,
+			`write to ${cwd}/.gitignore-x/.github (not an allowed write path)`,
+			"write to /Users/ana/elsewhere/.git/config (not an allowed write path)",
 		]);
+	});
+
+	it("does not call a blocked .git write of the verifier git state", async () => {
+		const sandbox = sandboxWith((command) => [
+			{ command, line: `mkdir(41) deny(1) file-write-create ${cwd}/sub/.git` },
+		]);
+		const result = await createBashTool({ sandbox, policy: "verifier" }).execute({ command: failing }, { cwd });
+		expect(result.blocked).toEqual([`write to ${cwd}/sub/.git (not an allowed write path)`]);
 	});
 
 	it("names a blocked read", async () => {

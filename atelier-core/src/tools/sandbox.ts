@@ -876,21 +876,35 @@ export class Sandbox {
 	 */
 	async blocks(
 		runId: string,
-		{ policy, graceMs = 0 }: { policy: SandboxPolicyName; graceMs?: number },
+		{ policy, graceMs = 0, cwd }: { policy: SandboxPolicyName; graceMs?: number; cwd?: string },
 	): Promise<string[]> {
 		const store = this.#manager?.getSandboxViolationStore?.();
 		if (!store) return [];
 		const key = runKey(runId);
+		const writable = policy === "agent" && cwd !== undefined ? this.#gitRoots(cwd) : [];
 		const deadline = Date.now() + graceMs;
 		for (;;) {
 			const mine = store.getViolations().filter((v) => v.encodedCommand === key);
 			const causes = describeViolations(
 				mine.map((v) => v.line),
 				policy,
+				writable,
 			);
 			if (causes.length > 0 || Date.now() >= deadline) return causes;
 			await new Promise((resolve) => setTimeout(resolve, 25));
 		}
+	}
+
+	/** The working directory and the configuration's write directories, by name and by real path; the protections of their `.git` are git state. */
+	#gitRoots(cwd: string): string[] {
+		let added: string[] = [];
+		try {
+			added = loadSandboxAdditions({ cwd, home: this.#options.home ?? homedir() }).allowWrite;
+		} catch {
+			// An invalid configuration stopped the command before it ran: nothing it blocked comes from there.
+		}
+		const dirs = [cwd, ...added];
+		return [...new Set([...dirs, ...dirs.flatMap((dir) => realOther(dir) ?? [])])];
 	}
 
 	#outside: boolean | undefined;
