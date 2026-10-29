@@ -1,5 +1,5 @@
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
 	ClaudeCodeBackend,
@@ -17,6 +17,7 @@ import {
 	Session,
 	type ToolCall,
 } from "../src/index.ts";
+import { ModelData, useModelData } from "../src/model-catalog/index.ts";
 
 function msg(value: Record<string, unknown>): SDKMessage {
 	return { uuid: "u", session_id: "s", ...value } as unknown as SDKMessage;
@@ -206,6 +207,7 @@ describe("ClaudeCodeBackend options", () => {
 
 		const o = calls.options;
 		expect(o.cwd).toBe("/work");
+		// The default, claude-opus-5-5, goes as the alias that stands for it, which gets the 1M window where the plan has it.
 		expect(o.model).toBe("opus");
 		expect(o.tools).toEqual([]);
 		expect(o.settingSources).toEqual([]);
@@ -350,6 +352,75 @@ describe("ClaudeCodeBackend options", () => {
 		const kept = fakeQuery([], []);
 		await new ClaudeCodeBackend({ query: kept.query, env, keepApiKey: true }).start(start);
 		expect(kept.calls.options.env).toHaveProperty("ANTHROPIC_API_KEY", "sk-secret");
+	});
+});
+
+describe("ClaudeCodeBackend model names", () => {
+	afterEach(() => useModelData(new ModelData()));
+
+	const startOn = async (model: string, extra: Record<string, unknown> = {}) => {
+		const { query, calls } = fakeQuery([init], []);
+		const session = await new ClaudeCodeBackend({ query, env: {}, ...extra }).start({ ...plainStart, model });
+		return { session, calls };
+	};
+
+	it("sends the alias that stands for the chosen id, by the code's list until a session lists the subscription's", async () => {
+		expect((await startOn("claude-opus-5-5")).calls.options.model).toBe("opus");
+		expect((await startOn("claude-sonnet-5-5")).calls.options.model).toBe("sonnet");
+		expect((await startOn("claude-opus-4-8")).calls.options.model).toBe("claude-opus-4-8");
+		// What is written goes as it is.
+		expect((await startOn("sonnet")).calls.options.model).toBe("sonnet");
+
+		useModelData(
+			new ModelData(
+				{
+					"claude-code": [
+						{ id: "claude-fable-5-1", aliases: ["fable"] },
+						{ id: "claude-opus-5-5" },
+						{ id: "claude-opus-4-6", aliases: ["claude-opus-4-6[1m]"] },
+					],
+				},
+				{ "claude-code": ["claude-fable-5-1", "claude-opus-5-5", "claude-opus-4-6"] },
+			),
+		);
+		expect((await startOn("claude-fable-5-1")).calls.options.model).toBe("fable");
+		expect((await startOn("claude-opus-4-6")).calls.options.model).toBe("claude-opus-4-6[1m]");
+		// The subscription's list says no alias stands for it any longer: the code's does not count.
+		expect((await startOn("claude-opus-5-5")).calls.options.model).toBe("claude-opus-5-5");
+
+		const { session, calls } = await startOn("claude-opus-4-6");
+		await session.configure?.({ model: "claude-fable-5-1" });
+		expect(calls.order).toContain("setModel:fable");
+	});
+
+	it("says the window Claude Code ran each model with, by its versioned id", async () => {
+		const windows: Record<string, number>[] = [];
+		const usage = (contextWindow: number, canonicalModel?: string) => ({
+			inputTokens: 1,
+			outputTokens: 1,
+			cacheReadInputTokens: 0,
+			cacheCreationInputTokens: 0,
+			webSearchRequests: 0,
+			costUSD: 0,
+			contextWindow,
+			maxOutputTokens: 1,
+			...(canonicalModel === undefined ? {} : { canonicalModel }),
+		});
+		const done = msg({
+			...(result(0.01) as unknown as Record<string, unknown>),
+			modelUsage: {
+				opus: usage(1_000_000, "claude-opus-5-5"),
+				"claude-haiku-4-5-20251001": usage(200_000),
+				"claude-opus-4-6[1m]": usage(1_000_000),
+			},
+		});
+		const { query } = fakeQuery([init], [[done]]);
+		const backend = new ClaudeCodeBackend({ query, env: {}, onContextWindows: (seen) => windows.push(seen) });
+		const session = await backend.start({ ...plainStart, model: "claude-opus-5-5" });
+		await collectBodies(session.send("one"));
+		expect(windows).toEqual([
+			{ "claude-opus-5-5": 1_000_000, "claude-haiku-4-5-20251001": 200_000, "claude-opus-4-6": 1_000_000 },
+		]);
 	});
 });
 

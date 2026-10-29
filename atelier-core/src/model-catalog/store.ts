@@ -87,17 +87,41 @@ const writing = new Map<string, Promise<void>>();
  * it is asked again at the next refresh.
  */
 function saveSource(file: string, name: string, entry: SourceEntry): Promise<void> {
-	const write = (writing.get(file) ?? Promise.resolve()).then(() => writeSource(file, name, entry));
-	const settled = write.catch(() => {});
+	return queued(file, () => writeSource(file, name, () => entry));
+}
+
+/**
+ * Changes one source's entry as `update` says, from the file as it is now; nothing is written when the source has no
+ * entry, or `update` answers undefined.
+ */
+export function updateSource(
+	file: string,
+	name: string,
+	update: (entry: SourceEntry) => SourceEntry | undefined,
+): Promise<void> {
+	return queued(file, () =>
+		writeSource(file, name, (current) => (current === undefined ? undefined : update(current))),
+	);
+}
+
+function queued(file: string, write: () => Promise<void>): Promise<void> {
+	const done = (writing.get(file) ?? Promise.resolve()).then(write);
+	const settled = done.catch(() => {});
 	writing.set(file, settled);
 	void settled.then(() => {
 		if (writing.get(file) === settled) writing.delete(file);
 	});
-	return write;
+	return done;
 }
 
-async function writeSource(file: string, name: string, entry: SourceEntry): Promise<void> {
+async function writeSource(
+	file: string,
+	name: string,
+	next: (current: SourceEntry | undefined) => SourceEntry | undefined,
+): Promise<void> {
 	const catalog = await readCatalog(file);
+	const entry = next(Object.hasOwn(catalog.sources, name) ? catalog.sources[name] : undefined);
+	if (entry === undefined) return;
 	catalog.sources[name] = entry;
 	await mkdir(dirname(file), { recursive: true, mode: 0o700 });
 	const temporary = `${file}.${randomBytes(6).toString("hex")}.tmp`;
