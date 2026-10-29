@@ -52,8 +52,8 @@ export class SessionRecorder {
 	/** The messages the file holds of an `anthropic-api` history, by digest. */
 	#messages: string[];
 	#sessionId: string | undefined;
-	/** What the file says the model was last told about yolo; a file that never said it counts as not told. */
-	#yoloTold: boolean;
+	/** What the file says the model was last told about yolo; undefined until it says it, so the first state does. */
+	#yoloTold: boolean | undefined;
 	/** The turn of the last prompt: a queued message that started it is already saved as that prompt. */
 	#promptTurn: string | undefined;
 
@@ -64,7 +64,7 @@ export class SessionRecorder {
 		const known = options.known;
 		this.#messages = known !== undefined && "messages" in known ? known.messages.map(digest) : [];
 		this.#sessionId = known !== undefined && "sessionId" in known ? known.sessionId : undefined;
-		this.#yoloTold = options.knownYoloTold ?? false;
+		this.#yoloTold = options.knownYoloTold;
 	}
 
 	get id(): string {

@@ -1985,6 +1985,12 @@ describe("saved sessions", () => {
 		expect(h.backend.prompts).toEqual([`${LEFT_YOLO}\n\ngo`]);
 	});
 
+	it("gives a session resumed into yolo the rules, when the saved conversation never told the model of yolo", async () => {
+		await save("plain work", "done", 1_700_000_000);
+		const { h } = await resumeWith(["--continue", "--mode", "yolo", "go"]);
+		expect(h.backend.prompts).toEqual([`${YOLO_RULES}\n\ngo`]);
+	});
+
 	it("resumes a session saved before the mode was recorded as it always did, with no note", async () => {
 		const store = new SessionStore(home);
 		const record = store.create(cwd);
