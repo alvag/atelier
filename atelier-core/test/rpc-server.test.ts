@@ -1161,7 +1161,7 @@ describe("RpcServer and background jobs", () => {
 	it("starts a turn of its own when a job ends while no turn runs", async () => {
 		const go = join(cwd, "go");
 		const background = createBackgroundTools({ sandbox: new Sandbox({ platform: "darwin", manager: fakeManager }) });
-		const command = `while [ ! -f ${go} ]; do sleep 0.02; done; echo done`;
+		const command = `while [ ! -f ${go} ]; do sleep 0.1; done; echo done`;
 		const h = harness(
 			[
 				[

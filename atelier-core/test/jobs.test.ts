@@ -402,7 +402,7 @@ describe("background jobs", () => {
 	it("keeps the last 20 jobs to end, whenever they started", async () => {
 		const { dir, jobs, ended } = harness();
 		const goFile = join(dir, "go");
-		jobs.start(plain(`while [ ! -f ${goFile} ]; do sleep 0.02; done`, dir));
+		jobs.start(plain(`while [ ! -f ${goFile} ]; do sleep 0.1; done`, dir));
 		for (let i = 1; i <= 20; i++) {
 			jobs.start(plain("true", dir));
 			await until(() => ended.length === i);
