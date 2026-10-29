@@ -69,8 +69,10 @@ const chat = (
 
 /**
  * The models of https://opencode.ai/docs/go (2026-10-28), with their prices from its table, and the windows and
- * levels from pi-ai 1.4.0's `opencode-go.json`. Update it when that page changes: add or remove the model, its
- * protocol (the page's endpoint) and its price, and the test that lists the models.
+ * levels from pi-ai 1.4.0's `opencode-go.json`. `mimo-v2.5` and `mimo-v2.5-pro` are gone: OpenCode answers 410
+ * that they are deprecated and points to the mimo-v2.6 models (measured 2026-10-29). Update it when that page
+ * changes: add or remove the model, its protocol (the page's endpoint) and its price, and the test that lists
+ * the models.
  */
 export const OPENCODE_GO_MODELS: Readonly<Record<string, OpenCodeGoModel>> = Object.freeze({
 	"minimax-m3": {
@@ -121,8 +123,6 @@ export const OPENCODE_GO_MODELS: Readonly<Record<string, OpenCodeGoModel>> = Obj
 	"minimax-m3.1-flash": chat(1_000_000, ["low", "medium", "high", "xhigh", "max"], flat(0.15, 0.6, 0.015)),
 	"mimo-v2.6-pro": chat(1_048_576, [], flat(0.435, 0.87, 0.003625), { reasonsOnItsOwn: true }),
 	"mimo-v2.6-flash": chat(1_048_576, [], flat(0.14, 0.28, 0.0028), { reasonsOnItsOwn: true }),
-	"mimo-v2.5-pro": chat(1_048_576, [], flat(0.435, 0.87, 0.003625)),
-	"mimo-v2.5": chat(1_000_000, [], flat(0.14, 0.28, 0.0028)),
 	"longcat-2.0": chat(1_000_000, [], flat(0.3, 1.2, 0.006), { reasonsOnItsOwn: true }),
 	"step-5-preview": chat(1_000_000, ["low", "medium", "high"], flat(1, 2.7, 0.1)),
 	"hy4-preview": chat(1_024_000, ["high"], flat(0.834, 2.501, 0.042), { off: "none" }),
