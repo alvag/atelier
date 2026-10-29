@@ -141,6 +141,12 @@ describe("rules allowed always in this project", () => {
 		);
 		expect(questions.map(({ callId }) => callId)).toEqual(["c1", "c2", "c3"]);
 		expect(results[3]?.output).toContain("ran");
+		const hidden = await run(
+			app,
+			[leave("./run.sh -kClink", "d1"), leave("./run.sh foo@./link", "d2"), leave("./run.sh file:link", "d3")],
+			{ rules },
+		);
+		expect(hidden.questions.map(({ callId }) => callId)).toEqual(["d1", "d2", "d3"]);
 	});
 
 	it("asks when an argument is a dangling link out of the project, and not for one that stays in it", async () => {

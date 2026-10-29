@@ -740,6 +740,8 @@ export interface SimpleCommand {
 	writesFile: boolean;
 	/** It changes the environment the command runs with: an assignment (`PATH=./bin open`) or an `env` option (`env -P`). */
 	setsEnvironment: boolean;
+	/** The words before the command: the wrappers and their options (`nice -n 10`), assignments and redirections. */
+	prefix: { value: string; raw: string }[];
 	/**
 	 * Its standard input comes from the line: a pipe from an earlier command (`|`, `|&`, also into a subshell) or an
 	 * input redirection (`<`, `0<`, `<>`, `<&`, a heredoc `<<`, a here-string `<<<`).
@@ -808,7 +810,14 @@ export function simpleCommands(command: string): SimpleCommand[] | undefined {
 			const environment = setsEnvironment(segment.slice(0, cursor), wrappers);
 			const readsInput = piped || redirectsInput(queue[0] as Token[]);
 			if (words.length > 0 || wrappers.length > 0 || writes || environment)
-				commands.push({ wrappers, words, writesFile: writes, setsEnvironment: environment, readsInput });
+				commands.push({
+					wrappers,
+					words,
+					writesFile: writes,
+					setsEnvironment: environment,
+					readsInput,
+					prefix: segment.slice(0, cursor).map(({ value, raw }) => ({ value, raw })),
+				});
 			else if (readsInput) groupInput = true;
 		}
 	}

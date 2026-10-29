@@ -336,6 +336,9 @@ describe("coveredBy with project rules", () => {
 		["./gradlew build", [], ["./gradlew build"]],
 		["pnpm test 2>&1 | tail -5", ["tail"], ["pnpm test"]],
 		["pnpm test --reporter=dot", [], ["pnpm test"]],
+		["nice -n 10 make", [], ["make"]],
+		["go vet ./...", [], ["go"]],
+		["npm --save-dev run lint", [], ["npm"]],
 	] as const)("covers %j by a project rule: every argument is a simple word", (command, allowed, project) => {
 		expect(coveredBy(command, allowed, project)).toBe(true);
 	});
@@ -366,6 +369,18 @@ describe("coveredBy with project rules", () => {
 		"pnpm test a#b",
 		"pnpm test sub//x:/y",
 		"printf '%s' a=b; pnpm test",
+		"make -kC..",
+		"make -kC../x",
+		"npm pack --dry-run foo@../outside",
+		"npm install foo@../outside",
+		"pnpm test x..",
+		"nice -n ' 0' make",
+		"timeout '5 ' make",
+		"npm --script-shel=true run test",
+		"npm --node-option=x run test",
+		"make --ev=x",
+		"make --eva x",
+		"./gradlew --init-scr x build",
 	])("asks for %j under a project rule: an argument is no simple word", (command) => {
 		expect(
 			coveredBy(
