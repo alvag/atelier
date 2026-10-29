@@ -4430,6 +4430,50 @@ describe("paste question", () => {
 	});
 });
 
+describe("TUI and background tasks", { timeout: 20_000 }, () => {
+	it("shows a background subagent's start and end, counts it in the footer, and runs the turn its report wakes", async () => {
+		const gate: { open?: () => void } = {};
+		const child = new FakeBackend([
+			[
+				{ run: () => new Promise<void>((resolve) => (gate.open = resolve)) },
+				{ event: { type: "text_delta", text: "REPORT" } },
+				{ event: finished },
+			],
+		]);
+		const h = harness(
+			[
+				[
+					{ event: started },
+					{
+						toolCall: {
+							tool: "task",
+							input: { agent: "explorer", prompt: "Find it.", background: true, label: "find" },
+							callId: "c1",
+						},
+					},
+					{ event: finished },
+				],
+				[{ event: finished }],
+			],
+			{ children: [child] },
+		);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("find it");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("⧗ task task-1 started · explorer: find · 1 running"));
+		await until(() => h.screen.screen().endsWith("· 1 job"));
+		await until(() => gate.open !== undefined);
+		gate.open?.();
+		await until(() => h.screen.screen().includes("■ task task-1 finished"));
+		await until(() => h.backend.prompts.length === 2);
+		expect(h.backend.prompts[1]).toMatch(/^Background task task-1 \(explorer, "find"\) finished after \d+s/);
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+});
+
 describe("TUI and background jobs", { timeout: 20_000 }, () => {
 	it.each(["default", "custom"])(
 		"keeps jobs in the fullscreen footer with %s item order and idle notices",

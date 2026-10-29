@@ -276,3 +276,34 @@ describe("background jobs in atelier run", () => {
 		expect(await exited).toBe(0);
 	});
 });
+
+describe("background tasks in atelier run", () => {
+	it("waits for a background subagent and the turn its report wakes before exiting", async () => {
+		let open = () => {};
+		const opened = new Promise<void>((resolve) => (open = resolve));
+		const child = new FakeBackend([
+			[{ run: () => opened }, { event: { type: "text_delta", text: "REPORT" } }, { event: finished }],
+		]);
+		const h = harness([
+			[
+				{
+					toolCall: {
+						tool: "task",
+						input: { agent: "explorer", prompt: "Find it.", background: true, label: "find" },
+						callId: "c1",
+					},
+				},
+				{ event: finished },
+			],
+			[{ event: finished }],
+		]);
+		const backends = [h.backend, child];
+		const exited = run(["--no-session", "find it"], h.io, () => backends.shift() ?? child);
+		await until(() => h.err().includes("waiting for 1 background job (Ctrl+C stops them)\n"));
+		open();
+		expect(await exited).toBe(0);
+		expect(h.backend.prompts[1]).toMatch(/^Background task task-1 \(explorer, "find"\) finished after \d+s\.\n/);
+		expect(h.out()).toContain("⧗ task task-1 started · explorer: find · 1 running\n");
+		expect(h.out()).toMatch(/■ task task-1 finished · \d+s · explorer: find · 1 notice waiting\n/);
+	});
+});
