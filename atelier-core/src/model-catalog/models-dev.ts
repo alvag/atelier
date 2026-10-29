@@ -78,7 +78,10 @@ function modelOf(value: unknown): CatalogModel | undefined {
 	return model;
 }
 
-/** The models of the backends' providers in models.dev's `api.json`; throws when it is not that file. */
+/**
+ * The models of the backends' providers in models.dev's `api.json`; throws when it is not that file, or holds no valid
+ * model of them: an answer like that is broken, and the cached one stays.
+ */
 export function parseModelsDev(body: unknown): CatalogModels {
 	if (!isRecord(body)) throw new Error("models.dev answered something else than its catalog");
 	const models: CatalogModels = {};
@@ -89,6 +92,8 @@ export function parseModelsDev(body: unknown): CatalogModels {
 			.map(modelOf)
 			.filter((model) => model !== undefined);
 	}
+	if (!Object.values(models).some((list) => list.length > 0))
+		throw new Error("models.dev answered no model of Atelier's providers");
 	return models;
 }
 
