@@ -77,7 +77,7 @@ import {
 	type ThinkingLevel,
 } from "./profiles/index.ts";
 import { loadProjectInstructions, type ProjectInstructions } from "./project-instructions.ts";
-import { LEFT_YOLO, MEMORY_RULES, ODD_RULES, RISK_RULES, YOLO_RULES } from "./prompt.ts";
+import { LEFT_YOLO, MEMORY_RULES, oddRules, RISK_RULES, YOLO_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
 import { createScratchDir, type ScratchDir } from "./scratch.ts";
@@ -469,7 +469,7 @@ export class Session {
 		session.#toldYolo = (options.resume === undefined ? undefined : options.resumedYoloTold) ?? session.#startedYolo;
 		session.#systemPrompt = [
 			options.systemPromptAppend ?? "",
-			options.odd ? ODD_RULES : "",
+			options.odd ? oddRules(options.subagents?.agents.map((agent) => agent.name) ?? []) : "",
 			options.memory ? MEMORY_RULES : "",
 			options.review ? RISK_RULES : "",
 			session.#startedYolo ? YOLO_RULES : "",
