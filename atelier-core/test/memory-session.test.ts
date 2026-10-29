@@ -499,6 +499,31 @@ describe("compaction summary", () => {
 		]);
 	});
 
+	it("says the summary was saved, with its id and its first line", async () => {
+		const memory = new FakeMemory("proj");
+		const s = await Session.start({ backend: summarizing([]), cwd, tools, memory });
+		const events = await run(s.compact());
+		await s.close();
+		expect(events.filter((e) => e.type === "memory_summary_saved")).toEqual([
+			expect.objectContaining({ id: 1, preview: "## Goal" }),
+		]);
+		expect(events.filter((e) => e.type === "error")).toEqual([]);
+	});
+
+	it("gives the summary's first line as plain text, cut", async () => {
+		const memory = new FakeMemory("proj");
+		const long = `\n\n  ## Goal \u001b[31mred\u001b[0m\t${"x".repeat(200)}\nnext line`;
+		const s = await Session.start({ backend: summarizing([long]), cwd, tools, memory });
+		const events = await run(s.compact());
+		await s.close();
+		const saved = events.find((e) => e.type === "memory_summary_saved");
+		const preview = saved?.type === "memory_summary_saved" ? saved.preview : "";
+		expect(preview.startsWith("## Goal ␛[31mred␛[0m x")).toBe(true);
+		expect(preview).not.toContain("\u001b");
+		expect([...preview]).toHaveLength(120);
+		expect(preview.endsWith("…")).toBe(true);
+	});
+
 	it("warns once when memory fails or saves with a warning, without retrying, and the turn goes on", async () => {
 		const failing = new FakeMemory("proj");
 		let attempts = 0;
@@ -510,6 +535,7 @@ describe("compaction summary", () => {
 		const events = await run(s.send("go"));
 		await s.close();
 		expect(attempts).toBe(1);
+		expect(events.filter((e) => e.type === "memory_summary_saved")).toEqual([]);
 		expect(events.filter((e) => e.type === "error")).toEqual([
 			expect.objectContaining({
 				code: "memory_summary_failed",
@@ -526,6 +552,9 @@ describe("compaction summary", () => {
 		const warnedEvents = await run(w.compact());
 		await w.close();
 		expect(warned.saved).toHaveLength(1);
+		expect(warnedEvents.filter((e) => e.type === "memory_summary_saved")).toEqual([
+			expect.objectContaining({ id: 1, preview: "## Goal", warning: "conflict detection did not finish" }),
+		]);
 		expect(warnedEvents.filter((e) => e.type === "error")).toEqual([
 			expect.objectContaining({
 				code: "memory_summary_warning",

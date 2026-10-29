@@ -368,6 +368,12 @@ export type AtelierEventBody =
 	| { type: "mcp_status"; servers: McpServerStatus[]; problems: string[] }
 	/** Sent first in a session's first turn: whether long-term memory works, for which project, or why not. */
 	| { type: "memory_status"; available: boolean; project?: string; reason?: string }
+	/**
+	 * The compaction summary was saved to memory as `#id`, after a compaction or a backend change. `preview`: its first
+	 * line, plain text, cut to 120 characters. `warning`: what the save warned about; the recoverable error
+	 * `memory_summary_warning` still says it, for clients that do not know this event.
+	 */
+	| { type: "memory_summary_saved"; id: number; preview: string; warning?: string }
 	/** Sent first in a session's first turn when AGENTS.md / CLAUDE.md files were found: those added to the system prompt, and those left out by the size cap. */
 	| { type: "project_instructions"; files: string[]; dropped: string[] }
 	/** Sent in a session's first turn, after `project_instructions`, when skills or problems with them were found: the skills listed in the system prompt, and what is wrong with the others. */
