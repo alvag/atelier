@@ -34,8 +34,11 @@ const compacted = message({
 	compact_metadata: { trigger: "auto", pre_tokens: 18_000, post_tokens: 3000 },
 });
 
-/** Claude Code that plays one reply per prompt; `hang` waits until the query is closed, an Error crashes it. */
-function claudeCode(replies: (Record<string, unknown> | Error | "hang")[][]): QueryFunction {
+/**
+ * Claude Code that plays one reply per prompt; `hang` waits until the query is closed, an Error crashes it. A `dead`
+ * one ignores `close()`, so a turn left hanging never ends on its own.
+ */
+function claudeCode(replies: (Record<string, unknown> | Error | "hang")[][], dead = false): QueryFunction {
 	return ({ prompt }) => {
 		let closed: () => void = () => {};
 		const closing = new Promise<void>((resolve) => {
@@ -53,7 +56,10 @@ function claudeCode(replies: (Record<string, unknown> | Error | "hang")[][]): Qu
 				}
 			}
 		}
-		return Object.assign(run(), { interrupt: async () => {}, close: () => closed() }) as unknown as SdkQuery;
+		const close = () => {
+			if (!dead) closed();
+		};
+		return Object.assign(run(), { interrupt: async () => {}, close }) as unknown as SdkQuery;
 	};
 }
 
@@ -65,21 +71,29 @@ async function footerAfterTurn(events: AsyncIterable<AtelierEvent>, state: Foote
 
 describe("footer on claude-code", () => {
 	it.each([
-		["the interrupt does not finish in time", [compacted, "hang"] as const, true],
-		["Claude Code crashes", [compacted, new Error("claude exited with code 1")] as const, false],
-	])("says the size is unknown when a turn that compacted ends without its result: %s", async (_, reply, interrupt) => {
-		const query = claudeCode([[answer, finished], [...reply]]);
-		const session = await Session.start({
-			backend: new ClaudeCodeBackend({ query, env: {}, interruptGraceMs: 10 }),
-			cwd: "/w",
-			tools: [],
-		});
-		let state = await footerAfterTurn(session.send("one"), {});
-		expect(footerLine(state, 120, plain, ["context"])).toBe(" ctx 2%");
-		const second = footerAfterTurn(session.send("two"), state);
-		if (interrupt) await session.interrupt();
-		state = await second;
-		expect(footerLine(state, 120, plain, ["context"])).toBe(" ctx ?");
-		await session.close();
-	});
+		["the interrupt does not finish in time", [compacted, "hang"] as const, true, false],
+		["the interrupt does not finish in time and the query ignores close", [compacted, "hang"] as const, true, true],
+		["Claude Code crashes", [compacted, new Error("claude exited with code 1")] as const, false, false],
+	])(
+		"says the size is unknown when a turn that compacted ends without its result: %s",
+		async (_, reply, interrupt, dead) => {
+			const query = claudeCode([[answer, finished], [...reply]], dead);
+			const session = await Session.start({
+				backend: new ClaudeCodeBackend({ query, env: {}, interruptGraceMs: 10 }),
+				cwd: "/w",
+				tools: [],
+			});
+			let state = await footerAfterTurn(session.send("one"), {});
+			expect(footerLine(state, 120, plain, ["context"])).toBe(" ctx 2%");
+			const second = footerAfterTurn(session.send("two"), state);
+			if (interrupt) await session.interrupt();
+			state = await second;
+			expect(footerLine(state, 120, plain, ["context"])).toBe(" ctx ?");
+			// The session is over: the next turn says so instead of waiting on Claude Code.
+			const third: AtelierEvent[] = [];
+			for await (const event of session.send("three")) third.push(event);
+			expect(third.map((event) => event.type)).toEqual(["error", "turn_finished"]);
+			await session.close();
+		},
+	);
 });
