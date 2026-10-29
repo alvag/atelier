@@ -19,7 +19,7 @@ it("publishes the model contract without enabling the tool in existing sessions"
 	expect(tool.description).toBe(
 		"Ask the user 1 to 4 questions, each with 2 to 4 options. " +
 			"Mark exactly one option per question recommended: true; clients show it first with (Recommended), never preselected. " +
-			"Each option may include a description of up to 300 characters. " +
+			"Each option may include a nonblank description of up to 300 characters. " +
 			"Every question also offers Other..., where the user can write 1 to 2000 characters; you cannot disable it. " +
 			"Only the user can answer, including in yolo mode. " +
 			"Wait for the result; never infer an answer from a cancelled, superseded or unavailable question.",
@@ -65,6 +65,16 @@ it("accepts boundary lengths and returns a complete mixed batch without trimming
 });
 
 describe("ask_user input validation", () => {
+	it.each(["", "  ", "\n\t"])("rejects blank descriptions %j before asking anyone", async (description) => {
+		const ask = vi.fn<AskUser>();
+		const questions = [
+			{ ...question(), options: question().options.map((option) => ({ ...option, description })) },
+			{ ...question(), id: "q2" },
+		];
+		await expect(createAskUserTool(ask).execute({ questions }, context)).rejects.toThrow(ToolInputError);
+		expect(ask).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		["no questions", { questions: [] }],
 		["five questions", { questions: Array.from({ length: 5 }, (_, i) => ({ ...question(), id: String(i) })) }],
