@@ -44,6 +44,8 @@ export interface LoadedSession {
 	config: SavedConfig;
 	/** Absent for a session that never finished a turn: it starts empty with the saved configuration. */
 	resume?: ResumeState;
+	/** Whether the model was last told it runs in yolo; absent in a file saved before it was kept. */
+	yoloTold?: boolean;
 	/** Everything the transcript shows again; the backend state is left out. */
 	entries: SavedEntry[];
 	turns: number;
@@ -93,6 +95,7 @@ export class SessionStore {
 			path: this.path(cwd, loaded.header.id),
 			root: this.#root,
 			...(loaded.resume === undefined ? {} : { known: loaded.resume }),
+			...(loaded.yoloTold === undefined ? {} : { knownYoloTold: loaded.yoloTold }),
 		});
 	}
 
@@ -167,6 +170,7 @@ export class SessionStore {
 			...(replayed.name === undefined ? {} : { name: replayed.name }),
 			config: replayed.config,
 			...(replayed.resume === undefined ? {} : { resume: replayed.resume }),
+			...(replayed.yoloTold === undefined ? {} : { yoloTold: replayed.yoloTold }),
 			entries: parsed.entries.filter((entry) => entry.type !== "state"),
 			turns: replayed.turns,
 		};

@@ -33,6 +33,8 @@ export interface SavedConfig {
  * One line after the header. `text` is the main agent's text of a turn segment, merged from its deltas; `event` is
  * any other event as the clients got it; `state` is what the backend needs to resume: Claude Code's session id, or
  * the messages of `anthropic-api` (`replace`: they are the whole history, otherwise they follow the ones before).
+ * A state's optional `yoloTold` says whether the model was last told it runs in yolo, written when that changes; a
+ * state without it keeps what an earlier one said.
  */
 export type SavedEntry =
 	| ({ type: "config" } & SavedConfig)
@@ -40,8 +42,8 @@ export type SavedEntry =
 	| { type: "text"; turnId: string; text: string; agent?: string; parentCallId?: string }
 	| { type: "event"; event: AtelierEvent }
 	| { type: "name"; name: string }
-	| { type: "state"; backend: string; sessionId: string }
-	| { type: "state"; backend: string; messages: JsonValue[]; replace: boolean };
+	| { type: "state"; backend: string; sessionId: string; yoloTold?: boolean }
+	| { type: "state"; backend: string; messages: JsonValue[]; replace: boolean; yoloTold?: boolean };
 
 /** A session file that cannot be listed, read or changed; `code` is what the protocol answers. */
 export class SessionFileError extends Error {
@@ -195,6 +197,8 @@ function entryProblem(value: unknown): string | undefined {
 			return isString(value.name) ? undefined : "name lacks its text";
 		case "state":
 			if (!isString(value.backend)) return "state lacks its backend";
+			if (value.yoloTold !== undefined && typeof value.yoloTold !== "boolean")
+				return "state has a yoloTold that is not true or false";
 			if (isString(value.sessionId)) return undefined;
 			return Array.isArray(value.messages) && typeof value.replace === "boolean"
 				? undefined
@@ -208,6 +212,8 @@ function entryProblem(value: unknown): string | undefined {
 export interface Replayed {
 	config?: SavedConfig;
 	resume?: ResumeState;
+	/** Whether the model was last told it runs in yolo; absent when no state says, as in a file saved before it was kept. */
+	yoloTold?: boolean;
 	name?: string;
 	turns: number;
 	lastPrompt?: string;
@@ -222,6 +228,7 @@ export function replay(header: SessionHeader, entries: readonly SavedEntry[]): R
 	let name = header.name;
 	let turns = 0;
 	let lastPrompt: string | undefined;
+	let yoloTold: boolean | undefined;
 	let state: { backend: string; sessionId?: string; messages?: JsonValue[] } | undefined;
 	const configs: SavedConfig[] = [];
 	for (const entry of entries) {
@@ -233,6 +240,7 @@ export function replay(header: SessionHeader, entries: readonly SavedEntry[]): R
 			const { type: _type, ...config } = entry;
 			configs.push(config);
 		} else if (entry.type === "state") {
+			if (entry.yoloTold !== undefined) yoloTold = entry.yoloTold;
 			if ("sessionId" in entry) state = { backend: entry.backend, sessionId: entry.sessionId };
 			else {
 				const before = state?.backend === entry.backend ? (state.messages ?? []) : [];
@@ -251,6 +259,7 @@ export function replay(header: SessionHeader, entries: readonly SavedEntry[]): R
 	return {
 		...(config === undefined ? {} : { config }),
 		...(resume === undefined ? {} : { resume }),
+		...(yoloTold === undefined ? {} : { yoloTold }),
 		...(name === undefined ? {} : { name }),
 		turns,
 		...(lastPrompt === undefined ? {} : { lastPrompt }),
