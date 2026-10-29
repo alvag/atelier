@@ -35,7 +35,7 @@ import { summarizesThinking, type ThinkingSend, thinkingToSend } from "../../pri
 import type { ToolDefinition } from "../../tools/types.ts";
 import { VERSION } from "../../version.ts";
 import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./map.ts";
-import { claudeCodeName, isVersionedClaudeId, withoutWindow } from "./models.ts";
+import { claudeCodeIdOf, claudeCodeName, isVersionedClaudeId, withoutWindow } from "./models.ts";
 
 /** The model a session runs without one chosen; Claude Code is sent the alias that stands for it, `opus`. */
 export const DEFAULT_MODEL = BACKEND_DEFAULTS["claude-code"];
@@ -155,7 +155,8 @@ export class ClaudeCodeBackend implements AgentBackend {
 		const input = new Channel<SDKUserMessage>();
 		const run = this.#options.query ?? (sdkQuery as QueryFunction);
 		const model = start.model ?? DEFAULT_MODEL;
-		const sent = thinkingToSend(model, start.thinking, "claude-code");
+		// The levels are the ones of the model an alias stands for (`fable` takes claude-fable-5-1's).
+		const sent = thinkingToSend(claudeCodeIdOf(model), start.thinking, "claude-code");
 		// Claude Code tells the effort it applied only to hooks inside a turn; read it when Atelier asked none.
 		const applied: AppliedEffort = {};
 		// A summary asked for by `summarize` goes to it; the others go to the core when it wants them.
@@ -172,7 +173,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 				...(sent?.effort === undefined ? {} : { effort: sent.effort }),
 				...(sent?.thinking === "disabled" ? { thinking: { type: "disabled" as const } } : {}),
 				// The API omits the thinking text by default on these models; the setting alone did not bring it back.
-				...(summarizesThinking(model, sent)
+				...(summarizesThinking(claudeCodeIdOf(model), sent)
 					? { thinking: { type: "adaptive" as const, display: "summarized" as const } }
 					: {}),
 				tools: [],
@@ -487,7 +488,7 @@ class ClaudeCodeSession implements BackendSession {
 		if (!setModel || !applyFlagSettings) throw new Error("This Claude Code query cannot change an open session.");
 		const model = change.model ?? this.#model;
 		const thinking = change.thinking ?? this.#thinking;
-		const sent = thinkingToSend(model, thinking, "claude-code");
+		const sent = thinkingToSend(claudeCodeIdOf(model), thinking, "claude-code");
 		// The Agent SDK has no way to turn thinking off in an open query; refuse before changing anything.
 		if (change.thinking !== undefined && sent?.report === "off")
 			throw new Error("claude-code cannot turn thinking off in an open session.");
