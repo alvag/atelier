@@ -26,6 +26,8 @@ One tool handles a single question or a batch:
 - Exactly one option per question must have `recommended: true`; the others may omit the field or set it to `false`. Clients must show it first with `(Recommended)`, without selecting it automatically or preselecting it. Descriptions go below their labels.
 - Every question also offers `Other...`, independently of the 2–4 model options. The model cannot disable it. The user writes 1–2000 characters, not only whitespace. The answer preserves their text, including leading/trailing spaces and newlines. String limits use JavaScript UTF-16 length.
 
+All three clients show invisible and bidirectional controls, including Arabic Letter Mark (U+061C), as visible markers in questions, labels and descriptions (`⟨U+061C⟩`, for example). They use the same sanitizer as command approvals.
+
 ## Session lifecycle
 
 Supply `Session.start({ askUser })` for a direct user-only callback, or `userQuestions: true` to answer request events with `session.answerUser(callId, answers)` (`null` cancels). Without either channel the tool immediately returns `unavailable`. `userQuestions: false` omits the tool for internal sessions.

@@ -348,6 +348,15 @@ describe("run", () => {
 		expect(h.out()).not.toContain("\u001b[2K");
 	});
 
+	it("shows Arabic Letter Mark as a visible marker in command approvals", async () => {
+		const step: FakeStep = { toolCall: { tool: "bash", input: { command: "echo \u061Cx" } } };
+		const h = harness([[step, { event: finished }]], { isTTY: true, input: ["n"], sandbox: false });
+		await run(["x"], h.io, h.createBackend);
+		expect(h.out()).toContain("Run this command?\n  echo ⟨U+061C⟩x\n");
+		expect(h.out()).toContain("warning: the command contains invisible or control characters, shown as markers.");
+		expect(h.out()).not.toContain("\u061C");
+	});
+
 	it("runs an interactive session until end of input", async () => {
 		const h = harness(
 			[
