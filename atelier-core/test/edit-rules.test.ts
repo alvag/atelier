@@ -96,6 +96,16 @@ describe("folder rules for edit and write", () => {
 		expect(questions[0]?.remember).toEqual({ rules: [join(home, "todo.txt")], always: true });
 	});
 
+	it("never lets a rule reach the rules saved for projects", async () => {
+		const rules = new PermissionRules({ home });
+		await rules.allow([{ kind: "path", value: join(home, ".atelier") }], "session");
+		const target = join(home, ".atelier", "project-permissions.json");
+		const { questions, results } = await run([writeCall(target, "w1"), editCall(target, "e1")], [], rules);
+		expect(questions).toEqual([]);
+		expect(results.map(({ ok }) => ok)).toEqual([false, false]);
+		expect(results[0]?.output).toContain("protected");
+	});
+
 	it("never lets a rule reach ~/.atelier", async () => {
 		const rules = new PermissionRules({ home });
 		await rules.allow([{ kind: "path", value: join(home, ".atelier") }], "session");
