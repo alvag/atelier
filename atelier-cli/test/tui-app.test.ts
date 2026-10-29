@@ -1220,6 +1220,45 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(await code).toBe(0);
 	});
 
+	it("titles the terminal with the first prompt or the name, on /new, /resume and /rename, each title once", async () => {
+		const h = harness([[{ event: finished }], [{ event: finished }]], { saveSessions: true, backendId: "claude-code" });
+		h.backend.resumeState = { sessionId: "cc-1" };
+		const folder = basename(cwd);
+		const code = run(["--mode", "auto"], h.io, () => h.backend);
+		await until(h.screen.started);
+		const send = async (line: string, shown: string) => {
+			h.screen.type(line);
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes(shown));
+		};
+		await send("/status", "cost: none yet");
+		await send("fix the footer", "$0.50");
+		await send("and the docs", "$1.00");
+		expect(h.screen.titles).toEqual([`Atelier - ${folder}`, `Atelier - fix the footer - ${folder}`]);
+		await send("/new", "── new session ──");
+		await until(() => h.screen.titles.at(-1) === `Atelier - ${folder}`);
+		await send("/resume", "Resume a session");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("── resumed session ──"));
+		await until(() => h.screen.titles.at(-1) === `Atelier - fix the footer - ${folder}`);
+		await send("/rename", "usage: /rename <name>");
+		await send(`/rename ${"n".repeat(201)}`, "must have 1 to 200 characters");
+		await send("/rename  Footer work ", "session renamed to Footer work");
+		expect(h.core.commands.filter((command) => command.command === "session.rename").at(-1)).toMatchObject({
+			cwd,
+			name: "Footer work",
+		});
+		expect(h.screen.titles).toEqual([
+			`Atelier - ${folder}`,
+			`Atelier - fix the footer - ${folder}`,
+			`Atelier - ${folder}`,
+			`Atelier - fix the footer - ${folder}`,
+			`Atelier - Footer work - ${folder}`,
+		]);
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
 	it("folds the thinking once the turn moves on, and opens and folds it with Ctrl+R", async () => {
 		const h = harness([
 			[
@@ -2535,7 +2574,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				atelier("done", { message: "All done: it passes." }),
 				atelier("clear"),
 			]);
-			expect(h.screen.titles).toEqual([`Atelier - ${basename(cwd)}`]);
+			expect(h.screen.titles).toEqual([`Atelier - ${basename(cwd)}`, `Atelier - one - ${basename(cwd)}`]);
 		});
 
 		it("reports idle for an interrupted turn and error for a failed one", async () => {
@@ -2629,6 +2668,49 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				atelier("done", { message: "Ran three." }),
 				atelier("clear"),
 			]);
+		});
+
+		it("titles the terminal without control or bidi characters, cut to 50 characters", async () => {
+			const h = harness([]);
+			const stub = stubCore({
+				answer: (command) => {
+					if (command.command !== "session.resume") return undefined;
+					// A saved prompt and a name set elsewhere, such as in the desktop, come back as they were written.
+					return command.sessionId === "abc"
+						? { sessionId: "s2", entries: [{ type: "prompt", turnId: "t", text: "saved\x1b]0;evil\x07 run" }] }
+						: { sessionId: "s3", name: "named\x1b]2;x\x07 \u202eit", entries: [] };
+				},
+			});
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const folder = basename(cwd);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			// The editor keeps ESC and BEL out of what is typed; a saved prompt or name brings them back below.
+			h.screen.type(`\u202efix ${"y".repeat(80)}`);
+			h.screen.type("\r");
+			await until(() => h.screen.titles.length === 2);
+			expect(h.screen.titles[1]).toBe(`Atelier - fix ${"y".repeat(45)}… - ${folder}`);
+			stub.emit({ type: "turn_finished", stopReason: "end_turn", usage });
+			await until(() => h.screen.screen().includes("◇ done"));
+			h.screen.type("/rename Mine");
+			h.screen.type("\r");
+			await new Promise((r) => setTimeout(r, 300));
+			console.log("DBG", JSON.stringify(stub.log.commands.map((c) => c.command)), JSON.stringify(h.screen.statuses));
+			await until(() => h.screen.screen().includes("this session is not saved"));
+			for (const id of ["abc", "def"]) {
+				h.screen.type(`/resume ${id}`);
+				h.screen.type("\r");
+				await until(() => h.screen.titles.length === (id === "abc" ? 3 : 4));
+			}
+			expect(h.screen.titles.slice(2)).toEqual([
+				`Atelier - saved ]0;evil run - ${folder}`,
+				`Atelier - named ]2;x it - ${folder}`,
+			]);
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what must not be there
+			expect(h.screen.titles.join("")).not.toMatch(/[\x00-\x1f\x7f-\x9f\u202e]/);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
 		});
 
 		it("does not report a list of the TUI's own as blocked", async () => {

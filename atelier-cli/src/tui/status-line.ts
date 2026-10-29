@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { AtelierEvent } from "@atelier/core";
 import { plain } from "./herdr-status.ts";
 import { settledState } from "./program-status.ts";
@@ -16,6 +17,16 @@ export function oneLine(text: string, max = MAX_LINE_CHARS): string {
 		.slice(0, max - 1)
 		.join("")
 		.trimEnd()}${ELLIPSIS}`;
+}
+
+/** The longest session name or first prompt the terminal's title shows. */
+export const MAX_TITLE_NAME_CHARS = 50;
+
+/** `Atelier - <name> - <working directory name>`, or without the name when there is none yet. */
+export function terminalTitle(cwd: string, name: string | undefined): string {
+	const folder = oneLine(basename(cwd));
+	const named = oneLine(name ?? "", MAX_TITLE_NAME_CHARS);
+	return named === "" ? `Atelier - ${folder}` : `Atelier - ${named} - ${folder}`;
 }
 
 /**
