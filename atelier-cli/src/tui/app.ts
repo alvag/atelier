@@ -1,5 +1,4 @@
 import { homedir } from "node:os";
-import { basename } from "node:path";
 import {
 	type AtelierEvent,
 	type ClientCommand,
@@ -90,7 +89,7 @@ import {
 } from "./selectors.ts";
 import { readTuiSettings } from "./settings.ts";
 import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
-import { StatusLine } from "./status-line.ts";
+import { StatusLine, terminalTitle } from "./status-line.ts";
 import { editorTheme, type Paint, painter, Shade, Tones } from "./style.ts";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
@@ -144,6 +143,8 @@ const ANSWER_GUARD_MS = 400;
 /** How long the terminal has to say its colors; the shade starts as the palette's until then, and stays so after. */
 const COLOR_QUERY_MS = 500;
 
+const RENAME_USAGE = "/rename <name>";
+
 const COMMANDS = [
 	{ name: "model", description: "Change the model, of any provider you are signed in to [provider/model]" },
 	{ name: "effort", description: "Change the thinking level from the next turn [level]" },
@@ -156,6 +157,7 @@ const COMMANDS = [
 	{ name: "logout", description: "Sign out of a stored API key or an account [account|api-key] [provider]" },
 	{ name: "new", description: "Start a new session" },
 	{ name: "resume", description: "Resume a saved session of this folder [id]" },
+	{ name: "rename", description: "Name this session <name>" },
 	{ name: "review", description: "Review the current changes, against HEAD or a git ref" },
 	{ name: "undo-correction", description: "Undo the latest escalated review's correction" },
 	{ name: "compact", description: "Summarize the older history now [instructions]" },
@@ -261,11 +263,15 @@ class Footer implements Component {
 	}
 }
 
-/** A session the TUI runs: its id in the core, its file's id when it is saved, and what its next turn runs with. */
+/**
+ * A session the TUI runs: its id in the core, its file's id when it is saved, what its next turn runs with, and what
+ * the terminal's title names it by: its name, or its first prompt.
+ */
 interface Opened {
 	sessionId: string;
 	savedId?: string;
 	configuration?: SessionConfiguration;
+	name?: string;
 }
 
 /** The mode requests of one session: how many were sent, the newest the core accepted, and whether the newest failed. */
@@ -338,11 +344,14 @@ async function resumeSession(
 		name?: string;
 		entries: JsonValue[];
 	};
-	conversation.plain(savedTranscript(savedId, resumed.name, resumed.entries as unknown as SavedEntry[]));
+	const entries = resumed.entries as unknown as SavedEntry[];
+	conversation.plain(savedTranscript(savedId, resumed.name, entries));
+	const name = resumed.name ?? entries.find((entry) => entry.type === "prompt")?.text;
 	return {
 		sessionId: resumed.sessionId,
 		savedId,
 		...(resumed.configuration === undefined ? {} : { configuration: resumed.configuration }),
+		...(name === undefined ? {} : { name }),
 	};
 }
 
@@ -437,6 +446,15 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		return EXIT_FAILED;
 	}
 	let { sessionId, savedId } = opened;
+	/** What the terminal's title names the session by, and the title it was given last. */
+	let titleName = opened.name;
+	let titled: string | undefined;
+	const showTitle = () => {
+		const title = terminalTitle(args.cwd, titleName);
+		if (title === titled) return;
+		titled = title;
+		options.terminal.setTitle(title);
+	};
 
 	const fullscreen = settings.fullscreen && !args.noFullscreen;
 	const attention = new Attention(settings.notifications, { ...options, cwd: args.cwd });
@@ -944,6 +962,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const previous = sessionId;
 		sessionId = next.sessionId;
 		savedId = next.savedId;
+		titleName = next.name;
+		showTitle();
 		conversation = shownIn;
 		queue.messages = [];
 		footer.state = next.configuration === undefined ? {} : footerWithConfiguration({}, next.configuration);
@@ -1218,6 +1238,17 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		chosen = {};
 	};
 
+	/** `/rename <name>` names the saved session, within the length the core takes; the title follows. */
+	const runRename = async (name: string) => {
+		if (name === "") return conversation.note(`usage: ${RENAME_USAGE}`, true);
+		if (savedId === undefined) return conversation.note("error: this session is not saved; it has no name", true);
+		const renamed = await request({ command: "session.rename", sessionId: savedId, cwd: args.cwd, name });
+		if (renamed === undefined) return;
+		titleName = name;
+		showTitle();
+		conversation.note(`session renamed to ${shown(name).text}`);
+	};
+
 	const submit = async (line: string) => {
 		const text = line.trim();
 		// It only reads the saved sessions, so it runs at any time, a turn or a command running or not.
@@ -1277,6 +1308,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			refreshModels();
 		} else if (text === "/status") runStatus();
 		else if (command === "/resume" && single) await runResume(argument);
+		else if (command === "/rename") await runRename(text.slice(command.length).trim());
 		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });
 		else if (/^\/review(?:\s+\S+)?$/.test(text))
 			await startTurn({ command: "session.review", sessionId, ...(words[1] === undefined ? {} : { ref: words[1] }) });
@@ -1284,7 +1316,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			const instructions = text.slice("/compact".length).trim();
 			await startTurn({ command: "session.compact", sessionId, ...(instructions === "" ? {} : { instructions }) });
 		} else if (usages.has(command ?? "")) conversation.note(`usage: ${usages.get(command ?? "")}`, true);
-		else await startTurn({ command: "session.send", sessionId, prompt: line });
+		else {
+			titleName ??= line;
+			showTitle();
+			await startTurn({ command: "session.send", sessionId, prompt: line });
+		}
 	};
 	editor.onSubmit = (line) => void submit(line);
 
@@ -1386,7 +1422,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			.then(matchTerminalColors)
 			.catch(() => {});
 	}
-	options.terminal.setTitle(`Atelier - ${basename(args.cwd)}`);
+	showTitle();
 	// Before the first prompt, not at its failure: what the backend lacks, and how to get it.
 	const startedOn = footer.state.backend;
 	if (startedOn !== undefined && options.checkLogin !== undefined) {
