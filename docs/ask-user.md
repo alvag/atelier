@@ -1,6 +1,6 @@
 # Structured user questions
 
-Main sessions register `ask_user`; internal roles and subagents, including custom definitions, never receive it. RPC clients can opt in to structured questions. The [line CLI](cli.md) offers numbered choices and Other input; TUI and desktop integration are separate deliveries.
+Main sessions register `ask_user`; internal roles and subagents, including custom definitions, never receive it. RPC clients can opt in to structured questions. The [CLI](cli.md) offers framed TUI lists or numbered line prompts, both with Other input. Desktop integration is a separate delivery.
 
 ## Input and limits
 

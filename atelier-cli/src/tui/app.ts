@@ -17,7 +17,7 @@ import {
 	writeDefaultPermissionMode,
 } from "@atelier/core";
 import type { CoreExit } from "@atelier/core/client";
-import type { BackendName } from "@atelier/core/protocol";
+import type { BackendName, UserAnswer } from "@atelier/core/protocol";
 import {
 	type AutocompleteItem,
 	CombinedAutocompleteProvider,
@@ -61,6 +61,7 @@ import {
 	PasteFilter,
 	SearchDialog,
 	SecretDialog,
+	TextDialog,
 } from "./dialog.ts";
 import { FeaturePanel } from "./feature-panel.ts";
 import {
@@ -169,6 +170,10 @@ const MODEL_NOTE = "Only showing models from configured providers. Use /login to
 
 /** The answer a list gives when Esc closes it. */
 const CANCELLED = "\0";
+/** The choices of an `ask_user` question are generated values, never the source ids, which may be any text. */
+const OTHER = "other";
+const ASK_CANCELLED = "cancel";
+const optionValue = (index: number) => `option-${index}`;
 
 const shown = (text: string) => visibleText(text);
 const isMode = (word: string | undefined): word is PermissionMode =>
@@ -304,6 +309,7 @@ async function startSession(
 	const started = (await link.request({
 		command: "session.start",
 		cwd: args.cwd,
+		userQuestions: true,
 		...(chosen.model === undefined ? {} : { model: chosen.model }),
 		...(chosen.backend === undefined ? {} : { backend: chosen.backend }),
 		...(mode === undefined ? {} : { mode }),
@@ -331,7 +337,12 @@ async function resumeSession(
 	savedId: string,
 	conversation: Conversation,
 ): Promise<Opened> {
-	const resumed = (await link.request({ command: "session.resume", sessionId: savedId, cwd })) as Opened & {
+	const resumed = (await link.request({
+		command: "session.resume",
+		sessionId: savedId,
+		cwd,
+		userQuestions: true,
+	})) as Opened & {
 		name?: string;
 		entries: JsonValue[];
 	};
@@ -479,9 +490,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const dialogs = new Container();
 	/** Questions waiting for an answer, the first one on screen. */
 	const questions: {
-		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog | SearchDialog;
+		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog | SearchDialog | TextDialog;
 		cancel: () => void;
 		local: boolean;
+		/** The `ask_user` batch it shows: the core's `user_question_resolved` closes it without an answer. */
+		userCallId?: string;
+		/** Marks the batch closed, so that a late key or callback sends nothing. */
+		drop?: () => void;
 		blocked?: Blocked | undefined;
 		told?: boolean;
 	}[] = [];
@@ -610,9 +625,81 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if (questions.length === 1) showQuestion();
 		reportRunning();
 	};
+	/**
+	 * Asks an `ask_user` batch one question at a time and sends the answers once all are given; Esc or Ctrl+C sends
+	 * `null`. The core's `user_question_resolved` closes it with nothing sent, so a late key answers nothing.
+	 */
+	const askUser = (callId: string, batch: Extract<AtelierEvent, { type: "user_question_requested" }>["questions"]) => {
+		const given: UserAnswer[] = [];
+		let closed = false;
+		const guardMs = options.answerGuardMs ?? ANSWER_GUARD_MS;
+		const asked = sessionId;
+		const entry: (typeof questions)[number] = {
+			dialog: new TextDialog("", paint, () => {}),
+			cancel: () => finish(null),
+			local: false,
+			userCallId: callId,
+			blocked: { kind: "question", message: "Questions from the agent" },
+		};
+		const finish = (answers: typeof given | null) => {
+			if (closed) return;
+			closed = true;
+			const at = questions.indexOf(entry);
+			if (at !== -1) questions.splice(at, 1);
+			if (asked === sessionId) void request({ command: "session.answer_user", sessionId, callId, answers });
+			showQuestion();
+			reportRunning();
+		};
+		entry.drop = () => {
+			closed = true;
+		};
+		const step = () => {
+			const item = batch[given.length];
+			if (item === undefined) return finish(given);
+			const title = `${shown(item.question).text} (Question ${given.length + 1} of ${batch.length})`;
+			const ordered = [...item.options].sort((a, b) => Number(b.recommended === true) - Number(a.recommended === true));
+			const choices: Choice<string>[] = [
+				...ordered.map((option, index) => ({
+					value: optionValue(index),
+					label: `${shown(option.label).text}${option.recommended ? " (Recommended)" : ""}`,
+					...(option.description === undefined ? {} : { description: shown(option.description).text }),
+				})),
+				{ value: OTHER, label: "Other..." },
+			];
+			const next = (answer: (typeof given)[number]) => {
+				if (closed) return;
+				given.push(answer);
+				step();
+			};
+			entry.dialog = new ChoiceDialog(
+				{ title, lines: [], choices, cancel: ASK_CANCELLED, guardMs, paste: input, descriptionsBelow: true },
+				paint,
+				(value) => {
+					if (closed) return;
+					if (value === ASK_CANCELLED) return finish(null);
+					if (value !== OTHER) {
+						const chosen = ordered.find((_, index) => optionValue(index) === value);
+						return chosen === undefined ? finish(null) : next({ questionId: item.id, optionId: chosen.id });
+					}
+					entry.dialog = new TextDialog(title, paint, (text) =>
+						text === undefined ? finish(null) : next({ questionId: item.id, other: text }),
+					);
+					showQuestion();
+				},
+			);
+			if (questions[0] === entry) showQuestion();
+		};
+		questions.push(entry);
+		step();
+		if (questions.length === 1) showQuestion();
+		reportRunning();
+	};
 	/** Drops the questions on screen: the core denied or dropped its own; the TUI's own lists close as with Esc. */
 	const dropQuestions = () => {
-		for (const dropped of questions.splice(0)) if (dropped.local) dropped.cancel();
+		for (const dropped of questions.splice(0)) {
+			dropped.drop?.();
+			if (dropped.local) dropped.cancel();
+		}
 		showQuestion();
 		reportRunning();
 	};
@@ -698,7 +785,16 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				false,
 				{ kind: "permission", message: approvalQuestion(event).title },
 			);
-		else if (event.type === "review_consent_requested")
+		else if (event.type === "user_question_requested") askUser(event.callId, event.questions);
+		else if (event.type === "user_question_resolved") {
+			// Closed at once, with whatever was typed in it: only this batch, and nothing is sent.
+			const at = questions.findIndex((entry) => entry.userCallId === event.callId);
+			if (at !== -1) {
+				questions.splice(at, 1)[0]?.drop?.();
+				showQuestion();
+				reportRunning();
+			}
+		} else if (event.type === "review_consent_requested")
 			ask(
 				{
 					title: CONSENT_TITLE,
