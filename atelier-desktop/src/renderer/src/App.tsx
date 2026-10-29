@@ -2,6 +2,7 @@ import {
 	BACKEND_DEFAULTS,
 	BACKEND_MODELS,
 	type BackendName,
+	claudeCodeAliases,
 	DEFAULT_BACKEND,
 	type QueueKind,
 	type ReviewConsentAnswer,
@@ -22,6 +23,7 @@ const MODE_HINTS: Partial<Record<PermissionMode, string>> = {
 };
 
 const MODELS = BACKEND_MODELS;
+const CLAUDE_CODE_ALIASES = claudeCodeAliases(MODELS["claude-code"]);
 const BACKENDS = Object.keys(MODELS) as BackendName[];
 
 const numbers = new Intl.NumberFormat("en-US");
@@ -62,6 +64,8 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 	const [backend, setBackend] = useState<BackendName>(DEFAULT_BACKEND);
 	const [model, setModel] = useState(BACKEND_DEFAULTS[DEFAULT_BACKEND]);
 	const [noSandbox, setNoSandbox] = useState(false);
+	// An alias (claude-code's default, `opus`) shows as the model it stands for; the alias is what is sent.
+	const shownModel = (backend === "claude-code" ? CLAUDE_CODE_ALIASES[model] : undefined) ?? model;
 	/** Empty: the core resolves the profile by layers. */
 	const [chosen, setProfile] = useState("");
 	// What the selector shows is what is sent: a name the listed profiles lack counts as "by layers".
@@ -136,7 +140,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 				</label>
 				<label>
 					model{" "}
-					<select value={model} onChange={(event) => setModel(event.target.value)} disabled={state.busy}>
+					<select value={shownModel} onChange={(event) => setModel(event.target.value)} disabled={state.busy}>
 						{MODELS[backend].map((name) => (
 							<option key={name}>{name}</option>
 						))}

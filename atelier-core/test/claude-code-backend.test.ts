@@ -393,6 +393,18 @@ describe("ClaudeCodeBackend model names", () => {
 		expect(calls.order).toContain("setModel:fable");
 	});
 
+	it("runs opus by default, whatever model it stands for now", async () => {
+		useModelData(
+			new ModelData(
+				{ "claude-code": [{ id: "claude-opus-6", aliases: ["opus"] }, { id: "claude-opus-5-5" }] },
+				{ "claude-code": ["claude-opus-6", "claude-opus-5-5"] },
+			),
+		);
+		const { query, calls } = fakeQuery([init], []);
+		await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		expect(calls.options.model).toBe("opus");
+	});
+
 	it("takes the levels of the versioned id an alias stands for, as the subscription's list says it", async () => {
 		useModelData(
 			new ModelData(

@@ -1,3 +1,4 @@
+export { claudeCodeAliases } from "../backends/claude-code/models.ts";
 export type {
 	AtelierEvent,
 	AtelierEventBody,

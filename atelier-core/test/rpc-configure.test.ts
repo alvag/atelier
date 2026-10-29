@@ -305,7 +305,7 @@ describe("options.list", () => {
 		const response = await h.ask({ command: "options.list" });
 		expect(response.ok && response.result.backends).toContainEqual({
 			name: "claude-code",
-			default: "claude-opus-5-5",
+			default: "opus",
 			models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
 			aliases: { opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-5-5" },
 		});
@@ -368,11 +368,13 @@ describe("options.list", () => {
 			images: true,
 		});
 		// What no source said is left out.
-		expect(result.models).toContainEqual({ provider: "claude-code", model: "claude-haiku-5-5" });
+		expect(result.models).toContainEqual({ provider: "claude-code", model: "claude-fable-5-1" });
 		const claudeCode = (result.backends as { name: string; aliases?: Record<string, string> }[]).find(
 			({ name }) => name === "claude-code",
 		);
 		expect(claudeCode?.aliases).toEqual({ opus: "claude-opus-5-5", fable: "claude-fable-5-1" });
+		// The default is the alias, which a client shows as the model it stands for now.
+		expect(claudeCode).toMatchObject({ default: "opus" });
 		useModelData(new ModelData());
 		await h.close();
 	});
