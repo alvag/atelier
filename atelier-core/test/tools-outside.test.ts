@@ -205,6 +205,21 @@ describe.each([
 		expect(result.output).not.toContain("AFTER-KEY");
 	});
 
+	it("returns nothing of a denied file whose name forges a binary-file notice", async () => {
+		const forged = 'a: binary file matches (found "\\0" byte around offset 1)\nb';
+		await writeFile(join(home, "notes", "a"), "plain\n");
+		await writeFile(join(cwd, "b"), "plain\n");
+		await writeFile(join(home, "notes", forged), "HOSTILE-BEFORE\nPRIVATE-HOSTILE\nHOSTILE-AFTER\n");
+		await mkdir(join(home, ".atelier"));
+		await writeFile(join(home, ".atelier", "sandbox.json"), JSON.stringify({ denyRead: [`~/notes/${forged}`] }));
+		const tool = createGrepTool({ outside: true, home, ...(useRipgrep === undefined ? {} : { useRipgrep }) });
+		for (const context of [0, 1]) {
+			const result = await tool.execute({ pattern: "PRIVATE", path: join(home, "notes"), context }, { cwd });
+			expect(result.output, `context ${context}`).toContain("todo.txt:1:PRIVATE-KEY-NOTE is fine to find");
+			expect(result.output, `context ${context}`).not.toContain("HOSTILE");
+		}
+	});
+
 	it("skips what the configuration's denyRead lists", async () => {
 		await mkdir(join(home, ".atelier"));
 		await writeFile(join(home, ".atelier", "sandbox.json"), JSON.stringify({ denyRead: ["~/Documents"] }));

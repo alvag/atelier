@@ -36,6 +36,16 @@ describe.skipIf(!hasRipgrep)("grep with ripgrep", () => {
 		const result = await createGrepTool({ useRipgrep: true }).execute({ pattern: "needle" }, ctx);
 		expect(result).toMatchObject({ ok: true, output: "src/a.txt:2:needle lower" });
 	});
+
+	it("gives a match to the whole file name when the name forges a binary-file notice", async () => {
+		const forged = 'a: binary file matches (found "\\0" byte around offset 1)\nb';
+		await writeFile(join(cwd, "src/a"), "plain\n");
+		await writeFile(join(cwd, "src", forged), "needle here\n");
+		// The open tool checks every path it returns, so a match given to a missing `b` would be dropped.
+		const tool = createGrepTool({ useRipgrep: true, outside: true, home: join(base, "home") });
+		const result = await tool.execute({ pattern: "needle", path: "src" }, ctx);
+		expect(result.output).toBe(`src/${forged}:1:needle here`);
+	});
 });
 
 for (const [name, useRipgrep] of [
