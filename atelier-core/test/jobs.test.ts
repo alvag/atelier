@@ -378,6 +378,27 @@ describe("background jobs", () => {
 		expect(jobs.running).toBe(0);
 	});
 
+	it("stops a job within a bounded time when the process listing does not answer", { timeout: 10_000 }, async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atelier-jobs-slow-"));
+		dirs.push(dir);
+		const ended: EndedJob[] = [];
+		const jobs = new Jobs({
+			scratchDir: dir,
+			onEnded: (end) => ended.push(end),
+			// A listing that never answers, as a `ps` stuck on a loaded machine would.
+			listProcesses: () => new Promise(() => {}),
+		});
+		open.push(jobs);
+		const pidFile = join(dir, "pid");
+		const job = jobs.start(plain(`echo $$ > ${pidFile}; exec sleep 300`, dir));
+		const pid = await pidIn(pidFile);
+		const started = Date.now();
+		expect(await jobs.stop(job.id)).toMatchObject({ outcome: "stopped" });
+		expect(Date.now() - started).toBeLessThan(3500);
+		expect(alive(pid)).toBe(false);
+		expect(ended).toHaveLength(1);
+	});
+
 	it("keeps the last 20 jobs to end, whenever they started", async () => {
 		const { dir, jobs, ended } = harness();
 		const goFile = join(dir, "go");
