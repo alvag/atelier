@@ -126,6 +126,19 @@ describe("background jobs in atelier run", () => {
 		expect(h.backend.prompts).toHaveLength(2);
 	});
 
+	it("gives the notices of jobs that end together to one woken turn", async () => {
+		const second: FakeStep = {
+			toolCall: { tool: "bash_background", input: { command: waitsForGo(), label: "other" }, callId: "c2" },
+		};
+		const h = harness([[startJob(waitsForGo()), second, { event: finished }], [{ event: finished }]]);
+		const exited = run(["--no-session", "start them"], h.io, h.createBackend);
+		await until(() => h.err().includes("waiting for 2 background jobs"));
+		await go();
+		expect(await exited).toBe(0);
+		expect(h.backend.prompts).toHaveLength(2);
+		expect(h.backend.prompts[1]?.match(/Background job /g)).toHaveLength(2);
+	});
+
 	it("stops the jobs it waits for on Ctrl+C", async () => {
 		const pidFile = join(cwd, "pid");
 		const h = harness([[startJob(`echo $$ > ${pidFile}; exec sleep 300`), { event: finished }]]);
