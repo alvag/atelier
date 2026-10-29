@@ -16,6 +16,12 @@ export {
 	type UserQuestion,
 	type UserQuestionResult,
 } from "./ask-user.ts";
+export {
+	BASH_BACKGROUND_TOOL,
+	createBackgroundTools,
+	JOB_LIST_TOOL,
+	JOB_STOP_TOOL,
+} from "./background.ts";
 export { type BashOptions, bashTool, createBashTool, DEFAULT_TIMEOUT_SEC } from "./bash.ts";
 export {
 	type CommandRules,
@@ -26,6 +32,7 @@ export {
 } from "./command-rules.ts";
 export { createEditTool, type EditOptions, editTool } from "./edit.ts";
 export { createGrepTool, grepTool, openGrepTool } from "./grep.ts";
+export { type EndedJob, type JobInfo, Jobs, MAX_RUNNING_JOBS } from "./jobs.ts";
 export { MAX_WRITE_BYTES } from "./limits.ts";
 export { PathOutsideError, PathProtectedError, resolveInside } from "./paths.ts";
 export { createReadTool, openReadTool, readTool } from "./read.ts";
