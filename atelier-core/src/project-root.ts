@@ -41,12 +41,13 @@ async function isBareRepository(dir: string): Promise<boolean> {
 
 /**
  * The value of `core.bare` as git reads a config file: only in the `[core]` section (any case, no subsection), the
- * last one wins, a key alone is true, comments (`#`, `;`) and quotes are not part of the value.
+ * last one wins, a key alone is true, comments (`#`, `;`) and quotes are not part of the value, and a backslash at
+ * the end of a line continues it on the next.
  */
 function coreBare(text: string): boolean {
 	let inCore = false;
 	let bare = false;
-	for (const raw of text.split("\n")) {
+	for (const raw of text.replace(/\\\r?\n/g, "").split("\n")) {
 		let line = raw.trim();
 		const section = /^\[([^\]]*)\](.*)$/.exec(line);
 		if (section) {
