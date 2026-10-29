@@ -106,6 +106,21 @@ it("compacts at the threshold: the summary replaces the older history, with the 
 	expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn", requests: 2 });
 });
 
+it("compacts only when the context passes the point, not when it reaches it", async () => {
+	const thirdTurn = async (compactAt: number, compacts: boolean) => {
+		const { session } = await start({}, compactAt);
+		await twoTurns(session, big);
+		if (compacts) api.answers.push({ events: completed([textItem(SUMMARY)]) });
+		api.answers.push({ events: completed([textItem("third")]) });
+		return (await all(session.send("third"))).filter((event) => event.type === "compaction_started");
+	};
+	// The size the check sees before the third turn's request, from a session that compacts there.
+	const [seen] = await thirdTurn(200, true);
+	const tokens = seen?.type === "compaction_started" ? seen.tokens : 0;
+	expect(await thirdTurn(tokens, false)).toEqual([]);
+	expect(await thirdTurn(tokens - 1, true)).toMatchObject([{ reason: "threshold", tokens }]);
+});
+
 it("compacts once on a context overflow and retries the request", async () => {
 	const { session } = await start({}, 1_000_000);
 	await twoTurns(session);

@@ -1,4 +1,4 @@
-import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
+import { type AtelierEvent, type AtelierEventBody, FakeBackend, Session } from "@atelier/core";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_STATUS_LINE, type FooterState, footerAfter, footerLine } from "../src/tui/footer.ts";
@@ -124,6 +124,25 @@ describe("footer", () => {
 		expect(context(after([configured("anthropic-api", "claude-haiku-5-5")], measured))).toBe(" ");
 		expect(context(after([configured("anthropic-api")], measured))).toBe(" ");
 		expect(context(after([configured("openai-codex", "claude-opus-5-5")], measured))).toBe(" ");
+	});
+
+	it("keeps the gauge hidden when the model changes during a turn, until the new model measures it", async () => {
+		let session: Session | undefined;
+		const context = { window: 1_000_000, compactAt: 983_616 };
+		const backend = new FakeBackend([
+			[{ event: { type: "turn_finished", stopReason: "end_turn", usage, context: { tokens: 190_000, ...context } } }],
+			[
+				{ run: async () => void (await session?.configure({ model: "claude-haiku-5-5" })) },
+				{ event: { type: "turn_finished", stopReason: "end_turn", usage, context: { tokens: 190_000, ...context } } },
+			],
+		]);
+		session = await Session.start({ backend, cwd: "/w", tools: [], model: "claude-opus-5-5" });
+		let state: FooterState = { backend: "fake", model: "claude-opus-5-5" };
+		for await (const event of session.send("one")) state = footerAfter(state, event);
+		expect(footerLine(state, 120, plain, ["context"])).toBe(" ctx ▰▰▱▱▱▱▱▱ 19% · 1M");
+		for await (const event of session.send("two")) state = footerAfter(state, event);
+		expect(footerLine(state, 120, plain, ["model", "context"])).toBe(" claude-haiku-5-5");
+		await session.close();
 	});
 
 	it("says the asked level when the model did not take it", () => {

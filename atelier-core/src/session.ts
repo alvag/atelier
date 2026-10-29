@@ -331,8 +331,10 @@ export class Session {
 	#handoffSpent: PhaseSpent | undefined;
 	/** What the last backend change did to the history, said once in `session_configured`. */
 	#backendChange: BackendChange | undefined;
-	/** The backend and model `context_warning` was said for, until the context goes below it again or compacts. */
-	#contextWarned: string | undefined;
+	/** Counts the changes of backend or model: a context belongs to the backend and model that measured it. */
+	#modelEpoch = 0;
+	/** The `#modelEpoch` `context_warning` was said in, until the context goes below it again or compacts. */
+	#contextWarned: number | undefined;
 	/** Events from outside a turn (a summary that was not saved), said at the start of the next one. */
 	#notices: AtelierEventBody[] = [];
 	/** The main agent as its backend's `session_started` described it: what the turn's parts say it ran with. */
@@ -858,6 +860,8 @@ export class Session {
 		const started = performance.now();
 		// A backend change made just before this turn replaces the session this turn runs on.
 		let backendSession: BackendSession = opening;
+		// The backend and model the turn runs on, once the changes made before it are applied.
+		let turnEpoch = this.#modelEpoch;
 		const pump = (async () => {
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }>;
 			try {
@@ -866,6 +870,7 @@ export class Session {
 				// A change that arrived as the last turn was ending is applied before this one starts.
 				if (this.#pending !== undefined || this.#pendingBackend !== undefined) await this.#applyPending(turn);
 				backendSession = this.#backendSession ?? backendSession;
+				turnEpoch = this.#modelEpoch;
 				this.#announceConfiguration(turn);
 				this.#sayNotices(turn);
 				if (this.#announced) this.#sayProfileNotices(turn);
@@ -883,6 +888,11 @@ export class Session {
 			// A change asked during the turn lands now, between this turn and the next.
 			await this.#applyPending(turn);
 			finish = this.#withHandoff(this.#withClassifier(finish));
+			// A backend or model change applied as the turn ended: the context it measured is not the new model's.
+			if (this.#modelEpoch !== turnEpoch) {
+				const { context: _measured, ...rest } = finish;
+				finish = rest;
+			}
 			// An interrupted or failed turn gives the queue back instead of running it after, also what was queued while
 			// it was ending; from here until it is over, nothing more is queued.
 			if (abort.signal.aborted || UNCLEAN_ENDS.has(finish.stopReason)) {
@@ -899,7 +909,7 @@ export class Session {
 			for await (const body of turn) {
 				if (body.type === "compaction_finished" && body.ok && body.parentCallId === undefined)
 					this.#contextWarned = undefined;
-				const warning = body.type === "turn_finished" ? this.#contextWarning(body.context) : undefined;
+				const warning = body.type === "turn_finished" ? this.#contextWarning(body.context, turnEpoch) : undefined;
 				if (warning !== undefined) {
 					const said = stamp(warning);
 					this.#options.record?.event(said);
@@ -925,17 +935,18 @@ export class Session {
 		}
 	}
 
-	/** The warning a turn's context brings: once near compaction, again after it went below or the model changed. */
-	#contextWarning(context: ContextUsage | undefined): AtelierEventBody | undefined {
+	/**
+	 * The warning a turn's context brings: once near compaction, again after it went below or the backend or model the
+	 * turn ran on (`epoch`) changed, also back to one it was said for.
+	 */
+	#contextWarning(context: ContextUsage | undefined, epoch: number): AtelierEventBody | undefined {
 		if (context === undefined) return undefined;
 		if (!nearCompaction(context)) {
 			this.#contextWarned = undefined;
 			return undefined;
 		}
-		const { backend, model } = this.configuration();
-		const running = `${backend}/${model ?? ""}`;
-		if (this.#contextWarned === running) return undefined;
-		this.#contextWarned = running;
+		if (this.#contextWarned === epoch) return undefined;
+		this.#contextWarned = epoch;
 		const { tokens, window, compactAt } = context;
 		return { type: "context_warning", tokens, window, compactAt };
 	}
@@ -1155,6 +1166,7 @@ export class Session {
 		this.#backendSessionId = next.id;
 		this.#options.backend = next;
 		this.#model = model;
+		this.#modelEpoch++;
 		this.#explicitModel = requested !== undefined;
 		this.#compaction = compaction.compaction;
 		if (compaction.notice !== undefined) this.#profileNotices.push(compaction.notice);
@@ -1197,6 +1209,7 @@ export class Session {
 				throw new ConfigureError("configure_failed", describeError(error));
 			}
 		}
+		if (change.model !== undefined && change.model !== this.#model) this.#modelEpoch++;
 		if (change.model !== undefined) this.#model = change.model;
 		if (change.thinking !== undefined) this.#thinking = change.thinking;
 		if (user?.model !== undefined) this.#explicitModel = true;
