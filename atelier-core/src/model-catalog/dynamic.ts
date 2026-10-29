@@ -34,9 +34,10 @@ export interface DynamicCatalogOptions {
 }
 
 /**
- * The model lists of `options.list`: each backend's list in the code and the models its provider listed that the code
- * lacks, newest first; Claude Code's by their versioned ids, without its aliases. It reads the cache once, and makes what it holds the process's model data, so the backends price and
- * size the new models; a refresh replaces both as it lands.
+ * The model lists of `options.list`, newest first: each backend's list in the code and the models its provider listed
+ * that the code lacks; for claude-code, once a session listed the subscription's models with their aliases resolved,
+ * that list alone, by versioned ids. It reads the cache once, and makes what it holds the process's model data, so the
+ * backends price and size the new models; a refresh replaces both as it lands.
  */
 export class DynamicModelCatalog implements ModelCatalog {
 	readonly #options: DynamicCatalogOptions;
@@ -50,8 +51,8 @@ export class DynamicModelCatalog implements ModelCatalog {
 	}
 
 	/**
-	 * Never fails: whatever the cache holds, the code's list stays, but for claude-code once the subscription's list is
-	 * resolved: that list alone says what the subscription offers.
+	 * Never fails: whatever the cache holds, a backend's list in the code is offered, but claude-code's, which the
+	 * subscription's resolved list replaces: that list alone says what the subscription offers.
 	 */
 	async models(backend: BackendName): Promise<readonly string[]> {
 		const data = await this.#latest();

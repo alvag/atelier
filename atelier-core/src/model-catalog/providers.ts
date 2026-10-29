@@ -17,7 +17,7 @@ const MAX_PAGES = 5;
  */
 export const CODEX_CLIENT_VERSION = "0.162.1";
 
-const listing = (backend: CatalogBackend, models: CatalogModel[]): FetchResult => ({
+const listing = (backend: CatalogBackend, models: CatalogModel[]): Extract<FetchResult, { kind: "changed" }> => ({
 	kind: "changed",
 	models: { [backend]: models },
 });
@@ -169,10 +169,14 @@ export function claudeCodeModelsSource(list: () => Promise<readonly unknown[]>):
 				models.set(id, model);
 			}
 			if (models.size === 0) throw new Error("Claude Code listed no model");
-			return listing(
-				"claude-code",
-				[...models.values()].map(({ aliases, ...model }) => (aliases.length === 0 ? model : { ...model, aliases })),
-			);
+			return {
+				...listing(
+					"claude-code",
+					[...models.values()].map(({ aliases, ...model }) => (aliases.length === 0 ? model : { ...model, aliases })),
+				),
+				// The aliases were resolved, so the list counts as resolved even with none on it.
+				resolved: true,
+			};
 		},
 	};
 }

@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
 	CATALOG_BACKENDS,
+	type CatalogBackend,
 	type CatalogListing,
 	type CatalogModel,
 	type CatalogModels,
@@ -27,6 +28,11 @@ export const CLAUDE_CODE_RUNS = "claude-code-runs";
 export interface SourceEntry {
 	checkedAt: number;
 	etag?: string;
+	/**
+	 * The source resolved what its list's aliases stand for (Claude Code's): a list kept without it, as an older Atelier
+	 * kept it, is asked for again.
+	 */
+	resolved?: true;
 	models: CatalogModels;
 }
 
@@ -35,7 +41,9 @@ export interface CatalogFile {
 	sources: Record<string, SourceEntry>;
 }
 
-export type FetchResult = { kind: "changed"; models: CatalogModels; etag?: string } | { kind: "unchanged" };
+export type FetchResult =
+	| { kind: "changed"; models: CatalogModels; etag?: string; resolved?: true }
+	| { kind: "unchanged" };
 
 /** Where models come from: `fetch` throws when it cannot say, and the cached answer stays. */
 export interface CatalogSource {
@@ -75,6 +83,7 @@ export async function readCatalog(file: string): Promise<CatalogFile> {
 						{
 							checkedAt: entry.checkedAt,
 							...(typeof entry.etag === "string" ? { etag: entry.etag } : {}),
+							...(entry.resolved === true ? { resolved: true as const } : {}),
 							models: catalogModels(entry.models),
 						},
 					],
@@ -178,6 +187,7 @@ export async function refreshSource(
 			await saveSource(file, source.name, {
 				checkedAt: now,
 				...(result.etag === undefined ? {} : { etag: result.etag }),
+				...(result.resolved ? { resolved: true as const } : {}),
 				models: result.models,
 			});
 		else if (previous) await saveSource(file, source.name, { ...previous, checkedAt: now });
@@ -232,6 +242,7 @@ export async function refreshCatalog(
 export function modelDataOf(catalog: CatalogFile): ModelData {
 	const models: CatalogModels = {};
 	const listed: CatalogListing = {};
+	const resolved: CatalogBackend[] = [];
 	for (const backend of CATALOG_BACKENDS) {
 		const merged = new Map<string, CatalogModel>();
 		const own = (name: string) => (Object.hasOwn(catalog.sources, name) ? catalog.sources[name] : undefined);
@@ -246,6 +257,7 @@ export function modelDataOf(catalog: CatalogFile): ModelData {
 			merged.set(model.id, { ...merged.get(model.id), ...model });
 		models[backend] = [...merged.values()];
 		if (provided) listed[backend] = provided.map((model) => model.id);
+		if (provided && own(backend)?.resolved) resolved.push(backend);
 	}
-	return new ModelData(models, listed);
+	return new ModelData(models, listed, resolved);
 }

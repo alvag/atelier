@@ -198,6 +198,8 @@ it("lists the models Claude Code offers the subscription by their versioned ids,
 		{ value: "", displayName: "", description: "" },
 	];
 	await refreshCatalog(file, [claudeCodeModelsSource(models)]);
+	// The cache says the aliases were resolved, so a list without any alias counts as resolved too.
+	expect((await readCatalog(file)).sources["claude-code"]?.resolved).toBe(true);
 	const data = modelDataOf(await readCatalog(file));
 	expect(data.listed("claude-code")).toEqual([
 		"claude-opus-5-5",

@@ -165,6 +165,7 @@ describe("Session.configure", () => {
 				new ModelData(
 					{ "claude-code": [{ id: "claude-fable-5-1", aliases: ["fable"] }] },
 					{ "claude-code": ["claude-fable-5-1"] },
+					["claude-code"],
 				),
 			);
 			const backend = new FakeBackend(

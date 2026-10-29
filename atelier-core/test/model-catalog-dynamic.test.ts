@@ -394,6 +394,24 @@ it("asks again a session for any list kept without the aliases resolved, wheneve
 	expect(asked).toBe(1);
 });
 
+it("takes a list kept resolved as resolved without any alias on it, and asks for it only after the interval", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	const kept = {
+		checkedAt: Date.now(),
+		resolved: true,
+		models: { "claude-code": [{ id: "claude-opus-4-8" }, { id: "claude-sonnet-4-6" }] },
+	};
+	await writeFile(file, JSON.stringify({ version: 1, sources: { "claude-code": kept } }));
+	const catalog = new DynamicModelCatalog({ file, sources: [] });
+	let asked = 0;
+	await catalog.listClaudeCode(async () => {
+		asked++;
+		return [];
+	});
+	expect(asked).toBe(0);
+	expect(await catalog.models("claude-code")).toEqual(["claude-opus-4-8", "claude-sonnet-4-6"]);
+});
+
 it("keeps the window Claude Code ran a model with, listed or not, offline too, through the next list", async () => {
 	// Without a cache and with the refresh off, the window is kept all the same.
 	const offline = new DynamicModelCatalog({ file, sources: [], network: false });

@@ -36,14 +36,11 @@ export function claudeCodeName(model: string): string {
 }
 
 /**
- * The subscription's list, once a session listed it with the aliases resolved: versioned ids only, and some kept with
- * the alias that stands for it, as `supportedModels()` always lists `opus`. Undefined before, for a list kept in an
- * older format too, which is asked again.
+ * The subscription's list, once a session listed it with the aliases resolved, as the cache says it; undefined before,
+ * for a list kept in an older format too, which is asked again.
  */
 export function resolvedClaudeCodeList(data: ModelData): readonly string[] | undefined {
-	const listed = data.listed("claude-code");
-	if (listed === undefined || listed.length === 0 || !listed.every(isVersionedClaudeId)) return undefined;
-	return listed.some((id) => (data.model("claude-code", id)?.aliases?.length ?? 0) > 0) ? listed : undefined;
+	return data.resolved("claude-code") ? data.listed("claude-code") : undefined;
 }
 
 /**
