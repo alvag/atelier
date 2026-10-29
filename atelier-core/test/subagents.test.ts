@@ -112,6 +112,33 @@ describe("the delegation rules", () => {
 		expect(description).not.toContain("everything it needs");
 	});
 
+	it("name only the agents the session has: no explorer, no word of sending one; no worker, no word of it", async () => {
+		const descriptionFor = async (agents: SubagentDefinition[]) => {
+			const backend = new FakeBackend([]);
+			const createBackend = () => new FakeBackend([]);
+			await (await Session.start({ backend, cwd: process.cwd(), tools, subagents: { agents, createBackend } })).close();
+			return backend.startOptions?.tools.find((t) => t.name === TASK_TOOL)?.description ?? "";
+		};
+		const scout = { ...explorer, name: "scout" };
+		const pathsRule =
+			"- Pass paths, the spec reference and what to change, never file contents: the subagent reads them itself.";
+
+		const onlyScout = await descriptionFor([scout]);
+		expect(onlyScout).toContain(`When to delegate:\n${pathsRule}\nAgents:\n- scout: Reads code`);
+		expect(onlyScout).not.toContain("explorer");
+		expect(onlyScout).not.toContain("worker");
+
+		const withWorker = await descriptionFor([scout, worker]);
+		expect(withWorker).toContain(
+			`When to delegate:\n${pathsRule}\n- Reading that prepares a delegated change belongs to the worker: do not read it first yourself.\nAgents:`,
+		);
+		expect(withWorker).not.toContain("explorer");
+
+		const withExplorer = await descriptionFor([explorer]);
+		expect(withExplorer).toContain("send one explorer");
+		expect(withExplorer).not.toContain("worker");
+	});
+
 	it("tie an ODD task's route to them", async () => {
 		const backend = new FakeBackend([]);
 		await (await Session.start({ backend, cwd: process.cwd(), tools, odd: true })).close();
