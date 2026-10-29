@@ -5,17 +5,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HttpServerConfig } from "../src/mcp/config.ts";
 import { loadMcpConfig } from "../src/mcp/config.ts";
 import { McpManager } from "../src/mcp/manager.ts";
-import { loginMcpServer, logoutMcpServer, McpAuthStore, mcpAuthFile } from "../src/mcp/oauth.ts";
+import { loginMcpServer, logoutMcpServer, McpAuthStore, McpOAuthProvider, mcpAuthFile } from "../src/mcp/oauth.ts";
 
 let home: string;
 let base: string;
 let http: Server;
 /** What the fake servers saw and what they hand out. */
-let fake: { access: string; refresh: string; registered: number; refreshed: number; tokenRequests: URLSearchParams[] };
+let fake: {
+	access: string;
+	refresh: string;
+	registered: number;
+	refreshed: number;
+	tokenRequests: URLSearchParams[];
+	authorizationEndpoint?: string;
+	redirectUrl?: string;
+};
 
 const body = (request: IncomingMessage) =>
 	new Promise<string>((resolve) => {
@@ -39,7 +47,7 @@ beforeEach(async () => {
 		if (url.pathname === "/.well-known/oauth-authorization-server")
 			return json({
 				issuer: base,
-				authorization_endpoint: `${base}/authorize`,
+				authorization_endpoint: fake.authorizationEndpoint ?? `${base}/authorize`,
 				token_endpoint: `${base}/token`,
 				registration_endpoint: `${base}/register`,
 				response_types_supported: ["code"],
@@ -49,6 +57,7 @@ beforeEach(async () => {
 		if (url.pathname === "/register") {
 			fake.registered++;
 			const metadata = JSON.parse(await body(request));
+			fake.redirectUrl = metadata.redirect_uris[0];
 			return json({ ...metadata, client_id: `client-${fake.registered}` }, 201);
 		}
 		if (url.pathname === "/authorize") {
@@ -120,6 +129,80 @@ async function connected(server: HttpServerConfig, store: McpAuthStore): Promise
 	await manager.ready();
 	return manager;
 }
+
+describe("MCP OAuth browser URLs", () => {
+	it.each([
+		"http://example.invalid/authorize",
+		"https://example.invalid/authorize",
+		"HTTP://example.invalid/authorize",
+		"HTTPS://example.invalid/authorize",
+	])("opens %s through the provider", async (page) => {
+		const openBrowser = vi.fn();
+		const provider = new McpOAuthProvider(remote(), new McpAuthStore(mcpAuthFile(home)), {
+			onRedirect: openBrowser,
+		});
+		const url = new URL(page);
+		await provider.redirectToAuthorization(url);
+		expect(openBrowser).toHaveBeenCalledExactlyOnceWith(url);
+	});
+
+	it.each(["file:///tmp/authorize", "javascript:alert(1)", "atelier-test://authorize", "FILE:///tmp/authorize"])(
+		"refuses %s before calling the browser",
+		async (page) => {
+			const openBrowser = vi.fn();
+			const provider = new McpOAuthProvider(remote(), new McpAuthStore(mcpAuthFile(home)), {
+				onRedirect: openBrowser,
+			});
+			const url = new URL(page);
+			await expect(provider.redirectToAuthorization(url)).rejects.toThrow(
+				`Refused to open OAuth URL for MCP server "remote": ${url.href}; only http: and https: URLs are allowed`,
+			);
+			expect(openBrowser).not.toHaveBeenCalled();
+		},
+	);
+
+	it("fails the manager's login without opening a file URL, exchanging tokens, or reconnecting", async () => {
+		fake.authorizationEndpoint = "file:///tmp/authorize";
+		const store = new McpAuthStore(mcpAuthFile(home));
+		const openBrowser = vi.fn(() => {
+			throw new Error("unsafe browser callback invoked");
+		});
+		const manager = new McpManager(
+			{ file: "mcp.json", servers: [remote()], problems: [], secrets: [] },
+			{ auth: store, openBrowser },
+		);
+		manager.start();
+		await manager.ready();
+		try {
+			expect(manager.status()[0]?.state).toBe("needs_auth");
+			await expect(manager.login("remote")).rejects.toThrow(
+				/^Refused to open OAuth URL for MCP server "remote": file:\/\/\/tmp\/authorize\?.*; only http: and https: URLs are allowed$/,
+			);
+			expect(openBrowser).not.toHaveBeenCalled();
+			expect(fake.tokenRequests).toEqual([]);
+			expect(store.get(remote())?.tokens).toBeUndefined();
+			expect(manager.status()[0]?.state).toBe("needs_auth");
+			// Registration exposes the actual callback URI; rejection must close that listener.
+			expect(fake.redirectUrl).toBeDefined();
+			await expect(fetch(fake.redirectUrl as string)).rejects.toThrow();
+		} finally {
+			await manager.close();
+		}
+	});
+
+	it.each([
+		["not a URL", "Invalid URL"],
+		["javascript:alert(1)", "URL cannot use javascript:, data:, or vbscript: scheme"],
+	])("preserves the SDK's metadata rejection for %s", async (page, diagnostic) => {
+		fake.authorizationEndpoint = page;
+		const store = new McpAuthStore(mcpAuthFile(home));
+		const openBrowser = vi.fn();
+		await expect(loginMcpServer(remote(), store, { openBrowser })).rejects.toThrow(diagnostic);
+		expect(openBrowser).not.toHaveBeenCalled();
+		expect(fake.tokenRequests).toEqual([]);
+		expect(store.get(remote())?.tokens).toBeUndefined();
+	});
+});
 
 describe("MCP OAuth", () => {
 	it("marks a server that asks for sign-in, and says how to sign in", async () => {
