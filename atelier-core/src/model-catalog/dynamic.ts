@@ -45,8 +45,17 @@ export class DynamicModelCatalog implements ModelCatalog {
 	/** Never fails: whatever the cache holds, the code's list stays. */
 	async models(backend: BackendName): Promise<readonly string[]> {
 		const base = BACKEND_MODELS[backend];
-		const listed = (await this.#loaded.catch(() => new ModelData())).listed(backend) ?? [];
+		const listed = (await this.#latest()).listed(backend) ?? [];
 		return [...base, ...listed.filter((id) => !base.includes(id))];
+	}
+
+	/** The data of the newest read that ended: a newer one published while this waited replaces what it waited for. */
+	async #latest(): Promise<ModelData> {
+		for (;;) {
+			const loaded = this.#loaded;
+			const data = await loaded.catch(() => new ModelData());
+			if (loaded === this.#loaded) return data;
+		}
 	}
 
 	/** Asks every source whose answer is older than the interval (all of them with `force`), then reads the cache. */
