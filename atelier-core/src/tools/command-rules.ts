@@ -9,6 +9,12 @@ import { type SimpleCommand, simpleCommands } from "./destructive-guard.ts";
  * substitution, `eval`, `sh -c`, a control structure, a program named by a
  * variable or a glob, a redirection to a file, any mention of `.atelier`) is
  * never covered, and asks.
+ *
+ * A rule is kept for the session, in a project, or always. Interpreters and
+ * launchers run whatever code they are given: only for the session. Programs that
+ * run code the repository defines (package scripts, makefiles, a program written
+ * as a relative path) only in a project, so a rule allowed in one never runs a
+ * freshly cloned repository's scripts. Everything else may be allowed always.
  */
 
 /** Programs that run whatever code they are given: never allowed always. */
@@ -62,6 +68,47 @@ const LAUNCHERS: Record<string, readonly string[]> = {
 	pipx: ["run"],
 	uv: ["run"],
 };
+
+/**
+ * Programs that run code the repository defines, whatever their subcommand: package scripts and lifecycle hooks,
+ * makefiles, build scripts, test configuration. Their rules are kept for a project, never for every folder.
+ */
+const PROJECT_PROGRAMS = new Set([
+	"npm",
+	"pnpm",
+	"yarn",
+	"make",
+	"gmake",
+	"just",
+	"rake",
+	"gradle",
+	"mvn",
+	"cargo",
+	"go",
+	"pip",
+	"pip3",
+	"poetry",
+	"pdm",
+	"hatch",
+	"uv",
+	"composer",
+	"bundle",
+	"mix",
+	"dotnet",
+	"swift",
+	"xcodebuild",
+	"cmake",
+	"ninja",
+	"pytest",
+	"tox",
+	"nox",
+	"vitest",
+	"jest",
+]);
+/** Commands that change the directory later commands of the line run in. */
+const CHANGES_DIRECTORY = new Set(["cd", "pushd", "popd"]);
+/** A word that names a place outside the project: absolute, under `~`, or through `..`, also as an option's value (`-C/x`, `--dir=/x`). */
+const LEAVES_PROJECT = /^(?:-[A-Za-z]*|--?[\w-]+=|[\w-]*=)?[/~]|[=:,][/~]|(?:^|[/=:,])\.\.(?:\/|$)/;
 
 /** Programs whose line is not one command the words show: they run a string, a file in this shell, or a structure. */
 const NEVER = new Set([
@@ -140,6 +187,10 @@ interface Key {
 	runsCode: boolean;
 	/** A launcher's subcommand: only the rule that names it (`pnpm dlx`) covers it, never the program's alone. */
 	launcher: boolean;
+	/** Runs code the repository defines: its rules are kept for a project, never always. */
+	project: boolean;
+	/** One of its words names a place outside the project: no project rule covers it. */
+	leavesProject: boolean;
 }
 
 const ruleOf = ({ program, subcommand }: Key) => (subcommand === undefined ? program : `${program} ${subcommand}`);
@@ -147,6 +198,12 @@ const ruleOf = ({ program, subcommand }: Key) => (subcommand === undefined ? pro
 function isRunner(program: string, subcommand: string | undefined): boolean {
 	const name = program.split("/").at(-1) ?? program;
 	return INTERPRETERS.has(name) || PYTHON.test(name) || (subcommand !== undefined && isLauncher(name, subcommand));
+}
+
+/** Whether a program runs code the repository defines: a package manager or build runner, or a relative path (`./gradlew`). */
+function isProjectProgram(program: string): boolean {
+	const name = program.split("/").at(-1) ?? program;
+	return PROJECT_PROGRAMS.has(name) || (program.includes("/") && !program.startsWith("/"));
 }
 
 /** Whether a word names an interpreter or a launcher program, by itself or as a path (`/bin/sh`). */
@@ -190,6 +247,8 @@ function keyOf({ wrappers, words, writesFile, setsEnvironment }: SimpleCommand):
 		...(subcommand === undefined ? {} : { subcommand }),
 		runsCode: wrappers.includes("sudo") || isRunner(program, subcommand),
 		launcher: launcher !== undefined || runsInterpreter,
+		project: isProjectProgram(program),
+		leavesProject: words.some(({ value }) => LEAVES_PROJECT.test(value)),
 	};
 }
 
@@ -210,33 +269,52 @@ function keysOf(command: string): Key[] | undefined {
 export interface CommandRules {
 	/** The rule of each command of the line, in order and without repeats; undefined when the line can never be covered. */
 	rules: string[] | undefined;
-	/** Whether the rules may be allowed always: no command of the line runs arbitrary code. */
+	/** Whether the rules may be allowed always: no command of the line runs arbitrary code or code the repository defines. */
 	always: boolean;
+	/** Set when the rules may be allowed always in this project, not everywhere: a command of the line runs code the repository defines. */
+	project?: true;
 }
 
 /** The rules that would cover `command`, as the question offers them. */
 export function commandRules(command: string): CommandRules {
 	const keys = keysOf(command);
 	if (keys === undefined) return { rules: undefined, always: false };
-	return { rules: [...new Set(keys.map(ruleOf))], always: keys.every((key) => !key.runsCode) };
+	const rules = [...new Set(keys.map(ruleOf))];
+	if (keys.some((key) => key.runsCode)) return { rules, always: false };
+	return keys.some((key) => key.project) ? { rules, always: false, project: true } : { rules, always: true };
 }
 
-/** Whether the allowed rules cover every command of the line. */
-export function coveredBy(command: string, allowed: Iterable<string>): boolean {
+/** Whether a rule of `rules` covers the command of `key`. */
+const covers = (rules: ReadonlySet<string>, key: Key) =>
+	(!key.launcher && rules.has(key.program)) || (key.subcommand !== undefined && rules.has(ruleOf(key)));
+
+/**
+ * Whether the allowed rules cover every command of the line. `project` are the rules allowed always in this
+ * session's project: they cover a command only when the line cannot take it elsewhere (no `cd`, `pushd` or `popd`, no
+ * word that names a place outside the project).
+ */
+export function coveredBy(command: string, allowed: Iterable<string>, project: Iterable<string> = []): boolean {
 	const rules = new Set(allowed);
-	if (rules.size === 0) return false;
+	const projectRules = new Set(project);
+	if (rules.size === 0 && projectRules.size === 0) return false;
 	const keys = keysOf(command);
 	if (keys === undefined) return false;
-	return keys.every(
-		(key) => (!key.launcher && rules.has(key.program)) || (key.subcommand !== undefined && rules.has(ruleOf(key))),
-	);
+	const staysInProject = !keys.some((key) => CHANGES_DIRECTORY.has(key.program));
+	return keys.every((key) => covers(rules, key) || (staysInProject && !key.leavesProject && covers(projectRules, key)));
 }
 
-/** Whether `rule` is one `commandRules` could give; with `always`, also one that may be allowed always. */
-export function isValidCommandRule(rule: string, { always }: { always: boolean }): boolean {
+/** How broadly `rule` may be kept: only for the session, in a project, or always; undefined when it is no rule `commandRules` could give. */
+export function commandRuleScope(rule: string): "session" | "project" | "always" | undefined {
 	const [program, subcommand, ...rest] = rule.split(" ");
-	if (program === undefined || rest.length > 0 || !PROGRAM.test(program)) return false;
-	if (subcommand !== undefined && !SUBCOMMAND.test(subcommand)) return false;
-	if (NEVER.has(program.split("/").at(-1) ?? program)) return false;
-	return !always || !isRunner(program, subcommand);
+	if (program === undefined || rest.length > 0 || !PROGRAM.test(program)) return undefined;
+	if (subcommand !== undefined && !SUBCOMMAND.test(subcommand)) return undefined;
+	if (NEVER.has(program.split("/").at(-1) ?? program)) return undefined;
+	if (isRunner(program, subcommand)) return "session";
+	return isProjectProgram(program) ? "project" : "always";
+}
+
+/** Whether `rule` is one `commandRules` could give; with `always`, also one that may be allowed always, in every folder. */
+export function isValidCommandRule(rule: string, { always }: { always: boolean }): boolean {
+	const scope = commandRuleScope(rule);
+	return scope !== undefined && (!always || scope === "always");
 }

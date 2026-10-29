@@ -152,6 +152,7 @@ export {
 } from "./pricing.ts";
 export * from "./profiles/index.ts";
 export { loadProjectInstructions, MAX_INSTRUCTIONS_BYTES, type ProjectInstructions } from "./project-instructions.ts";
+export { projectRoot } from "./project-root.ts";
 export { MEMORY_RULES, ODD_RULES, SYSTEM_PROMPT_APPEND } from "./prompt.ts";
 export * from "./protocol/index.ts";
 export type { ReviewConsentAnswer, ReviewConsentRequest, ReviewOptions } from "./review/session-review.ts";

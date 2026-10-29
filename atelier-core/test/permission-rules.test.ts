@@ -54,10 +54,10 @@ describe("PermissionRules", () => {
 		const two = new PermissionRules({ home });
 		await Promise.all([
 			one.allow([{ kind: "bash", value: "open" }], "always"),
-			two.allow([{ kind: "bash", value: "npm install" }], "always"),
+			two.allow([{ kind: "bash", value: "ego-browser nodejs" }], "always"),
 		]);
 		await one.allow([{ kind: "bash", value: "open" }], "always");
-		expect((await saved()).allow).toEqual(expect.arrayContaining([{ bash: "open" }, { bash: "npm install" }]));
+		expect((await saved()).allow).toEqual(expect.arrayContaining([{ bash: "open" }, { bash: "ego-browser nodejs" }]));
 		expect((await saved()).allow).toHaveLength(2);
 	});
 
@@ -100,7 +100,7 @@ describe("PermissionRules", () => {
 			0o600,
 			"entry 1",
 		],
-		["an interpreter", { kind: "atelier.permissions", version: 1, allow: [{ bash: "python3" }] }, 0o600, "entry 1"],
+		["a bad rule", { kind: "atelier.permissions", version: 1, allow: [{ bash: "op*n" }] }, 0o600, "entry 1"],
 		["writable by others", { kind: "atelier.permissions", version: 1, allow: [{ bash: "open" }] }, 0o666, "writable"],
 	];
 	it.each(INVALID)("ignores a file with %s and says why", async (_name, content, mode, reason) => {
