@@ -201,8 +201,10 @@ export class QuestionDialog implements Component, Focusable {
 
 	handleInput(data: string): void {
 		if (this.#answered) return;
+		// Only a paste that starts on the text row is kept, and only while this question reads the input.
 		this.#paste.keeping = this.#typing;
 		const keys = this.#paste.feed(data);
+		this.#paste.keeping = false;
 		const pasted = this.#paste.takePasted();
 		if (this.#guarded()) return;
 		this.#problem = "";
