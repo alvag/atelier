@@ -27,7 +27,7 @@ export function createScreen(terminal: Terminal, fullscreen: boolean, paint: Pai
 }
 
 /**
- * Puts the document (the header and the transcript) on screen with the parts fixed under it. Full screen, the document
+ * Puts the document on screen with the parts fixed under it and an optional fullscreen bar above it. Full screen, the document
  * scrolls in the space the fixed parts leave, following its end while the view is at it; on the main screen they go one
  * after the other. A part with `shown` takes no room while it says false.
  */
@@ -35,6 +35,7 @@ export function mount(
 	tui: TUI,
 	document: Component,
 	fixed: { component: Component; editor?: boolean; shown?: () => boolean }[],
+	top?: Component,
 ): void {
 	if (!isViewportTUI(tui)) {
 		tui.addChild(document);
@@ -52,6 +53,7 @@ export function mount(
 	);
 	tui.setLayoutRoot(
 		new VStack([
+			...(top === undefined ? [] : [{ component: top, basis: 1, grow: 0, shrink: 0, minSize: 1 }]),
 			{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 			{ component: bottom, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
 		]),
