@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { isInsideSandbox } from "../src/tools/sandbox.ts";
 import {
 	type EndedJob,
 	JobRefusedError,
@@ -14,6 +13,7 @@ import {
 	jobStopText,
 	MAX_RUNNING_JOBS,
 } from "../src/tools/jobs.ts";
+import { isInsideSandbox } from "../src/tools/sandbox.ts";
 
 const until = async (condition: () => boolean) => {
 	for (let i = 0; i < 400 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
