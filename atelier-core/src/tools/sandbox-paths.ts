@@ -108,25 +108,24 @@ export interface ConfigFile {
 	malformed: boolean;
 }
 
-/** One file's include and hooks records, or undefined when git fails (1 is only "no match"). */
-function gitConfigRecords(file: string): string[] | undefined {
-	const run = spawnSync(
-		"git",
-		[
-			"config",
-			"--file",
-			file,
-			"--no-includes",
-			"-z",
-			"--get-regexp",
-			"^(include\\.path|includeif\\..*\\.path|core\\.hookspath)$",
-		],
-		// Apply the former per-query output limits after splitting, not to the larger combined stream.
-		{ encoding: "utf8", timeout: 5000, maxBuffer: Infinity },
-	);
+const CONFIG_BUFFER_LIMIT = 1024 * 1024;
+
+/** Raw NUL-delimited records: decoding first would expand invalid UTF-8 bytes when measuring the old query sizes. */
+function gitConfigRecords(file: string, args: string[], maxBuffer = CONFIG_BUFFER_LIMIT): Buffer[] | undefined {
+	const run = spawnSync("git", ["config", "--file", file, "--no-includes", "-z", ...args], {
+		timeout: 5000,
+		maxBuffer,
+	});
 	if (run.status === 1) return [];
+	// As before, status 0 is accepted even if Node also reports ENOBUFS after git has exited.
 	if (run.status !== 0) return undefined;
-	return run.stdout.split("\0").filter((_, i, all) => i < all.length - 1);
+	const records: Buffer[] = [];
+	let start = 0;
+	for (let end = run.stdout.indexOf(0); end !== -1; end = run.stdout.indexOf(0, start)) {
+		records.push(run.stdout.subarray(start, end));
+		start = end + 1;
+	}
+	return records;
 }
 
 /**
@@ -138,31 +137,52 @@ function gitConfigRecords(file: string): string[] | undefined {
  */
 export function configFilePaths(file: string): ConfigFile {
 	if (!existsSync(file)) return { includes: [], malformed: false };
-	const records = gitConfigRecords(file);
+	const records = gitConfigRecords(
+		file,
+		["--get-regexp", "^(include\\.path|includeif\\..*\\.path|core\\.hookspath)$"],
+		Infinity,
+	);
 	if (records === undefined) return { ...parseConfigFile(file), malformed: true };
 	const plain: string[] = [];
 	const conditional: string[] = [];
 	let hooksPath: string | undefined;
 	let plainBytes = 0;
 	let conditionalBytes = 0;
+	let hooksBytes = 0;
 	for (const record of records) {
-		const separator = record.indexOf("\n");
-		const key = separator === -1 ? record : record.slice(0, separator);
-		const value = separator === -1 ? "" : record.slice(separator + 1);
+		const separator = record.indexOf(10);
+		const key = record.subarray(0, separator === -1 ? record.length : separator).toString("utf8");
+		const value = record.subarray(separator === -1 ? record.length : separator + 1);
 		if (key === "include.path") {
-			plain.push(value);
-			plainBytes += Buffer.byteLength(value) + 1;
-		} else if (record.startsWith("includeif.")) {
+			plain.push(value.toString("utf8"));
+			plainBytes += value.length + 1;
+		} else if (key.startsWith("includeif.")) {
 			// Preserve the old get-regexp handling, even for a valueless conditional entry.
-			conditional.push(record.slice(separator + 1));
-			conditionalBytes += Buffer.byteLength(record) + 1;
-		} else if (key === "core.hookspath") hooksPath = value;
+			conditional.push(record.subarray(separator + 1).toString("utf8"));
+			conditionalBytes += record.length + 1;
+		} else if (key === "core.hookspath") {
+			hooksPath = value.toString("utf8");
+			hooksBytes = value.length + 1;
+		}
 	}
-	const hooksBytes = hooksPath === undefined ? 0 : Buffer.byteLength(hooksPath) + 1;
-	// spawnSync's default was 1 MiB for each of get-all, get-regexp and get (the last hooks value only).
-	if (Math.max(plainBytes, conditionalBytes, hooksBytes) > 1024 * 1024)
-		return { ...parseConfigFile(file), malformed: true };
+	// Above the old buffer bound, only the original queries can tell whether git exited before Node could kill it.
+	if (Math.max(plainBytes, conditionalBytes, hooksBytes) > CONFIG_BUFFER_LIMIT) return separateConfigFilePaths(file);
 	return { includes: [...plain, ...conditional], malformed: false, ...(hooksPath === undefined ? {} : { hooksPath }) };
+}
+
+/** Preserve the original commands and their actual exit/overflow behavior for large individual query outputs. */
+function separateConfigFilePaths(file: string): ConfigFile {
+	const plain = gitConfigRecords(file, ["--get-all", "include.path"]);
+	const conditional = gitConfigRecords(file, ["--get-regexp", "^includeif\\..*\\.path$"]);
+	const hooks = gitConfigRecords(file, ["--get", "core.hooksPath"]);
+	if (plain === undefined || conditional === undefined || hooks === undefined)
+		return { ...parseConfigFile(file), malformed: true };
+	const includes = [
+		...plain.map((record) => record.toString("utf8")),
+		...conditional.map((record) => record.subarray(record.indexOf(10) + 1).toString("utf8")),
+	];
+	const hooksPath = hooks[0]?.toString("utf8");
+	return { includes, malformed: false, ...(hooksPath === undefined ? {} : { hooksPath }) };
 }
 
 /** The same answer read with a simple parser, for a file git rejects. */
