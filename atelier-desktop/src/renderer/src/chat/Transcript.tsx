@@ -1,4 +1,10 @@
-import { cacheHitRate, describeRefusal, type PhaseAgent, type ReviewConsentAnswer } from "@atelier/core/protocol";
+import {
+	cacheHitRate,
+	contextWarningText,
+	describeRefusal,
+	type PhaseAgent,
+	type ReviewConsentAnswer,
+} from "@atelier/core/protocol";
 import { visibleText } from "@atelier/core/text";
 import { memo } from "react";
 import { renderMarkdown } from "./markdown.ts";
@@ -509,6 +515,12 @@ function Items({
 				return (
 					<div key={key} className="warning sandbox-warning">
 						bash runs without a sandbox ({item.reason}): {UNSANDBOXED_EFFECT}
+					</div>
+				);
+			case "context_warning":
+				return (
+					<div key={key} className="warning context-warning">
+						{contextWarningText(item)}
 					</div>
 				);
 			case "error":

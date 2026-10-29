@@ -4,6 +4,7 @@ import {
 	type BackendName,
 	type ContextUsage,
 	claudeCodeAliases,
+	contextGauge,
 	DEFAULT_BACKEND,
 	type QueueKind,
 	type ReviewConsentAnswer,
@@ -32,10 +33,21 @@ const numbers = new Intl.NumberFormat("en-US");
 /** The core's reason for a session started with `noSandbox`. */
 const SANDBOX_TURNED_OFF = "sandbox turned off for this session";
 
+/** The status bar's styles for a context near where it compacts. */
+const LEVEL_CLASSES = { normal: undefined, warning: "warning", danger: "error" } as const;
+
 /** How full the context is; right after a compaction the size is not known until a request measures it. */
-function contextLabel({ tokens, window, unknown }: ContextUsage): string {
-	if (unknown) return `context ? / ${numbers.format(window)}`;
-	return `context ${numbers.format(tokens)} / ${numbers.format(window)} (${Math.round((tokens / window) * 100)}%)`;
+function ContextLabel({ context }: { context: ContextUsage }) {
+	const { text, level } = contextGauge(context);
+	const compacts = `compacts at ${numbers.format(context.compactAt)} tokens`;
+	const title = context.unknown
+		? compacts
+		: `${numbers.format(context.tokens)} of ${numbers.format(context.window)} tokens · ${compacts}`;
+	return (
+		<span className={LEVEL_CLASSES[level]} title={title}>
+			ctx {text}
+		</span>
+	);
 }
 
 /** `profile: cheap (repo)`, or `profile: default`. */
@@ -260,11 +272,7 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 					</select>
 				) : null}
 				{state.phase ? <span className="phase">{state.phase}</span> : null}
-				{state.context ? (
-					<span title={`compacts at ${numbers.format(state.context.compactAt)} tokens`}>
-						{contextLabel(state.context)}
-					</span>
-				) : null}
+				{state.context ? <ContextLabel context={state.context} /> : null}
 				{state.session?.noSandbox ? (
 					<span className="warning" title={`${SANDBOX_TURNED_OFF}: ${UNSANDBOXED_EFFECT}`}>
 						bash: NOT SANDBOXED (turned off)
