@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import type { AtelierEvent, JsonValue, QueuedMessage } from "../events.ts";
+import type { AtelierEvent, AtelierEventBody, JsonValue, QueuedMessage } from "../events.ts";
 import { decodeServerMessage, encodeMessage, LineSplitter } from "../protocol/codec.ts";
 import { type ClientCommand, PROTOCOL_VERSION, type ServerMessage } from "../protocol/types.ts";
 
@@ -59,6 +59,7 @@ export class RpcClient {
 	readonly #child: ChildProcessWithoutNullStreams;
 	readonly #pending = new Map<string, Pending>();
 	readonly #eventListeners = new Set<(sessionId: string, event: AtelierEvent) => void>();
+	readonly #sessionEventListeners = new Set<(sessionId: string, event: AtelierEventBody) => void>();
 	readonly #protocolErrorListeners = new Set<(message: string) => void>();
 	readonly #exitListeners = new Set<(exit: CoreExit) => void>();
 	readonly #closeTimeoutMs: number;
@@ -138,6 +139,12 @@ export class RpcClient {
 		return () => this.#eventListeners.delete(listener);
 	}
 
+	/** Events outside any turn (`session_event`): a background job that ended while no turn ran and none will start. */
+	onSessionEvent(listener: (sessionId: string, event: AtelierEventBody) => void): () => void {
+		this.#sessionEventListeners.add(listener);
+		return () => this.#sessionEventListeners.delete(listener);
+	}
+
 	onProtocolError(listener: (message: string) => void): () => void {
 		this.#protocolErrorListeners.add(listener);
 		return () => this.#protocolErrorListeners.delete(listener);
@@ -189,6 +196,9 @@ export class RpcClient {
 			}
 			case "event":
 				for (const listener of this.#eventListeners) listener(message.sessionId, message.event);
+				return;
+			case "session_event":
+				for (const listener of this.#sessionEventListeners) listener(message.sessionId, message.event);
 				return;
 			case "protocol_error":
 				this.#protocolError(message.message);

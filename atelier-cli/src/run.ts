@@ -498,6 +498,8 @@ export async function run(
 	let woken = new Promise<void>((resolve) => {
 		wakeUp = resolve;
 	});
+	/** The CLI shows its prompt and waits for a line. */
+	let atPrompt = false;
 	const rewake = () => {
 		woken = new Promise<void>((resolve) => {
 			wakeUp = resolve;
@@ -505,6 +507,12 @@ export async function run(
 	};
 	const session = await Session.start({
 		wake: () => wakeUp(),
+		// A job's end while no turn runs and none will: said at once, on a line of its own, and the prompt again.
+		idleEvent: (event) => {
+			renderer.endLine();
+			renderer.render({ ...event, seq: 0, turnId: "" } as AtelierEvent);
+			if (io.isTTY && atPrompt) renderer.write(PROMPT);
+		},
 		backend,
 		...(mcp ? { mcp } : {}),
 		...(recorder === undefined ? {} : { record: recorder }),
@@ -760,7 +768,9 @@ export async function run(
 				if (io.isTTY) renderer.write(PROMPT);
 				reading = lines.next(PROMPT.length);
 			}
+			atPrompt = true;
 			const read = await Promise.race([reading.then((line) => ({ line })), woken.then(() => undefined)]);
+			atPrompt = false;
 			if (read === undefined) {
 				// A job's notice woke the session while it waited for a line: the turn may ask a question, which reads lines.
 				rewake();

@@ -188,4 +188,36 @@ describe("background jobs in atelier run", () => {
 		h.stdin.end();
 		expect(await exited).toBe(0);
 	});
+
+	it.each(["interrupted", "error"])(
+		"shows the end of a job that ends after a turn that ended %s, and its notice waiting, before the next prompt",
+		async (how) => {
+			const h = harness(
+				[
+					[
+						startJob(waitsForGo()),
+						...(how === "interrupted"
+							? [{ run: () => h.ctrlC() }, { waitForInterrupt: true as const }]
+							: [{ throw: "backend failed" }]),
+					],
+					[{ event: finished }],
+				],
+				{ input: true },
+			);
+			h.stdin.write("start it\n");
+			const exited = run(["--no-session"], h.io, h.createBackend);
+			await until(() => h.out().includes("⧗ job 1 started"));
+			await until(() => h.backend.prompts.length === 1 && /tokens:|error/.test(h.out() + h.err()));
+			await go();
+			await until(() => /■ job 1 ended · exit 0 · \d+s · wait · 1 notice waiting\n/.test(h.out()));
+			expect(h.backend.prompts).toHaveLength(1);
+			h.stdin.write("continue\n");
+			await until(() => h.backend.prompts.length === 2);
+			expect(h.backend.prompts[1]).toMatch(/^Background job 1 /);
+			h.stdin.end();
+			expect(await exited).toBe(0);
+			// Said once: the next turn does not say it again.
+			expect(h.out().match(/■ job 1 ended/g)).toHaveLength(1);
+		},
+	);
 });
