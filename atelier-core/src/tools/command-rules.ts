@@ -117,6 +117,15 @@ function leavesProject({ value, raw }: { value: string; raw: string }): boolean 
 	return /(?:^|[=:,@])\/|^-[A-Za-z0-9]+\/|^--[\w-]+\//.test(value);
 }
 
+/** The places a word may name: itself, and the value of an option it carries (`--dir=x`, `-Cx`). */
+function placesOf(value: string): string[] {
+	const places = [value];
+	const equals = value.indexOf("=");
+	if (equals > 0) places.push(value.slice(equals + 1));
+	if (/^-[A-Za-z0-9]/.test(value) && value.length > 2) places.push(value.slice(2));
+	return places.filter((place) => place !== "");
+}
+
 /** Programs whose line is not one command the words show: they run a string, a file in this shell, or a structure. */
 const NEVER = new Set([
 	"eval",
@@ -198,6 +207,8 @@ interface Key {
 	project: boolean;
 	/** One of its words names a place outside the project: no project rule covers it. */
 	leavesProject: boolean;
+	/** The places its words may name, as written: the words, an option's attached value (`-Cdir`, `--dir=dir`). */
+	places: string[];
 }
 
 const ruleOf = ({ program, subcommand }: Key) => (subcommand === undefined ? program : `${program} ${subcommand}`);
@@ -258,6 +269,11 @@ function keyOf({ wrappers, words, writesFile, setsEnvironment }: SimpleCommand):
 		// `xargs` adds arguments read from its input, which the words never show.
 		// The program is what runs, not a place it works in: only a `..` or `~` in it (`../other/gradlew`) leaves.
 		leavesProject: wrappers.includes("xargs") || /\.\.|~/.test(program) || words.slice(1).some(leavesProject),
+		// A program written as a relative path (`./run.sh`) is the project's: a link there may lead out of it.
+		places: [
+			...(program.includes("/") && !program.startsWith("/") ? [program] : []),
+			...words.slice(1).flatMap(({ value }) => placesOf(value)),
+		],
 	};
 }
 
@@ -300,17 +316,27 @@ const covers = (rules: ReadonlySet<string>, key: Key) =>
 /**
  * Whether the allowed rules cover every command of the line. `project` are the rules allowed always in this
  * session's project: they cover a command only when no command of the line can take it elsewhere (no `cd`, `pushd`
- * or `popd`, no `xargs`, no word that names a place outside the project).
+ * or `popd`, no `xargs`, no word that names a place outside the project). `inProject` tells whether a place a word
+ * names, relative to the command's directory, really is in the project (a link in it may lead out); it is asked only
+ * when a project rule is needed, and without it every place counts as in.
  */
-export function coveredBy(command: string, allowed: Iterable<string>, project: Iterable<string> = []): boolean {
+export function coveredBy(
+	command: string,
+	allowed: Iterable<string>,
+	project: Iterable<string> = [],
+	inProject: (place: string) => boolean = () => true,
+): boolean {
 	const rules = new Set(allowed);
 	const projectRules = new Set(project);
 	if (rules.size === 0 && projectRules.size === 0) return false;
 	const keys = keysOf(command);
 	if (keys === undefined) return false;
+	if (keys.every((key) => covers(rules, key))) return true;
 	// A project rule holds the whole line to the project: any command of it can hand a place to the one it covers.
-	const staysInProject = !keys.some((key) => CHANGES_DIRECTORY.has(key.program) || key.leavesProject);
-	return keys.every((key) => covers(rules, key) || (staysInProject && covers(projectRules, key)));
+	const staysInProject = !keys.some(
+		(key) => CHANGES_DIRECTORY.has(key.program) || key.leavesProject || !key.places.every(inProject),
+	);
+	return staysInProject && keys.every((key) => covers(rules, key) || covers(projectRules, key));
 }
 
 /** How broadly `rule` may be kept: only for the session, in a project, or always; undefined when it is no rule `commandRules` could give. */
