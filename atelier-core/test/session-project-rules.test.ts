@@ -204,6 +204,23 @@ describe("rules allowed always in this project", () => {
 		expect(questions.map(({ callId }) => callId)).toEqual(["c1", "c2", "c3"]);
 	});
 
+	it("still covers grouped commands given input by session rules, as before", async () => {
+		await writeFile(join(app, "payload.mk"), "x\n");
+		const rules = new PermissionRules({ home, cwd: app });
+		await rules.allow([{ kind: "bash", value: "printf" }], "session");
+		await rules.allow([{ kind: "bash", value: "./run.sh" }], "session");
+		const { questions, results } = await run(
+			app,
+			[leave("printf 'SESSION_STDIN\\n' | (./run.sh)", "c1"), leave("(./run.sh) < payload.mk", "c2")],
+			{ rules },
+		);
+		expect(questions).toEqual([]);
+		expect(results.map(({ output }) => output)).toEqual([
+			expect.stringContaining("ran"),
+			expect.stringContaining("ran"),
+		]);
+	});
+
 	it("covers an absolute executable allowed for the project", async () => {
 		const rules = new PermissionRules({ home, cwd: app });
 		await rules.allow([{ kind: "bash", value: "/usr/bin/make" }], "project");

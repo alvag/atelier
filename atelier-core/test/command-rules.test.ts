@@ -302,6 +302,9 @@ describe("coveredBy with project rules", () => {
 		"printf x | (make -f -)",
 		"printf x | { make -f -; }",
 		"(make -f -) < Makefile.in",
+		"make -f -<payload.mk",
+		"make -f -<<'EOF'\ninclude /outside/Makefile\nEOF",
+		"make -f -<<<'include /outside/Makefile'",
 	])("never covers by a project rule a command whose standard input another part of the line gives: %j", (command) => {
 		expect(coveredBy(command, ["printf"], ["make"])).toBe(false);
 	});
@@ -313,6 +316,9 @@ describe("coveredBy with project rules", () => {
 		// A session rule covers it as before.
 		expect(coveredBy("printf x | make -f -", ["printf", "make"])).toBe(true);
 		expect(coveredBy("make -f - <<< 'all:'", ["make"])).toBe(true);
+		expect(coveredBy("printf x | (make -f -)", ["printf", "make"])).toBe(true);
+		expect(coveredBy("(make -f -) < payload.mk", ["make"])).toBe(true);
+		expect(coveredBy("make 'a<b'", [], ["make"])).toBe(true);
 	});
 
 	it("still covers such a line by a session rule", () => {
