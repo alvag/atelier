@@ -1,5 +1,6 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import { PasteFilter } from "../src/tui/dialog.ts";
 import { type QuestionAnswer, QuestionDialog } from "../src/tui/question-dialog.ts";
 import { type Paint, painter } from "../src/tui/style.ts";
 
@@ -207,6 +208,26 @@ describe("QuestionDialog's Type something row", () => {
 		shown.handleInput(PASTE(" three"));
 		shown.handleInput("\r");
 		expect(answers).toEqual([{ other: "one two three" }]);
+	});
+
+	it("keeps no paste for a later question that another list took while the filter was shared", () => {
+		const paste = new PasteFilter();
+		const first: QuestionAnswer[] = [];
+		const one = new QuestionDialog({ ...question, paste }, plain, (answer) => first.push(answer));
+		one.reveal();
+		one.handleInput("3");
+		one.handleInput("x");
+		one.handleInput("\r");
+		expect(first).toEqual([{ other: "x" }]);
+		// An approval after it, on the same filter, gets a paste: it answers nothing there, and is not kept.
+		paste.feed(PASTE("stale"));
+		const later: QuestionAnswer[] = [];
+		const two = new QuestionDialog({ ...question, paste }, plain, (answer) => later.push(answer));
+		two.reveal();
+		two.handleInput("3");
+		two.handleInput("y");
+		two.handleInput("\r");
+		expect(later).toEqual([{ other: "y" }]);
 	});
 
 	it("shows control characters as markers and sends them as typed", () => {
