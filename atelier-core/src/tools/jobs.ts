@@ -98,6 +98,8 @@ export interface JobsOptions {
 	scratchDir: string;
 	/** Called once per job when it is over, stopped jobs included. */
 	onEnded: (ended: EndedJob) => void;
+	/** Called once per job as it starts. */
+	onStarted?: (job: JobInfo) => void;
 }
 
 interface Entry {
@@ -178,6 +180,7 @@ export class Jobs {
 		};
 		entry.done = this.#watch(entry, request);
 		this.#entries.set(id, entry);
+		this.#options.onStarted?.({ ...info });
 		return { ...info };
 	}
 
