@@ -155,6 +155,7 @@ A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent
 | `ATELIER_MCP=off`            | No MCP servers.                                                                                                                         |
 | `ATELIER_LOGIN_CHECK=off`    | Do not check at start whether the backend has its login or key; the model catalog reads no credential either, and asks only models.dev. |
 | `ATELIER_MODEL_REFRESH=off`  | Do not ask models.dev or the providers for new models ([model catalog](docs/models.md)).                                                |
+| `ATELIER_OFFLINE=1`          | Same as `ATELIER_MODEL_REFRESH=off`.                                                                                                    |
 | `ATELIER_CODEX_VARIANT`      | `legacy` or `chatgpt`: the OpenAI sign-in `openai-codex` uses, instead of the Codex one first and ChatGPT after.                        |
 | `ATELIER_SCRATCH_SWEEP=off`  | No cleanup of the temporary directories that crashed sessions left ([temporary directories](docs/architecture.md)).                     |
 

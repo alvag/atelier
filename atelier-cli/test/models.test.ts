@@ -66,6 +66,13 @@ it("asks nothing with ATELIER_MODEL_REFRESH=off, and says so", async () => {
 	expect(out).toContain("anthropic-api · the code's list\n");
 });
 
+it("asks nothing offline (ATELIER_OFFLINE=1), even with --refresh, and says so", async () => {
+	const { code, out } = await models(["--refresh"], { ATELIER_OFFLINE: "1" });
+	expect(code).toBe(0);
+	expect(out.split("\n")[0]).toBe("ATELIER_OFFLINE=1: nothing was asked.");
+	expect(out).not.toContain("Refreshed");
+});
+
 it("takes only --refresh, and --refresh only with models", async () => {
 	expect(await models(["now"])).toMatchObject({ code: 2 });
 	expect((await models(["--json"])).code).toBe(2);

@@ -1,10 +1,4 @@
-import {
-	catalogFile,
-	DynamicModelCatalog,
-	defaultCatalogSources,
-	modelRefreshEnabled,
-	readCatalog,
-} from "@atelier/core";
+import { catalogFile, DynamicModelCatalog, defaultCatalogSources, modelRefreshOff, readCatalog } from "@atelier/core";
 import { BACKEND_MODELS, BACKEND_NAMES } from "@atelier/core/protocol";
 
 export interface ModelsIO {
@@ -20,7 +14,8 @@ export interface ModelsIO {
  */
 export async function runModels(options: { refresh?: true }, io: ModelsIO): Promise<number> {
 	const file = catalogFile(io.home);
-	const network = modelRefreshEnabled(io.env);
+	const off = modelRefreshOff(io.env);
+	const network = off === undefined;
 	const catalog = new DynamicModelCatalog({
 		file,
 		// Asked for by the user: a key in the Keychain may be read for --refresh.
@@ -28,7 +23,7 @@ export async function runModels(options: { refresh?: true }, io: ModelsIO): Prom
 		network,
 	});
 	if (options.refresh) {
-		if (!network) io.stdout("ATELIER_MODEL_REFRESH=off: nothing was asked.\n");
+		if (!network) io.stdout(`${off}: nothing was asked.\n`);
 		else {
 			const outcomes = await catalog.refresh({ force: true });
 			const said = Object.entries(outcomes).map(([source, outcome]) => `${source} ${outcome}`);

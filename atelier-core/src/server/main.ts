@@ -46,6 +46,7 @@ Environment:
   ATELIER_MODEL_REFRESH=off
                          Offer the models of the code and of ~/.atelier/models.json
                          without asking models.dev or the providers for new ones
+  ATELIER_OFFLINE=1      The same (any value but empty or 0)
   ATELIER_ALLOW_ROOT     As root (uid 0) the server refuses to start unless this is exactly
                          "I accept the risk"; it then warns on every start
   ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their

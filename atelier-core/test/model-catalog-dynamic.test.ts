@@ -7,6 +7,7 @@ import {
 	catalogFile,
 	DynamicModelCatalog,
 	ModelData,
+	modelRefreshEnabled,
 	readCatalog,
 	useModelData,
 } from "../src/model-catalog/index.ts";
@@ -211,6 +212,29 @@ it("drops an odd entry of the cache file alone", async () => {
 	]);
 	expect(await catalog.models("opencode-go")).toEqual(BACKEND_MODELS["opencode-go"]);
 	expect(Object.getPrototypeOf((await readCatalog(file)).sources)).toBe(Object.prototype);
+});
+
+it("asks no source, at start or for Claude Code, offline (ATELIER_OFFLINE=1) or with ATELIER_MODEL_REFRESH=off", async () => {
+	expect(modelRefreshEnabled({})).toBe(true);
+	expect(modelRefreshEnabled({ ATELIER_OFFLINE: "0" })).toBe(true);
+	expect(modelRefreshEnabled({ ATELIER_OFFLINE: "" })).toBe(true);
+	for (const env of [{ ATELIER_OFFLINE: "1" }, { ATELIER_MODEL_REFRESH: "off" }]) {
+		expect(modelRefreshEnabled(env)).toBe(false);
+		const asked: string[] = [];
+		const catalog = new DynamicModelCatalog({
+			file,
+			sources: [anthropic(["claude-new-6"], asked)],
+			network: modelRefreshEnabled(env),
+		});
+		expect(await catalog.start()).toEqual({});
+		expect(await catalog.refresh({ force: true })).toEqual({});
+		let listed = 0;
+		await catalog.listClaudeCode(async () => {
+			listed++;
+			return [];
+		});
+		expect({ asked, listed }).toEqual({ asked: [], listed: 0 });
+	}
 });
 
 it("does not ask the network when it is off, and still offers what the cache holds", async () => {
