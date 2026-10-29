@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { closeSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { visibleText } from "../text.ts";
-import { JOB_MARK, SWEEP_SCRIPT, sweepJob } from "./job-sweep.ts";
+import { JOB_MARK, type ProcessList, SWEEP_SCRIPT, sweepJob } from "./job-sweep.ts";
 import { MAX_LINE_CHARS } from "./limits.ts";
 
 /** Jobs that may run at once in one session: an orchestrator watches several flows and their CI. */
@@ -100,6 +100,8 @@ export interface JobsOptions {
 	onEnded: (ended: EndedJob) => void;
 	/** Called once per job as it starts. */
 	onStarted?: (job: JobInfo) => void;
+	/** How the processes are listed to find a job's tree; the system's by default, a slow one in tests. */
+	listProcesses?: ProcessList;
 }
 
 interface Entry {
@@ -110,6 +112,8 @@ interface Entry {
 	mark: string;
 	/** What a stop found of the job's tree: still killed once a parent that tied it to the job is gone. */
 	known: Set<number>;
+	/** The stop's listing did not answer in time. */
+	unlisted?: boolean;
 	sink: JobOutput;
 	/** The command exited (or never started): stopping it now changes nothing. */
 	exited: boolean;
@@ -213,8 +217,15 @@ export class Jobs {
 			return { outcome: "ended", job: this.#snapshot(entry) };
 		}
 		entry.stopping = true;
-		if (entry.child.pid !== undefined)
-			for (const pid of await sweepJob(entry.child.pid, entry.mark, "SIGTERM").catch(() => [])) entry.known.add(pid);
+		if (entry.child.pid !== undefined) {
+			const swept = await sweepJob(entry.child.pid, entry.mark, "SIGTERM", this.#options.listProcesses).catch(() => ({
+				signaled: [],
+				listed: false,
+			}));
+			for (const pid of swept.signaled) entry.known.add(pid);
+			// A listing that did not answer is not waited for again at the end: the group and what was found are killed.
+			if (!swept.listed) entry.unlisted = true;
+		}
 		killGroup(entry.child, "SIGTERM");
 		const timer = setTimeout(() => {
 			killGroup(entry.child, "SIGKILL");
@@ -253,7 +264,8 @@ export class Jobs {
 			// sweep lists the tree before it kills anything, so no parent dies before its children are found; it is best
 			// effort, and whatever it meets the job still ends. The group's own kill covers a sweep that could list nothing,
 			// and what a stop found is killed too: a parent that died since no longer leads to it.
-			await sweepJob(child.pid, entry.mark).catch(() => []);
+			if (!entry.unlisted)
+				await sweepJob(child.pid, entry.mark, "SIGKILL", this.#options.listProcesses).catch(() => {});
 			killGroup(child, "SIGKILL");
 			killPids(entry.known);
 			// A process the sweep could not find may still hold the output pipes: the job ends without waiting for it.
