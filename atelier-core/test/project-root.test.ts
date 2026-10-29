@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { projectRoot } from "../src/index.ts";
+import { projectOf, projectRoot } from "../src/index.ts";
 
 let root: string;
 
@@ -137,6 +137,42 @@ describe("projectRoot", () => {
 		await bareLike(cache, '[core]\n\tbare = "true"\n');
 		await mkdir(join(cache, "objects", "probe"), { recursive: true });
 		expect(await projectRoot(join(cache, "objects", "probe"))).toBe(cache);
+	});
+
+	it("does not inherit an enclosing project for a bare repo with a symlinked config", async () => {
+		const outer = join(root, "outer");
+		const bare = join(outer, "bare");
+		await mkdir(join(outer, ".git"), { recursive: true });
+		await mkdir(join(bare, "objects"), { recursive: true });
+		await mkdir(join(bare, "refs"));
+		await mkdir(join(bare, "sub"));
+		await writeFile(join(bare, "HEAD"), "ref: refs/heads/main\n");
+		await writeFile(join(root, "config"), "[core]\n bare = true\n");
+		await symlink(join(root, "config"), join(bare, "config"));
+		expect(await projectOf(join(bare, "sub"))).toEqual({ project: bare, checkout: bare });
+	});
+
+	it("does not inherit an enclosing project for a bare-looking folder without a config, nor with a link to none", async () => {
+		const outer = join(root, "outer");
+		const bare = join(outer, "bare");
+		await mkdir(join(outer, ".git"), { recursive: true });
+		await mkdir(join(bare, "objects"), { recursive: true });
+		await mkdir(join(bare, "refs"));
+		await mkdir(join(bare, "sub"));
+		await writeFile(join(bare, "HEAD"), "ref: refs/heads/main\n");
+		expect(await projectOf(join(bare, "sub"))).toEqual({ project: bare, checkout: bare });
+		await symlink(join(root, "missing"), join(bare, "config"));
+		expect(await projectOf(join(bare, "sub"))).toEqual({ project: bare, checkout: bare });
+	});
+
+	it("goes on past a bare-looking folder whose config says with certainty it is not bare", async () => {
+		const outer = join(root, "outer");
+		await mkdir(join(outer, ".git"), { recursive: true });
+		await mkdir(join(outer, ".git", "objects", "pack"), { recursive: true });
+		await mkdir(join(outer, ".git", "refs"));
+		await writeFile(join(outer, ".git", "HEAD"), "ref: refs/heads/main\n");
+		await writeFile(join(outer, ".git", "config"), "[core]\n\tbare = false\n");
+		expect(await projectRoot(join(outer, ".git", "objects", "pack"))).toBe(outer);
 	});
 
 	it("is a submodule's own folder, and the folder holding a .git file it cannot follow", async () => {
