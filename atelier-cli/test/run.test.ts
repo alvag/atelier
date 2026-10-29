@@ -1965,6 +1965,31 @@ describe("saved sessions", () => {
 		expect(h.out()).not.toContain("child words");
 	});
 
+	it("leaves the questions the user answered out of a line-by-line resume", async () => {
+		const store = new SessionStore(home);
+		const record = store.create(cwd);
+		record.config({ backend: "claude-code", mode: "normal" });
+		record.prompt("t1", "pick");
+		const questions = [
+			{
+				id: "q1",
+				question: "Which one?",
+				options: [
+					{ id: "a", label: "A", recommended: true },
+					{ id: "b", label: "B" },
+				],
+			},
+		];
+		record.event({ type: "user_question_requested", callId: "u1", questions, seq: 1, turnId: "t1" });
+		const result = { status: "answered" as const, answers: [{ questionId: "q1", optionId: "b" }] };
+		record.event({ type: "user_question_resolved", callId: "u1", result, seq: 2, turnId: "t1" });
+		record.event({ type: "text_delta", text: "B it is", seq: 3, turnId: "t1" });
+		await record.flush();
+		const { h } = await resumeWith(["--resume", record.id, "go"]);
+		expect(h.out().startsWith(`resumed session ${record.id}: 1 turn\n> pick\nB it is\n`)).toBe(true);
+		expect(h.out()).not.toContain("Answered");
+	});
+
 	it("prints what the user steered during a turn after its prompt, as a prompt of its own", async () => {
 		const store = new SessionStore(home);
 		const record = store.create(cwd);

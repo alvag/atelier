@@ -2387,6 +2387,60 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(stub.log.commands.map((command) => command.command)).not.toContain("session.resume");
 	});
 
+	it("shows a resumed session's answered questions in the same block, between the prompt and the turn's text", async () => {
+		const h = harness([], { columns: 120 });
+		const questions = [
+			{
+				id: "q1",
+				question: "Which language should commit messages use?",
+				options: [
+					{ id: "en", label: "English", recommended: true },
+					{ id: "es", label: "Spanish" },
+				],
+			},
+		];
+		const event = (seq: number, body: Record<string, unknown>) => ({
+			type: "event",
+			event: { seq, turnId: "t1", ...body },
+		});
+		const entries = [
+			{ type: "prompt", turnId: "t1", text: "set up commits" },
+			event(1, { type: "tool_call_started", callId: "u1", tool: "ask_user", input: { questions } }),
+			event(2, { type: "user_question_requested", callId: "u1", questions }),
+			event(3, {
+				type: "user_question_resolved",
+				callId: "u1",
+				result: { status: "answered", answers: [{ questionId: "q1", optionId: "es" }] },
+			}),
+			event(4, {
+				type: "tool_call_finished",
+				callId: "u1",
+				ok: true,
+				summary: "User answered 1 question.",
+				truncated: false,
+			}),
+			{ type: "text", turnId: "t1", text: "Commits in Spanish, then." },
+		];
+		const stub = stubCore({
+			answer: (command) =>
+				command.command === "sessions.list"
+					? { sessions: [{ id: "old1", backend: "claude-code", resumable: true }] }
+					: command.command === "session.resume"
+						? { sessionId: "s1", entries }
+						: { sessionId: "s1" },
+		});
+		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+		const code = run(["--resume", "old1"], h.io, () => h.backend);
+		await until(() => h.screen.screen().includes("Commits in Spanish"));
+		const screen = h.screen.screen();
+		expect(screen).toContain("● Answered 1 question");
+		expect(screen).toContain("⎿ Which language should commit messages use?  → Spanish");
+		expect(screen.indexOf("> set up commits")).toBeLessThan(screen.indexOf("Answered 1 question"));
+		expect(screen.indexOf("Answered 1 question")).toBeLessThan(screen.indexOf("Commits in Spanish"));
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+	});
+
 	/** A TUI on a stub core that emits the approvals a test asks for, with no key guard. */
 	async function approvalCore() {
 		const h = harness([]);

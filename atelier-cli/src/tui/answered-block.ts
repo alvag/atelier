@@ -1,4 +1,4 @@
-import { type UserQuestion, type UserQuestionResult, visibleText } from "@atelier/core";
+import { type JsonValue, type UserQuestion, type UserQuestionResult, visibleText } from "@atelier/core";
 import { type Component, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Paint } from "./style.ts";
 
@@ -6,6 +6,20 @@ import type { Paint } from "./style.ts";
 export type AskOutcome = UserQuestionResult | { status: "not_asked" } | { status: "waiting" };
 
 const shown = (text: string) => visibleText(text).text;
+
+/** The questions of an `ask_user` call's input, or none when it holds something else. */
+export function questionsOf(input: JsonValue): UserQuestion[] {
+	const questions = typeof input === "object" && input !== null && !Array.isArray(input) ? input.questions : undefined;
+	if (!Array.isArray(questions)) return [];
+	return questions.filter(
+		(question): question is UserQuestion & JsonValue =>
+			typeof question === "object" &&
+			question !== null &&
+			!Array.isArray(question) &&
+			typeof question.question === "string" &&
+			Array.isArray(question.options),
+	);
+}
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 /** Text on one line, as shown: its line breaks as spaces, without the blanks at its edges (what was sent keeps them). */
