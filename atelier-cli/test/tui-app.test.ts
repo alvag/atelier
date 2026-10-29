@@ -4276,6 +4276,62 @@ describe("paste question", () => {
 });
 
 describe("TUI and background jobs", { timeout: 20_000 }, () => {
+	it.each(["default", "custom"])(
+		"keeps jobs in the fullscreen footer with %s item order and idle notices",
+		async (order) => {
+			if (order === "custom") {
+				await mkdir(join(home, ".atelier"));
+				await writeFile(
+					join(home, ".atelier", "settings.json"),
+					JSON.stringify({
+						kind: "atelier.settings",
+						version: 1,
+						tui: { statusLine: ["jobs", "cost", "mode", "model", "phase", "sandbox"] },
+					}),
+				);
+			}
+			const go = join(cwd, "go");
+			const command = `while [ ! -f ${go} ]; do sleep 0.1; done; echo done`;
+			const h = harness([
+				[
+					{ event: started },
+					{ event: { type: "phase_changed", phase: "implementing", source: "declared" } },
+					{ toolCall: { tool: "bash_background", input: { command, label: "ci wait" }, callId: "c1" } },
+					{ waitForInterrupt: true },
+				],
+				[{ event: finished }],
+			]);
+			const code = run(["--no-session", "--no-review"], h.io, () => h.backend);
+			try {
+				await until(h.screen.started);
+				h.screen.type("start it");
+				h.screen.type("\r");
+				await until(() => h.screen.screen().includes("⧗ job 1 started · ci wait · 1 running"));
+				const activity = order === "custom" ? "normal · implementing · sandbox ✗" : "normal · sandbox ✗ · implementing";
+				const withJobs = (jobs: string) => (order === "custom" ? ` ${jobs} · ${activity}` : ` ${activity} · ${jobs}`);
+				expect(h.screen.frame().at(-1)).toBe(withJobs("1 job"));
+				const top = h.screen.frame()[0];
+				expect(top).toContain("m · profile default");
+				expect(top).not.toMatch(/\b\d+ jobs?\b|notices? waiting/);
+				h.screen.type("\x1b");
+				await until(() => h.screen.screen().includes("interrupted"));
+				await writeFile(go, "");
+				await until(() => h.screen.frame().at(-1) === withJobs("1 notice waiting"));
+				expect(h.screen.screen()).toContain("■ job 1 ended · exit 0");
+				expect(h.screen.frame()[0]).toBe(top);
+				expect(h.backend.prompts).toHaveLength(1);
+				h.screen.type("continue");
+				h.screen.type("\r");
+				await until(() => h.screen.frame()[0]?.endsWith("$0.50") === true);
+				expect(h.backend.prompts[1]).toMatch(/^Background job 1 /);
+				expect(h.screen.frame().at(-1)).toBe(` ${activity}`);
+			} finally {
+				h.terminate(15);
+				expect(await code).toBe(143);
+			}
+		},
+	);
+
 	it("shows a job's start and end, counts it in the footer, and takes the turn its notice wakes as running", async () => {
 		const go = join(cwd, "go");
 		const command = `while [ ! -f ${go} ]; do sleep 0.1; done; echo done`;
@@ -4289,7 +4345,7 @@ describe("TUI and background jobs", { timeout: 20_000 }, () => {
 			[{ run: () => new Promise<void>((resolve) => (gate.release = resolve)) }, { event: finished }],
 			[{ event: finished }],
 		]);
-		const code = run(["--no-session"], h.io, () => h.backend);
+		const code = run(["--no-session", "--no-fullscreen"], h.io, () => h.backend);
 		await until(h.screen.started);
 		h.screen.type("start it");
 		h.screen.type("\r");
@@ -4324,7 +4380,7 @@ describe("TUI and background jobs", { timeout: 20_000 }, () => {
 			],
 			[{ event: finished }],
 		]);
-		const code = run(["--no-session"], h.io, () => h.backend);
+		const code = run(["--no-session", "--no-fullscreen"], h.io, () => h.backend);
 		await until(h.screen.started);
 		h.screen.type("start it");
 		h.screen.type("\r");
