@@ -109,6 +109,23 @@ describe("memory tool", () => {
 		);
 	});
 
+	it("sums a search up by how many memories it found", async () => {
+		const { session: s, send } = await session([
+			[
+				call("memory", SAVE, "s1"),
+				call("memory", { ...SAVE, title: "Use MCP again" }, "s2"),
+				call("memory", { action: "search", query: "MCP" }, "two"),
+				call("memory", { action: "search", query: "MCP", limit: 1 }, "one"),
+				call("memory", { action: "search", query: "nothing like it" }, "none"),
+				{ event: finished },
+			],
+		]);
+		const events = await send("go");
+		await s.close();
+		const summaries = events.flatMap((e) => (e.type === "tool_call_finished" ? [e.summary] : []));
+		expect(summaries.slice(2)).toEqual(["2 results", "1 result", "no results"]);
+	});
+
 	it.each([
 		["an Anthropic key in the content", { content: "key sk-ant-api03-abcdefghijklmnopqrstuvwx" }],
 		["a GitHub token in the title", { title: "token ghp_abcdefghijklmnopqrstuvwxyz0123456789" }],

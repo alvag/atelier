@@ -301,9 +301,10 @@ export function createMemoryTool(memory: MemoryPort): ToolDefinition {
 					case "search": {
 						if (!input.query?.trim()) return failed("search needs query.");
 						const hits = await memory.search(input.query, input.limit ?? SEARCH_LIMIT);
-						if (hits.length === 0) return done(`No memories match "${input.query}".`);
+						if (hits.length === 0) return done(`No memories match "${input.query}".`, "no results");
 						return done(
 							hits.map((hit) => `#${hit.id} [${hit.type}] ${hit.title} — ${oneLine(hit.preview)}`).join("\n"),
+							`${hits.length} result${hits.length === 1 ? "" : "s"}`,
 						);
 					}
 					case "get": {
@@ -344,8 +345,9 @@ function oneLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }
 
-function done(output: string): ToolOutcome {
-	return { ok: true, output, summary: output.split("\n")[0] ?? "", truncated: false };
+/** A call that worked; its summary is the output's first line unless one is given, like a search's `2 results`. */
+function done(output: string, summary = output.split("\n")[0] ?? ""): ToolOutcome {
+	return { ok: true, output, summary, truncated: false };
 }
 
 function failed(output: string): ToolOutcome {
