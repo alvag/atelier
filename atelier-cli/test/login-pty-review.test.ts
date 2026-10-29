@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,26 +113,49 @@ async function probe(mode: "redirect" | "cancel" | "handoff") {
 				? injectedRunner
 				: `process.argv=[process.execPath,'atelier','login','api-key','anthropic']; await import(${JSON.stringify(mainModule)});`),
 	);
-	const result = spawnSync("python3", ["-c", driver, process.execPath, runner, mode, folder, String(PROBE_BUDGET_S)], {
-		encoding: "utf8",
-		// Only if the driver itself hangs: its own deadline comes first.
-		timeout: (PROBE_BUDGET_S + 3) * 1000,
-		env: {
-			PATH: process.env.PATH,
-			HOME: home,
-			TMPDIR: process.env.TMPDIR,
-			NODE_COMPILE_CACHE: process.env.NODE_COMPILE_CACHE,
-			NO_UPDATE_NOTIFIER: "1",
-		},
+	const result = await runDriver(["-c", driver, process.execPath, runner, mode, folder, String(PROBE_BUDGET_S)], {
+		PATH: process.env.PATH,
+		HOME: home,
+		TMPDIR: process.env.TMPDIR,
+		NODE_COMPILE_CACHE: process.env.NODE_COMPILE_CACHE,
+		NO_UPDATE_NOTIFIER: "1",
 	});
 	expect(result.status, result.stderr).toBe(0);
 	return JSON.parse(result.stdout);
 }
 
+/** Runs the Python driver without blocking the worker; it is killed only if it outlives its own deadline. */
+function runDriver(
+	args: string[],
+	env: NodeJS.ProcessEnv,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+	return new Promise((resolve, reject) => {
+		const child = spawn("python3", args, {
+			env,
+			stdio: ["ignore", "pipe", "pipe"],
+			timeout: (PROBE_BUDGET_S + 3) * 1000,
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+			stderr += chunk;
+		});
+		child.on("error", reject);
+		child.on("close", (status) => resolve({ status, stdout, stderr }));
+	});
+}
+
 it.skipIf(!ptyAvailable)(
 	"(e) hides a key even when stdout is redirected but stdin is a terminal",
 	async () => {
-		const result = await probe("redirect");
+		// The probe never blocks the test worker: its timers, and Vitest's own timeout, keep running meanwhile.
+		let ticks = 0;
+		const ticking = setInterval(() => ticks++, 50);
+		const result = await probe("redirect").finally(() => clearInterval(ticking));
+		expect(ticks).toBeGreaterThan(0);
 		expect(result).toEqual({ echo_disabled: true, exit: 0, echo_leaked: false, restored: true });
 	},
 	30000,
