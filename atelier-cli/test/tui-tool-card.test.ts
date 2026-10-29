@@ -95,12 +95,12 @@ describe("ToolCard", () => {
 
 	it("shows any other tool's input as keys and values instead of JSON", () => {
 		const { lines } = card(
-			"memory",
+			"lookup",
 			{ action: "search", query: "TUI tool rendering colors", limit: 5, tags: ["a", "b"] },
 			{ summary: "search (1 result)" },
 		);
 		expect(lines.join("\n")).toMatchInlineSnapshot(`
-			" ✓ memory search · 1 result
+			" ✓ lookup search · 1 result
 			   │ action search
 			   │ query  TUI tool rendering colors
 			   │ limit  5
@@ -109,7 +109,7 @@ describe("ToolCard", () => {
 	});
 
 	it("names what another tool works on while it runs", () => {
-		expect(card("memory", { action: "search", query: "x" }).card.current()).toBe("memory search");
+		expect(card("lookup", { action: "search", query: "x" }).card.current()).toBe("lookup search");
 	});
 
 	it("cuts what the call works on, never its state, at a narrow width", () => {
@@ -133,8 +133,8 @@ describe("ToolCard", () => {
 		expect(failed.card.alerts()).toEqual(["<red>✗</> <bold>bash</> <red>ls · exit 1</>"]);
 		const grep = card("grep", { pattern: "mode" }, { summary: "mode: 1 match" }, { paint: tagged }).lines;
 		expect(grep[1]).toContain("<dim>pattern</> <yellow>mode</>");
-		const memory = card("memory", { action: "get", id: 7 }, { summary: "get" }, { paint: tagged }).lines;
-		expect(memory.join("\n")).toContain("<dim>id    </> <yellow>7</>");
+		const other = card("lookup", { action: "get", id: 7 }, { summary: "get" }, { paint: tagged }).lines;
+		expect(other.join("\n")).toContain("<dim>id    </> <yellow>7</>");
 	});
 
 	it("numbers a written file's lines and says how many more there are", () => {
@@ -466,5 +466,96 @@ describe("ToolCard with large input", () => {
 		// The first in the file moves nothing; the last moves by 39 lines for each edit before it.
 		expect(text).toContain(`   │     2 - l${count - 1}\n   │     2 + L${count - 1}\n   │     3 + more0`);
 		expect(text).toContain(`   │  ${2 * count} - l0\n   │ ${2 * count + 39 * (count - 1)} + L0`);
+	});
+});
+
+describe("ToolCard for memory", () => {
+	/** The folded card of one memory call, its lines without trailing blanks. */
+	function memory(input: JsonValue, finished?: Partial<Finished>, options: Parameters<typeof card>[3] = {}) {
+		const { card: tc } = card("memory", input, finished, options);
+		return tc.render(options.width ?? 80, false).map((line) => line.trimEnd());
+	}
+
+	it("shows a search as what it looked for and how many memories it found", () => {
+		const query = "session summary reference groups review";
+		expect(memory({ action: "search", query }, { summary: "2 results" })).toEqual([
+			` 🧠 search "${query}"`,
+			"    ↳ ✓ 2 results",
+		]);
+		expect(memory({ action: "search", query: "nothing" }, { summary: "no results" })).toEqual([
+			' 🧠 search "nothing"',
+			"    ↳ ✓ no results",
+		]);
+	});
+
+	it("shows a get as the id it read and the entry, without the id again", () => {
+		const lines = memory({ action: "get", id: 5519 }, { summary: "#5519 [session_summary] Session summary" });
+		expect(lines).toEqual([" 🧠 get #5519", "    ↳ ✓ [session_summary] Session summary"]);
+	});
+
+	it("shows a save as its title and the id it got, and the warning when there is one", () => {
+		const input = { action: "save", title: "Use MCP", type: "decision", content: "**What**: MCP" };
+		expect(memory(input, { summary: "Saved memory #5518." })).toEqual([' 🧠 save "Use MCP"', "    ↳ ✓ saved #5518"]);
+		const warned = memory(
+			input,
+			{ summary: "Saved memory #5518. Warning: conflict detection did not finish" },
+			{
+				paint: tagged,
+				width: 120,
+			},
+		);
+		expect(warned[1]).toBe("    ↳ <green>✓</> saved #5518 <yellow>· warning: conflict detection did not finish</>");
+	});
+
+	it("shows a failure in red with its text, and how long the call took", () => {
+		const lines = memory(
+			{ action: "get", id: 99 },
+			{ ok: false, summary: "No memory #99." },
+			{ took: 1500, paint: tagged },
+		);
+		expect(lines).toEqual([" 🧠 <bold>get</> #99", "    ↳ <red>✗</> <red>No memory #99.</> <dim>· 1.5s</>"]);
+	});
+
+	it("says what a memory call is doing while it runs", () => {
+		expect(memory({ action: "search", query: "x" })).toEqual([' 🧠 search "x"', "    ↳ ◐ searching…"]);
+		expect(memory({ action: "save", title: "t" })[1]).toBe("    ↳ ◐ saving…");
+		expect(memory({ action: "get", id: 1 })[1]).toBe("    ↳ ◐ reading…");
+		expect(card("memory", { action: "search", query: "x" }).card.current()).toBe('memory search "x"');
+	});
+
+	it("adds, open, what its two lines leave out under a bar", () => {
+		const { lines } = card(
+			"memory",
+			{ action: "save", title: "Use MCP", type: "decision", content: "**What**: MCP\n**Why**: stdio", topicKey: "a/b" },
+			{ summary: "Saved memory #3." },
+		);
+		expect(lines.join("\n")).toMatchInlineSnapshot(`
+			" 🧠 save "Use MCP"
+			    ↳ ✓ saved #3
+			    │ type     decision
+			    │ content  **What**: MCP
+			    │          **Why**: stdio
+			    │ topicKey a/b"
+		`);
+		const search = card("memory", { action: "search", query: "x" }, { summary: "1 result" }).lines;
+		expect(search).toEqual([' 🧠 search "x"', "    ↳ ✓ 1 result"]);
+	});
+
+	it("cuts the subject inside its quotes at a narrow width, and leaves the icon out when it is too narrow", () => {
+		const query = "x".repeat(100);
+		const lines = memory({ action: "search", query }, { summary: "2 results" }, { width: 30 });
+		expect(lines[0]).toMatch(/^ 🧠 search "x+…"$/);
+		expect(visibleWidth(lines[0] ?? "")).toBe(30);
+		const narrow = memory({ action: "search", query }, { summary: "2 results" }, { width: 20 });
+		expect(narrow[0]).toMatch(/^ search "x+…"$/);
+		expect(narrow[1]).toBe(" ↳ ✓ 2 results");
+		expect(narrow.every((line) => visibleWidth(line) <= 20)).toBe(true);
+	});
+
+	it("keeps a folded card off the card's background", () => {
+		const t = new Tones(true);
+		t.match({ r: 30, g: 30, b: 30 }, "truecolor");
+		const lines = memory({ action: "search", query: "x" }, { summary: "1 result" }, { tones: t });
+		expect(lines).toEqual([' 🧠 search "x"', "    ↳ ✓ 1 result"]);
 	});
 });

@@ -157,6 +157,37 @@ const STATES = {
 
 const stateOf = (ok: boolean | undefined) => STATES[ok === undefined ? "running" : ok ? "ok" : "failed"];
 
+const MEMORY_TOOL = "memory";
+const MEMORY_ICON = "🧠";
+/** Columns under which a memory card leaves its icon out, so a terminal that draws it wider never overflows. */
+const MEMORY_ICON_WIDTH = 24;
+/** The input fields a memory card's two lines already show; open, it adds the rest. */
+const MEMORY_SHOWN = new Set(["action", "query", "id", "title"]);
+/** What a memory call says while it runs, by its action. */
+const MEMORY_DOING: Record<string, string> = { search: "searching…", get: "reading…", save: "saving…" };
+
+/** A memory call's action and what it is about: the query or the title, on one line, or the id as `#7`. */
+function memoryCall(input: JsonValue): { action: string; subject?: string; quoted: boolean } {
+	const action = shown(field(input, "action") ?? "");
+	if (action === "get") {
+		const id = isRecord(input) ? input.id : undefined;
+		return { action, ...(typeof id === "number" ? { subject: `#${id}` } : {}), quoted: false };
+	}
+	const text = field(input, action === "save" ? "title" : "query");
+	if (text === undefined) return { action, quoted: false };
+	return { action, subject: shown(text).replace(/\s+/g, " ").trim(), quoted: true };
+}
+
+/** What a memory call came to: `saved #5518` and its warning apart, or the entry read without its id again. */
+function memoryOutcome(input: JsonValue, summary: string): { outcome: string; warning?: string } {
+	const saved = /^Saved memory #(\d+)\.(?: Warning: (.*))?$/s.exec(summary);
+	if (saved) return { outcome: `saved #${saved[1]}`, ...(saved[2] === undefined ? {} : { warning: shown(saved[2]) }) };
+	const { action, subject } = memoryCall(input);
+	if (action === "get" && subject !== undefined && summary.startsWith(`${subject} `))
+		return { outcome: shown(summary.slice(subject.length + 1)) };
+	return { outcome: shown(summary) };
+}
+
 /** What a subagent, the verifier or a review role did, grouped under the call or the step that started it. */
 export class AgentActivity {
 	agent: string | undefined;
@@ -281,9 +312,14 @@ export class ToolCard implements Component {
 		return this.#finished?.ok === false || (this.#activity?.failures().length ?? 0) > 0;
 	}
 
-	/** `bash pnpm test`, or `task worker · edit src/a.ts` with the call its subagent runs now. */
+	/** Whether the call shows its own lines even in a folded block, as a memory call does. */
+	get pinned(): boolean {
+		return this.tool === MEMORY_TOOL;
+	}
+
+	/** `bash pnpm test`, `memory search "query"`, or `task worker · edit src/a.ts` with the call its subagent runs now. */
 	current(): string {
-		const label = `${shown(this.tool)} ${target(this.#input)}`.trimEnd();
+		const label = `${shown(this.tool)} ${this.pinned ? this.#memoryCallText() : target(this.#input)}`.trimEnd();
 		const child = this.#activity?.current();
 		return child === undefined ? label : `${label} · ${child}`;
 	}
@@ -331,8 +367,9 @@ export class ToolCard implements Component {
 
 	/** Every line on the card's background to the last column, when there is one. */
 	render(width: number, open = this.#view.expanded): string[] {
-		const lines = this.#lines(width, open);
-		if (!this.#tones.on) return lines;
+		const lines = this.pinned ? this.#memoryLines(width, open) : this.#lines(width, open);
+		// A memory card folded is part of the block's summary, not a card of its own.
+		if (!this.#tones.on || (this.pinned && !open)) return lines;
 		return lines.map((line) => this.#tones.card(`${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`));
 	}
 
@@ -354,6 +391,48 @@ export class ToolCard implements Component {
 		lines.push(...indented(details, width, `   ${bar} `));
 		if (this.#activity) lines.push(...indented(this.#activity.details(paint), width, "     "));
 		return lines;
+	}
+
+	/** `search "query"`, `get #7`, `save "title"`. */
+	#memoryCallText(): string {
+		const { action, subject, quoted } = memoryCall(this.#input);
+		if (subject === undefined) return action;
+		return `${action} ${quoted ? `"${subject}"` : subject}`;
+	}
+
+	/**
+	 * A memory call in two lines, `🧠 search "query"` and `↳ ✓ 2 results`: what it did and to what, cut inside its quotes,
+	 * then how it came out. Open, it adds under a bar the input the two lines leave out, such as a save's content.
+	 */
+	#memoryLines(width: number, open: boolean): string[] {
+		const paint = this.#paint;
+		const done = this.#finished;
+		const state = stateOf(done?.ok);
+		const lead = width >= MEMORY_ICON_WIDTH ? ` ${MEMORY_ICON} ` : " ";
+		const { action, subject, quoted } = memoryCall(this.#input);
+		const head = `${lead}${paint("bold", action)}`;
+		let first = head;
+		if (subject !== undefined) {
+			const room = Math.max(1, width - visibleWidth(head) - 1 - (quoted ? 2 : 0));
+			first = `${head} ${quoted ? `"${cut(subject, room)}"` : cut(subject, room)}`;
+		}
+		const parts = [paint(state.style, state.mark)];
+		if (done === undefined) parts.push(MEMORY_DOING[action] ?? "running…");
+		else {
+			const { outcome, warning } = memoryOutcome(this.#input, done.summary);
+			parts.push(done.ok ? outcome : paint("red", outcome));
+			if (warning !== undefined) parts.push(paint("yellow", `· warning: ${warning}`));
+			if (this.#tookMs !== undefined && this.#tookMs >= 1000)
+				parts.push(paint("dim", `· ${(this.#tookMs / 1000).toFixed(1)}s`));
+		}
+		const second = `${" ".repeat(visibleWidth(lead))}↳ ${parts.join(" ")}`;
+		const lines = [truncateToWidth(first, width), truncateToWidth(second, width)];
+		if (!open || !isRecord(this.#input)) return lines;
+		const rest = Object.fromEntries(Object.entries(this.#input).filter(([key]) => !MEMORY_SHOWN.has(key)));
+		if (Object.keys(rest).length === 0) return lines;
+		const bar = paint(state.style, hasColor(paint) ? "▎" : "│");
+		// The bar under the `↳`, so the details read as the outcome's.
+		return [...lines, ...indented(fieldLines(rest, paint), width, `${" ".repeat(visibleWidth(lead))}${bar} `)];
 	}
 }
 

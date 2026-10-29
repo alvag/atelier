@@ -41,7 +41,7 @@ describe("Conversation", () => {
 				{ type: "tool_call_finished", callId: "c5", ok: true, summary: "a.ts (1 edit)", truncated: false },
 				{ type: "tool_call_started", callId: "c6", tool: "grep", input: { pattern: "mode" } },
 				{ type: "tool_call_finished", callId: "c6", ok: true, summary: "mode (3 matches)", truncated: false },
-				{ type: "tool_call_started", callId: "c7", tool: "memory", input: { action: "search" } },
+				{ type: "tool_call_started", callId: "c7", tool: "lookup", input: { action: "search" } },
 				{ type: "tool_call_finished", callId: "c7", ok: true, summary: "search (1 result)", truncated: false },
 				{ type: "text_delta", text: "Done." },
 			],
@@ -205,6 +205,45 @@ describe("Conversation", () => {
 		expect(text).toContain("✗ bash pnpm test · exit 1");
 		expect(text).toContain("sandbox blocked: network to registry.npmjs.org");
 		expect(text).not.toContain("pnpm install");
+	});
+
+	it("keeps each memory call's two lines in sight while the block is folded, and leaves them out of the summary", () => {
+		const { text } = shown([
+			{ type: "tool_call_started", callId: "m1", tool: "memory", input: { action: "search", query: "tui cards" } },
+			{ type: "tool_call_finished", callId: "m1", ok: true, summary: "2 results", truncated: false },
+			{ type: "tool_call_started", callId: "c1", tool: "read", input: { path: "a.ts" } },
+			{ type: "tool_call_finished", callId: "c1", ok: true, summary: "a.ts (2 lines)", truncated: false },
+			{ type: "tool_call_started", callId: "m2", tool: "memory", input: { action: "get", id: 9 } },
+			{ type: "tool_call_finished", callId: "m2", ok: false, summary: "No memory #9.", truncated: false },
+			{ type: "tool_call_started", callId: "m3", tool: "memory", input: { action: "save", title: "Cards" } },
+		]);
+		expect(text.trimEnd()).toBe(
+			[
+				" ⎿ Read 1 file",
+				'   🧠 search "tui cards"',
+				"      ↳ ✓ 2 results",
+				"   🧠 get #9",
+				"      ↳ ✗ No memory #9.",
+				'   🧠 save "Cards"',
+				"      ↳ ◐ saving…",
+			].join("\n"),
+		);
+	});
+
+	it("shows a block of memory calls alone as their lines, and opens them into their details", () => {
+		const bodies: Body[] = [
+			{
+				type: "tool_call_started",
+				callId: "m1",
+				tool: "memory",
+				input: { action: "save", title: "T", type: "decision" },
+			},
+			{ type: "tool_call_finished", callId: "m1", ok: true, summary: "Saved memory #4.", truncated: false },
+		];
+		expect(shown(bodies).text.trimEnd()).toBe(['   🧠 save "T"', "      ↳ ✓ saved #4"].join("\n"));
+		expect(shown(bodies, 80, true).text.trimEnd()).toBe(
+			['   🧠 save "T"', "      ↳ ✓ saved #4", "      │ type decision"].join("\n"),
+		);
 	});
 
 	it("shows the call running now in the summary's place, a subagent's own call included", () => {
