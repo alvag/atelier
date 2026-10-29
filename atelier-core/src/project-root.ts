@@ -1,4 +1,4 @@
-import { readFile, realpath, stat } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 /**
@@ -11,8 +11,9 @@ export async function projectRoot(cwd: string): Promise<string> {
 	const start = await realpath(cwd);
 	for (let dir = start; ; dir = dirname(dir)) {
 		const dotGit = join(dir, ".git");
-		const info = await stat(dotGit).catch(() => undefined);
-		if (info?.isDirectory()) return dir;
+		// A `.git` that is a link is never followed to another checkout: the folder holding it is the project.
+		const info = await lstat(dotGit).catch(() => undefined);
+		if (info?.isDirectory() || info?.isSymbolicLink()) return dir;
 		if (info?.isFile()) return (await mainCheckout(dir, dotGit)) ?? dir;
 		if (dirname(dir) === dir) return start;
 	}
@@ -34,7 +35,8 @@ async function mainCheckout(dir: string, dotGit: string): Promise<string | undef
 		const commonDir = await realpath(resolve(gitDir, common));
 		if (dirname(gitDir) !== join(commonDir, "worktrees")) return undefined;
 		const back = (await readFile(join(gitDir, "gitdir"), "utf8")).trim();
-		if ((await realpath(resolve(gitDir, back))) !== (await realpath(dotGit))) return undefined;
+		// `dir` is a real path and `dotGit` a plain file in it: the main checkout must name this very file.
+		if ((await realpath(resolve(gitDir, back))) !== dotGit) return undefined;
 		// A bare repository is its own git directory; otherwise the checkout is the folder that holds `.git`.
 		return basename(commonDir) === ".git" ? dirname(commonDir) : commonDir;
 	} catch {

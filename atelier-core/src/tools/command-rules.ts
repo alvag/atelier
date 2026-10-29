@@ -255,7 +255,8 @@ function keyOf({ wrappers, words, writesFile, setsEnvironment }: SimpleCommand):
 		runsCode: wrappers.includes("sudo") || isRunner(program, subcommand),
 		launcher: launcher !== undefined || runsInterpreter,
 		project: isProjectProgram(program),
-		leavesProject: words.some(leavesProject),
+		// `xargs` adds arguments read from its input, which the words never show.
+		leavesProject: wrappers.includes("xargs") || words.some(leavesProject),
 	};
 }
 

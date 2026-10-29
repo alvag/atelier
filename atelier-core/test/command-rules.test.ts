@@ -254,6 +254,12 @@ describe("coveredBy with project rules", () => {
 		).toBe(false);
 	});
 
+	it("never covers by a project rule a command whose arguments xargs reads from its input", () => {
+		expect(coveredBy("printf '/tmp/other\\n' | xargs make -C", ["printf"], ["make"])).toBe(false);
+		expect(coveredBy("xargs make -C < targets.txt", [], ["make"])).toBe(false);
+		expect(coveredBy("xargs make -C < targets.txt", ["make"])).toBe(true);
+	});
+
 	it("still covers such a line by a session rule", () => {
 		expect(coveredBy("pnpm -C /other install", ["pnpm"])).toBe(true);
 	});
