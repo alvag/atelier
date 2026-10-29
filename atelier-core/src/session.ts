@@ -462,6 +462,8 @@ export class Session {
 	 * wait for the user's next prompt and start no turn of their own.
 	 */
 	#jobsHeld = false;
+	/** Ends the wait of a woken turn for its notices: the session's close calls it. */
+	#gathering: (() => void) | undefined;
 
 	private constructor(options: SessionOptions) {
 		const subagents = options.subagents;
@@ -750,9 +752,9 @@ export class Session {
 	async *#send(prompt: string, turnId: string, entered?: QueuedMessage, woken = false): AsyncGenerator<AtelierEvent> {
 		yield* this.#stream(turnId, woken ? undefined : prompt, entered, async (turn, signal, backendSession) => {
 			// A woken turn waits a moment for the notices of jobs ending with the first, then takes all there are.
-			if (woken) await untilAborted(new Promise<void>((resolve) => setTimeout(resolve, WAKE_GATHER_MS)), signal);
-			// Interrupted while it waited: it ends before the backend, and the notices wait for the user's next prompt.
-			if (woken && signal.aborted)
+			if (woken) await this.#gatherNotices(signal);
+			// Interrupted or closed while it waited: it ends before the backend, and the notices wait for the next prompt.
+			if (woken && (signal.aborted || this.#closed))
 				return { type: "turn_finished", stopReason: "interrupted", usage: { ...ZERO_USAGE } };
 			// The user's words reach the feature log as the turn starts, without delaying the backend;
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
@@ -1546,6 +1548,7 @@ export class Session {
 			this.#closed = true;
 			this.#userQuestions.close();
 			const scratch = this.#scratch;
+			this.#gathering?.();
 			// The jobs stop whatever else fails below: apart from the chain, and waited for before their files go.
 			const stoppingJobs = this.#jobs?.stopAll().catch(() => {});
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
@@ -1642,6 +1645,25 @@ export class Session {
 		if (idle !== undefined) this.#sayIdle(idle, ended);
 		else this.#say(ended);
 		if (notice !== undefined && this.#turn === undefined && !this.#closed && !this.#jobsHeld) this.#options.wake?.();
+	}
+
+	/**
+	 * The woken turn's wait for the notices of jobs ending with the first: WAKE_GATHER_MS, cut short by an interrupt or
+	 * the session's close, and its timer cleared whichever comes first.
+	 */
+	#gatherNotices(signal: AbortSignal): Promise<void> {
+		return new Promise<void>((resolve) => {
+			const done = () => {
+				clearTimeout(timer);
+				signal.removeEventListener("abort", done);
+				if (this.#gathering === done) this.#gathering = undefined;
+				resolve();
+			};
+			const timer = setTimeout(done, WAKE_GATHER_MS);
+			signal.addEventListener("abort", done, { once: true });
+			this.#gathering = done;
+			if (signal.aborted) done();
+		});
 	}
 
 	/** An event outside any turn: to its listener, and saved with the session as a turn's events are (`turnId` empty). */

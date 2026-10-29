@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -194,6 +194,32 @@ describe("background jobs in a session", () => {
 		expect(rest.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "interrupted" });
 		expect(backend.prompts).toHaveLength(1);
 		expect(session.jobs.waiting).toBe(1);
+	});
+
+	it.each(["interrupted", "closed"])("leaves no timer of a woken turn's wait once the session is %s", async (how) => {
+		const { session, woke } = await started(() => [
+			[call("bash_background", { command: waitsForGo() }, "c1"), { event: finished }],
+			[{ event: finished }],
+		]);
+		for await (const _event of session.send("start it")) {
+		}
+		await go();
+		await until(() => woke() === 1);
+		// From here on only fake timers: what the woken turn sets is counted, and nothing fires by itself.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const turn = session.nextQueued() as AsyncGenerator<AtelierEvent>;
+			await turn.next();
+			expect(vi.getTimerCount()).toBe(1);
+			if (how === "interrupted") await session.interrupt();
+			else await session.close();
+			const ended: AtelierEvent[] = [];
+			for (let next = await turn.next(); !next.done; next = await turn.next()) ended.push(next.value);
+			expect(ended.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "interrupted" });
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it.each(["interrupted", "error"])(
