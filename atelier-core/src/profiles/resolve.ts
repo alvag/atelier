@@ -85,7 +85,7 @@ export async function resolveProfile({
 		}
 		const profile = file.profiles.get(name);
 		if (profile !== undefined) return { name, origin, profile, reports };
-		reports.push({ path: source, message: `profile ${describeProfileName(name)} does not exist, skipped` });
+		reports.push({ path: source, message: `profile "${name}" does not exist, skipped` });
 	}
 	return { origin: "default", profile: {}, reports };
 }

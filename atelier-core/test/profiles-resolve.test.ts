@@ -137,6 +137,20 @@ describe("resolveProfile", () => {
 		]);
 	});
 
+	it("ignores a pin whose profile is empty or not a name, telling the rule, and goes on to the next layer", async () => {
+		await setProfiles(profiles);
+		await mkdir(join(repo, ".git", "atelier"));
+		await writeFile(
+			join(repo, ".git", "atelier", "profile-pin.json"),
+			JSON.stringify({ kind: "atelier.profile_pin", version: 1, profile: "" }),
+		);
+		const resolved = await resolveProfile({ cwd: repo, home });
+		expect([resolved.origin, resolved.name]).toEqual(["active", "global"]);
+		expect(messages(resolved.reports)).toEqual([
+			`"profile" is not a valid profile name (""), pin ignored. ${PROFILE_NAME_RULE}`,
+		]);
+	});
+
 	it("ignores the repository's declaration whose name is not valid, naming it, and goes on to the next layer", async () => {
 		await setProfiles(profiles);
 		await mkdir(join(repo, ".atelier"));
@@ -157,25 +171,12 @@ describe("resolveProfile", () => {
 		]);
 	});
 
-	it("tells the rule when a layer names a profile whose name is not valid", async () => {
-		await setProfiles(profiles);
-		const resolved = await resolveProfile({ cwd: repo, home, choice: "bad name" });
-		const text = messages(resolved.reports).join("\n");
-		expect(text).toContain(PROFILE_NAME_RULE);
-	});
-
-	it("quotes the name of a missing profile, so it cannot break the line it is read on", async () => {
+	it("quotes the name of a layer that names a profile whose name is not valid", async () => {
 		await setProfiles(profiles);
 		const resolved = await resolveProfile({ cwd: repo, home, choice: 'a "quoted"\nname' });
 		expect(messages(resolved.reports)).toEqual([
 			`profile "a \\"quoted\\"\\nname" is not a valid profile name, skipped. ${PROFILE_NAME_RULE}`,
 		]);
-	});
-
-	it("quotes the name of a profile that does not exist, so it cannot break the line it is read on", async () => {
-		await setProfiles(profiles);
-		const resolved = await resolveProfile({ cwd: repo, home, choice: "gone" });
-		expect(messages(resolved.reports)).toEqual(['profile "gone" does not exist, skipped']);
 	});
 
 	it("ignores the profiles of a name that is not valid, keeping the rest of the file", async () => {

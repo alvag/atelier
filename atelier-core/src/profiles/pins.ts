@@ -51,7 +51,8 @@ export function parsePin(text: string, path: string): PinRead {
 	const pin = raw as Record<string, unknown>;
 	if (pin.kind !== PIN_KIND || pin.version !== PIN_VERSION)
 		return drop(`expected kind "${PIN_KIND}" and version ${PIN_VERSION}`);
-	if (typeof pin.profile !== "string" || pin.profile === "") return drop(`"profile" is not a profile name`);
+	if (typeof pin.profile !== "string")
+		return drop(`"profile" is not a profile name (${describeProfileName(pin.profile)})`, PROFILE_NAME_RULE);
 	if (!isValidProfileName(pin.profile))
 		return drop(`"profile" is not a valid profile name (${describeProfileName(pin.profile)})`, PROFILE_NAME_RULE);
 	return { profile: pin.profile, reports: [] };

@@ -906,14 +906,14 @@ describe("session.start profiles", () => {
 			const started = await command("s", { command: "session.start", cwd });
 			expect(started).toMatchObject({ ok: true });
 			const sessionId = (started as unknown as { result: { sessionId: string } }).result.sessionId;
-			expect(await command("i", { command: "session.set_profile", sessionId, profile: "bad name" })).toMatchObject({
+			const refused = await command("r", { command: "session.set_profile", sessionId, profile: "bad name" });
+			expect(refused).toMatchObject({
 				ok: false,
 				error: {
 					code: "invalid_profile_name",
 					message: expect.stringContaining('Invalid profile name "bad name"'),
 				},
 			});
-			const refused = await command("i", { command: "session.set_profile", sessionId, profile: "bad name" });
 			const message = (refused as unknown as { error: { message: string } }).error.message;
 			expect(message).toContain(PROFILE_NAME_RULE);
 			for (const name of ["__proto__", "constructor", "prototype"]) expect(message).toContain(name);

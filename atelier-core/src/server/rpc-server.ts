@@ -481,7 +481,7 @@ export class RpcServer {
 		const known = read.valid ? [...read.file.profiles.keys()] : [];
 		if (!known.includes(name)) {
 			const near = closestName(name, known);
-			const missing = `No profile ${describeProfileName(name)} in ~/.atelier/profiles.json`;
+			const missing = `No profile "${name}" in ~/.atelier/profiles.json`;
 			throw new CommandError(
 				"unknown_profile",
 				near === undefined ? `${missing}.` : `${missing}; did you mean "${near}"?`,
