@@ -115,6 +115,17 @@ describe("AskDialog", () => {
 		expect(sent).toEqual([[{ option: 0 }, { other: "abc" }]]);
 	});
 
+	it("drops the rest of a chunk once a question of the batch is answered, so it cannot change that answer", () => {
+		const { dialog, sent, lines } = asked([language, checks]);
+		dialog.handleInput("3");
+		dialog.handleInput("y");
+		dialog.handleInput("\r\x1b[200~more\x1b[201~\r");
+		expect(lines(120)[3]).toBe(" Which checks should run before each commit?");
+		dialog.handleInput("1");
+		dialog.handleInput("\r");
+		expect(sent).toEqual([[{ other: "y" }, { option: 0 }]]);
+	});
+
 	it("cancels the whole batch on Esc, on any tab", () => {
 		const { dialog, sent } = asked([language, checks]);
 		dialog.handleInput("1");

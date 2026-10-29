@@ -90,6 +90,8 @@ export class QuestionDialog implements Component, Focusable {
 	/** The row of the cursor, none until a key puts it on one; the last row is `Type something…`. */
 	#cursor: number | undefined;
 	#answered = false;
+	/** How many answers it gave: a batch reopens it after each one. */
+	#given = 0;
 	/** What the user typed on `Type something…`, and where the text cursor is in it, in characters. */
 	#text = "";
 	#at = 0;
@@ -158,9 +160,14 @@ export class QuestionDialog implements Component, Focusable {
 		return this.#cursor === this.#options.length;
 	}
 
-	#choose(row: number): void {
+	#give(answer: QuestionAnswer): void {
 		this.#answered = true;
-		this.#answer({ option: row });
+		this.#given++;
+		this.#answer(answer);
+	}
+
+	#choose(row: number): void {
+		this.#give({ option: row });
 	}
 
 	/** Sends the text typed, unless it is blank or too long: then the hint line says why. */
@@ -168,8 +175,7 @@ export class QuestionDialog implements Component, Focusable {
 		if (this.#text.trim() === "") this.#problem = "Type an answer, or esc to cancel";
 		else if (this.#text.length > OTHER_MAX) this.#problem = `Too long: ${this.#text.length} of ${OTHER_MAX} characters`;
 		else {
-			this.#answered = true;
-			this.#answer({ other: this.#text });
+			this.#give({ other: this.#text });
 		}
 	}
 
@@ -203,23 +209,25 @@ export class QuestionDialog implements Component, Focusable {
 		if (this.#answered) return;
 		const guarded = this.#guarded();
 		this.#problem = "";
+		// Nothing after an answer in this chunk counts, even once a batch has reopened the question to come back to it.
+		const given = this.#given;
+		const live = () => !guarded && !this.#answered && this.#given === given;
 		// Keys and pastes in the order they came: a paste goes into the text only when it starts there, never into an
-		// option, and nothing after the answer counts.
+		// option.
 		this.#paste.read(data, {
 			keys: (keys) => {
-				if (!guarded && !this.#answered) this.#key(keys);
+				if (live()) this.#key(keys);
 			},
-			keep: () => !guarded && !this.#answered && this.#typing,
+			keep: () => live() && this.#typing,
 			pasted: (text) => {
-				if (!guarded && !this.#answered && this.#typing) this.#insert(text.replace(/\r\n?/g, "\n"));
+				if (live() && this.#typing) this.#insert(text.replace(/\r\n?/g, "\n"));
 			},
 		});
 	}
 
 	#key(keys: string): void {
 		if (matchesKey(keys, "escape")) {
-			this.#answered = true;
-			this.#answer("cancel");
+			this.#give("cancel");
 			return;
 		}
 		if (matchesKey(keys, "up") || matchesKey(keys, "down")) {
