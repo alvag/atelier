@@ -256,7 +256,8 @@ function keyOf({ wrappers, words, writesFile, setsEnvironment }: SimpleCommand):
 		launcher: launcher !== undefined || runsInterpreter,
 		project: isProjectProgram(program),
 		// `xargs` adds arguments read from its input, which the words never show.
-		leavesProject: wrappers.includes("xargs") || words.some(leavesProject),
+		// The program is what runs, not a place it works in: only a `..` or `~` in it (`../other/gradlew`) leaves.
+		leavesProject: wrappers.includes("xargs") || /\.\.|~/.test(program) || words.slice(1).some(leavesProject),
 	};
 }
 
