@@ -406,7 +406,10 @@ export type AtelierEventBody =
 			running: number;
 			waiting: number;
 	  }
-	/** The agent read the notices that waited (with a tool result or a prompt): the jobs running and the notices left. */
+	/**
+	 * The agent read the notices that waited (with a tool result or a prompt), or they wait again because the backend
+	 * failed on that prompt before answering: the jobs running and the notices left.
+	 */
 	| { type: "jobs_status"; running: number; waiting: number }
 	/**
 	 * The user's MCP servers and what is wrong with their file, at the start of the first turn and of any turn in which

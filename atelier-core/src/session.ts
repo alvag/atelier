@@ -809,8 +809,11 @@ export class Session {
 			let reviewNotice = this.#review?.takeNotice();
 			if (reviewNotice !== undefined) sent = `${reviewNotice}\n\n${sent}`;
 			// The notices of ended jobs that waited: the whole prompt of a turn they woke, else before the user's words.
-			const jobNotices = this.#takeJobNotices(turn);
-			if (jobNotices !== undefined) sent = woken ? `${sent}${jobNotices}` : `${jobNotices}\n\n${sent}`;
+			let jobNotices = this.#takeJobNotices(turn);
+			if (jobNotices !== undefined) {
+				const text = jobNotices.join("\n\n");
+				sent = woken ? `${sent}${text}` : `${text}\n\n${sent}`;
+			}
 			const mcpStatus = this.mcpStatus();
 			if (mcpStatus !== undefined && JSON.stringify(mcpStatus) !== this.#mcpSaid) {
 				this.#mcpSaid = JSON.stringify(mcpStatus);
@@ -827,6 +830,7 @@ export class Session {
 			let noteTaken = false;
 			this.#promptTaken = () => {
 				reviewNotice = undefined;
+				jobNotices = undefined;
 				if (telling) this.#toldYolo = yolo;
 				noteTaken = true;
 			};
@@ -866,6 +870,8 @@ export class Session {
 				if (this.#recoveryInFlight !== undefined) this.#recovery ??= this.#recoveryInFlight;
 				this.#recoveryInFlight = undefined;
 				if (reviewNotice !== undefined) this.#review?.returnNotice(reviewNotice);
+				// The model never saw them: they wait again, before any that came since, for the next prompt.
+				if (jobNotices !== undefined) this.#returnJobNotices(jobNotices, turn);
 			}
 			this.#previousTurn = { request, lastMessage: lastMessageTail(this.#lastMessage) };
 			await logged;
@@ -1586,7 +1592,7 @@ export class Session {
 		const result = await this.#runTool(call);
 		if (!this.#steerable || this.#abort?.signal.aborted) return result;
 		// The notices of jobs that ended go with the result too, after the user's steers.
-		const notices = this.#takeJobNotices(this.#turn);
+		const notices = this.#takeJobNotices(this.#turn)?.join("\n\n");
 		const steers = this.#queue.filter((message) => message.kind === "steer");
 		if (steers.length === 0) return notices === undefined ? result : { ...result, steering: notices };
 		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
@@ -1673,12 +1679,18 @@ export class Session {
 	}
 
 	/** The waiting notices as the agent reads them, the clients told none waits now; undefined when none waited. */
-	#takeJobNotices(turn: Channel<TurnEvent> | undefined): string | undefined {
+	#takeJobNotices(turn: Channel<TurnEvent> | undefined): string[] | undefined {
 		if (this.#jobNotices.length === 0) return undefined;
 		const notices = this.#jobNotices.splice(0);
 		this.#jobsWake = false;
 		turn?.push({ type: "jobs_status", running: this.#jobs?.running ?? 0, waiting: 0 });
-		return notices.join("\n\n");
+		return notices;
+	}
+
+	/** Notices a prompt took that the backend failed on before answering: they wait again, oldest first. */
+	#returnJobNotices(notices: readonly string[], turn: Channel<TurnEvent>): void {
+		this.#jobNotices.unshift(...notices);
+		turn.push({ type: "jobs_status", running: this.#jobs?.running ?? 0, waiting: this.#jobNotices.length });
 	}
 
 	async #runTool(call: ToolCall): Promise<ToolCallResult> {
