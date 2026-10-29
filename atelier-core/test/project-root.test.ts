@@ -64,6 +64,14 @@ describe("projectRoot", () => {
 		expect(await projectRoot(join(root, "linked"))).toBe(join(root, "linked"));
 	});
 
+	it("uses the bare repository's common directory from a subfolder", async () => {
+		const bare = join(root, "bare.git");
+		git(root, "init", "--bare", "-q", bare);
+		await mkdir(join(bare, "objects", "probe"));
+		expect(await projectRoot(join(bare, "objects", "probe"))).toBe(bare);
+		expect(await projectRoot(bare)).toBe(bare);
+	});
+
 	it("is a submodule's own folder, and the folder holding a .git file it cannot follow", async () => {
 		await mkdir(join(root, "app", ".git", "modules", "lib"), { recursive: true });
 		await mkdir(join(root, "app", "lib"), { recursive: true });

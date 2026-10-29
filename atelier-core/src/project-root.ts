@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from "node:path";
 /**
  * The project a session works in, as rules allowed "in this project" name it: the real path of the git checkout
  * that holds the working directory (the main checkout for a linked worktree, so every worktree of a repository
- * shares its rules), or the working directory itself outside git. It reads the files git leaves, never runs git,
+ * shares its rules), a bare repository for the folders in it, or the working directory itself outside git. It reads the files git leaves, never runs git,
  * whose configuration the repository could set.
  */
 export async function projectRoot(cwd: string): Promise<string> {
@@ -15,8 +15,20 @@ export async function projectRoot(cwd: string): Promise<string> {
 		const info = await lstat(dotGit).catch(() => undefined);
 		if (info?.isDirectory() || info?.isSymbolicLink()) return dir;
 		if (info?.isFile()) return (await mainCheckout(dir, dotGit)) ?? dir;
+		if (await isBareRepository(dir)) return dir;
 		if (dirname(dir) === dir) return start;
 	}
+}
+
+/** Whether `dir` is a bare repository, as its files show: `HEAD`, `objects/`, `refs/` and `bare = true` in `config`. */
+async function isBareRepository(dir: string): Promise<boolean> {
+	const kinds = await Promise.all(
+		["HEAD", "objects", "refs", "config"].map((name) => lstat(join(dir, name)).catch(() => undefined)),
+	);
+	const [head, objects, refs, config] = kinds;
+	if (!head?.isFile() || !objects?.isDirectory() || !refs?.isDirectory() || !config?.isFile()) return false;
+	const text = await readFile(join(dir, "config"), "utf8").catch(() => "");
+	return /^\s*bare\s*=\s*true\s*$/im.test(text);
 }
 
 /**
