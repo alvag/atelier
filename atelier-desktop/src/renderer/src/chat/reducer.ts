@@ -371,13 +371,28 @@ function withoutStaleContext(state: ChatState, backend: string, model: string | 
 function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 	if (event.parentCallId !== undefined) return applySubagentEvent(state, event, event.parentCallId);
 	const next = applyMainEvent(state, event);
-	// A configuration and the turn's end say nothing of who answered: a change can land between the answer and the end.
-	if (event.type === "session_configured" || event.type === "turn_finished") return next;
+	// What the session says as the turn ends tells nothing of who answered: a change can land between the answer and the end.
+	if (SESSION_EVENTS.has(event.type)) return next;
 	return noteRanOn(next, event.turnId);
 }
 
-/** Who answered the turn: the model and backend its last event came from, else the session's. */
-const ranOn = (turn: Turn, state: ChatState) => modelAndBackend(turn.ranOn ?? state);
+/** Events the session says around a turn, not the agent that answers it. */
+const SESSION_EVENTS: ReadonlySet<string> = new Set([
+	"session_configured",
+	"queue_update",
+	"queued_message",
+	"context_warning",
+	"turn_finished",
+]);
+
+/**
+ * Who answered the turn: the main agent the core says ran it, measured before a change that landed as it ended; else
+ * the model and backend its last event came from; else the session's.
+ */
+function answeredBy(event: Extract<AtelierEvent, { type: "turn_finished" }>, turn: Turn, state: ChatState): RanOn {
+	const main = event.phases?.main?.agents?.find((agent) => agent.role === "orchestrator");
+	return modelAndBackend(main ?? turn.ranOn ?? state);
+}
 
 function modelAndBackend({ model, backend }: RanOn): RanOn {
 	return { ...(model === undefined ? {} : { model }), ...(backend === undefined ? {} : { backend }) };
@@ -426,7 +441,7 @@ function applyMainEvent(state: ChatState, event: AtelierEvent): ChatState {
 					return {
 						...rest,
 						items: endReviews(closeConsents(turn.items)),
-						finished: { ...finishedOf(event), ...ranOn(turn, state) },
+						finished: { ...finishedOf(event), ...answeredBy(event, turn, state) },
 					};
 				}),
 				busy: false,
