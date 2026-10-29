@@ -731,17 +731,35 @@ describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 			expect(result.output).not.toContain("sandbox blocked");
 			expect(result.output).toContain("+candidate");
 			expect(result.output).toContain("base\nbase\ncandidate\n");
-
-			// The link is readable, not what it leads to: the rest of /private/var stays out, named either way.
-			const beyond = await verifier().execute(
-				{ command: `readlink /var; ls /var/; cat /var${outside.replace(/^\/private\/var/, "")}/secret.txt` },
-				{ cwd: linked },
-			);
-			expect(beyond.output).toMatch(/^private\/var$/m);
-			expect(beyond.output).not.toContain("OUTSIDE-SECRET");
-			expect(beyond.output.match(/Operation not permitted/g)).toHaveLength(2);
 		} finally {
 			await rm(linked, { recursive: true, force: true });
+		}
+	});
+
+	it.each([
+		["ls", "cat"],
+		["cat", "ls"],
+	])("reads the /var link but denies its contents, %s then %s", async (first, second) => {
+		// TMPDIR need not be under /var: make the denied file there instead of inventing a /var alias for it.
+		const deniedDir = await mkdtemp("/var/tmp/atelier-verify-denied-");
+		try {
+			const secret = join(deniedDir, "secret.txt");
+			await writeFile(secret, "OUTSIDE-SECRET\n");
+			expect(await realpath(secret)).toMatch(/^\/private\/var\//);
+			expect(await readFile(secret, "utf8")).toBe("OUTSIDE-SECRET\n");
+			const link = await run("readlink /var");
+			expect(link.ok, link.output).toBe(true);
+			expect(link.output, link.output).toMatch(/^private\/var$/m);
+			for (const operation of [first, second]) {
+				const command = operation === "ls" ? "ls /var/" : `cat ${secret}`;
+				const beyond = await run(command);
+				const diagnostic = `${command}\n${beyond.output}`;
+				expect(beyond.ok, diagnostic).toBe(false);
+				expect(beyond.output, diagnostic).not.toContain("OUTSIDE-SECRET");
+				expect(beyond.output.match(/Operation not permitted/g), diagnostic).toHaveLength(1);
+			}
+		} finally {
+			await rm(deniedDir, { recursive: true, force: true });
 		}
 	});
 
