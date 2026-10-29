@@ -58,6 +58,10 @@ describe("projectRoot", () => {
 		await writeFile(join(root, "other", ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt")}\n`);
 		expect(await projectRoot(join(root, "other"))).toBe(join(root, "other"));
 		expect(await projectRoot(join(root, "wt"))).toBe(main);
+		// A .git that is a link to a registered worktree's .git file is not that worktree.
+		await mkdir(join(root, "linked"));
+		await symlink(join(root, "wt", ".git"), join(root, "linked", ".git"));
+		expect(await projectRoot(join(root, "linked"))).toBe(join(root, "linked"));
 	});
 
 	it("is a submodule's own folder, and the folder holding a .git file it cannot follow", async () => {
