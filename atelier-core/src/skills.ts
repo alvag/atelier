@@ -1,6 +1,6 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { parse } from "yaml";
+import { LineCounter, parse, YAMLParseError } from "yaml";
 import { isProtected, protectedReadPaths } from "./tools/paths.ts";
 
 /** A skill as the system prompt lists it: the agent reads `path` when a task matches `description`. */
@@ -17,7 +17,7 @@ export interface SkillWarning {
 	message: string;
 }
 
-export interface Skills {
+export interface LoadedSkills {
 	/** In the order they were found: the closest project folder first, the user's last. */
 	skills: Skill[];
 	warnings: SkillWarning[];
@@ -26,7 +26,10 @@ export interface Skills {
 const NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_NAME = 64;
 const MAX_DESCRIPTION = 1024;
-/** The most the skills block may add to the system prompt, its instructions included: twice a large personal set of about 25 skills. */
+/**
+ * The most the skills block may add to the system prompt, its instructions included: twice a large personal set of
+ * about 25 skills.
+ */
 export const MAX_SKILLS_BYTES = 24 * 1024;
 
 /**
@@ -74,10 +77,22 @@ function frontmatter(text: string): Record<string, unknown> {
 	if (lines[0]?.trimEnd() !== "---") return {};
 	const end = lines.findIndex((line, i) => i > 0 && line.trimEnd() === "---");
 	if (end === -1) throw new Error("no closing ---");
-	const data: unknown = parse(lines.slice(1, end).join("\n"));
+	const data = parseYaml(lines.slice(1, end).join("\n"));
 	if (data === null || data === undefined) return {};
 	if (typeof data !== "object" || Array.isArray(data)) throw new Error("it is not a mapping");
 	return data as Record<string, unknown>;
+}
+
+/** `text` parsed as YAML; a syntax error throws as `<what> at line 2, column 5`, the line counted within `text`. */
+function parseYaml(text: string): unknown {
+	const lineCounter = new LineCounter();
+	try {
+		return parse(text, { prettyErrors: false, lineCounter });
+	} catch (error) {
+		if (!(error instanceof YAMLParseError)) throw error;
+		const { line, col } = lineCounter.linePos(error.pos[0]);
+		throw new Error(`${error.message} at line ${line}, column ${col}`);
+	}
 }
 
 /** The skill in `file`, or why it is not loaded; `warnings` gets what is wrong but does not stop it. */
@@ -95,8 +110,7 @@ async function readSkill(
 	try {
 		data = frontmatter(await readFile(file, "utf8"));
 	} catch (error) {
-		// The parser's first line, without the colon that introduces its excerpt of the file.
-		const reason = (error instanceof Error ? error.message : String(error)).split("\n")[0]?.replace(/:\s*$/, "");
+		const reason = error instanceof Error ? error.message : String(error);
 		warn(`invalid frontmatter: ${reason}; not loaded`);
 		return undefined;
 	}
@@ -163,12 +177,13 @@ function withinCap(skills: readonly Skill[], warnings: SkillWarning[]): Skill[] 
 }
 
 /**
- * Finds the skills in `.agents/skills/` from `cwd` up to the repository root, then in the user's
- * `home`/.agents/skills/, once. A skill is a folder with a SKILL.md whose frontmatter has a description;
- * of two with the same name the first found wins. Skills the agent's `read` could not open are left out, and so
- * are those past MAX_SKILLS_BYTES; with an invalid sandbox configuration no skill is loaded.
+ * Finds the skills in `.agents/skills/` from `cwd` up to the repository root, then in `home`'s, each folder once: a
+ * skill is a folder with a SKILL.md whose frontmatter has a description, and of two with the same name the first wins.
+ *
+ * Left out are the skills the agent's `read` could not open and those past MAX_SKILLS_BYTES; with an invalid sandbox
+ * configuration, every skill.
  */
-export async function loadSkills(cwd: string, home: string): Promise<Skills> {
+export async function loadSkills(cwd: string, home: string): Promise<LoadedSkills> {
 	const folders = [...(await projectFolders(cwd)), resolve(home)].map((dir) => join(dir, ".agents", "skills"));
 	const files = (await Promise.all([...new Set(folders)].map((folder) => skillFiles(folder)))).flat();
 	if (files.length === 0) return { skills: [], warnings: [] };

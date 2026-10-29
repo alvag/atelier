@@ -80,7 +80,7 @@ import { RISK_TOOL } from "./review/tool.ts";
 import { createScratchDir, type ScratchDir } from "./scratch.ts";
 import type { SavedConfig } from "./sessions/format.ts";
 import type { SessionRecorder } from "./sessions/recorder.ts";
-import { loadSkills, type Skills, skillsPrompt } from "./skills.ts";
+import { type LoadedSkills, loadSkills, skillsPrompt } from "./skills.ts";
 import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
 import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
@@ -203,7 +203,10 @@ export interface SessionOptions {
 	reviewUnavailable?: string;
 	/** Adds `home`/.agents/AGENTS.md and the AGENTS.md / CLAUDE.md files from `cwd` up to `home` (excluded) to the system prompt, read once at start. Never given to subagents. */
 	projectInstructions?: { home: string };
-	/** Lists the skills of `.agents/skills/` (from `cwd` up to the repo root, then `home`'s) in the system prompt, found once at start. Never given to subagents. */
+	/**
+	 * Lists the skills of `.agents/skills/` (from `cwd` up to the repo root, then `home`'s) in the system prompt, found
+	 * once at start. Never given to subagents.
+	 */
 	skills?: { home: string };
 	/** Turns on RDD: the risk tool, the assessment at the end of each turn and `Session.review`. Never given to subagents. */
 	review?: ReviewOptions;
@@ -321,7 +324,7 @@ export class Session {
 	/** The instruction files read at start; reported with the first turn. */
 	#instructions: ProjectInstructions | undefined;
 	/** The skills found at start; reported with the first turn. */
-	#skills: Skills | undefined;
+	#skills: LoadedSkills | undefined;
 	#announced = false;
 	/** The MCP servers whose instructions the model was already given. */
 	readonly #mcpGiven = new Set<string>();

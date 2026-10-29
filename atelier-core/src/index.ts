@@ -177,7 +177,14 @@ export {
 	type StatsRow,
 	type StatsSpend,
 } from "./sessions/index.ts";
-export { loadSkills, MAX_SKILLS_BYTES, type Skill, type Skills, type SkillWarning, skillsPrompt } from "./skills.ts";
+export {
+	type LoadedSkills,
+	loadSkills,
+	MAX_SKILLS_BYTES,
+	type Skill,
+	type SkillWarning,
+	skillsPrompt,
+} from "./skills.ts";
 export {
 	BUILTIN_AGENTS,
 	boundReport,
