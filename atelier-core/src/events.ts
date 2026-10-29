@@ -353,6 +353,11 @@ export type AtelierEventBody =
 			phases?: TurnPhases;
 			at?: string;
 	  }
+	/**
+	 * The main agent's context reached 90% of where it compacts, said once before the turn's `turn_finished`, with that
+	 * turn's context; said again once it went below, was unknown, compacted, or the backend or the model changed.
+	 */
+	| { type: "context_warning"; tokens: number; window: number; compactAt: number }
 	/** The core started summarizing the older history; `tokens` is the context size that led to it. */
 	| { type: "compaction_started"; reason: CompactionReason; tokens: number }
 	/** `tokensAfter` is an estimate until the next request measures it; `kept`: messages kept verbatim. */
