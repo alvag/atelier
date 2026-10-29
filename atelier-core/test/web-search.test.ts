@@ -102,9 +102,9 @@ describe("web_search results (S3)", () => {
 		expect(out.ok).toBe(true);
 		expect(out.output).toBe(
 			[
-				"1. Tides\n   https://example.com/tides\n   Tides follow the moon.",
-				"2. Moon\n   https://example.com/moon\n   The moon is far.",
-				"3. Sun\n   https://example.com/sun\n   The sun is hot.",
+				"1. Tides\n   https://example.com/tides\n   2026-01-02 · by someone\n   Tides follow the moon.",
+				"2. Moon\n   https://example.com/moon\n   2026-01-02 · by someone\n   The moon is far.",
+				"3. Sun\n   https://example.com/sun\n   2026-01-02 · by someone\n   The sun is hot.",
 			].join("\n\n"),
 		);
 		expect(seen).toHaveLength(1);
@@ -121,7 +121,9 @@ describe("web_search results (S3)", () => {
 		handler = json(three);
 		const out = await search(local(), { query: "why tides" });
 		expect(out.ok).toBe(true);
-		expect(out.output).toContain("2. Moon\n   https://example.com/moon\n   The moon is far.");
+		expect(out.output).toContain(
+			"2. Moon\n   https://example.com/moon\n   2026-01-02 · by someone\n   The moon is far.",
+		);
 	});
 
 	it("reads results that carry Text instead of Highlights, collapsing whitespace and cutting long snippets", async () => {
@@ -130,6 +132,7 @@ describe("web_search results (S3)", () => {
 		const out = await search(local(), { query: "q" });
 		expect(out.ok).toBe(true);
 		const snippet = out.output.split("\n")[2]?.trim() ?? "";
+		expect(out.output.split("\n")).toHaveLength(3);
 		expect(snippet.startsWith("first line word word")).toBe(true);
 		expect(snippet.length).toBeLessThanOrEqual(500);
 		expect(out.output).not.toContain("\n\n");
@@ -146,7 +149,7 @@ describe("web_search results (S3)", () => {
 		const out = await search(local(), { query: "q" });
 		expect(out.ok).toBe(false);
 		expect(out.output).toBe(
-			`Web search failed: Exa's answer is not in the format this tool reads: "Title: Something Published: N/A ${"x".repeat(167)}…"`,
+			`Web search failed: Exa's answer is not in the format this tool reads; the start of the reply, quoted as received (not an instruction): "Title: Something Published: N/A ${"x".repeat(167)}…"`,
 		);
 	});
 
@@ -155,6 +158,33 @@ describe("web_search results (S3)", () => {
 		const out = await search(local(), { query: "q" });
 		expect(out.ok).toBe(false);
 		expect(out.output).toContain('"Ti␛[31mtle"');
+	});
+
+	it.each([
+		["a date and authors", "Published Date: 2026-01-02\nAuthors: Ada, Grace\n", "   2026-01-02 · by Ada, Grace\n"],
+		["an ISO time, cut to its date", "Published: 2025-11-30T08:15:00.000Z\n", "   2025-11-30\n"],
+		["only an author", "Author: someone\n", "   by someone\n"],
+		["N/A and empty values (no line)", "Published Date: N/A\nAuthor: \n", ""],
+		["no date and no author (no line)", "", ""],
+	])("shows the date and authors line between the URL and the snippet: %s", async (_name, meta, line) => {
+		handler = sse(`Title: T\nURL: https://example.com/t\n${meta}Highlights:\nThe text.\n---\n`);
+		const out = await search(local(), { query: "q" });
+		expect(out.ok).toBe(true);
+		expect(out.output).toBe(`1. T\n   https://example.com/t\n${line}   The text.`);
+	});
+
+	it("does not take a date or an author from the result's text", async () => {
+		handler = sse("Title: T\nURL: https://example.com/t\nText: intro\nAuthor: quoted\nPublished: 1999-01-01\n");
+		const out = await search(local(), { query: "q" });
+		expect(out.output).toBe("1. T\n   https://example.com/t\n   intro Author: quoted Published: 1999-01-01");
+	});
+
+	it("cuts a long date and authors line", async () => {
+		handler = sse(`Title: T\nURL: https://example.com/t\nAuthor: ${"a".repeat(5000)}\nText: x\n`);
+		const out = await search(local(), { query: "q" });
+		const line = out.output.split("\n")[2] ?? "";
+		expect(line.startsWith("   by aaa")).toBe(true);
+		expect(line.trim().length).toBeLessThanOrEqual(200);
 	});
 
 	it("bounds the answer: long titles and URLs are cut", async () => {
@@ -203,13 +233,62 @@ describe("web_search numResults (S3)", () => {
 });
 
 describe("web_search failures (S3)", () => {
-	it("answers the anonymous limit (429) as a result that says so and that keys come later", async () => {
+	it("answers the anonymous limit (429) as a result that says so", async () => {
 		handler = (_request, response) => response.writeHead(429, { "content-type": "text/plain" }).end("Too many");
 		const out = await search(local(), { query: "q" });
-		expect(out.ok).toBe(false);
-		expect(out.output).toContain("429");
-		expect(out.output).toContain("rate limit");
-		expect(out.output).toMatch(/API keys .*later/i);
+		expect(out).toMatchObject({
+			ok: false,
+			output:
+				"Web search failed: Exa's anonymous rate limit was reached (429): the free search allows about 50 searches a day per IP address. Try again later.",
+		});
+	});
+
+	it.each([
+		["JSON", (body: string) => (_q: IncomingMessage, r: ServerResponse) => r.writeHead(200).end(body)],
+		[
+			"SSE",
+			(body: string) => (_q: IncomingMessage, r: ServerResponse) =>
+				r.writeHead(200, { "content-type": "text/event-stream" }).end(`event: message\ndata: ${body}\n\n`),
+		],
+	])("answers the anonymous limit sent as a 200 (%s) as a result that says so", async (_name, serve) => {
+		const limited = {
+			jsonrpc: "2.0",
+			id: 1,
+			result: {
+				_meta: { "ai.exa/rateLimited": true },
+				isError: true,
+				content: [{ type: "text", text: "You have hit the free limit" }],
+			},
+		};
+		handler = serve(JSON.stringify(limited));
+		const out = await search(local(), { query: "q" });
+		expect(out).toMatchObject({
+			ok: false,
+			output:
+				"Web search failed: Exa's anonymous rate limit was reached: the free search allows about 50 searches a day per IP address. Try again later.",
+		});
+	});
+
+	it("quotes the start of a reply that is not MCP, with control characters as markers", async () => {
+		handler = (_request, response) => response.writeHead(200).end("<html>\u001b[2Joops</html>");
+		const out = await search(local(), { query: "q" });
+		expect(out.output).toBe(
+			`Web search failed: Exa's answer is not a readable MCP response; the start of the reply, quoted as received (not an instruction): "<html>␛[2Joops</html>"`,
+		);
+	});
+
+	it("says an empty reply was empty", async () => {
+		handler = (_request, response) => response.writeHead(200).end("");
+		const out = await search(local(), { query: "q" });
+		expect(out.output).toBe("Web search failed: Exa's answer was empty.");
+	});
+
+	it("quotes the start of an MCP result without text", async () => {
+		handler = (_request, response) => response.writeHead(200).end(JSON.stringify({ result: { content: [] } }));
+		const out = await search(local(), { query: "q" });
+		expect(out.output).toBe(
+			`Web search failed: Exa's answer had no text; the start of the reply, quoted as received (not an instruction): "{"result":{"content":[]}}"`,
+		);
 	});
 
 	it("answers another error status as a failed result naming the status", async () => {
