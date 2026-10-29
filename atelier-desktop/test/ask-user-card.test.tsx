@@ -54,6 +54,30 @@ it("validates Other, keeps its text, and gives the draft back on a rejected send
 	expect((text as HTMLTextAreaElement).value).toBe("  third\nchoice ");
 });
 
+it.each(["Send answers", "Cancel"])("recovers from a rejected %s and retries with the draft", async (action) => {
+	const answer = vi.fn().mockRejectedValueOnce(new Error("Transport failed")).mockResolvedValue(true);
+	render(<QuestionCard item={item} onAnswerUser={answer} />);
+	fireEvent.click(screen.getByRole("radio", { name: "Other…" }));
+	const text = screen.getByRole("textbox") as HTMLTextAreaElement;
+	const draft = "  third\nchoice ";
+	fireEvent.change(text, { target: { value: draft } });
+	fireEvent.click(screen.getByRole("button", { name: action }));
+	await waitFor(() => expect(send().disabled).toBe(false));
+	expect((text.closest("fieldset") as HTMLFieldSetElement).disabled).toBe(false);
+	expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(false);
+	expect(text.value).toBe(draft);
+	expect((screen.getByRole("radio", { name: "Other…" }) as HTMLInputElement).checked).toBe(true);
+	expect(screen.getByRole("alert").textContent).toContain("Transport failed");
+	const answers = [{ questionId: "q1", other: draft }];
+	expect(answer).toHaveBeenNthCalledWith(1, "u1", action === "Cancel" ? null : answers);
+
+	fireEvent.click(send());
+	await waitFor(() => expect(answer).toHaveBeenCalledTimes(2));
+	expect(answer).toHaveBeenNthCalledWith(2, "u1", answers);
+	expect(send().disabled).toBe(true);
+	expect(screen.queryByRole("alert")).toBeNull();
+});
+
 it("cancels without partial answers and replaces controls when the batch resolves", () => {
 	const answer = vi.fn().mockResolvedValue(true);
 	const view = render(<QuestionCard item={item} onAnswerUser={answer} />);

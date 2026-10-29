@@ -93,6 +93,7 @@ export function QuestionCard({ item, onAnswerUser }: { item: Item; onAnswerUser:
 	const [picks, setPicks] = useState<ReadonlyMap<string, Pick>>(new Map());
 	const [texts, setTexts] = useState<ReadonlyMap<string, string>>(new Map());
 	const [sending, setSending] = useState(false);
+	const [error, setError] = useState<string>();
 	if (item.state === "resolved")
 		return (
 			<fieldset className="approval">
@@ -111,8 +112,16 @@ export function QuestionCard({ item, onAnswerUser }: { item: Item; onAnswerUser:
 	const submit = async (answers: UserAnswer[] | null) => {
 		if (sending) return;
 		setSending(true);
-		// The card stays until the core's resolved event; a refusal gives it back.
-		if (!(await onAnswerUser(item.callId, answers))) setSending(false);
+		setError(undefined);
+		let accepted = false;
+		try {
+			accepted = await onAnswerUser(item.callId, answers);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			// An accepted answer waits for the core's resolved event; failures give the draft back.
+			if (!accepted) setSending(false);
+		}
 	};
 	const answers = (): UserAnswer[] =>
 		item.questions.map((question) => {
@@ -135,6 +144,11 @@ export function QuestionCard({ item, onAnswerUser }: { item: Item; onAnswerUser:
 					onText={(text) => setTexts((current) => new Map(current).set(question.id, text))}
 				/>
 			))}
+			{error !== undefined ? (
+				<div className="error" role="alert">
+					{visibleText(error).text}
+				</div>
+			) : null}
 			<div className="approval-actions">
 				<button type="button" disabled={!complete || sending} onClick={() => void submit(answers())}>
 					Send answers
