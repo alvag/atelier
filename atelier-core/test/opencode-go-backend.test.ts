@@ -247,6 +247,8 @@ describe("the OpenCode Go models", () => {
 		expect(BACKEND_MODELS["opencode-go"]).toEqual(
 			expect.arrayContaining(["glm-5.3", "kimi-k3", "deepseek-v4-pro", "hy3"]),
 		);
+		// Deprecated at OpenCode: it answers 410 and points to the mimo-v2.6 models.
+		expect(BACKEND_MODELS["opencode-go"]).not.toEqual(expect.arrayContaining(["mimo-v2.5", "mimo-v2.5-pro"]));
 		const one = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
 		const unpriced = BACKEND_MODELS["opencode-go"].filter((model) => costOfRequest(model, one) === undefined);
 		expect(unpriced).toEqual(["deepseek-v4.1-flash", "deepseek-v4-pro"]);
