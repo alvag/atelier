@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { BorrowTimeoutError, borrowTmpdir } from "../scratch.ts";
 import { describeViolations } from "./sandbox-blocks.ts";
@@ -556,9 +556,10 @@ function sandboxExecWorks(): boolean {
 }
 
 /**
- * A path of a policy as a Seatbelt filter, itself and below: a glob (with `*` or `**`) as a regular expression that
- * also takes what is under a name it matches, as the library denies a pattern (a `.git` is a directory), anything
- * else as a subpath.
+ * A path of a policy as a Seatbelt filter: a glob (with `*` or `**`) as a regular expression, anything else as
+ * itself and below. A glob of `.git` (`nestedGitPattern`) also takes what is under the name, as the library denies
+ * it, since a `.git` is a directory; the secret file patterns match the name only, so a folder such as `.env.d`
+ * stays writable inside.
  */
 function seatbeltFilter(path: string): string {
 	if (!path.includes("*")) return `(subpath ${JSON.stringify(path)})`;
@@ -566,7 +567,8 @@ function seatbeltFilter(path: string): string {
 		.split(/(\*\*\/|\*)/)
 		.map((part) => (part === "**/" ? "(.*/)?" : part === "*" ? "[^/]*" : part.replace(/[.^$+?()[\]{}|\\"]/g, "\\$&")))
 		.join("");
-	return `(regex #"^${regex}(/.*)?$")`;
+	const below = basename(path) === ".git" ? "(/.*)?" : "";
+	return `(regex #"^${regex}${below}$")`;
 }
 
 /** The real path of `place`, or undefined when it cannot be resolved or is the same. */
