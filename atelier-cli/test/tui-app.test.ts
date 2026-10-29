@@ -220,7 +220,11 @@ function harness(
 		// No test runs the real Claude Code or asks the real Keychain: a missing binary and an empty Keychain.
 		claudeCode: join(home, "no-claude-in-tests"),
 		runSecurity: async () => ({ code: 44, stdout: "", stderr: "" }),
-		tui: { terminal: screen.terminal, connect: core.connect, ...({ answerGuardMs: 0 } as { answerGuardMs?: number }) },
+		tui: {
+			terminal: screen.terminal,
+			connect: core.connect,
+			...({ answerGuardMs: 0, statusIntervalMs: 0 } as { answerGuardMs?: number }),
+		},
 		onTerminate: (handler: (signal: number) => void) => {
 			terminate = handler;
 			return () => {
@@ -2474,8 +2478,43 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			...rest,
 		});
 
+		/** A TUI on a core the test drives, the OSC 7501 live line held back `statusIntervalMs` between changes. */
+		const stubbed = (statusIntervalMs = 0) => {
+			const h = harness([]);
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, statusIntervalMs } as typeof h.io.tui;
+			return { h, stub, code: run(["--no-session"], h.io, () => h.backend) };
+		};
+		const callStarted = (callId: string, tool: string, input: Record<string, unknown>) => ({
+			type: "tool_call_started",
+			callId,
+			tool,
+			input,
+		});
+		const callFinished = (callId: string) => ({
+			type: "tool_call_finished",
+			callId,
+			ok: true,
+			summary: "done",
+			truncated: false,
+		});
+		const taskInProgress = (id: string, title: string) => ({
+			type: "feature_changed",
+			name: "row",
+			path: "odd/tasks/row.md",
+			title: "Row",
+			tasks: [{ id, title, specs: [], status: "in_progress" }],
+		});
+
 		it("reports idle, working, blocked on an approval, working and done, and clears on exit", async () => {
-			const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo first" } } }, { event: finished }]]);
+			const h = harness([
+				[
+					{ event: { type: "text_delta", text: "Looking first." } },
+					{ toolCall: { tool: "bash", input: { command: "echo first" } } },
+					{ event: { type: "text_delta", text: "\n\nAll done: it passes.\nThe rest." } },
+					{ event: finished },
+				],
+			]);
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
 			h.screen.type("one");
@@ -2489,9 +2528,11 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(h.screen.statuses).toEqual([
 				atelier("idle"),
 				atelier("working"),
+				atelier("working", { message: "bash echo first" }),
 				atelier("blocked", { kind: "permission", message: "Run this command?" }),
+				atelier("working", { message: "bash echo first" }),
 				atelier("working"),
-				atelier("done"),
+				atelier("done", { message: "All done: it passes." }),
 				atelier("clear"),
 			]);
 			expect(h.screen.titles).toEqual([`Atelier - ${basename(cwd)}`]);
@@ -2509,11 +2550,15 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => h.screen.screen().includes("working"));
 			h.screen.type("\x1b");
 			await until(() => h.screen.screen().includes("interrupted"));
-			expect(h.screen.statuses).toEqual([atelier("idle"), atelier("working"), atelier("idle")]);
+			expect(h.screen.statuses).toEqual([
+				atelier("idle"),
+				atelier("working"),
+				atelier("idle", { message: "interrupted" }),
+			]);
 			h.screen.type("again");
 			h.screen.type("\r");
 			await until(() => h.screen.statuses.length === 5);
-			expect(h.screen.statuses.slice(3)).toEqual([atelier("working"), atelier("error")]);
+			expect(h.screen.statuses.slice(3)).toEqual([atelier("working"), atelier("error", { message: "boom" })]);
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
@@ -2532,6 +2577,58 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\x03");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
+		});
+
+		it("reports the call running, else the task in progress, while working, each line once", async () => {
+			const { h, stub, code } = stubbed();
+			await until(h.screen.started);
+			h.screen.type("go");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.length === 2);
+			stub.emit(taskInProgress("T2", "Hot profile"));
+			// The main agent's text leaves the line as it is, and so do a subagent's calls; only the last text is told.
+			stub.emit({ type: "text_delta", text: "First a look." });
+			stub.emit(callStarted("c1", "edit", { path: "src/app.ts" }));
+			stub.emit({ ...callStarted("c2", "read", { path: "b.ts" }), parentCallId: "c1" });
+			stub.emit(callFinished("c1"));
+			stub.emit({ type: "text_delta", text: "‮See\u001b[31m it " });
+			stub.emit({ type: "text_delta", text: "x".repeat(300) });
+			stub.emit({ type: "turn_finished", stopReason: "end_turn", usage });
+			await until(() => h.screen.statuses.at(-1)?.state === "done");
+			expect(h.screen.statuses).toEqual([
+				atelier("idle"),
+				atelier("working"),
+				atelier("working", { message: "T2 Hot profile" }),
+				atelier("working", { message: "edit src/app.ts" }),
+				atelier("working", { message: "T2 Hot profile" }),
+				// One line, without control or bidi characters, cut to 200 characters.
+				atelier("done", { message: `See [31m it ${"x".repeat(187)}…` }),
+			]);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("holds back the live line between changes, and drops it once the turn ends", async () => {
+			const { h, stub, code } = stubbed(60_000);
+			await until(h.screen.started);
+			h.screen.type("go");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.length === 2);
+			for (const id of ["c1", "c2", "c3"]) {
+				stub.emit(callStarted(id, "bash", { command: `echo ${id}` }));
+				stub.emit(callFinished(id));
+			}
+			stub.emit({ type: "text_delta", text: "Ran three." });
+			stub.emit({ type: "turn_finished", stopReason: "end_turn", usage });
+			await until(() => h.screen.statuses.at(-1)?.state === "done");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			expect(h.screen.statuses).toEqual([
+				atelier("idle"),
+				atelier("working"),
+				atelier("done", { message: "Ran three." }),
+				atelier("clear"),
+			]);
 		});
 
 		it("does not report a list of the TUI's own as blocked", async () => {

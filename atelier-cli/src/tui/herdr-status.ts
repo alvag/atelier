@@ -40,7 +40,7 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]+/g;
 const BIDI = /[؜‎‏‪-‮⁦-⁩]/g;
 
 /** The text without control or bidi characters, its spaces collapsed. */
-const plain = (text: string) => text.replace(BIDI, "").replace(CONTROL, " ").replace(/\s+/g, " ").trim();
+export const plain = (text: string) => text.replace(BIDI, "").replace(CONTROL, " ").replace(/\s+/g, " ").trim();
 
 const ELLIPSIS = "…";
 
