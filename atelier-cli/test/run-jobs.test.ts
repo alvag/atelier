@@ -139,6 +139,30 @@ describe("background jobs in atelier run", () => {
 		expect(h.backend.prompts[1]?.match(/Background job /g)).toHaveLength(2);
 	});
 
+	it("gives one woken turn the notice a turn left and that of a job ending just after it", async () => {
+		// The second job ends a moment after the first: after the turn that saw the first one end is over.
+		const later: FakeStep = {
+			toolCall: {
+				tool: "bash_background",
+				input: { command: `${waitsForGo()}; sleep 0.15`, label: "later" },
+				callId: "c2",
+			},
+		};
+		const h = harness([
+			[
+				startJob(waitsForGo()),
+				later,
+				{ run: go },
+				{ run: () => until(() => h.out().includes("■ job 1 ended")) },
+				{ event: finished },
+			],
+			[{ event: finished }],
+		]);
+		expect(await run(["--no-session", "start them"], h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toHaveLength(2);
+		expect(h.backend.prompts[1]?.match(/Background job /g)).toHaveLength(2);
+	});
+
 	it("stops the jobs it waits for on Ctrl+C", async () => {
 		const pidFile = join(cwd, "pid");
 		const h = harness([[startJob(`echo $$ > ${pidFile}; exec sleep 300`), { event: finished }]]);
