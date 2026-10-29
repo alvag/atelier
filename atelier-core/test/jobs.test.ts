@@ -181,6 +181,18 @@ describe("background jobs", () => {
 		expect(quoted).not.toContain("</job_output>");
 	});
 
+	it("bounds a line of hidden characters once shown, and keeps the lines before it", async () => {
+		const { dir, jobs, ended } = harness();
+		// U+200B (zero width space) as its UTF-8 bytes: the printf of macOS's bash knows no \\u.
+		jobs.start(plain(`echo failure; printf '\\342\\200\\213%.0s' $(seq 1 500); echo`, dir));
+		await until(() => ended.length === 1);
+		const notice = ended[0]?.notice ?? "";
+		const quoted = notice.slice(notice.indexOf("<job_output>\n") + 13, notice.lastIndexOf("\n</job_output>"));
+		expect(quoted).toContain("failure");
+		expect(quoted.split("\n").at(-1)).toMatch(/^(⟨U\+200B⟩)+.*… \[line clipped\]$/);
+		expect(Buffer.byteLength(quoted)).toBeLessThanOrEqual(4096);
+	});
+
 	it("adds what the sandbox blocked to the notice of a job that failed", async () => {
 		const { dir, jobs, ended } = harness();
 		jobs.start({ ...plain("exit 1", dir), blocked: async () => ["write to /x (outside the working directory)"] });
