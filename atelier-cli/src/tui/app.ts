@@ -591,7 +591,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	let line = new StatusLine();
 	/** Tells the terminal, and Herdr when the TUI runs in one of its panes, what the TUI is doing. */
 	const reportState = (state: Parameters<ProgramStatusReporter["report"]>[0], blocked?: Blocked, message?: string) => {
-		programStatus.report(state, blocked ?? { message });
+		programStatus.report(
+			state,
+			blocked === undefined
+				? { message }
+				: { kind: blocked.kind === "permission" ? "permission" : "question", message: blocked.message },
+		);
 		herdr?.report(state, blocked);
 	};
 	/** Tells Herdr which session the TUI runs. */

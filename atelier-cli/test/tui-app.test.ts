@@ -2960,7 +2960,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			stub.emit({ type: "approval_requested", callId: "c1", command: "echo hi", confirm: "ru؜le\x1b]0;x\x07" });
 			await until(() => h.screen.statuses.at(-1)?.state === "blocked");
 			expect(h.screen.statuses.at(-1)).toEqual(
-				atelier("blocked", { kind: "permission", message: "Run this command? (guard: rule␛]0;x⟨U+0007⟩)" }),
+				atelier("blocked", { kind: "permission", message: "Run this command? (guard: ru⟨U+061C⟩le␛]0;x⟨U+0007⟩)" }),
 			);
 			h.screen.type("\x03");
 			h.screen.type("\x03");
