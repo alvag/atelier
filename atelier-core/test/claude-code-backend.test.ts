@@ -952,12 +952,17 @@ describe("ClaudeCodeBackend context usage", () => {
 			},
 			...extra,
 		});
-	/** A turn's result that says the window Claude Code ran opus with, under its `[1m]` key. */
-	const ranWith = (contextWindow: number) =>
+	/** The same answer, from another model. */
+	const from = (model: string, message: SDKMessage) => {
+		const value = message as unknown as { message: Record<string, unknown> };
+		return msg({ ...value, message: { ...value.message, model } });
+	};
+	/** A turn's result that says the window Claude Code ran `model` with, under its `[1m]` key. */
+	const ranWith = (contextWindow: number, model = "claude-opus-5-5") =>
 		msg({
 			...(result(0.01) as unknown as Record<string, unknown>),
 			modelUsage: {
-				"claude-opus-5-5[1m]": {
+				[`${model}[1m]`]: {
 					inputTokens: 1,
 					outputTokens: 1,
 					cacheReadInputTokens: 0,
@@ -966,7 +971,7 @@ describe("ClaudeCodeBackend context usage", () => {
 					costUSD: 0,
 					contextWindow,
 					maxOutputTokens: 128_000,
-					canonicalModel: "claude-opus-5-5",
+					canonicalModel: model,
 				},
 				"claude-haiku-5-5": {
 					inputTokens: 1,
@@ -1110,6 +1115,38 @@ describe("ClaudeCodeBackend context usage", () => {
 			"prompt:three",
 		]);
 		expect(contexts).toEqual([1_000_000, 500_000, 500_000]);
+	});
+
+	it("never measures a model against another model's window", async () => {
+		const sonnet = (input: number) => from("claude-sonnet-5-5", answer(input, 0, 0));
+		const { query } = withContextUsage(
+			[
+				[answer(2, 4000, 500), ranWith(1_000_000)],
+				// The result names only the windows of the models before the change.
+				[sonnet(6000), ranWith(1_000_000)],
+				[sonnet(7000), ranWith(200_000, "claude-sonnet-5-5")],
+				[sonnet(8000), result(0.04)],
+				[answer(9000, 0, 0), result(0.05)],
+			],
+			async () => ({ isAutoCompactEnabled: false }),
+			async () => ({ isAutoCompactEnabled: false }),
+		);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		const contexts: unknown[] = [];
+		const turn = async (prompt: string) => {
+			const finish = finishOf(await collectBodies(session.send(prompt)));
+			contexts.push(finish?.type === "turn_finished" ? finish.context : undefined);
+		};
+		await turn("one");
+		await session.configure?.({ model: "sonnet" });
+		for (const prompt of ["two", "three", "four", "five"]) await turn(prompt);
+		expect(contexts).toEqual([
+			{ tokens: 4502, window: 1_000_000, compactAt: 1_000_000 },
+			undefined,
+			{ tokens: 7000, window: 200_000, compactAt: 200_000 },
+			{ tokens: 8000, window: 200_000, compactAt: 200_000 },
+			{ tokens: 9000, window: 1_000_000, compactAt: 1_000_000 },
+		]);
 	});
 
 	it("says the size is unknown right after Claude Code compacts, until an answer measures it again", async () => {
