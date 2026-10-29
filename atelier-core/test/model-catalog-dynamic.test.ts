@@ -259,6 +259,24 @@ it("asks no source, at start or for Claude Code, offline (ATELIER_OFFLINE=1) or 
 	}
 });
 
+it("says what it knows of a model, whether it takes images included", async () => {
+	const read = async () => ({
+		sources: {
+			"openai-codex": {
+				checkedAt: 1,
+				models: { "openai-codex": [{ id: "gpt-6.1-terra", contextWindow: 400_000, images: true }] },
+			},
+		},
+	});
+	const catalog = new DynamicModelCatalog({ file, sources: [], network: false, read });
+	expect(await catalog.model("openai-codex", "gpt-6.1-terra")).toEqual({
+		id: "gpt-6.1-terra",
+		contextWindow: 400_000,
+		images: true,
+	});
+	expect(await catalog.model("openai-codex", "unknown")).toBeUndefined();
+});
+
 it("does not ask the network when it is off, and still offers what the cache holds", async () => {
 	await new DynamicModelCatalog({ file, sources: [anthropic(["claude-new-6"])] }).refresh();
 	const asked: string[] = [];

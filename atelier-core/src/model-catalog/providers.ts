@@ -47,6 +47,8 @@ function anthropicModel(value: unknown): CatalogModel | undefined {
 			model.efforts = EFFORTS.filter((level) => isRecord(effort[level]) && effort[level].supported === true);
 		const off = anthropicOff(value.capabilities);
 		if (off) model.off = off;
+		const images = value.capabilities.image_input;
+		if (isRecord(images) && typeof images.supported === "boolean") model.images = images.supported;
 	}
 	return model;
 }
@@ -130,6 +132,7 @@ function codexModel(value: unknown): (CatalogModel & { priority: number }) | und
 		priority: typeof value.priority === "number" ? value.priority : Number.MAX_SAFE_INTEGER,
 	};
 	if (isSize(value.context_window)) model.contextWindow = value.context_window;
+	if (Array.isArray(value.input_modalities)) model.images = value.input_modalities.includes("image");
 	if (Array.isArray(value.supported_reasoning_levels) && value.supported_reasoning_levels.length > 0)
 		model.efforts = value.supported_reasoning_levels
 			.map((level) => (isRecord(level) ? level.effort : undefined))
