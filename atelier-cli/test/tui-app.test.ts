@@ -3385,7 +3385,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		it("says a failed turn, and nothing of an interrupted one", async () => {
 			await settle({ minSeconds: 0 });
 			const h = harness([
-				[{ event: { type: "text_delta", text: "working" } }, { waitForInterrupt: true }],
+				[{ event: { type: "text_delta", text: "notification test backend ready" } }, { waitForInterrupt: true }],
 				[{ throw: "boom" }],
 			]);
 			inGhostty(h);
@@ -3393,7 +3393,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(h.screen.started);
 			h.screen.type("long job");
 			h.screen.type("\r");
-			await until(() => h.screen.screen().includes("working"));
+			await until(() => h.screen.screen().includes("notification test backend ready"));
 			h.screen.type("\x1b");
 			await until(() => h.screen.screen().includes("interrupted"));
 			h.screen.type("again");
