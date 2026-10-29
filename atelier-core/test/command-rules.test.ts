@@ -221,6 +221,8 @@ describe("coveredBy with project rules", () => {
 		expect(coveredBy("pnpm install src/lib", [], ["pnpm install"])).toBe(true);
 		expect(coveredBy("make -C sub -j4 test", [], ["make"])).toBe(true);
 		expect(coveredBy("/usr/bin/make -C sub", [], ["/usr/bin/make"])).toBe(true);
+		expect(coveredBy('pnpm --filter "@app/*" build', [], ["pnpm"])).toBe(true);
+		expect(coveredBy("make test\\*", [], ["make"])).toBe(true);
 		expect(coveredBy("pnpm --filter ./packages/web build", [], ["pnpm"])).toBe(true);
 		expect(coveredBy("pnpm dlx evil", [], ["pnpm"])).toBe(false);
 	});
@@ -249,6 +251,10 @@ describe("coveredBy with project rules", () => {
 		"pnpm --dir=~/x install",
 		"npm install file:../lib",
 		"npm install foo@/x",
+		"make -C l?nk",
+		"make -C lin[k]",
+		"make -C l*",
+		"make -Cl*",
 	])("never covers %s by a project rule: it can leave the project", (command) => {
 		expect(
 			coveredBy(command, ["cd", "pushd", "popd"], ["pnpm", "pnpm install", "npm", "make", "../other/gradlew"]),

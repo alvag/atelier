@@ -17,8 +17,8 @@ export interface ToolContext {
 	bashRules?: readonly string[];
 	/** The `bash` rules the user allowed always in this session's project: they cover only a line that stays in it. */
 	projectBashRules?: readonly string[];
-	/** The real path of the session's project, where `projectBashRules` apply: a command covered by them names no place outside it. */
-	projectRoot?: string;
+	/** The real folder of the session's checkout (the project or a linked worktree of it): a command `projectBashRules` cover names no place outside it. */
+	projectBounds?: string;
 	/** The folders the user allowed `edit` and `write` in, real paths: a file in one or below is written without asking. */
 	pathRules?: readonly string[];
 }
