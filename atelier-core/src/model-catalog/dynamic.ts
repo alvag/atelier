@@ -101,9 +101,10 @@ export class DynamicModelCatalog implements ModelCatalog {
 	async listClaudeCode(list: () => Promise<readonly unknown[]>): Promise<void> {
 		if (this.#options.network === false) return;
 		try {
-			// A list kept without the aliases resolved, as an older Atelier kept it, is asked again, whenever it was kept.
+			// A list kept without the aliases resolved, as an older Atelier kept it, is asked again, whenever it was kept;
+			// a resolved one, an empty one too, waits out the interval.
 			const data = await this.#latest();
-			const force = data.listed("claude-code") !== undefined && resolvedClaudeCodeList(data) === undefined;
+			const force = data.listed("claude-code") !== undefined && !data.resolved("claude-code");
 			await refreshSource(this.#options.file, claudeCodeModelsSource(list), {
 				...this.#options.refresh,
 				...(force ? { force } : {}),
