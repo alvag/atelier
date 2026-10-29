@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { basename } from "node:path";
 import {
 	type AtelierEvent,
+	type AtelierEventBody,
 	type ClientCommand,
 	describeError,
 	type JsonValue,
@@ -96,6 +97,8 @@ import { editorTheme, type Paint, painter, Shade, Tones } from "./style.ts";
 export interface CoreLink {
 	request(command: ClientCommand): Promise<unknown>;
 	onEvent(listener: (sessionId: string, event: AtelierEvent) => void): () => void;
+	/** Events outside any turn: a background job that ended while no turn ran and none will start for it. */
+	onSessionEvent?(listener: (sessionId: string, event: AtelierEventBody) => void): () => void;
 	onExit(listener: (exit: CoreExit) => void): () => void;
 	close(): Promise<void>;
 }
@@ -1360,6 +1363,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	});
 
 	const removeEvents = link.onEvent(onEvent);
+	// A job's end outside any turn changes the footer and shows its line; no turn runs for it.
+	const removeSessionEvents = link.onSessionEvent?.((id, body) => {
+		if (id !== sessionId) return;
+		const event = { ...body, seq: 0, turnId: "" } as AtelierEvent;
+		footer.state = footerAfter(footer.state, event);
+		conversation.event(event);
+		tui.requestRender();
+	});
 	const removeExit = link.onExit(coreExited);
 	const removeTerminate = options.onTerminate?.((signal) => quit(SIGNAL_EXIT + signal));
 	tui.start();
@@ -1405,6 +1416,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	} finally {
 		removeKeys();
 		removeEvents();
+		removeSessionEvents?.();
 		removeExit();
 		removeTerminate?.();
 		loader.stop();
