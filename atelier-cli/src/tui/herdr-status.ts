@@ -28,6 +28,7 @@ const TOKEN_BYTES = 128;
 const BLOCKED_MESSAGES = {
 	permission: "Approval awaiting input",
 	question: "Review consent awaiting input",
+	user_question: "User answer awaiting input",
 } as const;
 
 type State = Exclude<ProgramStatus["state"], "clear">;
