@@ -9,12 +9,14 @@ import {
 	type AtelierEventBody,
 	type ClientCommand,
 	coreTools,
+	createBackgroundTools,
 	createBashTool,
 	FakeBackend,
 	type FakeStep,
 	folderKey,
 	RpcServer,
 	Sandbox,
+	type SandboxManagerLike,
 } from "@atelier/core";
 import type { CoreExit } from "@atelier/core/client";
 import { decodeServerMessage, encodeMessage, LineSplitter } from "@atelier/core/protocol";
@@ -43,10 +45,24 @@ const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 };
 const started: AtelierEventBody = { type: "session_started", backend: "fake", model: "m", authSource: "subscription" };
 const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage, costUsd: 0.5 };
 
+/** A sandbox library that is there and wraps nothing. */
+const wrapsNothing: SandboxManagerLike = {
+	isSupportedPlatform: () => true,
+	checkDependencies: () => ({ errors: [], warnings: [] }),
+	initialize: async () => {},
+	wrapWithSandbox: async (command) => command,
+	cleanupAfterCommand: () => {},
+	reset: async () => {},
+};
+
 /** `bash` without a sandbox: in normal mode every command asks. */
 const tools = (() => {
 	const bash = createBashTool({ sandbox: new Sandbox({ platform: "linux" }) });
-	return coreTools.map((tool) => (tool.name === "bash" ? bash : tool));
+	// Background jobs in a sandbox that is there and wraps nothing, so they start without asking.
+	const background = createBackgroundTools({ sandbox: new Sandbox({ platform: "darwin", manager: wrapsNothing }) });
+	return coreTools.map((tool) =>
+		tool.name === "bash" ? bash : (background.find((own) => own.name === tool.name) ?? tool),
+	);
 })();
 
 let cwd: string;
@@ -4077,5 +4093,44 @@ describe("paste question", () => {
 		expect(withoutCode("http://localhost:1455/auth/callback?code=abc&state=s")).toBe(
 			"http://localhost:1455/auth/callback?code=[hidden]&state=s",
 		);
+	});
+});
+
+describe("TUI and background jobs", { timeout: 20_000 }, () => {
+	it("shows a job's start and end, counts it in the footer, and takes the turn its notice wakes as running", async () => {
+		const go = join(cwd, "go");
+		const command = `while [ ! -f ${go} ]; do sleep 0.02; done; echo done`;
+		const gate: { release?: () => void } = {};
+		const h = harness([
+			[
+				{ event: started },
+				{ toolCall: { tool: "bash_background", input: { command, label: "ci wait" }, callId: "c1" } },
+				{ event: finished },
+			],
+			[{ run: () => new Promise<void>((resolve) => (gate.release = resolve)) }, { event: finished }],
+			[{ event: finished }],
+		]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("start it");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("⧗ job 1 started · ci wait · 1 running"));
+		await until(() => h.screen.screen().includes("$0.50 · 1 job"));
+		await writeFile(go, "");
+		await until(() => gate.release !== undefined);
+		await until(() => h.screen.screen().includes("■ job 1 ended · exit 0"));
+		// The woken turn runs: what is typed now is queued, not sent.
+		h.screen.type("then docs");
+		h.screen.type("\r");
+		await until(() => h.core.commands.some((sent) => sent.command === "session.queue"));
+		expect(h.core.commands.filter((sent) => sent.command === "session.send")).toHaveLength(1);
+		gate.release?.();
+		await until(() => h.backend.prompts.length === 3);
+		expect(h.backend.prompts[1]).toMatch(/^Background job 1 \("ci wait"\) ended: exit code 0/);
+		// Once the notice was read, the footer counts nothing; a command typed while a turn runs would wait in the editor.
+		await until(() => h.screen.screen().endsWith("sandbox ✗ · $1.50"));
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
 	});
 });

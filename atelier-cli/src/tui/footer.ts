@@ -33,6 +33,8 @@ export interface FooterState {
 	branch?: string;
 	/** Atelier's version. */
 	version?: string;
+	/** The background jobs running and the notices of ended ones the agent has not read. */
+	jobs?: { running: number; waiting: number };
 }
 
 /** The items the status line can show, as `statusLine` in `~/.atelier/settings.json` names them. */
@@ -50,6 +52,7 @@ export const STATUS_ITEMS = [
 	"phase",
 	"task",
 	"version",
+	"jobs",
 ] as const;
 export type StatusItem = (typeof STATUS_ITEMS)[number];
 
@@ -68,6 +71,7 @@ export const DEFAULT_STATUS_LINE: StatusItem[] = [
 	"cost",
 	"phase",
 	"task",
+	"jobs",
 ];
 
 /** The footer after one of the main agent's events; a subagent's events say nothing about the session. */
@@ -105,6 +109,11 @@ export function footerAfter(state: FooterState, event: AtelierEvent): FooterStat
 		// The same progress as the feature panel's.
 		case "feature_changed":
 			return { ...state, task: featureProgress(event) };
+		case "job_started":
+			return { ...state, jobs: { running: event.running, waiting: state.jobs?.waiting ?? 0 } };
+		case "job_finished":
+		case "jobs_status":
+			return { ...state, jobs: { running: event.running, waiting: event.waiting } };
 		default:
 			return state;
 	}
@@ -182,7 +191,20 @@ function itemText(item: StatusItem, state: FooterState, paint: Paint): string | 
 		}
 		case "version":
 			return state.version === undefined ? undefined : `v${shown(state.version)}`;
+		case "jobs":
+			return jobsText(state.jobs, paint);
 	}
+}
+
+/** `2 jobs`, `1 job, 1 notice waiting`, `2 notices waiting`: nothing when no job runs and no notice waits. */
+function jobsText(jobs: FooterState["jobs"], paint: Paint): string | undefined {
+	if (jobs === undefined) return undefined;
+	const { running, waiting } = jobs;
+	const parts = [
+		...(running > 0 ? [`${running} job${running === 1 ? "" : "s"}`] : []),
+		...(waiting > 0 ? [paint("yellow", `${waiting} notice${waiting === 1 ? "" : "s"} waiting`)] : []),
+	];
+	return parts.length === 0 ? undefined : parts.join(", ");
 }
 
 /**
