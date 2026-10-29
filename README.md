@@ -53,20 +53,20 @@ atelier --continue                                               # resume the ne
 
 The interactive session runs full screen: the transcript scrolls above (mouse wheel, PageUp/PageDown) and the editor and the status line stay at the bottom; on exit the transcript is left in the terminal. It shows your prompts and the editor on a subtle background after `›`, as Codex does, and the agent's text as Markdown, with code blocks colored by language. What the session loaded (instructions, skills, memory) and its cost are in `/status` and the status line, not in the transcript; `/stats` breaks the cost down by model, phase and role. Text selected with the mouse is copied to the clipboard.
 
-| Option                             | Effect                                                                                                                                                            |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--mode <mode>`                    | Permission mode: `normal` (default), `auto` or `yolo` (see below).                                                                                                |
-| `--backend <name>`                 | `claude-code` (default, Claude subscription), `anthropic-api` (billed to the API key), `opencode-go` (OpenCode Go plan) or `openai-codex` (ChatGPT subscription). |
-| `--model <name>`                   | Model to use (default: `claude-opus-5-5` on `claude-code`, `claude-sonnet-5-5` on `anthropic-api`); `openai-codex/gpt-6-luna` also picks the backend.             |
-| `--profile <name>`                 | Agent profile for this session (see [profiles](docs/profiles.md)).                                                                                                |
-| `--cwd <dir>`                      | Working directory (default: current directory).                                                                                                                   |
-| `--continue`                       | Resume the newest saved session of the working directory.                                                                                                         |
-| `--resume <id>`                    | Resume that saved session of the working directory.                                                                                                               |
-| `--no-session`                     | Do not save this session.                                                                                                                                         |
-| `--no-fullscreen`                  | Run the interactive session in the terminal's main screen, under what was there.                                                                                  |
-| `--no-review`                      | Do not review or verify changes.                                                                                                                                  |
-| `--no-sandbox`                     | Run `bash` without the macOS sandbox.                                                                                                                             |
-| `-h`, `--help` / `-v`, `--version` | Help and version.                                                                                                                                                 |
+| Option                             | Effect                                                                                                                                                                       |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--mode <mode>`                    | Permission mode: `normal` (default), `auto` or `yolo` (see below).                                                                                                           |
+| `--backend <name>`                 | `claude-code` (default, Claude subscription), `anthropic-api` (billed to the API key), `opencode-go` (OpenCode Go plan) or `openai-codex` (ChatGPT subscription).            |
+| `--model <name>`                   | Model to use (default: `opus` on `claude-code`, whatever model it stands for now, `claude-sonnet-5-5` on `anthropic-api`); `openai-codex/gpt-6-luna` also picks the backend. |
+| `--profile <name>`                 | Agent profile for this session (see [profiles](docs/profiles.md)).                                                                                                           |
+| `--cwd <dir>`                      | Working directory (default: current directory).                                                                                                                              |
+| `--continue`                       | Resume the newest saved session of the working directory.                                                                                                                    |
+| `--resume <id>`                    | Resume that saved session of the working directory.                                                                                                                          |
+| `--no-session`                     | Do not save this session.                                                                                                                                                    |
+| `--no-fullscreen`                  | Run the interactive session in the terminal's main screen, under what was there.                                                                                             |
+| `--no-review`                      | Do not review or verify changes.                                                                                                                                             |
+| `--no-sandbox`                     | Run `bash` without the macOS sandbox.                                                                                                                                        |
+| `-h`, `--help` / `-v`, `--version` | Help and version.                                                                                                                                                            |
 
 Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 

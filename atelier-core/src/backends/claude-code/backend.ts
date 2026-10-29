@@ -37,7 +37,7 @@ import { VERSION } from "../../version.ts";
 import { BACKEND_ID, type MapContext, MCP_SERVER_NAME, mapSdkMessage } from "./map.ts";
 import { claudeCodeIdOf, claudeCodeName, isVersionedClaudeId, withoutWindow } from "./models.ts";
 
-/** The model a session runs without one chosen; Claude Code is sent the alias that stands for it, `opus`. */
+/** The model a session runs without one chosen: `opus`, whatever model it stands for now. */
 export const DEFAULT_MODEL = BACKEND_DEFAULTS["claude-code"];
 export const DEFAULT_INTERRUPT_GRACE_MS = 5000;
 const ACCOUNT_INFO_TIMEOUT_MS = 3000;

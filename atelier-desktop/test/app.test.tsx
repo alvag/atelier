@@ -66,7 +66,7 @@ describe("App", () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "add validation");
 		expect(fake.commands).toEqual([
-			{ command: "session.start", cwd: "/work", model: "claude-opus-5-5", backend: "claude-code" },
+			{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
 			{ command: "session.send", sessionId: "s1", prompt: "add validation" },
 		]);
 		expect(screen.getByText("add validation")).toBeTruthy();
@@ -86,7 +86,7 @@ describe("App", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() =>
 			expect(fake.commands).toEqual([
-				{ command: "session.start", cwd: "/work", model: "claude-opus-5-5", backend: "claude-code", profile: "cheap" },
+				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code", profile: "cheap" },
 			]),
 		);
 	});
@@ -107,7 +107,7 @@ describe("App", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() =>
 			expect(fake.commands).toEqual([
-				{ command: "session.start", cwd: "/work", model: "claude-opus-5-5", backend: "claude-code" },
+				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
 			]),
 		);
 	});
@@ -128,7 +128,7 @@ describe("App", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() =>
 			expect(fake.commands).toEqual([
-				{ command: "session.start", cwd: "/work", model: "claude-opus-5-5", backend: "claude-code" },
+				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
 			]),
 		);
 	});
@@ -183,12 +183,7 @@ describe("App", () => {
 		).toEqual(["default", "normal", "auto", "yolo"]);
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() => expect(fake.commands).toHaveLength(1));
-		expect(fake.commands[0]).toEqual({
-			command: "session.start",
-			cwd: "/work",
-			model: "claude-opus-5-5",
-			backend: "claude-code",
-		});
+		expect(fake.commands[0]).toEqual({ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" });
 
 		fireEvent.change(select, { target: { value: "auto" } });
 		fireEvent.click(screen.getByRole("button", { name: "New session…" }));
@@ -196,7 +191,7 @@ describe("App", () => {
 			expect(fake.commands.at(-1)).toEqual({
 				command: "session.start",
 				cwd: "/work",
-				model: "claude-opus-5-5",
+				model: "opus",
 				backend: "claude-code",
 				mode: "auto",
 			}),
@@ -289,6 +284,20 @@ describe("App", () => {
 		expect(
 			screen.getByText("tokens: input 1,200 · output 85 · cache read 9,000 · cache write 3,100 · cache 68%"),
 		).toBeTruthy();
+	});
+
+	it("shows claude-code's default alias as the model it stands for, and starts the session on the alias", async () => {
+		const fake = fakeBridge();
+		render(<App bridge={fake.bridge} />);
+		await screen.findByText("core 0.0.0");
+		const model = screen.getByLabelText("model") as HTMLSelectElement;
+		expect(model.value).toBe("claude-opus-5-5");
+		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
+		await waitFor(() =>
+			expect(fake.commands).toEqual([
+				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
+			]),
+		);
 	});
 
 	it("opens an anthropic-api session with that backend's models and says it bills the API key", async () => {
@@ -810,7 +819,7 @@ describe("App", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() =>
 			expect(fake.commands).toEqual([
-				{ command: "session.start", cwd: "/work", model: "claude-opus-5-5", backend: "claude-code" },
+				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
 			]),
 		);
 		expect(screen.queryByText("bash: NOT SANDBOXED (turned off)")).toBeNull();
@@ -821,7 +830,7 @@ describe("App", () => {
 			expect(fake.commands.at(-1)).toEqual({
 				command: "session.start",
 				cwd: "/work",
-				model: "claude-opus-5-5",
+				model: "opus",
 				backend: "claude-code",
 				noSandbox: true,
 			}),

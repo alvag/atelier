@@ -9,8 +9,8 @@ import type { BackendName } from "./protocol/types.ts";
  * first. Pure: the desktop renderer imports it.
  */
 export const BACKEND_DEFAULTS: Readonly<Record<BackendName, string>> = Object.freeze({
-	// Claude Code is sent the alias that stands for it, `opus`.
-	"claude-code": "claude-opus-5-5",
+	// The alias, so a session runs what opus stands for now; a client shows it as that model (`options.list`'s aliases).
+	"claude-code": "opus",
 	"anthropic-api": "claude-sonnet-5-5",
 	"opencode-go": DEFAULT_OPENCODE_GO_MODEL,
 	"openai-codex": DEFAULT_CODEX_MODEL,
