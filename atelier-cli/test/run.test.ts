@@ -1473,7 +1473,7 @@ describe("agent profiles", () => {
 			const code = await run(["x"], h.io, () => h.backend);
 			expect(code).toBe(0);
 			expect(h.err()).toMatch(
-				/^error: \S+\/\.atelier\/profiles\.json: profile "bad name": invalid profile name, dropped\n/,
+				/^error: \S+\/\.atelier\/profiles\.json: profile "bad name": invalid profile name, dropped\. Use 1 to 64 characters: ASCII letters, digits, "\.", "_" or "-", starting with a letter or a digit\. The names "__proto__", "constructor" and "prototype" are refused\.\n/,
 			);
 		} finally {
 			await rm(home, { recursive: true, force: true });
@@ -1497,7 +1497,7 @@ describe("agent profiles", () => {
 			const code = await run(["x"], h.io, () => h.backend);
 			expect(code).toBe(0);
 			expect(h.err()).toMatch(
-				/^error: \S+\/\.atelier\/profiles\.json: "active" is not a valid profile name \("bad name"\), ignored\n/,
+				/^error: \S+\/\.atelier\/profiles\.json: "active" is not a valid profile name \("bad name"\), ignored\. Use 1 to 64 characters: ASCII letters, digits, "\.", "_" or "-", starting with a letter or a digit\. The names "__proto__", "constructor" and "prototype" are refused\.\n/,
 			);
 		} finally {
 			await rm(home, { recursive: true, force: true });

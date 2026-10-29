@@ -36,10 +36,15 @@ const SAFE_MODEL = /^[A-Za-z0-9._~:@/+%-]+$/;
 export const PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
- * Names that pass the pattern but collide with the members of an object when used
- * as a key, so they are refused even though they look like ordinary names.
+ * Names that pass the pattern but are refused all the same: `__proto__`,
+ * `constructor` and `prototype` mean something else to any code that takes a
+ * name as a key of an object, so a profile must never carry one of them.
  */
 export const RESERVED_PROFILE_NAMES = new Set(["__proto__", "constructor", "prototype"]);
+
+/** The rule a name has to follow, as the user is told it. */
+export const PROFILE_NAME_RULE =
+	'Use 1 to 64 characters: ASCII letters, digits, ".", "_" or "-", starting with a letter or a digit. The names "__proto__", "constructor" and "prototype" are refused.';
 
 /** Whether `value` is a name a profile may carry. */
 export function isValidProfileName(value: unknown): value is string {
@@ -52,12 +57,17 @@ export class ProfileNameError extends Error {
 }
 
 /**
- * What the user is told about a name that is not valid. The value is quoted with
- * `JSON.stringify`, so a name with spaces, quotes or newlines cannot break the
- * line it is read on.
+ * What the user is told about a name that is not valid. The value is quoted, so a
+ * name with spaces, quotes or newlines cannot break the line it is read on. A
+ * value JSON cannot write (a BigInt) falls back to its text: describing a name
+ * never throws.
  */
 export function describeProfileName(value: unknown): string {
-	return typeof value === "string" ? JSON.stringify(value) : (JSON.stringify(value) ?? "undefined");
+	try {
+		return JSON.stringify(value) ?? String(value);
+	} catch {
+		return String(value);
+	}
 }
 
 /** What one role asks for; a missing field inherits from the session. */
@@ -197,7 +207,10 @@ export function parseProfiles(text: string, path: string = profilesPath()): Prof
 		for (const [name, value] of Object.entries(raw.profiles ?? {})) {
 			// A name that is not valid is dropped with the entry it names: the rest of the file still counts.
 			if (!isValidProfileName(name)) {
-				reports.push({ path, message: `profile ${describeProfileName(name)}: invalid profile name, dropped` });
+				reports.push({
+					path,
+					message: `profile ${describeProfileName(name)}: invalid profile name, dropped. ${PROFILE_NAME_RULE}`,
+				});
 				continue;
 			}
 			const profile = parseProfile(value, name, path, reports);
@@ -207,7 +220,10 @@ export function parseProfiles(text: string, path: string = profilesPath()): Prof
 	if (typeof raw.active === "string" && isValidProfileName(raw.active)) file.active = raw.active;
 	else if (raw.active !== undefined) {
 		const reason = typeof raw.active === "string" ? "not a valid profile name" : "not a profile name";
-		reports.push({ path, message: `"active" is ${reason} (${describeProfileName(raw.active)}), ignored` });
+		reports.push({
+			path,
+			message: `"active" is ${reason} (${describeProfileName(raw.active)}), ignored. ${PROFILE_NAME_RULE}`,
+		});
 	}
 	return { valid: true, file, reports };
 }
@@ -225,10 +241,6 @@ export async function readProfiles(home: string = homedir()): Promise<ProfilesRe
 	}
 	return parseProfiles(text, path);
 }
-
-/** The rule a name has to follow, as the user is told it. */
-export const PROFILE_NAME_RULE =
-	'Use 1 to 64 characters: letters, digits, ".", "_" or "-", starting with a letter or a digit.';
 
 /** Writes `~/.atelier/profiles.json` through a temporary file and a rename, so a reader never sees half a file. */
 export async function writeProfiles(file: ProfilesFile, home: string = homedir()): Promise<void> {

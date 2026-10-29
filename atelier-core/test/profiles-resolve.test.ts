@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { profilesPath, readProfiles, resolveProfile, roleEntry } from "../src/index.ts";
+import { PROFILE_NAME_RULE, profilesPath, readProfiles, resolveProfile, roleEntry } from "../src/index.ts";
 
 let base: string;
 let home: string;
@@ -132,7 +132,9 @@ describe("resolveProfile", () => {
 		await writeFile(join(repo, ".git", "atelier", "profile-pin.json"), pin("bad name"));
 		const resolved = await resolveProfile({ cwd: repo, home });
 		expect([resolved.origin, resolved.name]).toEqual(["active", "global"]);
-		expect(messages(resolved.reports)).toEqual(['"profile" is not a valid profile name ("bad name"), pin ignored']);
+		expect(messages(resolved.reports)).toEqual([
+			`"profile" is not a valid profile name ("bad name"), pin ignored. ${PROFILE_NAME_RULE}`,
+		]);
 	});
 
 	it("ignores the repository's declaration whose name is not valid, naming it, and goes on to the next layer", async () => {
@@ -141,21 +143,48 @@ describe("resolveProfile", () => {
 		await writeFile(join(repo, ".atelier", "profile.json"), pin("bad name"));
 		const resolved = await resolveProfile({ cwd: repo, home });
 		expect([resolved.origin, resolved.name]).toEqual(["active", "global"]);
-		expect(messages(resolved.reports)).toEqual(['"profile" is not a valid profile name ("bad name"), pin ignored']);
+		expect(messages(resolved.reports)).toEqual([
+			`"profile" is not a valid profile name ("bad name"), pin ignored. ${PROFILE_NAME_RULE}`,
+		]);
 	});
 
 	it("reports a chosen name that is not valid and goes on to the next layer", async () => {
 		await setProfiles(profiles);
 		const resolved = await resolveProfile({ cwd: repo, home, choice: "bad name" });
 		expect([resolved.origin, resolved.name]).toEqual(["active", "global"]);
-		expect(messages(resolved.reports)).toEqual(['profile "bad name" is not a valid profile name, skipped']);
+		expect(messages(resolved.reports)).toEqual([
+			`profile "bad name" is not a valid profile name, skipped. ${PROFILE_NAME_RULE}`,
+		]);
+	});
+
+	it("tells the rule when a layer names a profile whose name is not valid", async () => {
+		await setProfiles(profiles);
+		const resolved = await resolveProfile({ cwd: repo, home, choice: "bad name" });
+		const text = messages(resolved.reports).join("\n");
+		expect(text).toContain(PROFILE_NAME_RULE);
+	});
+
+	it("quotes the name of a missing profile, so it cannot break the line it is read on", async () => {
+		await setProfiles(profiles);
+		const resolved = await resolveProfile({ cwd: repo, home, choice: 'a "quoted"\nname' });
+		expect(messages(resolved.reports)).toEqual([
+			`profile "a \\"quoted\\"\\nname" is not a valid profile name, skipped. ${PROFILE_NAME_RULE}`,
+		]);
+	});
+
+	it("quotes the name of a profile that does not exist, so it cannot break the line it is read on", async () => {
+		await setProfiles(profiles);
+		const resolved = await resolveProfile({ cwd: repo, home, choice: "gone" });
+		expect(messages(resolved.reports)).toEqual(['profile "gone" does not exist, skipped']);
 	});
 
 	it("ignores the profiles of a name that is not valid, keeping the rest of the file", async () => {
 		await setProfiles({ active: "global", profiles: { ...profiles.profiles, "bad name": { worker: { model: "x" } } } });
 		const resolved = await resolveProfile({ cwd: repo, home });
 		expect([resolved.origin, resolved.name]).toEqual(["active", "global"]);
-		expect(messages(resolved.reports)).toEqual(['profile "bad name": invalid profile name, dropped']);
+		expect(messages(resolved.reports)).toEqual([
+			`profile "bad name": invalid profile name, dropped. ${PROFILE_NAME_RULE}`,
+		]);
 	});
 
 	it("outside a git repository only the choice and the global active apply", async () => {

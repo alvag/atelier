@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ProfileReport } from "./profiles.ts";
-import { describeProfileName, isValidProfileName } from "./profiles.ts";
+import { describeProfileName, isValidProfileName, PROFILE_NAME_RULE } from "./profiles.ts";
 
 const run = promisify(execFile);
 
@@ -37,7 +37,10 @@ export async function pinPlaces(cwd: string): Promise<PinPlaces> {
 
 /** The profile a pin file names. Anything wrong with the file is reported and the pin counts as absent. */
 export function parsePin(text: string, path: string): PinRead {
-	const drop = (message: string): PinRead => ({ reports: [{ path, message: `${message}, pin ignored` }] });
+	// The notice ends with the rule, when there is one: what the user has to change comes last.
+	const drop = (message: string, rule?: string): PinRead => ({
+		reports: [{ path, message: `${message}, pin ignored${rule === undefined ? "" : `. ${rule}`}` }],
+	});
 	let raw: unknown;
 	try {
 		raw = JSON.parse(text);
@@ -50,7 +53,7 @@ export function parsePin(text: string, path: string): PinRead {
 		return drop(`expected kind "${PIN_KIND}" and version ${PIN_VERSION}`);
 	if (typeof pin.profile !== "string" || pin.profile === "") return drop(`"profile" is not a profile name`);
 	if (!isValidProfileName(pin.profile))
-		return drop(`"profile" is not a valid profile name (${describeProfileName(pin.profile)})`);
+		return drop(`"profile" is not a valid profile name (${describeProfileName(pin.profile)})`, PROFILE_NAME_RULE);
 	return { profile: pin.profile, reports: [] };
 }
 
