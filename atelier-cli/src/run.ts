@@ -460,7 +460,11 @@ export async function run(
 		idleEvent: (event) => {
 			renderer.endLine();
 			renderer.render({ ...event, seq: 0, turnId: "" } as AtelierEvent);
-			if (io.isTTY && atPrompt) renderer.write(PROMPT);
+			if (io.isTTY && atPrompt) {
+				renderer.write(PROMPT);
+				// What was typed before the line came stays in the reader: it is shown again after the prompt.
+				lines.redraw();
+			}
 		},
 		backend,
 		...(mcp ? { mcp } : {}),
@@ -883,6 +887,8 @@ function createLineReader(stdin: Readable): LineReader {
 		},
 		pause: () => rl?.pause(),
 		resume: () => rl?.resume(),
+		/** The terminal's own line mode keeps what is typed in sight: nothing to show again. */
+		redraw: () => {},
 		/** Nothing read without a terminal is pasted. */
 		pasted: () => false,
 		/** Drops the lines typed so far and says how many. */
