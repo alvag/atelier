@@ -75,7 +75,8 @@ function configValue(text: string): string | undefined {
 
 /** A config boolean as git reads it: `true`, `yes`, `on`, `1`, or `false`, `no`, `off`, `0` and empty; undefined otherwise. */
 function booleanOf(value: string): boolean | undefined {
-	const word = value.trim().toLowerCase();
+	// `configValue` already dropped the spaces outside quotes; those inside are part of the value, as in git.
+	const word = value.toLowerCase();
 	if (["true", "yes", "on", "1"].includes(word)) return true;
 	if (["false", "no", "off", "0", ""].includes(word)) return false;
 	return undefined;
