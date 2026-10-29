@@ -2328,7 +2328,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			});
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			askUser(stub.emit);
-			await until(() => h.screen.screen().includes("Question 1 of 2"));
+			await until(() => h.screen.screen().includes("○ Q1   ○ Q2"));
 			const screen = h.screen.screen();
 			expect(screen).toMatch(/1\. Postgres +Recommended/);
 			expect(screen).toContain("3. Type something…");
@@ -2343,7 +2343,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\x1b[B");
 			h.screen.type("\x1b[B");
 			h.screen.type("\r");
-			await until(() => h.screen.screen().includes("Question 2 of 2"));
+			await until(() => h.screen.screen().includes("✔ Q1"));
 			expect(answers()).toHaveLength(0);
 			// A number answers its row at once; 3, Type something, takes the text typed in place.
 			h.screen.type("3");
@@ -2371,6 +2371,40 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => h.screen.screen().includes("Answered 2 questions"));
 			expect(h.screen.screen()).toContain("→ SQLite");
 			expect(h.screen.screen()).toContain("→ Type something: my cache");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("names the tabs by their headers, goes back with ← and sends the answer changed there", async () => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
+			const [db, cache] = batch;
+			stub.emit({
+				type: "user_question_requested",
+				callId: "u3",
+				questions: [
+					{ ...db, header: "Database" },
+					{ ...cache, header: "Cache" },
+				],
+			});
+			await until(() => h.screen.screen().includes("○ Database   ○ Cache"));
+			h.screen.type("1");
+			await until(() => h.screen.screen().includes("✔ Database"));
+			h.screen.type("\x1b[D");
+			h.screen.type("2");
+			h.screen.type("1");
+			await until(() => answers().length === 1);
+			expect(answers()[0]).toMatchObject({
+				callId: "u3",
+				answers: [
+					{ questionId: "q1", optionId: "b" },
+					{ questionId: "q2", optionId: "d" },
+				],
+			});
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
@@ -2497,7 +2531,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => h.screen.screen().includes("profile cheap"));
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			askUser(stub.emit);
-			await until(() => h.screen.screen().includes("Question 1 of 2"));
+			await until(() => h.screen.screen().includes("○ Q1   ○ Q2"));
 			h.screen.type("\x1b");
 			await until(() => answers().length === 1);
 			expect(answers()[0]).toMatchObject({ callId: "u1", answers: null });
@@ -2505,7 +2539,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			// Resolved by the core while the user types an answer and an approval waits behind it.
 			askUser(stub.emit, "u2");
 			stub.emit({ type: "approval_requested", tool: "bash", callId: "a1", command: "echo hi" });
-			await until(() => h.screen.screen().includes("Question 1 of 2"));
+			await until(() => h.screen.screen().includes("○ Q1   ○ Q2"));
 			h.screen.type("\x1b[A");
 			h.screen.type("half typed");
 			await until(() => h.screen.screen().includes("half typed"));

@@ -140,15 +140,6 @@ describe("QuestionDialog", () => {
 		shown.handleInput("1");
 		expect(answers).toEqual(["cancel"]);
 	});
-
-	it("shows a title over the question when it has one", () => {
-		const { lines } = dialog({ title: "Question 1 of 2" });
-		expect(lines(80).slice(0, 3)).toEqual([
-			"─".repeat(80),
-			" Question 1 of 2",
-			" Which language should commit messages use?",
-		]);
-	});
 });
 
 describe("QuestionDialog's Type something row", () => {

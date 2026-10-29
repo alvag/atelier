@@ -50,6 +50,7 @@ import {
 	type ShownRule,
 } from "../permission-text.ts";
 import { savedParts } from "../transcript.ts";
+import { type AskAnswer, AskDialog } from "./ask-dialog.ts";
 import { Attention } from "./attention.ts";
 import { Conversation } from "./conversation.ts";
 import {
@@ -76,7 +77,6 @@ import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
 import { ProgramStatusReporter } from "./program-status.ts";
 import { PromptEditor } from "./prompt.ts";
-import { QuestionDialog } from "./question-dialog.ts";
 import { QueuePanel } from "./queue-panel.ts";
 import {
 	choicesOf,
@@ -526,7 +526,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const dialogs = new Container();
 	/** Questions waiting for an answer, the first one on screen. */
 	const questions: {
-		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog | SearchDialog | QuestionDialog;
+		dialog: ChoiceDialog<string> | SecretDialog | PasteDialog | SearchDialog | AskDialog;
 		cancel: () => void;
 		local: boolean;
 		/** The `ask_user` batch it shows: the core's `user_question_resolved` closes it without an answer. */
@@ -670,22 +670,18 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		reportRunning();
 	};
 	/**
-	 * Asks an `ask_user` batch one question at a time and sends the answers once all are given; Esc or Ctrl+C sends
-	 * `null`. The core's `user_question_resolved` closes it with nothing sent, so a late key answers nothing.
+	 * Asks an `ask_user` batch, its questions as tabs when there are several, and sends the answers once all are given;
+	 * Esc or Ctrl+C sends `null`. The core's `user_question_resolved` closes it with nothing sent, so a late key answers
+	 * nothing.
 	 */
 	const askUser = (callId: string, batch: Extract<AtelierEvent, { type: "user_question_requested" }>["questions"]) => {
-		const given: UserAnswer[] = [];
 		let closed = false;
-		const guardMs = options.answerGuardMs ?? ANSWER_GUARD_MS;
 		const asked = sessionId;
-		const entry: (typeof questions)[number] = {
-			dialog: new QuestionDialog({ question: "", options: [] }, paint, () => {}),
-			cancel: () => finish(null),
-			local: false,
-			userCallId: callId,
-			blocked: { kind: "user_question", message: "Questions from the agent" },
-		};
-		const finish = (answers: typeof given | null) => {
+		// Each question's options as listed, the recommended one first.
+		const ordered = batch.map((item) =>
+			[...item.options].sort((a, b) => Number(b.recommended === true) - Number(a.recommended === true)),
+		);
+		const finish = (answers: UserAnswer[] | null) => {
 			if (closed) return;
 			closed = true;
 			const at = questions.indexOf(entry);
@@ -694,40 +690,49 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			showQuestion();
 			reportRunning();
 		};
-		entry.drop = () => {
-			closed = true;
+		/** The answers as the core takes them: the source id of each option chosen, or the user's own text. */
+		const sent = (answers: AskAnswer[]): UserAnswer[] | null => {
+			const given: UserAnswer[] = [];
+			for (const [index, item] of batch.entries()) {
+				const answer = answers[index];
+				if (answer === undefined) return null;
+				if ("other" in answer) given.push({ questionId: item.id, other: answer.other });
+				else {
+					const chosen = ordered[index]?.[answer.option];
+					if (chosen === undefined) return null;
+					given.push({ questionId: item.id, optionId: chosen.id });
+				}
+			}
+			return given;
 		};
-		const step = () => {
-			const item = batch[given.length];
-			if (item === undefined) return finish(given);
-			const title = batch.length > 1 ? `Question ${given.length + 1} of ${batch.length}` : undefined;
-			const question = shown(item.question).text;
-			const ordered = [...item.options].sort((a, b) => Number(b.recommended === true) - Number(a.recommended === true));
-			const options = ordered.map((option) => ({
-				label: shown(option.label).text,
-				...(option.description === undefined ? {} : { description: shown(option.description).text }),
-				...(option.recommended ? { recommended: true } : {}),
-			}));
-			const next = (answer: (typeof given)[number]) => {
-				if (closed) return;
-				given.push(answer);
-				step();
-			};
-			entry.dialog = new QuestionDialog(
-				{ question, options, guardMs, paste: input, ...(title === undefined ? {} : { title }) },
-				paint,
-				(answer) => {
-					if (closed) return;
-					if (answer === "cancel") return finish(null);
-					if ("other" in answer) return next({ questionId: item.id, other: answer.other });
-					const chosen = ordered[answer.option];
-					return chosen === undefined ? finish(null) : next({ questionId: item.id, optionId: chosen.id });
-				},
-			);
-			if (questions[0] === entry) showQuestion();
+		const dialog = new AskDialog(
+			{
+				questions: batch.map((item, index) => ({
+					...(item.header === undefined ? {} : { header: shown(item.header).text }),
+					question: shown(item.question).text,
+					options: (ordered[index] ?? []).map((option) => ({
+						label: shown(option.label).text,
+						...(option.description === undefined ? {} : { description: shown(option.description).text }),
+						...(option.recommended ? { recommended: true } : {}),
+					})),
+				})),
+				guardMs: options.answerGuardMs ?? ANSWER_GUARD_MS,
+				paste: input,
+			},
+			paint,
+			(answers) => finish(answers === null ? null : sent(answers)),
+		);
+		const entry: (typeof questions)[number] = {
+			dialog,
+			cancel: () => finish(null),
+			local: false,
+			userCallId: callId,
+			blocked: { kind: "user_question", message: "Questions from the agent" },
+			drop: () => {
+				closed = true;
+			},
 		};
 		questions.push(entry);
-		step();
 		if (questions.length === 1) showQuestion();
 		reportRunning();
 	};

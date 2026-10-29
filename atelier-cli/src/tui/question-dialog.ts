@@ -30,7 +30,7 @@ const LEAD = 6;
 const DESCRIPTION_ROOM = 40;
 
 /** The hint's parts in the order they are dropped when it does not fit: the first goes first. */
-const dropOrder = ["enter select", "↑↓ move"];
+const dropOrder = ["enter select", "↑↓ move", "←→ tabs"];
 
 /** Whether `keys` are typed text: no control character, so no other key, is in them. */
 const isText = (keys: string) => characters(keys).every((char) => char >= " " && char !== "\x7f");
@@ -80,7 +80,7 @@ function fitHint(parts: readonly string[], width: number): string {
 export class QuestionDialog implements Component, Focusable {
 	focused = false;
 	readonly #question: string;
-	readonly #title: string | undefined;
+	readonly #tabs: boolean;
 	readonly #options: readonly QuestionOption[];
 	readonly #paint: Paint;
 	readonly #guardMs: number;
@@ -100,8 +100,8 @@ export class QuestionDialog implements Component, Focusable {
 		options: {
 			question: string;
 			options: readonly QuestionOption[];
-			/** A line over the question, such as where it is in its batch. */
-			title?: string;
+			/** Whether it is one tab of a batch: the hint line says ←→ moves among them. */
+			tabs?: boolean;
 			guardMs?: number;
 			/** The filter that followed the input before this question appeared; one of its own by default. */
 			paste?: PasteFilter;
@@ -110,7 +110,7 @@ export class QuestionDialog implements Component, Focusable {
 		answer: (answer: QuestionAnswer) => void,
 	) {
 		this.#question = options.question;
-		this.#title = options.title;
+		this.#tabs = options.tabs ?? false;
 		this.#options = options.options;
 		this.#paint = paint;
 		this.#guardMs = options.guardMs ?? 0;
@@ -123,9 +123,20 @@ export class QuestionDialog implements Component, Focusable {
 		return this.#options.length + 1;
 	}
 
-	/** Starts the guard: called when the question is put on screen. */
-	reveal(now = Date.now()): void {
-		this.#revealedAt ??= now;
+	/** Starts the guard: called when the question is put on screen; `again` when a batch shows it once more. */
+	reveal(now = Date.now(), again = false): void {
+		if (again) this.#revealedAt = now;
+		else this.#revealedAt ??= now;
+	}
+
+	/** Takes keys again after it answered, as a batch's tab the user goes back to: the cursor stays on the answer. */
+	reopen(): void {
+		this.#answered = false;
+	}
+
+	/** Whether ← and → are the text's: the cursor is on `Type something…` and something is typed there. */
+	get editing(): boolean {
+		return this.#typing && this.#text !== "";
 	}
 
 	/** The question is already whole: Ctrl+O has nothing to open, and opens no card behind it. */
@@ -226,11 +237,16 @@ export class QuestionDialog implements Component, Focusable {
 	invalidate(): void {}
 
 	render(width: number): string[] {
+		const rule = this.#paint("cyan", "─".repeat(Math.max(1, width)));
+		return [rule, ...this.body(width), rule];
+	}
+
+	/** What goes between the rules: the question, its options and the hint line. */
+	body(width: number): string[] {
 		const paint = this.#paint;
 		const room = Math.max(1, width - 1);
-		const rule = paint("cyan", "─".repeat(Math.max(1, width)));
-		const title = this.#title === undefined ? [] : wrapTextWithAnsi(paint("dim", this.#title), room);
 		const question = wrapTextWithAnsi(paint("bold", this.#question), room);
+		const tabs = this.#tabs ? ["←→ tabs"] : [];
 		const hint =
 			this.#problem !== ""
 				? paint("yellow", truncateToWidth(this.#problem, room, "…"))
@@ -238,17 +254,9 @@ export class QuestionDialog implements Component, Focusable {
 						"dim",
 						this.#typing
 							? fitHint(["enter send", "↑↓ move", "esc cancel"], room)
-							: fitHint(["↑↓ move", `1-${this.#rows} pick`, "enter select", "esc cancel"], room),
+							: fitHint([...tabs, "↑↓ move", `1-${this.#rows} pick`, "enter select", "esc cancel"], room),
 					);
-		const lines = [
-			rule,
-			...[...title, ...question].map((line) => ` ${line}`),
-			"",
-			...this.#optionRows(width),
-			"",
-			` ${hint}`,
-			rule,
-		];
+		const lines = [...question.map((line) => ` ${line}`), "", ...this.#optionRows(width), "", ` ${hint}`];
 		return lines.map((line) => truncateToWidth(line, width));
 	}
 
