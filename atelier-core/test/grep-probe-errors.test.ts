@@ -34,14 +34,19 @@ afterEach(async () => {
 	await rm(join(cwd, ".."), { recursive: true, force: true });
 });
 
-for (const code of ["ENAMETOOLONG", "EIO"])
+for (const code of ["ENAMETOOLONG", "ENOTDIR", "EIO"])
 	it.skipIf(!hasRipgrep)(`answers when the notice probe fails with ${code}`, async () => {
 		const forged = 'a: binary file matches (found "\\0" byte around offset 1)\nb';
 		await writeFile(join(cwd, "src/a"), "plain\n");
 		await writeFile(join(cwd, "src", forged), "needle here\n");
 		probe.code = code;
 		const result = await createGrepTool({ useRipgrep: true }).execute({ pattern: "needle", path: "src" }, { cwd });
-		// Whichever way the line is read, the search answers; what it returns is what the path filter lets through.
 		expect(result.ok).toBe(true);
-		expect(result.output).toContain("src/a");
+		if (code === "EIO") {
+			// Any other failure keeps the line part of the whole name, which the filter then checks.
+			expect(result.output).toBe(`src/${forged}:1:needle here`);
+		} else {
+			// A name that cannot exist makes the line a notice; the rest goes to a missing `b` and is dropped.
+			expect(result.output).toBe('src/a: binary file matches (found "\\0" byte around offset 1)');
+		}
 	});
