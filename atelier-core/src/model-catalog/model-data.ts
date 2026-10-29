@@ -61,11 +61,19 @@ export type CatalogListing = Partial<Record<CatalogBackend, readonly string[]>>;
 export class ModelData {
 	readonly #byBackend = new Map<CatalogBackend, Map<string, CatalogModel>>();
 	readonly #listed: CatalogListing;
+	readonly #resolved: ReadonlySet<CatalogBackend>;
 
-	constructor(models: CatalogModels = {}, listed: CatalogListing = {}) {
+	/** `resolved`: the backends whose provider's list was kept with its aliases resolved (Claude Code's). */
+	constructor(models: CatalogModels = {}, listed: CatalogListing = {}, resolved: readonly CatalogBackend[] = []) {
 		for (const backend of CATALOG_BACKENDS)
 			this.#byBackend.set(backend, new Map((models[backend] ?? []).map((model) => [model.id, model])));
 		this.#listed = listed;
+		this.#resolved = new Set(resolved);
+	}
+
+	/** Whether the provider's list was kept with what its aliases stand for resolved. */
+	resolved(backend: CatalogBackend): boolean {
+		return this.#resolved.has(backend) && this.#listed[backend] !== undefined;
 	}
 
 	model(backend: CatalogBackend, id: string): CatalogModel | undefined {

@@ -381,6 +381,7 @@ describe("ClaudeCodeBackend model names", () => {
 					],
 				},
 				{ "claude-code": ["claude-fable-5-1", "claude-opus-5-5", "claude-opus-4-6"] },
+				["claude-code"],
 			),
 		);
 		expect((await startOn("claude-fable-5-1")).calls.options.model).toBe("fable");
@@ -398,6 +399,7 @@ describe("ClaudeCodeBackend model names", () => {
 			new ModelData(
 				{ "claude-code": [{ id: "claude-opus-6", aliases: ["opus"] }, { id: "claude-opus-5-5" }] },
 				{ "claude-code": ["claude-opus-6", "claude-opus-5-5"] },
+				["claude-code"],
 			),
 		);
 		const { query, calls } = fakeQuery([init], []);
@@ -410,6 +412,7 @@ describe("ClaudeCodeBackend model names", () => {
 			new ModelData(
 				{ "claude-code": [{ id: "claude-fable-5-1", aliases: ["fable"] }] },
 				{ "claude-code": ["claude-fable-5-1"] },
+				["claude-code"],
 			),
 		);
 		const { query, calls } = fakeQuery([init], []);
