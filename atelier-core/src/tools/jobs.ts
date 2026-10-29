@@ -106,6 +106,8 @@ interface Entry {
 	child: ChildProcess;
 	/** The value of the job's JOB_MARK in the environment of each of its processes. */
 	mark: string;
+	/** What a stop found of the job's tree: still killed once a parent that tied it to the job is gone. */
+	known: Set<number>;
 	sink: JobOutput;
 	/** The command exited (or never started): stopping it now changes nothing. */
 	exited: boolean;
@@ -168,6 +170,7 @@ export class Jobs {
 			startedAt: Date.now(),
 			child,
 			mark,
+			known: new Set(),
 			sink,
 			exited: false,
 			stopping: false,
@@ -195,9 +198,13 @@ export class Jobs {
 			return { outcome: "ended", job: this.#snapshot(entry) };
 		}
 		entry.stopping = true;
-		if (entry.child.pid !== undefined) await sweepJob(entry.child.pid, entry.mark, "SIGTERM").catch(() => {});
+		if (entry.child.pid !== undefined)
+			for (const pid of await sweepJob(entry.child.pid, entry.mark, "SIGTERM").catch(() => [])) entry.known.add(pid);
 		killGroup(entry.child, "SIGTERM");
-		const timer = setTimeout(() => killGroup(entry.child, "SIGKILL"), KILL_GRACE_MS);
+		const timer = setTimeout(() => {
+			killGroup(entry.child, "SIGKILL");
+			killPids(entry.known);
+		}, KILL_GRACE_MS);
 		await entry.done;
 		clearTimeout(timer);
 		return { outcome: "stopped", job: this.#snapshot(entry) };
@@ -227,10 +234,13 @@ export class Jobs {
 		});
 		entry.exited = true;
 		if (ended.error === undefined && child.pid !== undefined) {
-			// What the command left behind dies with it, also what left its group; that closes the pipes they held.
+			// What the command left behind dies with it, also what left its group; that closes the pipes they held. The
+			// sweep lists the tree before it kills anything, so no parent dies before its children are found; it is best
+			// effort, and whatever it meets the job still ends. The group's own kill covers a sweep that could list nothing,
+			// and what a stop found is killed too: a parent that died since no longer leads to it.
+			await sweepJob(child.pid, entry.mark).catch(() => []);
 			killGroup(child, "SIGKILL");
-			// The sweep is best effort: whatever it meets, the job still ends.
-			await sweepJob(child.pid, entry.mark).catch(() => {});
+			killPids(entry.known);
 			// A process the sweep could not find may still hold the output pipes: the job ends without waiting for it.
 			let timer: NodeJS.Timeout | undefined;
 			await Promise.race([closed, new Promise((resolve) => (timer = setTimeout(resolve, KILL_GRACE_MS)))]);
@@ -270,6 +280,14 @@ export class Jobs {
 		for (const entry of finished.slice(0, Math.max(0, finished.length - MAX_FINISHED_JOBS)))
 			this.#entries.delete(entry.info.id);
 	}
+}
+
+/** SIGKILL to processes a stop found, a few seconds ago at most: too soon for their pids to be given to another. */
+function killPids(pids: Iterable<number>): void {
+	for (const pid of pids)
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {}
 }
 
 function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {

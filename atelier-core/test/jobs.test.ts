@@ -73,11 +73,14 @@ async function pidIn(file: string): Promise<number> {
  * hides its environment, so only its parent ties it to the job. Once the script exits it is a Node process, found by
  * the job's mark in its environment.
  */
-function escaper(dir: string, pidFile: string, stay: boolean): string {
-	const script = join(dir, `escaper-${stay ? "stay" : "exit"}.mjs`);
-	const program = stay
-		? `"/bin/sleep", ["300"]`
-		: `${JSON.stringify(process.execPath)}, ["-e", "setInterval(() => {}, 1000)"]`;
+function escaper(dir: string, pidFile: string, stay: boolean, stubborn = false): string {
+	const script = join(dir, `escaper-${stay ? "stay" : "exit"}${stubborn ? "-stubborn" : ""}.mjs`);
+	// Stubborn: no environment, so no mark, and SIGTERM ignored.
+	const program = stubborn
+		? `"/usr/bin/env", ["-i", "/bin/bash", "-c", "trap '' TERM; while :; do /bin/sleep 1; done"]`
+		: stay
+			? `"/bin/sleep", ["300"]`
+			: `${JSON.stringify(process.execPath)}, ["-e", "setInterval(() => {}, 1000)"]`;
 	writeFileSync(
 		script,
 		[
@@ -218,6 +221,26 @@ describe("background jobs", () => {
 			const escaped = await pidIn(pidFile);
 			await until(() => ended.length === 1);
 			await until(() => !running(escaped));
+		});
+
+		it("is killed when the job's command ends while the helper that started it still runs", async () => {
+			const { dir, jobs, ended } = harness();
+			const pidFile = join(dir, "escaped.pid");
+			jobs.start(plain(`${escaper(dir, pidFile, true)} & until [ -s ${pidFile} ]; do sleep 0.05; done; exit 0`, dir));
+			const escaped = await pidIn(pidFile);
+			await until(() => ended.length === 1);
+			await until(() => !running(escaped));
+		});
+
+		it("is killed on a stop when it ignores SIGTERM and its parent dies of it", async () => {
+			const { dir, jobs } = harness();
+			const pidFile = join(dir, "escaped.pid");
+			const job = jobs.start(plain(escaper(dir, pidFile, true, true), dir));
+			const escaped = await pidIn(pidFile);
+			await jobs.stop(job.id);
+			const stopped = Date.now();
+			while (running(escaped) && Date.now() - stopped < 5000) await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(running(escaped)).toBe(false);
 		});
 
 		it("is killed when the session closes", async () => {

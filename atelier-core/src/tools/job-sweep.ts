@@ -23,20 +23,25 @@ interface ProcessRow {
 /**
  * Signals every process of a job: those in its process group, those carrying its mark, and every descendant of either,
  * found in one listing so a parent that dies first does not hide its children. SIGKILL goes round after round until
- * none is left; another signal goes once. Never signals the process that runs it. Best effort: without a process
+ * none is left; another signal goes once. Never signals the process that runs it. Answers every pid it signaled, for
+ * a caller that must escalate later, when a parent that died may no longer lead to them. Best effort: without a process
  * listing (a sandbox refuses `ps`) it finds nothing and the group's own signal is all there is.
  */
-export async function sweepJob(pgid: number, mark: string, signal: NodeJS.Signals = "SIGKILL"): Promise<void> {
+export async function sweepJob(pgid: number, mark: string, signal: NodeJS.Signals = "SIGKILL"): Promise<number[]> {
 	const entry = `${JOB_MARK}=${mark}`;
 	const rounds = signal === "SIGKILL" ? ROUNDS : 1;
+	const signaled = new Set<number>();
 	for (let round = 0; round < rounds; round++) {
 		const pids = jobProcesses(await listProcesses(entry), pgid);
-		if (pids.length === 0) return;
-		for (const pid of pids)
+		if (pids.length === 0) break;
+		for (const pid of pids) {
+			signaled.add(pid);
 			try {
 				process.kill(pid, signal);
 			} catch {}
+		}
 	}
+	return [...signaled];
 }
 
 /** The job's processes in one listing: the group and the marked ones, then their descendants by parent. */
