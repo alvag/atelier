@@ -9,6 +9,7 @@ import {
 	isInside,
 	isProtected,
 	isSecretFileFolded,
+	PathProtectedError,
 	protectedReadPaths,
 	resolveInside,
 	resolveOutside,
@@ -290,6 +291,22 @@ async function isFile(path: string): Promise<boolean> {
 	return (await stat(path).catch(() => undefined))?.isFile() ?? false;
 }
 
+/**
+ * Refuses a target that is a protected place, or a file named like a secret file by the path as
+ * written or by its real path: the engines search the real path, so the filter would never see
+ * the name the caller gave (a link `alias.pem` to an ordinary file).
+ */
+async function refuseSecretTarget(
+	cwd: string,
+	path: string,
+	target: string,
+	secrets: readonly string[],
+): Promise<void> {
+	const written = resolve(cwd, path);
+	const named = (await isFile(target)) && (isSecretFileFolded(written) || isSecretFileFolded(target));
+	if (named || isProtected(written, secrets) || isProtected(target, secrets)) throw new PathProtectedError(path);
+}
+
 /** Applies a glob that has a directory to a relative path; a leading `!` negates it. */
 function globFilter(glob: string): (path: string) => boolean {
 	return glob.startsWith("!") ? (path) => !matchesGlob(path, glob.slice(1)) : (path) => matchesGlob(path, glob);
@@ -409,10 +426,11 @@ export function createGrepTool(options: GrepOptions = {}): ToolDefinition {
 		) {
 			try {
 				if (signal?.aborted) return failure("Search aborted.");
-				const secrets = options.outside ? await protectedReadPaths(cwd, options.home ?? homedir()) : [];
+				const secrets = await protectedReadPaths(cwd, options.home ?? homedir());
 				const target = options.outside
 					? await resolveOutside(cwd, path ?? ".", secrets)
 					: await resolveInside(cwd, path ?? ".");
+				await refuseSecretTarget(cwd, path ?? ".", target, secrets);
 				const root = await realpath(cwd);
 				// The engines are told to skip the secrets inside the target; the filter below is what guarantees none is returned.
 				const skipped = secrets.filter((secret) => secret !== target && isInside(target, secret));
