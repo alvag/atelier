@@ -329,6 +329,22 @@ describe("background jobs", () => {
 		expect(() => jobs.start(plain("true", dir))).toThrow("Refused: the session is closing.");
 	});
 
+	it("keeps the last 20 jobs to end, whenever they started", async () => {
+		const { dir, jobs, ended } = harness();
+		const goFile = join(dir, "go");
+		jobs.start(plain(`while [ ! -f ${goFile} ]; do sleep 0.02; done`, dir));
+		for (let i = 1; i <= 20; i++) {
+			jobs.start(plain("true", dir));
+			await until(() => ended.length === i);
+		}
+		writeFileSync(goFile, "");
+		await until(() => ended.length === 21);
+		const ids = jobs.list().map((job) => job.id);
+		expect(ids).toHaveLength(20);
+		expect(ids).toContain("1");
+		expect(ids).not.toContain("2");
+	});
+
 	it("lists running and finished jobs with their status, elapsed time, label and output file", async () => {
 		const { dir, jobs, ended } = harness();
 		expect(jobListText(jobs.list())).toBe("No background jobs.");
