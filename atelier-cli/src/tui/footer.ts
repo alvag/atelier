@@ -57,7 +57,7 @@ export const STATUS_ITEMS = [
 export type StatusItem = (typeof STATUS_ITEMS)[number];
 
 /** Fullscreen keeps only live activity below the editor; session details live in the top bar. */
-export const FULLSCREEN_FOOTER_ITEMS: readonly StatusItem[] = ["mode", "sandbox", "phase", "task"];
+export const FULLSCREEN_FOOTER_ITEMS: readonly StatusItem[] = ["mode", "sandbox", "phase", "task", "jobs"];
 
 export const isStatusItem = (value: unknown): value is StatusItem => STATUS_ITEMS.some((item) => item === value);
 
