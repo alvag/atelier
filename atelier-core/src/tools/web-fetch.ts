@@ -75,8 +75,18 @@ const carriesIpv4 = blockList(
 	],
 );
 
+/** Names that never lead to the public internet; they are refused before anything resolves them. */
+const LOCAL_NAME_SUFFIXES = [".localhost", ".internal", ".local"];
+
 class RefusedError extends Error {
 	override name = "RefusedError";
+}
+
+/** Throws for `localhost` and the local and internal domains, compared without case and without the root dot. */
+function checkName(hostname: string): void {
+	const name = hostname.toLowerCase().replace(/\.$/, "");
+	if (name === "localhost" || LOCAL_NAME_SUFFIXES.some((suffix) => name.endsWith(suffix)))
+		throw new RefusedError(`Refused: ${name} is a local or internal name.`);
 }
 
 /** The eight 16-bit groups of an IPv6 address, with a dotted IPv4 tail as the last two; null when it cannot be read. */
@@ -180,6 +190,7 @@ function requestOnce(
 ): Promise<Response> {
 	const host = url.hostname.replace(/^\[|\]$/g, "");
 	if (isIP(host) !== 0) checkAddress(host, options.allowLoopback);
+	else checkName(host);
 	return new Promise((resolve, reject) => {
 		const send = url.protocol === "https:" ? httpsRequest : httpRequest;
 		const req = send(

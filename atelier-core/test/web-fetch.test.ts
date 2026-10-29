@@ -350,6 +350,42 @@ describe("web_fetch special-use and embedded IPv4 addresses (#128)", () => {
 		expect(seen).toEqual(["/bounce"]);
 	});
 
+	it.each([
+		["localhost", "localhost"],
+		["LocalHost.", "localhost"],
+		["app.localhost", "app.localhost"],
+		["metadata.google.internal", "metadata.google.internal"],
+		["printer.local", "printer.local"],
+	])("refuses the name %s without resolving it, even with loopback open", async (host, name) => {
+		const asked: string[] = [];
+		const tool = local({
+			resolve: async (hostname) => {
+				asked.push(hostname);
+				return ["127.0.0.1"];
+			},
+		});
+		const out = await fetchPage(tool, `http://${host}:${new URL(base).port}/never`);
+		expect(out).toMatchObject({ ok: false, output: `Refused: ${name} is a local or internal name.` });
+		expect(asked).toEqual([]);
+		expect(seen).toEqual([]);
+	});
+
+	it("refuses a redirect to an internal name after the first request", async () => {
+		handler = (_request, response) =>
+			response.writeHead(302, { location: "http://metadata.google.internal/computeMetadata/v1/" }).end();
+		const asked: string[] = [];
+		const tool = local({
+			resolve: async (hostname) => {
+				asked.push(hostname);
+				return ["127.0.0.1"];
+			},
+		});
+		const out = await fetchPage(tool, `${base}/bounce`);
+		expect(out).toMatchObject({ ok: false, output: "Refused: metadata.google.internal is a local or internal name." });
+		expect(asked).toEqual([]);
+		expect(seen).toEqual(["/bounce"]);
+	});
+
 	it.each(["::1", "::ffff:127.0.0.1"])("still lets %s through when the tool was built for tests", async (address) => {
 		const tool = local({ resolve: async () => [address] });
 		const out = await fetchPage(tool, `http://pages.example:${new URL(base).port}/x`);
