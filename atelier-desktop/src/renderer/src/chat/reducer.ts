@@ -342,7 +342,12 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 
 function withoutSession(state: ChatState): ChatState {
 	// The queue belonged to the session: nothing can edit, remove or run it anymore, so it goes back to the composer.
-	const { session: _session, queue, ...rest } = state;
+	const closed = mapItems(state, (item) =>
+		item.kind === "question" && item.state === "pending"
+			? { ...item, state: "resolved", result: { status: "cancelled", reason: "closed" } }
+			: item,
+	);
+	const { session: _session, queue, ...rest } = closed;
 	if (queue === undefined) return { ...rest, busy: false };
 	const returned = { seq: (state.returned?.seq ?? 0) + 1, texts: queue.map((message) => message.text) };
 	return { ...rest, busy: false, returned };
