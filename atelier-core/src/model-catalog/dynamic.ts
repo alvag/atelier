@@ -1,4 +1,4 @@
-import { isVersionedClaudeId, resolvedClaudeCodeList } from "../backends/claude-code/models.ts";
+import { resolvedClaudeCodeList } from "../backends/claude-code/models.ts";
 import { BACKEND_MODELS, type ModelCatalog } from "../options.ts";
 import type { BackendName } from "../protocol/types.ts";
 import { useModelData } from "./current.ts";
@@ -17,9 +17,6 @@ import {
 	refreshSource,
 	updateSource,
 } from "./store.ts";
-
-/** Claude Code's aliases are not offered: the versioned id each stands for is. */
-const offered = (backend: BackendName, id: string) => backend !== "claude-code" || isVersionedClaudeId(id);
 
 export interface DynamicCatalogOptions {
 	/** The catalog file, `catalogFile(home)`. */
@@ -57,10 +54,10 @@ export class DynamicModelCatalog implements ModelCatalog {
 	async models(backend: BackendName): Promise<readonly string[]> {
 		const data = await this.#latest();
 		const released = (id: string) => data.model(backend, id)?.released;
-		const subscription = backend === "claude-code" ? resolvedClaudeCodeList(data) : undefined;
-		if (subscription !== undefined) return newestFirst(subscription, released);
 		const base = BACKEND_MODELS[backend];
-		const listed = (data.listed(backend) ?? []).filter((id) => !base.includes(id) && offered(backend, id));
+		// claude-code's: the subscription's resolved list, else the code's alone, never the ids of a list kept unresolved.
+		if (backend === "claude-code") return newestFirst(resolvedClaudeCodeList(data) ?? base, released);
+		const listed = (data.listed(backend) ?? []).filter((id) => !base.includes(id));
 		return newestFirst([...base, ...listed], released);
 	}
 

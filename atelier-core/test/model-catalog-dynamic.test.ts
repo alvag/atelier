@@ -349,7 +349,8 @@ it("lists Claude Code's versioned ids only, and asks again a session for a list 
 		}),
 	);
 	const catalog = new DynamicModelCatalog({ file, sources: [] });
-	expect(await catalog.models("claude-code")).toEqual([...BACKEND_MODELS["claude-code"], "claude-opus-4-8"]);
+	// Until it is asked again, the code's list alone: not the ids of a list kept unresolved.
+	expect(await catalog.models("claude-code")).toEqual(BACKEND_MODELS["claude-code"]);
 	await catalog.listClaudeCode(async () => [
 		{ value: "opus", resolvedModel: "claude-opus-5-5" },
 		{ value: "fable", resolvedModel: "claude-fable-5-1" },
@@ -392,6 +393,14 @@ it("asks again a session for any list kept without the aliases resolved, wheneve
 		return [];
 	});
 	expect(asked).toBe(1);
+});
+
+it("offers the code's list alone for a list kept without the resolved mark, with the refresh off", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	const kept = { checkedAt: Date.now(), models: { "claude-code": [{ id: "claude-opus-4-8" }] } };
+	await writeFile(file, JSON.stringify({ version: 1, sources: { "claude-code": kept } }));
+	const catalog = new DynamicModelCatalog({ file, sources: [], network: false });
+	expect(await catalog.models("claude-code")).toEqual(BACKEND_MODELS["claude-code"]);
 });
 
 it("takes a list kept resolved as resolved without any alias on it, and asks for it only after the interval", async () => {
