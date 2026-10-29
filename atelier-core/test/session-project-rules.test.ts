@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -219,6 +219,18 @@ describe("rules allowed always in this project", () => {
 			expect.stringContaining("ran"),
 			expect.stringContaining("ran"),
 		]);
+	});
+
+	it("asks before a recursive recipe can include a makefile from outside through MAKEFLAGS", async () => {
+		const marker = join(clone, "OUTSIDE_RAN");
+		await writeFile(join(clone, "payload.mk"), `$(shell touch '${marker}')\n`);
+		await writeFile(join(app, "Makefile"), "all:\n\t@$(MAKE) -f sub.mk\n");
+		await writeFile(join(app, "sub.mk"), "include payload.mk\nall:\n\t@true\n");
+		const rules = new PermissionRules({ home, cwd: app });
+		await rules.allow([{ kind: "bash", value: "make" }], "project");
+		const { questions } = await run(app, [leave(`make MAKEFLAGS=-I${clone}`, "c1")], { rules });
+		expect(questions).toHaveLength(1);
+		await expect(stat(marker)).rejects.toThrow();
 	});
 
 	it("covers an absolute executable allowed for the project", async () => {
