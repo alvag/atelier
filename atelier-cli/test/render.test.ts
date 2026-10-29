@@ -1027,6 +1027,18 @@ describe("Renderer", () => {
 			]);
 			expect(stdout).toContain(" · context 45,000 / 200,000 (23%)\n");
 		});
+
+		it("says the context size is unknown right after a compaction", () => {
+			const { stdout } = render([
+				{
+					type: "turn_finished",
+					stopReason: "end_turn",
+					usage,
+					context: { tokens: 3000, window: 1_000_000, compactAt: 967_000, unknown: true },
+				},
+			]);
+			expect(stdout).toContain(" · context ? / 1,000,000\n");
+		});
 	});
 
 	describe("verification", () => {

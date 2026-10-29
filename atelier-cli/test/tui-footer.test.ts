@@ -52,6 +52,18 @@ describe("footer", () => {
 		);
 	});
 
+	it("says the context size is unknown right after a compaction, until a turn measures it", () => {
+		const turn = (context: { tokens: number; unknown?: true }): Body => ({
+			type: "turn_finished",
+			stopReason: "end_turn",
+			usage,
+			context: { window: 1_000_000, compactAt: 967_000, ...context },
+		});
+		const compacted = after([turn({ tokens: 400_000 }), turn({ tokens: 3000, unknown: true })]);
+		expect(footerLine(compacted, 120, plain, ["context"])).toBe(" ctx ?");
+		expect(footerLine(after([turn({ tokens: 20_000 })], compacted), 120, plain, ["context"])).toBe(" ctx 2%");
+	});
+
 	it("says the asked level when the model did not take it", () => {
 		const state = after([
 			{
