@@ -1646,7 +1646,57 @@ describe("App", () => {
 				await screen.findByText("Context compacted · 180,000 → 30,000 tokens · 3 messages kept · $0.0120"),
 			).toBeTruthy();
 			expect(screen.getByText("cache miss after compaction: messages_changed (expected)")).toBeTruthy();
-			expect(within(screen.getByRole("status")).getByText("context 45,000 / 200,000 (23%)")).toBeTruthy();
+			const label = within(screen.getByRole("status")).getByText("ctx ▰▰▱▱▱▱▱▱ 23% · 200k");
+			expect(label.getAttribute("title")).toBe("45,000 of 200,000 tokens · compacts at 167,616 tokens");
+		});
+
+		it("colors the context by how close compaction is, and warns once near it", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				context: { tokens: 150_000, window: 1_000_000, compactAt: 200_000 },
+			});
+			const status = within(screen.getByRole("status"));
+			expect((await status.findByText("ctx ▰▱▱▱▱▱▱▱ 15% · 1M")).className).toBe("warning");
+			fake.emit({ type: "context_warning", tokens: 190_000, window: 1_000_000, compactAt: 200_000 });
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				context: { tokens: 190_000, window: 1_000_000, compactAt: 200_000 },
+			});
+			expect((await status.findByText("ctx ▰▰▱▱▱▱▱▱ 19% · 1M")).className).toBe("error");
+			expect(
+				screen.getByText("⚠ context at 19% of the 1M window (190,000 tokens), near where it compacts (200,000)"),
+			).toBeTruthy();
+		});
+
+		it("says the size is unknown as soon as the main agent compacts, and hides it when the model changes", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+			fake.emit({ type: "session_started", backend: "anthropic-api", model: "claude-opus-5-5", authSource: "api_key" });
+			fake.emit({
+				type: "turn_finished",
+				stopReason: "end_turn",
+				usage,
+				context: { tokens: 400_000, window: 1_000_000, compactAt: 983_616 },
+			});
+			const status = within(screen.getByRole("status"));
+			expect(await status.findByText("ctx ▰▰▰▱▱▱▱▱ 40% · 1M")).toBeTruthy();
+			fake.emit({ type: "compaction_finished", ok: true, reason: "manual", tokensBefore: 400_000, kept: 1, usage });
+			expect(await status.findByText("ctx ▱▱▱▱▱▱▱▱ ? · 1M")).toBeTruthy();
+			fake.emit({
+				type: "session_started",
+				backend: "anthropic-api",
+				model: "claude-haiku-5-5",
+				authSource: "api_key",
+			});
+			await waitFor(() => expect(status.queryByText(/^ctx /)).toBeNull());
 		});
 
 		it("says the context size is unknown right after a compaction", async () => {
@@ -1658,7 +1708,7 @@ describe("App", () => {
 				usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
 				context: { tokens: 3000, window: 1_000_000, compactAt: 967_000, unknown: true },
 			});
-			const label = await within(screen.getByRole("status")).findByText("context ? / 1,000,000");
+			const label = await within(screen.getByRole("status")).findByText("ctx ▱▱▱▱▱▱▱▱ ? · 1M");
 			expect(label.getAttribute("title")).toBe("compacts at 967,000 tokens");
 		});
 

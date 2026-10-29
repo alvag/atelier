@@ -119,6 +119,8 @@ export type TurnItem =
 	| { kind: "error"; code: string; message: string }
 	/** `bash` runs without a sandbox in this turn: every command asks. */
 	| { kind: "sandbox_warning"; reason: string }
+	/** The context reached 90% of where it compacts. */
+	| { kind: "context_warning"; tokens: number; window: number; compactAt: number }
 	/** `expected`: it follows a compaction, which rewrote the history on purpose. */
 	| { kind: "cache_miss"; reason: string; missedTokens: number; expected?: boolean }
 	| {
@@ -358,9 +360,12 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 	switch (event.type) {
 		case "session_started": {
 			// Claude Code says session_started on every init: a later one without a profile keeps the known one.
-			const { effort: _effort, ...rest } = state;
+			const { effort: _effort, context, ...rest } = state;
+			// Another backend or model has another window: the context waits for a turn to measure it.
+			const sameModel = event.backend === state.backend && event.model === state.model;
 			return {
 				...rest,
+				...(sameModel && context !== undefined ? { context } : {}),
 				backend: event.backend,
 				model: event.model,
 				authSource: event.authSource,
@@ -393,7 +398,10 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 		}
 		case "compaction_finished": {
 			const updated = updateTurn(state, event.turnId, (turn) => ({ ...turn, items: reduceItems(turn.items, event) }));
-			return event.ok ? { ...updated, expectedMissTurns: 2 } : updated;
+			if (!event.ok) return updated;
+			// Until an answer measures the compacted history, its size is not known.
+			const context = updated.context === undefined ? {} : { context: { ...updated.context, unknown: true as const } };
+			return { ...updated, ...context, expectedMissTurns: 2 };
 		}
 		case "cache_miss": {
 			if ((state.expectedMissTurns ?? 0) === 0)
@@ -603,6 +611,10 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 			);
 		case "sandbox_warning":
 			return [...items, { kind: "sandbox_warning", reason: event.reason }];
+		case "context_warning": {
+			const { tokens, window, compactAt } = event;
+			return [...items, { kind: "context_warning", tokens, window, compactAt }];
+		}
 		case "error":
 			return [...items, { kind: "error", code: event.code, message: event.message }];
 		case "cache_miss":
