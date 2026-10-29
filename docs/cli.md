@@ -111,13 +111,17 @@ rows = [
 
 ### Fullscreen status bar
 
-Fixed at the top in fullscreen only, the one-row session summary puts the working directory (under the home as `~`), branch, model and level, and profile on the left, and the context gauge and session cost on the right:
+Fixed at the top in fullscreen only, the one-row session summary puts the working directory (under the home as `~`), branch and changed-file count, model and level, and profile on the left, and the context gauge and session cost on the right:
 
 ```text
-~/code/app feature/fixed-status-bar · claude-opus-5-5 high · profile claude                ctx ▰▱▱▱▱▱▱▱ 11% · 1M · $0.42
+~/code/app feature/fixed-status-bar ±3 · claude-opus-5-5 high · profile claude             ctx ▰▱▱▱▱▱▱▱ 11% · 1M · $0.42
 ```
 
 On overflow, the path shrinks to its last segment first, then a long branch is cut with `…`. If that is not enough, the remaining left-hand text is cut; the right block keeps its space. A terminal narrower than the right block shows that block cut to its width, never wrapped. Unknown fields are omitted. The gauge has the same colors and compaction marker as the footer outside fullscreen.
+
+`±N` counts staged, unstaged and untracked files once per path (a rename counts once). It is omitted when clean, outside Git, or if Git is missing or the query fails. Branch and count refresh asynchronously at startup and after each turn; a newer read or shutdown cancels the previous query. Both respect `GIT_CEILING_DIRECTORIES`, including symlinked ceilings. Submodule changes are ignored.
+
+The count runs read-only `git status --porcelain=v1 -z --untracked-files=all --ignore-submodules=all --renames` with `--no-optional-locks`, fsmonitor and untracked cache disabled, no pager and no lazy fetches. A temporary Git metadata view links the original index, objects and refs but has its own minimal configuration: repository-defined filters and other programs cannot run, even if configuration changes during the query. Only non-executable file-comparison and ignore/attribute settings are retained; `.gitignore` and `info/exclude` still apply. Custom clean filters are not applied, so filtered files can differ from ordinary Git status. The original index is not written. The subprocesses share a two-second deadline and each has a 1 MiB output limit per stream; timeout, excess output or incomplete results hide the count without blocking input. The temporary view is removed when the read finishes or is cancelled. If the system temporary directory is inside the worktree, the count is omitted rather than writing there.
 
 ### Settings
 
