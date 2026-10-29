@@ -109,6 +109,23 @@ describe("background jobs in atelier run", () => {
 		expect(h.out()).toMatch(/■ job 1 ended · exit 0 · \d+s · wait · 1 notice waiting\n/);
 	});
 
+	it("exits 1 when the prompt's turn failed, with a job it started running", async () => {
+		const h = harness([[startJob(waitsForGo()), { throw: "backend failed" }], [{ event: finished }]]);
+		const exited = run(["--no-session", "start it"], h.io, h.createBackend);
+		await until(() => h.out().includes("⧗ job 1 started"));
+		await go();
+		expect(await exited).toBe(1);
+	});
+
+	it("exits 1 when a turn a notice woke failed, though the prompt's turn went well", async () => {
+		const h = harness([[startJob(waitsForGo()), { event: finished }], [{ throw: "backend failed" }]]);
+		const exited = run(["--no-session", "start it"], h.io, h.createBackend);
+		await until(() => h.err().includes("waiting for 1 background job"));
+		await go();
+		expect(await exited).toBe(1);
+		expect(h.backend.prompts).toHaveLength(2);
+	});
+
 	it("stops the jobs it waits for on Ctrl+C", async () => {
 		const pidFile = join(cwd, "pid");
 		const h = harness([[startJob(`echo $$ > ${pidFile}; exec sleep 300`), { event: finished }]]);
