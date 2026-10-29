@@ -334,6 +334,8 @@ async function startSession(
 		command: "session.start",
 		cwd: args.cwd,
 		userQuestions: true,
+		// The TUI shows a job's end outside any turn (`session_event`).
+		sessionEvents: true,
 		...(chosen.model === undefined ? {} : { model: chosen.model }),
 		...(chosen.backend === undefined ? {} : { backend: chosen.backend }),
 		...(mode === undefined ? {} : { mode }),
@@ -366,6 +368,7 @@ async function resumeSession(
 		sessionId: savedId,
 		cwd,
 		userQuestions: true,
+		sessionEvents: true,
 	})) as Opened & {
 		name?: string;
 		entries: JsonValue[];
