@@ -164,6 +164,17 @@ describe("background jobs in atelier run", () => {
 		expect(h.backend.prompts[1]?.match(/Background job /g)).toHaveLength(2);
 	});
 
+	it("exits 130 on Ctrl+C while a woken turn gathers its notices, without calling the backend", async () => {
+		const h = harness([[startJob(waitsForGo()), { event: finished }], [{ waitForInterrupt: true }]]);
+		const exited = run(["--no-session", "start it"], h.io, h.createBackend);
+		await until(() => h.err().includes("waiting for 1 background job"));
+		await go();
+		await until(() => h.out().includes("■ job 1 ended"));
+		h.ctrlC();
+		expect(await exited).toBe(130);
+		expect(h.backend.prompts).toHaveLength(1);
+	});
+
 	it("stops the jobs it waits for on Ctrl+C", async () => {
 		const pidFile = join(cwd, "pid");
 		const h = harness([[startJob(`echo $$ > ${pidFile}; exec sleep 300`), { event: finished }]]);
