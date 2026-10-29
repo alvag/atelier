@@ -1455,6 +1455,54 @@ describe("agent profiles", () => {
 			/^error: \S+\/\.atelier\/profiles\.json: profile "p": unknown role "verifer", did you mean "verifier"\?, dropped\n/,
 		);
 	});
+
+	it("prints the profile of an invalid name as a warning, keeping the rest of the file, and still runs", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-cli-home-"));
+		try {
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "profiles.json"),
+				JSON.stringify({
+					kind: "atelier.agent_model_profiles",
+					version: 1,
+					active: "p",
+					profiles: { p: { worker: { model: "m" } }, "bad name": { worker: { model: "m" } } },
+				}),
+			);
+			const h = harness([[{ event: finished }]], { home });
+			const code = await run(["x"], h.io, () => h.backend);
+			expect(code).toBe(0);
+			expect(h.err()).toMatch(
+				/^error: \S+\/\.atelier\/profiles\.json: profile "bad name": invalid profile name, dropped\n/,
+			);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	it("prints the invalid active value as a warning, and still runs", async () => {
+		const home = await mkdtemp(join(tmpdir(), "atelier-cli-home-"));
+		try {
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "profiles.json"),
+				JSON.stringify({
+					kind: "atelier.agent_model_profiles",
+					version: 1,
+					active: "bad name",
+					profiles: { p: { worker: { model: "m" } } },
+				}),
+			);
+			const h = harness([[{ event: finished }]], { home });
+			const code = await run(["x"], h.io, () => h.backend);
+			expect(code).toBe(0);
+			expect(h.err()).toMatch(
+				/^error: \S+\/\.atelier\/profiles\.json: "active" is not a valid profile name \("bad name"\), ignored\n/,
+			);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("permission modes", () => {

@@ -96,7 +96,8 @@ export type ClientCommand =
 	 * Re-resolves and freezes the profile `profile` for the session; the verifier, lenses, subagents, classifier and
 	 * compaction use it from the next turn, and the main agent takes the orchestrator's entry unless the model or the
 	 * level was chosen explicitly. Held while a turn runs, like `session.set_model`, and answers the same configuration.
-	 * Fails with `unknown_profile` (nothing named so), `profile_unavailable` (the server reads no profiles) or
+	 * Fails with `unknown_profile` (nothing named so), `invalid_profile_name` (the name is not one a profile may
+	 * carry), `profile_unavailable` (the server reads no profiles) or
 	 * `profile_backend_change` (the orchestrator's entry names another backend than the session's); nothing changes then.
 	 */
 	| { command: "session.set_profile"; sessionId: string; profile: string }

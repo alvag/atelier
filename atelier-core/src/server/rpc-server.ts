@@ -14,9 +14,12 @@ import { type DefaultPermissionMode, readDefaultPermissionMode } from "../permis
 import { PermissionRules } from "../permission-rules.ts";
 import {
 	closestName,
+	describeProfileName,
 	freezeProfile,
+	isValidProfileName,
 	orchestratorBackend,
 	type PinPlaces,
+	PROFILE_NAME_RULE,
 	pinPlaces,
 	readProfiles,
 	resolveProfile,
@@ -461,13 +464,19 @@ export class RpcServer {
 
 	/**
 	 * Freezes the profile `name` again, as `session.start` does, and gives it to the session. A name the server cannot
-	 * find is refused, never dropped for another layer's profile.
+	 * find is refused, never dropped for another layer's profile. A name that is not a valid profile name is refused
+	 * as such, with the rule the name has to follow.
 	 */
 	async #setProfile(sessionId: string, name: string): Promise<Result> {
 		const { session, cwd } = this.#session(sessionId);
 		const home = this.#options.home;
 		if (home === undefined)
 			throw new CommandError("profile_unavailable", "This server reads no profiles: it has no home directory.");
+		if (!isValidProfileName(name))
+			throw new CommandError(
+				"invalid_profile_name",
+				`Invalid profile name ${describeProfileName(name)}. ${PROFILE_NAME_RULE}`,
+			);
 		const read = await readProfiles(home);
 		const known = read.valid ? [...read.file.profiles.keys()] : [];
 		if (!known.includes(name)) {
