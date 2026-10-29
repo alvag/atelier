@@ -17,7 +17,7 @@ import {
 	sandbox as sharedSandbox,
 	verifierEnvironment,
 } from "./sandbox.ts";
-import { defineTool, type ToolContext, ToolInputError } from "./types.ts";
+import { defineTool, type ToolContext, type ToolGate, ToolInputError, type ToolOutcome } from "./types.ts";
 
 export const DEFAULT_TIMEOUT_SEC = 120;
 const KILL_GRACE_MS = 2000;
@@ -280,6 +280,148 @@ export interface BashOptions {
 	sandbox?: Sandbox;
 }
 
+/** What `bash` and `bash_background` decide and prepare commands with. */
+export interface CommandSettings {
+	withoutApproval: boolean;
+	env: Readonly<Record<string, string>>;
+	policy: SandboxPolicyName;
+	sandbox: Sandbox;
+}
+
+/** The guard's refusal of a command, as a call's outcome; undefined when the guard lets it through. */
+export function guardRefusal(command: string, cwd: string): ToolOutcome | undefined {
+	const rule = findDestructiveCommand(command, { cwd, home: homedir() });
+	return rule === undefined ? undefined : { ok: false, ...refusal(rule, command), truncated: false };
+}
+
+/**
+ * What the session asks before a command runs: the guard, the user's rules, `unsandboxed` and its reason, and the
+ * question the mode asks. Shared by `bash` and `bash_background`, so both go through the same checks.
+ */
+export async function gateCommand(
+	{ command, unsandboxed, reason }: { command: string; unsandboxed?: boolean | undefined; reason?: string | undefined },
+	context: ToolContext,
+	{ withoutApproval, policy, sandbox }: CommandSettings,
+): Promise<ToolGate> {
+	const { cwd, sandboxOff } = context;
+	const rule = findDestructiveCommand(command, { cwd, home: homedir() });
+	if (rule !== undefined) return { refusal: refusal(rule, command) };
+	if (coveredByRules(command, context, { withoutApproval, policy, sandbox })) return {};
+	// The verifier's copy is thrown away, so nothing there is worth asking about.
+	const confirmed = withoutApproval ? {} : confirmation(command);
+	if (unsandboxed) {
+		if (policy === "verifier") return { refusal: refusal(VERIFIER_UNSANDBOXED, command) };
+		if (reason === undefined || reason.trim() === "")
+			throw new ToolInputError("reason is required with unsandboxed: say why this command must leave the sandbox.");
+		// A command denied for want of a sandbox must not get past the question by asking to leave it.
+		const status = await statusFor(sandbox, sandboxOff);
+		return {
+			approval: {
+				command,
+				reason: reason.trim(),
+				...confirmed,
+				...rememberOffer(command, confirmed.confirm, sandbox),
+				...(failedToStart(status) ? { sandboxFailed: true as const } : {}),
+			},
+		};
+	}
+	if (withoutApproval) return {};
+	const status = await statusFor(sandbox, sandboxOff);
+	// The sandbox contains the command, so no mode asks about it, unless the guard's confirm category does.
+	if (status.available) return confirmed.confirm === undefined ? {} : { approval: { command, ...confirmed } };
+	return {
+		approval: {
+			command,
+			...confirmed,
+			...rememberOffer(command, confirmed.confirm, sandbox),
+			...(failedToStart(status) ? { sandboxFailed: true as const } : {}),
+		},
+		warning: status.reason,
+	};
+}
+
+/** A command ready to spawn: the program, its arguments and environment, and how it runs. */
+export interface PreparedCommand {
+	file: string;
+	args: string[];
+	env: NodeJS.ProcessEnv;
+	/** It runs wrapped in the sandbox: `sandbox.cleanup()` follows it, and its denials are asked by `runId`. */
+	sandboxed: boolean;
+	/** The user's rules let it run outside the sandbox without asking. */
+	covered: boolean;
+	runId: string;
+}
+
+/**
+ * Turns a command the gate let through into what to spawn: wrapped in the sandbox, under the profile of the commands
+ * the user's rules cover, or plain. `refused` is the outcome when it cannot run. The guard is not asked here.
+ */
+export async function prepareCommand(
+	{ command, unsandboxed }: { command: string; unsandboxed?: boolean | undefined },
+	context: ToolContext,
+	{ withoutApproval, env, policy, sandbox }: CommandSettings,
+	signal?: AbortSignal,
+): Promise<{ prepared: PreparedCommand } | { refused: ToolOutcome }> {
+	const { cwd, scratchDir, sandboxOff } = context;
+	if (unsandboxed && policy === "verifier")
+		return { refused: { ok: false, ...refusal(VERIFIER_UNSANDBOXED, command), truncated: false } };
+	const notRun = (output: string): { refused: ToolOutcome } => ({
+		refused: { ok: false, output, summary: `${firstLine(command)} (not run)`, truncated: false },
+	});
+	const covered = coveredByRules(command, context, { withoutApproval, policy, sandbox });
+	const sandboxStatus: SandboxStatus = covered
+		? { available: false, reason: "the user's rules allow this command outside the sandbox" }
+		: unsandboxed
+			? { available: false, reason: "the agent asked to run this command outside the sandbox" }
+			: await statusFor(sandbox, sandboxOff);
+	if (!sandboxStatus.available && policy === "verifier")
+		return notRun(`[bash is not available: ${sandboxStatus.reason}]`);
+	let script = command;
+	// Each run gets its own id, so its denials are not mixed with those of another run of the same text.
+	const runId = randomUUID();
+	if (sandboxStatus.available) {
+		try {
+			script = await sandbox.wrap(command, {
+				policy,
+				cwd,
+				runId,
+				...(scratchDir === undefined ? {} : { scratchDir }),
+				...(signal === undefined ? {} : { signal }),
+			});
+		} catch (error) {
+			return notRun(`[sandbox error: ${error instanceof Error ? error.message : String(error)}]`);
+		}
+	}
+	let run = { file: "bash", args: ["-c", script] };
+	if (covered) {
+		try {
+			run = sandbox.outside(command, cwd);
+		} catch (error) {
+			return notRun(`[sandbox error: ${error instanceof Error ? error.message : String(error)}]`);
+		}
+	}
+	// The verifier's own git and temporary directory; its caller's variables win.
+	const extra = policy === "verifier" && sandboxStatus.available ? { ...verifierEnvironment(cwd), ...env } : env;
+	return {
+		prepared: { ...run, env: commandEnv(extra), sandboxed: sandboxStatus.available, covered, runId },
+	};
+}
+
+/** What a command the user's rules let out of the sandbox adds to its output. */
+export function coveredNote(command: string): string {
+	return `[ran outside the sandbox: the user allows ${(commandRules(command).rules ?? []).join(", ")} there without asking; do not set unsandboxed for it]`;
+}
+
+/** What the sandbox blocked in a failed run of a prepared command, at most MAX_CAUSES of them. */
+export function preparedBlocks(
+	prepared: PreparedCommand,
+	{ sandbox, policy }: CommandSettings,
+	output: string,
+	cwd: string,
+): Promise<string[]> {
+	return prepared.sandboxed ? blockedCauses(sandbox, prepared.runId, policy, output, cwd) : Promise.resolve([]);
+}
+
 export const bashTool = createBashTool();
 
 export function createBashTool({
@@ -288,6 +430,7 @@ export function createBashTool({
 	policy = "agent",
 	sandbox = sharedSandbox,
 }: BashOptions = {}) {
+	const settings: CommandSettings = { withoutApproval, env, policy, sandbox };
 	return defineTool({
 		name: "bash",
 		description: `Run a shell command with bash in the working directory. stdout and stderr are combined. Output is truncated to its tail; the full text is saved to a file. Default timeout: ${DEFAULT_TIMEOUT_SEC}s.`,
@@ -303,111 +446,24 @@ export function createBashTool({
 			reason: z.string().optional().describe("Required with unsandboxed: why this command must leave the sandbox"),
 		},
 		approvalCommand: ({ command }) => (withoutApproval ? undefined : command),
-		async gate({ command, unsandboxed, reason }, context) {
-			const { cwd, sandboxOff } = context;
-			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
-			if (rule !== undefined) return { refusal: refusal(rule, command) };
-			if (coveredByRules(command, context, { withoutApproval, policy, sandbox })) return {};
-			// The verifier's copy is thrown away, so nothing there is worth asking about.
-			const confirmed = withoutApproval ? {} : confirmation(command);
-			if (unsandboxed) {
-				if (policy === "verifier") return { refusal: refusal(VERIFIER_UNSANDBOXED, command) };
-				if (reason === undefined || reason.trim() === "")
-					throw new ToolInputError("reason is required with unsandboxed: say why this command must leave the sandbox.");
-				// A command denied for want of a sandbox must not get past the question by asking to leave it.
-				const status = await statusFor(sandbox, sandboxOff);
-				return {
-					approval: {
-						command,
-						reason: reason.trim(),
-						...confirmed,
-						...rememberOffer(command, confirmed.confirm, sandbox),
-						...(failedToStart(status) ? { sandboxFailed: true as const } : {}),
-					},
-				};
-			}
-			if (withoutApproval) return {};
-			const status = await statusFor(sandbox, sandboxOff);
-			// The sandbox contains the command, so no mode asks about it, unless the guard's confirm category does.
-			if (status.available) return confirmed.confirm === undefined ? {} : { approval: { command, ...confirmed } };
-			return {
-				approval: {
-					command,
-					...confirmed,
-					...rememberOffer(command, confirmed.confirm, sandbox),
-					...(failedToStart(status) ? { sandboxFailed: true as const } : {}),
-				},
-				warning: status.reason,
-			};
-		},
+		gate: (input, context) => gateCommand(input, context, settings),
 		async execute({ command, timeoutSec, unsandboxed }, context) {
-			const { cwd, signal, scratchDir, sandboxOff } = context;
+			const { cwd, signal, scratchDir } = context;
 			// The session asks the gate first; this keeps a direct call from running what the guard refuses.
-			const rule = findDestructiveCommand(command, { cwd, home: homedir() });
-			if (rule !== undefined) return { ok: false, ...refusal(rule, command), truncated: false };
+			const refused = guardRefusal(command, cwd);
+			if (refused !== undefined) return refused;
 			const timeout = timeoutSec ?? DEFAULT_TIMEOUT_SEC;
 			if (signal?.aborted)
 				return { ok: false, output: "[command aborted]", summary: `${firstLine(command)} (aborted)`, truncated: false };
 
-			if (unsandboxed && policy === "verifier")
-				return { ok: false, ...refusal(VERIFIER_UNSANDBOXED, command), truncated: false };
-			const covered = coveredByRules(command, context, { withoutApproval, policy, sandbox });
-			const sandboxStatus: SandboxStatus = covered
-				? { available: false, reason: "the user's rules allow this command outside the sandbox" }
-				: unsandboxed
-					? { available: false, reason: "the agent asked to run this command outside the sandbox" }
-					: await statusFor(sandbox, sandboxOff);
-			if (!sandboxStatus.available && policy === "verifier")
-				return {
-					ok: false,
-					output: `[bash is not available: ${sandboxStatus.reason}]`,
-					summary: `${firstLine(command)} (not run)`,
-					truncated: false,
-				};
-			let script = command;
-			// Each run gets its own id, so its denials are not mixed with those of another run of the same text.
-			const runId = randomUUID();
-			if (sandboxStatus.available) {
-				try {
-					script = await sandbox.wrap(command, {
-						policy,
-						cwd,
-						runId,
-						...(scratchDir === undefined ? {} : { scratchDir }),
-						...(signal === undefined ? {} : { signal }),
-					});
-				} catch (error) {
-					const reason = error instanceof Error ? error.message : String(error);
-					return {
-						ok: false,
-						output: `[sandbox error: ${reason}]`,
-						summary: `${firstLine(command)} (not run)`,
-						truncated: false,
-					};
-				}
-			}
-
-			let run = { file: "bash", args: ["-c", script] };
-			if (covered) {
-				try {
-					run = sandbox.outside(command, cwd);
-				} catch (error) {
-					const reason = error instanceof Error ? error.message : String(error);
-					return {
-						ok: false,
-						output: `[sandbox error: ${reason}]`,
-						summary: `${firstLine(command)} (not run)`,
-						truncated: false,
-					};
-				}
-			}
-			const { file, args } = run;
+			const preparing = await prepareCommand({ command, unsandboxed }, context, settings, signal);
+			if ("refused" in preparing) return preparing.refused;
+			const { prepared } = preparing;
+			const { file, args, covered, runId } = prepared;
+			const sandboxStatus = { available: prepared.sandboxed };
 			const child = spawn(file, args, {
 				cwd,
-				// The verifier's own git and temporary directory; its caller's variables win.
-				env: commandEnv(
-					policy === "verifier" && sandboxStatus.available ? { ...verifierEnvironment(cwd), ...env } : env,
-				),
+				env: prepared.env,
 				detached: true,
 				stdio: ["ignore", "pipe", "pipe"],
 			});
@@ -465,7 +521,7 @@ export function createBashTool({
 			const label = stopped === "timeout" ? "timed out" : stopped === "aborted" ? "aborted" : `exit ${code ?? "?"}`;
 			return {
 				ok,
-				output: `${header}${text}${text ? "\n\n" : ""}${status}${blocked.map((cause) => `\n[sandbox blocked: ${cause}]`).join("")}${covered ? `\n[ran outside the sandbox: the user allows ${(commandRules(command).rules ?? []).join(", ")} there without asking; do not set unsandboxed for it]` : ""}`,
+				output: `${header}${text}${text ? "\n\n" : ""}${status}${blocked.map((cause) => `\n[sandbox blocked: ${cause}]`).join("")}${covered ? `\n${coveredNote(command)}` : ""}`,
 				summary: `${firstLine(command)} (${label})`,
 				truncated,
 				...(fullOutputPath === undefined ? {} : { fullOutputPath }),
