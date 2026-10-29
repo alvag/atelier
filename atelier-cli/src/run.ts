@@ -36,7 +36,7 @@ import {
 	visibleText,
 	writeDefaultPermissionMode,
 } from "@atelier/core";
-import { parseCliArgs, resumeRefusal, USAGE, UsageError } from "./args.ts";
+import { parseCliArgs, resumeRefusal, USAGE, UsageError, WorkingDirectoryUnavailableError } from "./args.ts";
 import { runDesktop } from "./desktop.ts";
 import { OWN_ROOT, versionLabel } from "./install-marker.ts";
 import {
@@ -65,7 +65,8 @@ export interface CliIO {
 	isTTY: boolean;
 	stdout: (text: string) => void;
 	stderr: (text: string) => void;
-	cwd: string;
+	/** Read lazily when --cwd is relative or absent. */
+	cwd: string | (() => string);
 	/** The environment the switches (ATELIER_REVIEW) are read from; none set when absent. */
 	env?: Record<string, string | undefined>;
 	/** The user id of the process; Atelier does not start as root (0) without ATELIER_ALLOW_ROOT. Unknown when absent. */
@@ -150,6 +151,10 @@ export async function run(
 	try {
 		args = parseCliArgs(argv, io.cwd, io.env);
 	} catch (error) {
+		if (error instanceof WorkingDirectoryUnavailableError) {
+			io.stderr(`atelier: ${error.message}\n`);
+			return EXIT_FAILED;
+		}
 		if (!(error instanceof UsageError)) throw error;
 		io.stderr(`error: ${error.message}\nRun atelier --help for usage.\n`);
 		return EXIT_USAGE;
@@ -168,7 +173,8 @@ export async function run(
 			: runMcpSignIn(io, args.cwd, connectMcp, args.subcommand.action ?? "login", args.subcommand.server);
 	if (args.subcommand?.name === "login" || args.subcommand?.name === "logout")
 		return runLoginSubcommand(io, args.subcommand.name, args.subcommand.target ?? {});
-	if (args.subcommand?.name === "stats") return runStats(args.stats ?? {}, { ...io, home: io.home ?? homedir() });
+	if (args.subcommand?.name === "stats")
+		return runStats(args.stats ?? {}, { ...io, cwd: args.cwd, home: io.home ?? homedir() });
 	if (args.subcommand?.name === "models")
 		return runModels(args.refreshModels ? { refresh: true } : {}, {
 			home: io.home ?? homedir(),
