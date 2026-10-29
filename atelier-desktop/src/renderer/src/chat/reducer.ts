@@ -172,12 +172,17 @@ export interface Finished {
 	backend?: string;
 }
 
+/** The model and backend that answered. */
+type RanOn = { model?: string; backend?: string };
+
 export interface Turn {
 	/** Undefined until the core assigns the turn id. */
 	id?: string;
 	prompt: string;
 	items: TurnItem[];
 	finished?: Finished;
+	/** The model and backend the turn's events came from: a change that lands as the turn ends does not relabel it. */
+	ranOn?: RanOn;
 }
 
 export interface Subagent {
@@ -365,6 +370,30 @@ function withoutStaleContext(state: ChatState, backend: string, model: string | 
 
 function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 	if (event.parentCallId !== undefined) return applySubagentEvent(state, event, event.parentCallId);
+	const next = applyMainEvent(state, event);
+	// A configuration and the turn's end say nothing of who answered: a change can land between the answer and the end.
+	if (event.type === "session_configured" || event.type === "turn_finished") return next;
+	return noteRanOn(next, event.turnId);
+}
+
+/** Who answered the turn: the model and backend its last event came from, else the session's. */
+const ranOn = (turn: Turn, state: ChatState) => modelAndBackend(turn.ranOn ?? state);
+
+function modelAndBackend({ model, backend }: RanOn): RanOn {
+	return { ...(model === undefined ? {} : { model }), ...(backend === undefined ? {} : { backend }) };
+}
+
+/** Notes on the turn the model and backend in effect when one of its events came. */
+function noteRanOn(state: ChatState, turnId: string): ChatState {
+	const index = state.turns.findIndex((turn) => turn.id === turnId);
+	const turn = state.turns[index];
+	if (turn === undefined) return state;
+	if (turn.ranOn?.model === state.model && turn.ranOn?.backend === state.backend) return state;
+	const noted: Turn = { ...turn, ranOn: modelAndBackend(state) };
+	return { ...state, turns: state.turns.map((other, i) => (i === index ? noted : other)) };
+}
+
+function applyMainEvent(state: ChatState, event: AtelierEvent): ChatState {
 	switch (event.type) {
 		case "session_started": {
 			// Claude Code says session_started on every init: a later one without a profile keeps the known one.
@@ -391,15 +420,15 @@ function applyEvent(state: ChatState, event: AtelierEvent): ChatState {
 		}
 		case "turn_finished": {
 			const finished: ChatState = {
-				...updateTurn(state, event.turnId, (turn) => ({
-					...turn,
-					items: endReviews(closeConsents(turn.items)),
-					finished: {
-						...finishedOf(event),
-						...(state.model === undefined ? {} : { model: state.model }),
-						...(state.backend === undefined ? {} : { backend: state.backend }),
-					},
-				})),
+				// The finished turn keeps who answered it in `finished`.
+				...updateTurn(state, event.turnId, (turn) => {
+					const { ranOn: _ranOn, ...rest } = turn;
+					return {
+						...rest,
+						items: endReviews(closeConsents(turn.items)),
+						finished: { ...finishedOf(event), ...ranOn(turn, state) },
+					};
+				}),
 				busy: false,
 				...(event.context === undefined ? {} : { context: event.context }),
 			};
