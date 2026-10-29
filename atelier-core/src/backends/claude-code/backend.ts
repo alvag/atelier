@@ -388,16 +388,26 @@ class ClaudeCodeSession implements BackendSession {
 			}
 			if (!this.#closing) {
 				this.#failure = "Claude Code ended the session.";
-				this.#deliver([errorEvent("backend_ended", this.#failure)]);
+				this.#deliver([errorEvent("backend_ended", this.#failure), ...this.#unfinishedTurn()]);
 			}
 		} catch (error) {
 			this.#failure = describeError(error);
-			this.#deliver([errorEvent("backend_crashed", this.#failure)]);
+			this.#deliver([errorEvent("backend_crashed", this.#failure), ...this.#unfinishedTurn()]);
 		} finally {
 			this.#failure ??= "Claude Code session is closed.";
 			this.#dropCompactAtAsk();
 			this.#endTurn();
 		}
+	}
+
+	/**
+	 * The end of an open turn Claude Code will not finish with its result, as the core would end it, but saying how full
+	 * the context is when that is known: right after a compaction, unknown rather than the size before it.
+	 */
+	#unfinishedTurn(): AtelierEventBody[] {
+		const context = this.#contextTracker.usage();
+		if (context === undefined || !this.#turn || this.#turn.closed) return [];
+		return [{ type: "turn_finished", stopReason: "error", usage: { ...ZERO_USAGE }, context }];
 	}
 
 	/** A delivered turn is immutable: anything that arrives after it closed (a crash, an error) goes to the next turn. */
@@ -516,7 +526,10 @@ class ClaudeCodeSession implements BackendSession {
 		if (!turn || turn !== this.#turn || this.#interruptTimer) return;
 		this.#interruptTimer = setTimeout(() => {
 			if (this.#turn !== turn) return;
-			this.#deliver([errorEvent("interrupt_timeout", "Claude Code did not stop in time; the session was closed.")]);
+			this.#deliver([
+				errorEvent("interrupt_timeout", "Claude Code did not stop in time; the session was closed."),
+				...this.#unfinishedTurn(),
+			]);
 			this.#closing = true;
 			// A query that does not end once closed never reaches the end of `#read`, which forgets the request too.
 			this.#dropCompactAtAsk();
