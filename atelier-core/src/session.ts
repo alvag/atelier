@@ -17,6 +17,8 @@ import {
 	type AtelierEventBody,
 	type BackendChange,
 	describeError,
+	type Effort,
+	type EffortNotSent,
 	errorEvent,
 	type McpServerStatus,
 	type PhaseAgent,
@@ -226,6 +228,10 @@ export interface SessionConfiguration {
 	/** Absent while the backend's default model runs and nothing changed it. */
 	model?: string;
 	thinking?: ThinkingLevel;
+	/** The level as the backend sends it, what `session_started.effort` says: the effort, `off`, `auto` for a model
+	 * that reasons on its own, or `<level> not sent`. Absent when no level was asked or while a change waits for the
+	 * turn to end, so what still runs stays what was said before. */
+	effort?: Effort | "off" | "auto" | EffortNotSent;
 	permissionMode: PermissionMode;
 	profile?: SessionProfile;
 	/** A turn is running: the model and level above wait for it to end. */
@@ -1012,13 +1018,17 @@ export class Session {
 		const model = coming ? coming.model : (this.#pending?.model ?? held?.model ?? this.#model);
 		const thinking = this.#pending?.thinking ?? held?.thinking ?? this.#thinking;
 		const profile = this.#pendingProfile ?? this.#options.profile;
+		const pending = this.#pending !== undefined || this.#pendingProfile !== undefined || coming !== undefined;
+		// While a change waits the backend still runs the old one, so its report would say the wrong level.
+		const effort = pending ? undefined : this.#sentEffort(model);
 		return {
 			backend: coming?.backend.id ?? this.#options.backend.id,
 			...(model === undefined ? {} : { model }),
 			...(thinking === undefined ? {} : { thinking }),
+			...(effort === undefined ? {} : { effort }),
 			permissionMode: this.#options.permissionMode ?? "normal",
 			...(profile === undefined ? {} : { profile: profileSummary(profile) }),
-			pending: this.#pending !== undefined || this.#pendingProfile !== undefined || coming !== undefined,
+			pending,
 		};
 	}
 
@@ -1164,23 +1174,26 @@ export class Session {
 		this.#profileNotices = [];
 	}
 
+	/** The effort as the backend sends the level asked, what `session_started` says of it, so a level the backend
+	 * cannot send (a thinking budget that does not fit the output budget, for one) is never said as sent; the table
+	 * is the fallback for backends that track none, and needs the model's name. Absent when no level was asked. */
+	#sentEffort(model: string | undefined): Effort | "off" | "auto" | EffortNotSent | undefined {
+		if (this.#thinking === undefined) return undefined;
+		const backend = this.#options.backend.id;
+		const report = this.#backendSession?.effortReport?.();
+		if (report !== undefined || !THINKING_BACKENDS.has(backend) || model === undefined) return report;
+		return thinkingToSend(model, this.#thinking, backend as ThinkingBackend)?.report;
+	}
+
 	/** The turn parts name the model and effort the backend was told, also when it does not say `session_started` again. */
 	#patchMainAgent(): void {
 		const agent = this.#mainAgent;
 		if (agent === undefined) return;
 		const next: PhaseAgent = { ...agent, ...(this.#model === undefined ? {} : { model: this.#model }) };
-		const backend = this.#options.backend.id;
-		if (this.#thinking !== undefined && THINKING_BACKENDS.has(backend)) {
-			// What the backend itself reports, so a level it cannot send (a thinking budget that does not fit the
-			// output budget, for one) is said here the same way as in `session_started`; backends that track none
-			// fall back to the table.
-			const report =
-				this.#backendSession?.effortReport?.() ??
-				thinkingToSend(next.model, this.#thinking, backend as ThinkingBackend)?.report;
-			if (report !== undefined) {
-				next.effort = report;
-				delete next.effectiveEffort;
-			}
+		const report = this.#sentEffort(next.model);
+		if (report !== undefined) {
+			next.effort = report;
+			delete next.effectiveEffort;
 		}
 		this.#mainAgent = next;
 	}

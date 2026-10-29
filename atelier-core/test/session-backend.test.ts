@@ -57,6 +57,7 @@ describe("Session.setBackend", () => {
 			backend: "anthropic-api",
 			model: "claude-sonnet-5-5",
 			thinking: "high",
+			effort: "high",
 			permissionMode: "normal",
 			pending: false,
 			backendChange: { from: "fake", summarized: true },

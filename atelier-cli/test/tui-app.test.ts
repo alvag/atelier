@@ -1562,6 +1562,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			backend: "claude-code",
 			model: "opus",
 			thinking: "medium",
+			effort: "medium",
 			permissionMode: "normal",
 			profile: { name: "cheap", origin: "active" },
 			pending: false,
@@ -1596,7 +1597,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 					case "session.set_model":
 						return change({ model: command.model });
 					case "session.set_effort":
-						return change({ thinking: command.effort });
+						return change({ thinking: command.effort, effort: command.effort });
 					case "session.set_profile":
 						return change({ profile: { name: command.profile, origin: "explicit" } });
 					case "session.set_backend":

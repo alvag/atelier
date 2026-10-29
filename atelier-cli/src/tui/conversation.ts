@@ -39,7 +39,9 @@ function finishedLine(event: Extract<AtelierEvent, { type: "turn_finished" }>, e
 function configuredLine(event: Extract<AtelierEvent, { type: "session_configured" }>): string {
 	const parts = [`backend ${shown(event.backend)}`];
 	if (event.model !== undefined) parts.push(`model ${shown(event.model)}`);
-	if (event.thinking !== undefined) parts.push(`effort ${shown(event.thinking)}`);
+	// The level as the backend sends it when the event says it; the one asked while the change waits.
+	const effort = event.effort ?? event.thinking;
+	if (effort !== undefined) parts.push(`effort ${shown(effort)}`);
 	parts.push(`mode ${event.permissionMode}`);
 	if (event.profile !== undefined) parts.push(`profile ${shown(event.profile.name ?? event.profile.origin)}`);
 	const change = event.backendChange;

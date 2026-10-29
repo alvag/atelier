@@ -9,6 +9,7 @@ import type {
 	ToolCallResult,
 } from "./backend.ts";
 import type { AtelierEventBody } from "./events.ts";
+import type { ThinkingSend } from "./pricing.ts";
 
 /** One scripted step of a fake turn. */
 export type FakeStep =
@@ -86,6 +87,12 @@ export class FakeBackend implements AgentBackend {
 						},
 					}
 				: {}),
+			// What a real backend says in `session_started`: the level the session runs with, `minimal` sent as `low`.
+			effortReport(): ThinkingSend["report"] | undefined {
+				const asked = [...backend.configured].reverse().find((change) => change.thinking !== undefined);
+				const level = (asked ?? backend.startOptions)?.thinking;
+				return level === undefined ? undefined : level === "minimal" ? "low" : level;
+			},
 			resumeState: () => backend.resumeState,
 			async *send(prompt: string): AsyncIterable<AtelierEventBody> {
 				backend.prompts.push(prompt);

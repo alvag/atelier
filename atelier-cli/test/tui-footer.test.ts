@@ -67,11 +67,55 @@ describe("footer", () => {
 
 	it("takes what a configuration change left and cuts the line to the width", () => {
 		const state = after(
-			[{ type: "session_configured", backend: "anthropic-api", thinking: "low", permissionMode: "yolo" }],
+			[
+				{
+					type: "session_configured",
+					backend: "anthropic-api",
+					thinking: "low",
+					effort: "low",
+					permissionMode: "yolo",
+				},
+			],
 			{ backend: "claude-code", model: "claude-opus-5-5", effort: "high", mode: "normal" },
 		);
 		expect(footerLine(state, 120, plain)).toBe(" anthropic-api low · yolo");
 		expect(visibleWidth(footerLine({ ...state, profile: "x".repeat(200) }, 30, plain))).toBeLessThanOrEqual(30);
+	});
+
+	it("shows the effort the configuration says the backend sends, not the level asked", () => {
+		const afterChange = (
+			model: string,
+			thinking: string,
+			effort: NonNullable<Extract<AtelierEventBody, { type: "session_configured" }>["effort"]>,
+		) =>
+			after([
+				{ type: "session_started", backend: "opencode-go", model, authSource: "api_key" },
+				{ type: "session_configured", backend: "opencode-go", thinking, effort, permissionMode: "normal" },
+			]);
+		// kimi-k2.7-code reasons on its own: a level asked is `auto`.
+		expect(footerLine(afterChange("kimi-k2.7-code", "high", "auto"), 120, plain)).toBe(" opencode-go auto · normal");
+		// minimax-m3 with an output budget too small for a thinking budget: `high not sent`.
+		expect(footerLine(afterChange("minimax-m3", "high", "high not sent"), 120, plain)).toBe(
+			" opencode-go high not sent · normal",
+		);
+		// glm-5.3 takes no `medium`: `medium not sent`.
+		expect(footerLine(afterChange("glm-5.3", "medium", "medium not sent"), 120, plain)).toBe(
+			" opencode-go medium not sent · normal",
+		);
+	});
+
+	it("keeps the effort label while a change waits for the turn to end", () => {
+		const state = after([
+			{
+				type: "session_started",
+				backend: "opencode-go",
+				model: "kimi-k2.7-code",
+				authSource: "api_key",
+				effort: "auto",
+			},
+			{ type: "session_configured", backend: "opencode-go", thinking: "high", permissionMode: "normal" },
+		]);
+		expect(footerLine(state, 120, plain)).toBe(" opencode-go auto · normal");
 	});
 
 	it("shows the items chosen in their order and leaves out the ones without a value", () => {

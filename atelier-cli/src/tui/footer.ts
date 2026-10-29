@@ -104,19 +104,21 @@ export function footerAfter(state: FooterState, event: AtelierEvent): FooterStat
 }
 
 /**
- * The footer after the configuration a command answered or `session_configured` said: an absent model or level is the
- * backend's default, so the one shown before goes.
+ * The footer after the configuration a command answered or `session_configured` said: the effort item shows the
+ * level as the backend sends it when the configuration says it (`auto`, `<level> not sent`), and while it does not
+ * — a change held for the turn to end, or a backend that reports none — the label before stays, since that is what
+ * still runs. An absent model is the backend's default, so the one shown before goes.
  */
 export function footerWithConfiguration(
 	state: FooterState,
-	configuration: Omit<SessionConfiguration, "pending" | "thinking"> & { thinking?: string },
+	configuration: Omit<SessionConfiguration, "pending" | "thinking" | "effort"> & { thinking?: string; effort?: string },
 ): FooterState {
-	const { model: _model, effort: _effort, ...rest } = state;
+	const { model: _model, ...rest } = state;
 	return {
 		...rest,
 		backend: configuration.backend,
 		...(configuration.model === undefined ? {} : { model: configuration.model }),
-		...(configuration.thinking === undefined ? {} : { effort: configuration.thinking }),
+		...(configuration.effort === undefined ? {} : { effort: configuration.effort }),
 		...(configuration.profile === undefined
 			? {}
 			: { profile: configuration.profile.name ?? configuration.profile.origin }),

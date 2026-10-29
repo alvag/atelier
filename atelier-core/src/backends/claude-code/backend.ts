@@ -482,6 +482,11 @@ class ClaudeCodeSession implements BackendSession {
 		return this.#applied.level;
 	}
 
+	/** The level as the start or the last `configure` left it: what `session_started` says about the effort. */
+	effortReport(): ThinkingSend["report"] | undefined {
+		return this.#effort;
+	}
+
 	/** Sets the model and the effort in the open query: they hold from the next prompt, which has not been sent yet. */
 	async configure(change: SessionChange): Promise<void> {
 		const { setModel, applyFlagSettings } = this.#query;
