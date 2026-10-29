@@ -48,6 +48,26 @@ it("prints each backend's models: the code's, then the ones its provider listed,
 	expect(out).toContain("openai-codex · the code's list\n  gpt-6-sol\n");
 });
 
+it("says whether a model takes images, where the catalog knows it", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	const sources = {
+		"models.dev": {
+			checkedAt: 1,
+			models: {
+				"anthropic-api": [{ id: "claude-sonnet-5-5", images: true }],
+				"opencode-go": [{ id: "grok-4.7", images: false }],
+			},
+		},
+		"opencode-go": { checkedAt: 1, models: { "opencode-go": [{ id: "grok-4.7" }] } },
+	};
+	await writeFile(join(home, ".atelier", "models.json"), JSON.stringify({ version: 1, sources }));
+	const { code, out } = await models([]);
+	expect(code).toBe(0);
+	expect(out).toContain("  claude-sonnet-5-5  images\n");
+	expect(out).toContain("  grok-4.7  (new)  text only\n");
+	expect(out).toContain("  claude-opus-5-5\n");
+});
+
 it("prints the code's lists when the cache holds a check time that is not a date", async () => {
 	await mkdir(join(home, ".atelier"), { recursive: true });
 	// As written in the file: the number is out of a date's range.

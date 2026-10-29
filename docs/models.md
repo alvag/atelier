@@ -33,13 +33,13 @@ When the core starts (`atelier`, the TUI, the desktop) it reads the cache, offer
 opencode-go · listed 2026-10-28T21:00:00.000Z
   minimax-m3
   ...
-  grok-4.7  (new)
+  grok-4.7  (new)  text only
 openai-codex · the code's list
   gpt-6-sol
   ...
 ```
 
-`(new)` marks a model the code's list lacks. `atelier models --refresh` asks every source first, whatever the age of its answer, and says how each went (`Refreshed: models.dev changed, anthropic-api skipped, opencode-go unchanged, openai-codex changed.`; `skipped`: not signed in, nothing asked). Claude Code's list is refreshed by its sessions only. With `ATELIER_MODEL_REFRESH=off` or `ATELIER_OFFLINE=1` it prints the variable and `: nothing was asked.` instead (`ATELIER_OFFLINE=1: nothing was asked.`). It takes no other option; `--refresh` without `models` is a usage error.
+`(new)` marks a model the code's list lacks; `images` and `text only` say whether a model takes images, where a source said it. `atelier models --refresh` asks every source first, whatever the age of its answer, and says how each went (`Refreshed: models.dev changed, anthropic-api skipped, opencode-go unchanged, openai-codex changed.`; `skipped`: not signed in, nothing asked). Claude Code's list is refreshed by its sessions only. With `ATELIER_MODEL_REFRESH=off` or `ATELIER_OFFLINE=1` it prints the variable and `: nothing was asked.` instead (`ATELIER_OFFLINE=1: nothing was asked.`). It takes no other option; `--refresh` without `models` is a usage error.
 
 ## What is sent where
 

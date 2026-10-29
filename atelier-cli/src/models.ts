@@ -9,7 +9,8 @@ export interface ModelsIO {
 
 /**
  * `atelier models [--refresh]`: each backend's models as `/model` offers them, the code's list first, then the ones
- * its provider listed (`(new)`), with when that list was checked. Without --refresh it reads the cache and asks
+ * its provider listed (`(new)`), with when that list was checked, and whether each takes images where the catalog
+ * knows it (`images`, `text only`). Without --refresh it reads the cache and asks
  * nothing; --refresh asks every source now, Claude Code aside, whose sessions list its models.
  */
 export async function runModels(options: { refresh?: true }, io: ModelsIO): Promise<number> {
@@ -37,7 +38,14 @@ export async function runModels(options: { refresh?: true }, io: ModelsIO): Prom
 		const origin = checkedAt === undefined ? "the code's list" : `listed ${new Date(checkedAt).toISOString()}`;
 		lines.push(`${backend} · ${origin}`);
 		const own: readonly string[] = BACKEND_MODELS[backend];
-		for (const model of await catalog.models(backend)) lines.push(`  ${model}${own.includes(model) ? "" : "  (new)"}`);
+		for (const model of await catalog.models(backend)) {
+			const images = (await catalog.model(backend, model))?.images;
+			const marks = [
+				...(own.includes(model) ? [] : ["(new)"]),
+				...(images === undefined ? [] : [images ? "images" : "text only"]),
+			];
+			lines.push(`  ${[model, ...marks].join("  ")}`);
+		}
 	}
 	io.stdout(`${lines.join("\n")}\n`);
 	return 0;
