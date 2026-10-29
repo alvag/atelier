@@ -2268,6 +2268,37 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("neutralizes Arabic Letter Mark in TUI questions, labels and descriptions", async () => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			stub.emit({
+				type: "user_question_requested",
+				callId: "alm",
+				questions: [
+					{
+						id: "q1",
+						question: "Q\u061C?",
+						options: [
+							{ id: "a", label: "L\u061C", description: "D\u061C", recommended: true },
+							{ id: "b", label: "Second" },
+						],
+					},
+				],
+			});
+			await until(() => h.screen.screen().includes("Other..."));
+			try {
+				expect(h.screen.screen()).not.toContain("\u061C");
+				for (const text of ["Q⟨U+061C⟩?", "L⟨U+061C⟩", "D⟨U+061C⟩"]) expect(h.screen.screen()).toContain(text);
+			} finally {
+				h.screen.type("\x03");
+				h.screen.type("\x03");
+				expect(await code).toBe(130);
+			}
+		});
+
 		it("wraps complete questions, labels and descriptions at 80 columns, including Other input", async () => {
 			const h = harness([], { columns: 80 });
 			const stub = listingCore();

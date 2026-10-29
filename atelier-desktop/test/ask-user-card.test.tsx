@@ -38,6 +38,31 @@ it("shows the recommended option first without choosing, and sends only an expli
 	expect(send().disabled).toBe(true);
 });
 
+it("neutralizes Arabic Letter Mark in desktop questions, labels and descriptions", () => {
+	const answer = vi.fn().mockResolvedValue(true);
+	const { container } = render(
+		<QuestionCard
+			item={{
+				...item,
+				questions: [
+					{
+						id: "q1",
+						question: "Q\u061C?",
+						options: [
+							{ id: "a", label: "L\u061C", description: "D\u061C", recommended: true },
+							{ id: "b", label: "Second" },
+						],
+					},
+				],
+			}}
+			onAnswerUser={answer}
+		/>,
+	);
+	expect(container.textContent).not.toContain("\u061C");
+	for (const text of ["Q⟨U+061C⟩?", "L⟨U+061C⟩", "D⟨U+061C⟩"]) expect(container.textContent).toContain(text);
+	expect(answer).not.toHaveBeenCalled();
+});
+
 it("validates Other, keeps its text, and gives the draft back on a rejected send", async () => {
 	const answer = vi.fn().mockResolvedValue(false);
 	render(<QuestionCard item={item} onAnswerUser={answer} />);
