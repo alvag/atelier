@@ -43,9 +43,12 @@ function tokensLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): st
 	if (event.requests !== undefined) parts.push(`${event.requests} request${event.requests === 1 ? "" : "s"}`);
 	if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
 	if (event.context !== undefined) {
-		const { tokens, window } = event.context;
+		const { tokens, window, unknown } = event.context;
 		parts.push(
-			`context ${numbers.format(tokens)} / ${numbers.format(window)} (${Math.round((tokens / window) * 100)}%)`,
+			// Right after a compaction the size is not known until a request measures it.
+			unknown
+				? `context ? / ${numbers.format(window)}`
+				: `context ${numbers.format(tokens)} / ${numbers.format(window)} (${Math.round((tokens / window) * 100)}%)`,
 		);
 	}
 	return `tokens: ${parts.join(" · ")}`;

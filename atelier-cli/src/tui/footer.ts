@@ -154,7 +154,8 @@ function itemText(item: StatusItem, state: FooterState, paint: Paint): string | 
 			if (state.sandboxed === undefined) return undefined;
 			return state.sandboxed ? "sandbox ✓" : paint("yellow", "sandbox ✗");
 		case "context":
-			return state.context === undefined ? undefined : `ctx ${contextShare(state.context)}%`;
+			if (state.context === undefined) return undefined;
+			return state.context.unknown ? "ctx ?" : `ctx ${contextShare(state.context)}%`;
 		case "cost":
 			return state.costUsd === undefined ? undefined : `$${state.costUsd.toFixed(2)}`;
 		case "phase":
