@@ -751,3 +751,123 @@ describe("Conversation code blocks", () => {
 		expect(lines[1]).toContain("<dim>   two */</>");
 	});
 });
+
+describe("Conversation ask_user answers", () => {
+	const questions = [
+		{
+			id: "q1",
+			question: "Which language should commit messages use?",
+			options: [
+				{ id: "en", label: "English", description: "What AGENTS.md asks for.", recommended: true },
+				{ id: "es", label: "Spanish" },
+			],
+		},
+		{
+			id: "q2",
+			question: "Which checks should run before each commit?",
+			options: [
+				{ id: "all", label: "pnpm check", recommended: true },
+				{ id: "unit", label: "Only Vitest" },
+			],
+		},
+	];
+	const asked = (result: Record<string, unknown> | undefined, summary = "User answered 2 questions."): Body[] => [
+		{ type: "tool_call_started", callId: "u1", tool: "ask_user", input: { questions } },
+		...(result === undefined
+			? []
+			: ([
+					{ type: "user_question_requested", callId: "u1", questions },
+					{ type: "user_question_resolved", callId: "u1", result },
+				] as Body[])),
+		{ type: "tool_call_finished", callId: "u1", ok: result?.status === "answered", summary, truncated: false },
+	];
+	const answered = {
+		status: "answered",
+		answers: [
+			{ questionId: "q1", optionId: "en" },
+			{ questionId: "q2", other: "only\nVitest" },
+		],
+	};
+
+	it("shows each question and its answer in a block of its own, lined up when there is room", () => {
+		const { text } = shown([...asked(answered), { type: "text_delta", text: "Thanks." }], 120);
+		expect(text).toContain(
+			[
+				" ● Answered 2 questions",
+				"   ⎿ Which language should commit messages use?   → English",
+				"     Which checks should run before each commit?  → Type something: only Vitest",
+				"",
+				" ● Thanks.",
+			].join("\n"),
+		);
+		expect(text).not.toContain("other tool");
+		expect(text).not.toContain("ask_user");
+	});
+
+	it("puts each answer under its question when the width is narrow, and never overflows", () => {
+		expect(shown(asked(answered), 60).text).toContain(
+			[
+				" ● Answered 2 questions",
+				"   ⎿ Which language should commit messages use?",
+				"       → English",
+				"     Which checks should run before each commit?",
+				"       → Type something: only Vitest",
+			].join("\n"),
+		);
+		const { lines } = shown(asked(answered), 40);
+		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+		expect(lines.join("\n")).toContain("→ English");
+	});
+
+	it.each([
+		[{ status: "cancelled", reason: "user" }, "2 questions cancelled by you"],
+		[{ status: "cancelled", reason: "interrupted" }, "2 questions cancelled: the turn was interrupted"],
+		[{ status: "cancelled", reason: "closed" }, "2 questions cancelled: the session closed"],
+		[{ status: "superseded" }, "2 questions superseded by your new message"],
+		[{ status: "unavailable", reason: "question_pending" }, "2 questions not asked: another question was waiting"],
+		[{ status: "unavailable", reason: "no_interactive_client" }, "2 questions not asked: no interactive client"],
+	])("says when the batch got no answer: %j", (result, title) => {
+		const { text } = shown(asked(result, "User question failed."), 120);
+		expect(text).toContain(` ● ${title}\n   ⎿ Which language should commit messages use?   — no answer`);
+		expect(text).not.toContain("✗");
+	});
+
+	it("says a batch the core never asked was not asked", () => {
+		const { text } = shown(asked(undefined, "User question unavailable."), 120);
+		expect(text).toContain(" ● 2 questions not asked\n   ⎿ Which language should commit messages use?   — no answer");
+		expect(text).not.toContain("other tool");
+	});
+
+	it("opens the ask_user card into the answers instead of its input", () => {
+		const { text } = shown(asked(answered), 120, true);
+		expect(text).toContain("ask_user");
+		expect(text).toMatch(/│ Which language should commit messages use\? {3}→ English/);
+		expect(text).not.toContain('"recommended"');
+		expect(text).not.toContain('"id"');
+		expect(text).not.toContain("other tool");
+	});
+
+	it("shows control characters of questions, labels and answers as markers", () => {
+		const marked = [{ ...questions[0], question: "Which \x1b[31mone?" }, questions[1]];
+		const { text } = shown(
+			[
+				{ type: "user_question_requested", callId: "u1", questions: marked },
+				{
+					type: "user_question_resolved",
+					callId: "u1",
+					result: {
+						status: "answered",
+						answers: [
+							{ questionId: "q1", optionId: "en" },
+							{ questionId: "q2", other: "a\x1b[2Jb" },
+						],
+					},
+				},
+			] as Body[],
+			120,
+		);
+		expect(text).not.toContain("\x1b");
+		expect(text).toContain("␛[31mone?");
+		expect(text).toContain("Type something: a␛[2Jb");
+	});
+});

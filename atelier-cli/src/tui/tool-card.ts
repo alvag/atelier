@@ -255,6 +255,8 @@ export class ToolCard implements Component {
 	#finished: Extract<AtelierEvent, { type: "tool_call_finished" }> | undefined;
 	#tookMs: number | undefined;
 	#activity: AgentActivity | undefined;
+	/** What the open card shows instead of the call's input, in `room` columns, such as an `ask_user` call's answers. */
+	details: ((room: number) => string[]) | undefined;
 
 	/** `now` times the call, from the card's start to its finish; `tones` are the card's backgrounds. */
 	constructor(
@@ -360,7 +362,8 @@ export class ToolCard implements Component {
 			lines.push(...indented([paint("yellow", `sandbox blocked: ${shown(cause)}`)], width, "   "));
 		if (!open) return lines;
 		const bar = paint(stateOf(done?.ok).style, hasColor(paint) ? "▎" : "│");
-		const details = inputLines(this.tool, this.#input, paint, Math.max(1, width - 5), done, this.#tones);
+		const room = Math.max(1, width - 5);
+		const details = this.details?.(room) ?? inputLines(this.tool, this.#input, paint, room, done, this.#tones);
 		if (done?.truncated)
 			details.push(
 				paint("dim", done.fullOutputPath ? `full output: ${shown(done.fullOutputPath)}` : "output truncated"),
