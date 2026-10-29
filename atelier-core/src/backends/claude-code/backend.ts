@@ -366,6 +366,9 @@ class ClaudeCodeSession implements BackendSession {
 		try {
 			for await (const message of this.#query) {
 				observe(message);
+				// Only the interrupt timeout fails the session while Claude Code still sends: the turn it ended is over, and
+				// what comes after it, a late result too, belongs to no turn.
+				if (this.#failure !== undefined) continue;
 				this.#contextTracker.observe(message);
 				if (typeof message.session_id === "string" && message.session_id !== "") this.#sessionId = message.session_id;
 				if (message.type === "system" && message.subtype === "compact_boundary") this.#stateDue = true;
