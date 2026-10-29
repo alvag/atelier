@@ -3,6 +3,8 @@ import { styleText } from "node:util";
 import {
 	type AtelierEvent,
 	cacheHitRate,
+	contextGauge,
+	contextWarningText,
 	describeRefusal,
 	type JsonValue,
 	type PhaseAgent,
@@ -30,7 +32,13 @@ export const API_KEY_BACKENDS: ReadonlySet<string> = new Set(["anthropic-api", "
 /** Starts every line a subagent produces, so its work reads as nested under the task call. */
 const CHILD = "  │ ";
 
-function tokensLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): string {
+/** The color of each level of the context gauge; a normal one has none. */
+const LEVEL_STYLES = { warning: "yellow", danger: "red" } as const;
+
+function tokensLine(
+	event: Extract<AtelierEvent, { type: "turn_finished" }>,
+	style: (style: Style, text: string) => string = (_, text) => text,
+): string {
 	const { input, output, cacheRead, cacheWrite } = event.usage;
 	const parts = [
 		`input ${numbers.format(input)}`,
@@ -43,13 +51,12 @@ function tokensLine(event: Extract<AtelierEvent, { type: "turn_finished" }>): st
 	if (event.requests !== undefined) parts.push(`${event.requests} request${event.requests === 1 ? "" : "s"}`);
 	if (event.costUsd !== undefined) parts.push(`$${event.costUsd.toFixed(4)}`);
 	if (event.context !== undefined) {
-		const { tokens, window, unknown } = event.context;
-		parts.push(
-			// Right after a compaction the size is not known until a request measures it.
-			unknown
-				? `context ? / ${numbers.format(window)}`
-				: `context ${numbers.format(tokens)} / ${numbers.format(window)} (${Math.round((tokens / window) * 100)}%)`,
-		);
+		const { text, level } = contextGauge(event.context);
+		// Right after a compaction the size is not known until a request measures it.
+		const context = event.context.unknown
+			? `context ${text}`
+			: `context ${text} (${numbers.format(event.context.tokens)} tokens)`;
+		parts.push(level === "normal" ? context : style(LEVEL_STYLES[level], context));
 	}
 	return `tokens: ${parts.join(" · ")}`;
 }
@@ -448,6 +455,9 @@ export class Renderer {
 				this.#unsandboxedTurn = event.turnId;
 				this.#warn(`bash: not sandboxed (${event.reason ?? "unavailable"}): ${UNSANDBOXED_EFFECT}`);
 				return;
+			case "context_warning":
+				this.#warn(contextWarningText(event));
+				return;
 			case "sandbox_warning":
 				if (this.#unsandboxedTurn === event.turnId) return;
 				this.#warn(`warning: bash runs without a sandbox (${event.reason}): ${UNSANDBOXED_EFFECT}`);
@@ -474,7 +484,12 @@ export class Renderer {
 			case "turn_finished": {
 				if (this.#expectedMissTurns > 0) this.#expectedMissTurns--;
 				if (event.stopReason === "error") this.failed = true;
-				this.#line(this.#style("dim", tokensLine(event)));
+				this.#line(
+					this.#style(
+						"dim",
+						tokensLine(event, (style, text) => this.#style(style, text)),
+					),
+				);
 				const phases = phasesLine(event, this.#backend);
 				if (phases !== undefined) this.#line(this.#style("dim", phases));
 				return;

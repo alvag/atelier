@@ -86,11 +86,11 @@ describe("footer on claude-code", () => {
 				tools: [],
 			});
 			let state = await footerAfterTurn(session.send("one"), {});
-			expect(footerLine(state, 120, plain, ["context"])).toBe(" ctx 2%");
+			expect(footerLine(state, 120, plain, ["context"])).toBe(" ctx ▱▱▱▱▱▱▱▱ 2% · 1M");
 			const second = footerAfterTurn(session.send("two"), state);
 			if (interrupt) await session.interrupt();
 			state = await second;
-			expect(footerLine(state, 120, plain, ["context"])).toBe(" ctx ?");
+			expect(footerLine(state, 120, plain, ["context"])).toBe(" ctx ▱▱▱▱▱▱▱▱ ? · 1M");
 			// The session is over: the next turn says so instead of waiting on Claude Code.
 			const third: AtelierEvent[] = [];
 			for await (const event of session.send("three")) third.push(event);

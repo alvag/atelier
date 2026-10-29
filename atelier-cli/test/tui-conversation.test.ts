@@ -466,6 +466,11 @@ describe("Conversation", () => {
 		expect(text).not.toContain("\u001b");
 	});
 
+	it("warns in the transcript once the context nears where it compacts", () => {
+		const { text } = shown([{ type: "context_warning", tokens: 182_000, window: 1_000_000, compactAt: 200_000 }], 120);
+		expect(text).toContain("⚠ context at 18% of the 1M window (182,000 tokens), near where it compacts (200,000)");
+	});
+
 	it("leaves the phase to the footer", () => {
 		expect(shown([{ type: "phase_changed", phase: "planning", source: "inferred" }]).text).toBe("");
 	});

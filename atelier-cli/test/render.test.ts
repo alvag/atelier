@@ -1,3 +1,4 @@
+import { styleText } from "node:util";
 import { type AtelierEvent, type AtelierEventBody, visibleText } from "@atelier/core";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
@@ -1025,7 +1026,23 @@ describe("Renderer", () => {
 					context: { tokens: 45_000, window: 200_000, compactAt: 167_616 },
 				},
 			]);
-			expect(stdout).toContain(" · context 45,000 / 200,000 (23%)\n");
+			expect(stdout).toContain(" · context ▰▰▱▱▱▱▱▱ 23% · 200k (45,000 tokens)\n");
+		});
+
+		it("colors the context by how close compaction is", () => {
+			let stdout = "";
+			const renderer = new Renderer({ stdout: (s) => (stdout += s), stderr: () => {}, color: true });
+			const context = { tokens: 190_000, window: 1_000_000, compactAt: 200_000 };
+			renderer.render({ type: "turn_finished", stopReason: "end_turn", usage, context, seq: 1, turnId: "t" });
+			expect(stdout).toContain(styleText("red", "context ▰▰▱▱▱▱▱▱ 19% · 1M (190,000 tokens)"));
+		});
+
+		it("warns once the context nears where it compacts", () => {
+			const { stdout, stderr } = render([
+				{ type: "context_warning", tokens: 182_000, window: 1_000_000, compactAt: 200_000 },
+			]);
+			expect(stdout).toBe("");
+			expect(stderr).toBe("⚠ context at 18% of the 1M window (182,000 tokens), near where it compacts (200,000)\n");
 		});
 
 		it("says the context size is unknown right after a compaction", () => {
@@ -1037,7 +1054,7 @@ describe("Renderer", () => {
 					context: { tokens: 3000, window: 1_000_000, compactAt: 967_000, unknown: true },
 				},
 			]);
-			expect(stdout).toContain(" · context ? / 1,000,000\n");
+			expect(stdout).toContain(" · context ▱▱▱▱▱▱▱▱ ? · 1M\n");
 		});
 	});
 
