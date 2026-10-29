@@ -108,12 +108,22 @@ export interface ConfigFile {
 	malformed: boolean;
 }
 
-/** `git config --file <file> --no-includes <args>` with NUL-separated output: its records, or undefined when git fails (1 is only "no match"). */
-function gitConfigRecords(file: string, args: string[]): string[] | undefined {
-	const run = spawnSync("git", ["config", "--file", file, "--no-includes", "-z", ...args], {
-		encoding: "utf8",
-		timeout: 5000,
-	});
+/** One file's include and hooks records, or undefined when git fails (1 is only "no match"). */
+function gitConfigRecords(file: string): string[] | undefined {
+	const run = spawnSync(
+		"git",
+		[
+			"config",
+			"--file",
+			file,
+			"--no-includes",
+			"-z",
+			"--get-regexp",
+			"^(include\\.path|includeif\\..*\\.path|core\\.hookspath)$",
+		],
+		// Apply the former per-query output limits after splitting, not to the larger combined stream.
+		{ encoding: "utf8", timeout: 5000, maxBuffer: Infinity },
+	);
 	if (run.status === 1) return [];
 	if (run.status !== 0) return undefined;
 	return run.stdout.split("\0").filter((_, i, all) => i < all.length - 1);
@@ -128,13 +138,31 @@ function gitConfigRecords(file: string, args: string[]): string[] | undefined {
  */
 export function configFilePaths(file: string): ConfigFile {
 	if (!existsSync(file)) return { includes: [], malformed: false };
-	const plain = gitConfigRecords(file, ["--get-all", "include.path"]);
-	const conditional = gitConfigRecords(file, ["--get-regexp", "^includeif\\..*\\.path$"]);
-	const hooks = gitConfigRecords(file, ["--get", "core.hooksPath"]);
-	if (plain === undefined || conditional === undefined || hooks === undefined)
+	const records = gitConfigRecords(file);
+	if (records === undefined) return { ...parseConfigFile(file), malformed: true };
+	const plain: string[] = [];
+	const conditional: string[] = [];
+	let hooksPath: string | undefined;
+	let plainBytes = 0;
+	let conditionalBytes = 0;
+	for (const record of records) {
+		const separator = record.indexOf("\n");
+		const key = separator === -1 ? record : record.slice(0, separator);
+		const value = separator === -1 ? "" : record.slice(separator + 1);
+		if (key === "include.path") {
+			plain.push(value);
+			plainBytes += Buffer.byteLength(value) + 1;
+		} else if (record.startsWith("includeif.")) {
+			// Preserve the old get-regexp handling, even for a valueless conditional entry.
+			conditional.push(record.slice(separator + 1));
+			conditionalBytes += Buffer.byteLength(record) + 1;
+		} else if (key === "core.hookspath") hooksPath = value;
+	}
+	const hooksBytes = hooksPath === undefined ? 0 : Buffer.byteLength(hooksPath) + 1;
+	// spawnSync's default was 1 MiB for each of get-all, get-regexp and get (the last hooks value only).
+	if (Math.max(plainBytes, conditionalBytes, hooksBytes) > 1024 * 1024)
 		return { ...parseConfigFile(file), malformed: true };
-	const includes = [...plain, ...conditional.map((record) => record.slice(record.indexOf("\n") + 1))];
-	return { includes, malformed: false, ...(hooks[0] === undefined ? {} : { hooksPath: hooks[0] }) };
+	return { includes: [...plain, ...conditional], malformed: false, ...(hooksPath === undefined ? {} : { hooksPath }) };
 }
 
 /** The same answer read with a simple parser, for a file git rejects. */
