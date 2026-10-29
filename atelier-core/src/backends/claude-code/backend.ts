@@ -531,9 +531,12 @@ class ClaudeCodeSession implements BackendSession {
 				...this.#unfinishedTurn(),
 			]);
 			this.#closing = true;
-			// A query that does not end once closed never reaches the end of `#read`, which forgets the request too.
+			this.#failure ??= "Claude Code did not stop in time; the session was closed.";
+			// A query that does not end once closed never reaches the end of `#read`, which does this too: the request is
+			// forgotten and the turn ends now, not when Claude Code stops.
 			this.#dropCompactAtAsk();
 			this.#query.close();
+			this.#endTurn();
 		}, this.#interruptGraceMs);
 	}
 
