@@ -244,8 +244,8 @@ export type QueuedMessage = {
 export type AtelierEventBody =
 	/**
 	 * `effort`: the thinking level asked for, as sent with every request: the reasoning effort, `off` when thinking
-	 * was turned off, `auto` when the model reasons on its own and takes no level, or `<level> not sent` when the
-	 * model cannot take that level. Absent when no level was asked.
+	 * was turned off, `auto` when a level was asked for a model that reasons on its own and takes no level, or
+	 * `<level> not sent` when the model cannot take that level. Absent when no level was asked.
 	 * `profile`: the main session's frozen profile, when it resolved one; set by the session.
 	 */
 	| {

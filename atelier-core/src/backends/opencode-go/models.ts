@@ -22,9 +22,11 @@ export interface OpenCodeGoModel {
 	contextWindow: number;
 	/** The levels the model takes; any other level is not sent. */
 	efforts: readonly Effort[];
-	/** The model reasons with nothing sent and takes no level: any level asked reports `auto`. */
+	/** The model reasons with nothing sent and takes no level: a level asked reports `auto`; `off` is not sent
+	 * either, since its reasoning cannot be turned off. */
 	reasonsOnItsOwn?: true;
-	/** Every level sends `thinking: {type: "enabled", budget_tokens}` (a Messages model); the budget turns its thinking on, it does not size it. */
+	/** Every level but `off` sends `thinking: {type: "enabled", budget_tokens}` (a Messages model); `off` sends
+	 * nothing, since the model does not think without the field. The budget turns the thinking on, it does not size it. */
 	budgetThinking?: true;
 	/** The `reasoning_effort` that turns its thinking off, on Chat Completions; absent when it cannot. */
 	off?: string;
