@@ -6,6 +6,7 @@ import {
 	type AgentBackend,
 	type ApprovalAnswer,
 	type ApprovalRequest,
+	type AskUser,
 	type AtelierEvent,
 	type BackendName,
 	BUILTIN_AGENTS,
@@ -37,6 +38,7 @@ import {
 	writeDefaultPermissionMode,
 } from "@atelier/core";
 import { parseCliArgs, resumeRefusal, USAGE, UsageError, WorkingDirectoryUnavailableError } from "./args.ts";
+import { askUserOnTerminal, NO_TERMINAL_NOTICE } from "./ask-user-line.ts";
 import { runDesktop } from "./desktop.ts";
 import { OWN_ROOT, versionLabel } from "./install-marker.ts";
 import {
@@ -368,6 +370,55 @@ export async function run(
 		}
 		return answer.line?.trim();
 	};
+	/**
+	 * Reads one line for an ask_user question; gives up when `signal` aborts, on Ctrl+C and at end of input, leaving no
+	 * read pending, so a line typed later goes to the next prompt.
+	 */
+	const readUserLine = async (
+		prompt: string,
+		signal: AbortSignal,
+	): Promise<{ text: string; pasted: boolean } | undefined> => {
+		if (signal.aborted) return undefined;
+		const early = lines.discardTyped();
+		if (early > 0) renderer.write(`ignored ${early} ${early === 1 ? "line" : "lines"} typed before this question\n`);
+		renderer.write(prompt);
+		let stop = () => {};
+		const cancelled = new Promise<undefined>((resolve) => {
+			stop = () => resolve(undefined);
+			cancelApproval = stop;
+			signal.addEventListener("abort", stop, { once: true });
+		});
+		const answer = await Promise.race([lines.next(prompt.length).then((line) => ({ line })), cancelled]);
+		signal.removeEventListener("abort", stop);
+		if (cancelApproval === stop) cancelApproval = undefined;
+		if (answer === undefined || answer.line === undefined) {
+			if (answer === undefined) lines.abandon();
+			renderer.write("\n");
+			return undefined;
+		}
+		renderer.write("\n");
+		return { text: answer.line, pasted: lines.pasted() };
+	};
+	let liveSession: Session | undefined;
+	const askUser: AskUser = async (questions, context) => {
+		renderer.endLine();
+		if (!io.isTTY) {
+			io.stderr(NO_TERMINAL_NOTICE);
+			return { status: "unavailable", reason: "no_interactive_client" };
+		}
+		return askUserOnTerminal(questions, {
+			signal: context.signal ?? new AbortController().signal,
+			write: (text) => renderer.write(text),
+			read: readUserLine,
+			supersede: (text) => {
+				try {
+					liveSession?.queue("steer", text);
+				} catch {
+					// The turn already ended: the text stays unsent.
+				}
+			},
+		});
+	};
 	/** Asks a yes/no question on the terminal; only "y" or "yes" is a yes, and Ctrl+C is a no. */
 	const askYesNo = async (question: string): Promise<boolean> =>
 		/^y(es)?$/i.test((await askLine(question, ANSWER_PROMPT)) ?? "");
@@ -460,6 +511,7 @@ export async function run(
 		permissionMode: mode,
 		...(saved?.problem === undefined ? {} : { permissionModeProblem: saved.problem }),
 		odd: true,
+		askUser,
 		...(io.home === undefined ? {} : { projectInstructions: { home: io.home }, skills: { home: io.home } }),
 		cwd: args.cwd,
 		...(model === undefined ? {} : { model }),
@@ -549,6 +601,7 @@ export async function run(
 		})
 		.finally(() => removeStartupTerminate?.());
 	if (session === undefined) return EXIT_FAILED;
+	liveSession = session;
 	if (resumed) renderer.write(savedTranscript(resumed.header.id, resumed.name, resumed.entries));
 
 	// Ctrl+C: the first press interrupts the turn (and answers no to a pending
