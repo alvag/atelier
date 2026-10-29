@@ -12,6 +12,7 @@ import {
 	configPath,
 	includedConfigFiles,
 	libraryProtectedPaths,
+	nestedGitPattern,
 	packageCacheDirectories,
 	secretFilePatterns,
 	secretReadPaths,
@@ -359,6 +360,8 @@ export function agentPolicy({
 }: AgentPolicyInput): SandboxPolicy {
 	const writable = additions?.allowWrite ?? [];
 	const worktree = worktreeGitPaths(worktreeGit);
+	// A directory above the working directory would deny the repository's own `.git`; what is below it has cwd's pattern.
+	const nestedGit = [cwd, ...writable.filter((dir) => !cwd.startsWith(`${dir}/`))].map(nestedGitPattern);
 	return {
 		filesystem: {
 			denyRead: [...secretReadPaths(home), ...(additions?.denyRead ?? [])],
@@ -373,6 +376,7 @@ export function agentPolicy({
 			denyWrite: [
 				...worktree.denyWrite,
 				...gitPaths,
+				...nestedGit,
 				...secretFilePatterns(cwd),
 				...writable.flatMap(secretFilePatterns),
 				...[cwd, ...writable].flatMap(libraryProtectedPaths),

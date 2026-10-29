@@ -9,6 +9,8 @@ import type { SandboxPolicyName } from "./sandbox.ts";
 
 const FILE_WRITE = /\bfile-write[\w-]*\s+(\S.*)$/;
 const FILE_READ = /\bfile-read[\w-]*\s+(\S.*)$/;
+/** A path in a `.git` or a `.git` itself, where every denied write is one of the git protections. */
+const IN_GIT = /\/\.git(\/|$)/;
 const NETWORK = /\bnetwork-outbound\s+(\S+)(?:\s+\((.*)\))?\s*$/;
 
 /**
@@ -28,7 +30,8 @@ export function describeViolation(line: string, policy: SandboxPolicyName): stri
 		return `network connect to ${network[1]}${reason === undefined ? "" : ` (${reason})`}`;
 	}
 	const write = FILE_WRITE.exec(line);
-	if (write) return `write to ${write[1]} (not an allowed write path)`;
+	if (write)
+		return `write to ${write[1]} (${IN_GIT.test(write[1] ?? "") ? "git state that runs code" : "not an allowed write path"})`;
 	const read = FILE_READ.exec(line);
 	if (read && !SYSTEM_PROBE.test(read[1] ?? "")) return `read of ${read[1]} (denied by the sandbox policy)`;
 	return undefined;
