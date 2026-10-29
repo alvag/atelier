@@ -115,7 +115,8 @@ const CHANGES_DIRECTORY = new Set(["cd", "pushd", "popd"]);
 function leavesProject({ value, raw }: { value: string; raw: string }): boolean {
 	if (/[$`~{]/.test(raw) || value.includes("~")) return true;
 	// A `..` segment of any place the word names, also after `:`, `,` or `=` (`-C../x`, `file:../lib`); `./...` is none.
-	if (placesOf(value).some((place) => place.split(/[/:,=]/).includes(".."))) return true;
+	// Two dots anywhere (`..`, `-kC..`, `foo@../x`) may name a parent; three or more (`./...`) are no path step.
+	if (/(?:^|[^.])\.\.(?:[^.]|$)/.test(value)) return true;
 	// A glob the shell expands (`l?nk`, `lin[k]`, `l*`) may name any place: only quoted or escaped it is literal.
 	if (/[*?[]/.test(raw.replace(/'[^']*'|"(?:\\.|[^"\\])*"|\\./g, ""))) return true;
 	return /(?:^|[=:,@])\/|^-[A-Za-z0-9]+\/|^--[\w-]+\//.test(value);
@@ -124,10 +125,11 @@ function leavesProject({ value, raw }: { value: string; raw: string }): boolean 
 /** The places a word may name: itself, and the value of an option it carries (`--dir=x`, `-Cx`). */
 function placesOf(value: string): string[] {
 	const places = [value];
-	const equals = value.indexOf("=");
-	if (equals > 0) places.push(value.slice(equals + 1));
-	if (/^-[A-Za-z0-9]/.test(value) && value.length > 2) places.push(value.slice(2));
-	return places.filter((place) => place !== "");
+	// What follows any `=`, `:`, `@` or `,` (`--dir=x`, `file:x`, `foo@./x`).
+	for (const [at, char] of [...value].entries()) if ("=:@,".includes(char)) places.push(value.slice(at + 1));
+	// Any point of a cluster of short options, where one of them may take the rest as its value (`-kCx`).
+	if (/^-[A-Za-z0-9]/.test(value)) for (let at = 2; at < value.length; at++) places.push(value.slice(at));
+	return [...new Set(places)].filter((place) => place !== "");
 }
 
 /**
@@ -148,10 +150,12 @@ const RUNS_CODE_OPTIONS: Record<string, readonly string[]> = {
 
 /** Whether `word` is one of `options`: as it is, with `=value`, a prefix ending in `.` (`--config.x`), or a short one in a cluster. */
 function isRunsCodeOption(word: string, options: readonly string[]): boolean {
+	// A long option counts under any prefix of it, as npm and make take one (`--script-shel`, `--ev`).
+	const name = word.split("=")[0] ?? word;
 	return options.some((option) => {
 		if (option.endsWith(".")) return word.startsWith(option);
 		if (option.length === 2) return new RegExp(`^-[A-Za-z0-9]*${option[1]}`).test(word);
-		return word === option || word.startsWith(`${option}=`);
+		return name === option || (name.length > 2 && option.startsWith(name));
 	});
 }
 
@@ -297,7 +301,7 @@ function launcherOf(name: string, words: SimpleCommand["words"]): string | undef
 }
 
 /** The key of one command, or undefined when it can never be covered. */
-function keyOf({ wrappers, words, writesFile, setsEnvironment, readsInput }: SimpleCommand): Key | undefined {
+function keyOf({ wrappers, words, writesFile, setsEnvironment, readsInput, prefix }: SimpleCommand): Key | undefined {
 	const [first, second] = words;
 	if (writesFile || setsEnvironment || first === undefined || first.raw !== first.value || !PROGRAM.test(first.value))
 		return undefined;
@@ -334,9 +338,12 @@ function keyOf({ wrappers, words, writesFile, setsEnvironment, readsInput }: Sim
 			...words.slice(1).flatMap(({ value }) => placesOf(value)),
 		],
 		readsInput,
-		simpleArguments: argumentsOf(words).every(
-			({ value }) => isSimpleArgument(value) && !isRunsCodeOption(value, RUNS_CODE_OPTIONS[name] ?? []),
-		),
+		// The wrappers' words (`nice -n 10`) count as arguments too.
+		simpleArguments:
+			argumentsOf([{ value: "", raw: "" }, ...prefix]).every(({ value }) => isSimpleArgument(value)) &&
+			argumentsOf(words).every(
+				({ value }) => isSimpleArgument(value) && !isRunsCodeOption(value, RUNS_CODE_OPTIONS[name] ?? []),
+			),
 	};
 }
 
