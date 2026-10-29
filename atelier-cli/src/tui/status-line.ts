@@ -1,23 +1,7 @@
 import { basename } from "node:path";
 import type { AtelierEvent } from "@atelier/core";
-import { plain } from "./herdr-status.ts";
-import { settledState } from "./program-status.ts";
+import { oneLine, settledState } from "./program-status.ts";
 import { target } from "./tool-card.ts";
-
-/** The longest line told to the terminal, far under the 2048 bytes OSC 7501 takes. */
-export const MAX_LINE_CHARS = 200;
-const ELLIPSIS = "…";
-
-/** The first line of `text` with words, one line without control or bidi characters, cut to `max` characters. */
-export function oneLine(text: string, max = MAX_LINE_CHARS): string {
-	const first = plain(text.split("\n").find((line) => plain(line) !== "") ?? "");
-	const characters = [...first];
-	if (characters.length <= max) return first;
-	return `${characters
-		.slice(0, max - 1)
-		.join("")
-		.trimEnd()}${ELLIPSIS}`;
-}
 
 /** The longest session name or first prompt the terminal's title shows. */
 export const MAX_TITLE_NAME_CHARS = 50;
@@ -36,14 +20,16 @@ export function terminalTitle(cwd: string, name: string | undefined): string {
 export class StatusLine {
 	#call: { id: string; line: string } | undefined;
 	#task: string | undefined;
-	/** The main agent's text since its last call. */
+	/** The main agent's last text, and whether a call came after it, so its next text starts a new one. */
 	#text = "";
+	#textEnded = false;
 	#error: string | undefined;
 
 	/** A turn starts: what the turn before said is not its. */
 	started() {
 		this.#call = undefined;
 		this.#text = "";
+		this.#textEnded = false;
 		this.#error = undefined;
 	}
 
@@ -52,10 +38,15 @@ export class StatusLine {
 		if (event.parentCallId !== undefined) return;
 		if (event.type === "tool_call_started") {
 			this.#call = { id: event.callId, line: `${event.tool} ${target(event.input)}`.trim() };
-			this.#text = "";
+			this.#textEnded = true;
 		} else if (event.type === "tool_call_finished" && event.callId === this.#call?.id) this.#call = undefined;
-		else if (event.type === "text_delta") this.#text += event.text;
-		else if (event.type === "error") this.#error = event.message;
+		else if (event.type === "text_delta") {
+			// Spaces alone after a call do not start a new text.
+			if (this.#textEnded && event.text.trim() === "") return;
+			if (this.#textEnded) this.#text = "";
+			this.#textEnded = false;
+			this.#text += event.text;
+		} else if (event.type === "error") this.#error = event.message;
 		else if (event.type === "feature_changed") {
 			const task = event.tasks.find((each) => each.status === "in_progress");
 			this.#task = task === undefined ? undefined : `${task.id} ${task.title}`;
