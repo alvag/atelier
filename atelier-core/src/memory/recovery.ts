@@ -33,11 +33,17 @@ function instruction(outcome: SummaryOutcome, key: string): string {
 	}
 }
 
+/** The most code points of a summary's first line an event carries, `…` included: a bound on its size, not a cut to columns. */
+export const SUMMARY_PREVIEW_CHARS = 200;
+
 /**
- * The summary's first line that says something, whole, as plain text: hidden characters as markers, blanks as one
- * space. Clients cut it to their columns.
+ * The summary's first line that says something, as plain text: hidden characters as markers, blanks as one space,
+ * capped at `SUMMARY_PREVIEW_CHARS` code points with `…`, never inside a surrogate pair. Clients cut it to their columns.
  */
 export function summaryPreview(summary: string): string {
 	const line = summary.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
-	return visibleText(line).text.replace(/\s+/g, " ").trim();
+	const plain = visibleText(line).text.replace(/\s+/g, " ").trim();
+	const points = [...plain];
+	if (points.length <= SUMMARY_PREVIEW_CHARS) return plain;
+	return `${points.slice(0, SUMMARY_PREVIEW_CHARS - 1).join("")}…`;
 }

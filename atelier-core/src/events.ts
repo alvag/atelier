@@ -370,7 +370,7 @@ export type AtelierEventBody =
 	| { type: "memory_status"; available: boolean; project?: string; reason?: string }
 	/**
 	 * The compaction summary was saved to memory as `#id`, after a compaction or a backend change. `preview`: its first
-	 * line, plain text, whole (clients cut it to their columns). `warning`: what the save warned about; the recoverable error
+	 * line, plain text, capped at 200 code points with `…` (clients cut it to their columns). `warning`: what the save warned about; the recoverable error
 	 * `memory_summary_warning` still says it, for clients that do not know this event.
 	 */
 	| { type: "memory_summary_saved"; id: number; preview: string; warning?: string }

@@ -510,9 +510,9 @@ describe("compaction summary", () => {
 		expect(events.filter((e) => e.type === "error")).toEqual([]);
 	});
 
-	it("gives the summary's first line as plain text, whole: clients cut it to their columns", async () => {
+	it("gives the summary's first line as plain text: clients cut it to their columns", async () => {
 		const memory = new FakeMemory("proj");
-		const long = `\n\n  ## Goal \u001b[31mred\u001b[0m\t${"x".repeat(200)}\nnext line`;
+		const long = `\n\n  ## Goal \u001b[31mred\u001b[0m\t${"x".repeat(80)}\nnext line`;
 		const s = await Session.start({ backend: summarizing([long]), cwd, tools, memory });
 		const events = await run(s.compact());
 		await s.close();
@@ -520,7 +520,22 @@ describe("compaction summary", () => {
 		const preview = saved?.type === "memory_summary_saved" ? saved.preview : "";
 		expect(preview.startsWith("## Goal ␛[31mred␛[0m x")).toBe(true);
 		expect(preview).not.toContain("\u001b");
-		expect(preview).toBe(`## Goal ␛[31mred␛[0m ${"x".repeat(200)}`);
+		expect(preview).toBe(`## Goal ␛[31mred␛[0m ${"x".repeat(80)}`);
+	});
+
+	it("caps the summary's first line at 200 code points, ending in …, without splitting a surrogate pair", async () => {
+		const previews = async (summary: string) => {
+			const memory = new FakeMemory("proj");
+			const s = await Session.start({ backend: summarizing([summary]), cwd, tools, memory });
+			const events = await run(s.compact());
+			await s.close();
+			return events.flatMap((e) => (e.type === "memory_summary_saved" ? [e.preview] : []));
+		};
+		const [emoji = ""] = await previews("😀".repeat(300));
+		expect([...emoji]).toHaveLength(200);
+		expect(emoji).toBe(`${"😀".repeat(199)}…`);
+		expect(await previews("x".repeat(200))).toEqual(["x".repeat(200)]);
+		expect(await previews("x".repeat(201))).toEqual([`${"x".repeat(199)}…`]);
 	});
 
 	it("warns once when memory fails or saves with a warning, without retrying, and the turn goes on", async () => {
