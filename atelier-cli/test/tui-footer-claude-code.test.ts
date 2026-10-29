@@ -35,8 +35,8 @@ const compacted = message({
 });
 
 /**
- * Claude Code that plays one reply per prompt; `hang` waits until the query is closed, an Error crashes it. A `dead`
- * one ignores `close()`, so a turn left hanging never ends on its own.
+ * Claude Code that plays one reply per prompt; `hang` waits until the query is closed, then sends what follows it in
+ * the reply and ends; an Error crashes it. A `dead` one ignores `close()`, so a turn left hanging never ends on its own.
  */
 function claudeCode(replies: (Record<string, unknown> | Error | "hang")[][], dead = false): QueryFunction {
 	return ({ prompt }) => {
@@ -46,10 +46,12 @@ function claudeCode(replies: (Record<string, unknown> | Error | "hang")[][], dea
 		});
 		async function* run() {
 			for await (const _ of prompt) {
-				for (const item of replies.shift() ?? []) {
+				const reply = replies.shift() ?? [];
+				for (const [index, item] of reply.entries()) {
 					if (item instanceof Error) throw item;
 					if (item === "hang") {
 						await closing;
+						yield* reply.slice(index + 1) as Record<string, unknown>[];
 						return;
 					}
 					yield item;
@@ -96,4 +98,32 @@ describe("footer on claude-code", () => {
 			await session.close();
 		},
 	);
+
+	it("never takes a result Claude Code sends after the interrupt timed out for the next turn", async () => {
+		let results = 0;
+		const backend = new ClaudeCodeBackend({
+			query: claudeCode([
+				[answer, finished],
+				[compacted, "hang", finished],
+			]),
+			env: {},
+			interruptGraceMs: 10,
+			onSdkMessage: (sdk) => {
+				if (sdk.type === "result") results++;
+			},
+		});
+		const session = await Session.start({ backend, cwd: "/w", tools: [] });
+		await footerAfterTurn(session.send("one"), {});
+		const second = footerAfterTurn(session.send("two"), {});
+		await session.interrupt();
+		await second;
+		while (results < 2) await new Promise((resolve) => setImmediate(resolve));
+		const third: AtelierEvent[] = [];
+		for await (const event of session.send("three")) third.push(event);
+		expect(third.map((event) => (event.type === "turn_finished" ? event.stopReason : event.type))).toEqual([
+			"error",
+			"error",
+		]);
+		await session.close();
+	});
 });
