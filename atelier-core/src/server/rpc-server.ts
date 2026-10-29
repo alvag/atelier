@@ -142,6 +142,17 @@ const MAX_REMEMBERED_IDS = 10_000;
  * pending are denied when their turn is interrupted, their session closes
  * or the client goes away.
  */
+/**
+ * A backend's `default` for `options.list`. claude-code's is the alias opus, said as the model it stands for now so
+ * a client finds it among the models (its backend still runs the alias), and absent when the list does not say what
+ * opus stands for, rather than a guess. The others' is their own default, listed or not.
+ */
+function defaultOf(name: BackendName, models: readonly string[]): { default?: string } {
+	if (name !== "claude-code") return { default: BACKEND_DEFAULTS[name] };
+	const id = claudeCodeIdOf(BACKEND_DEFAULTS[name]);
+	return models.includes(id) ? { default: id } : {};
+}
+
 export class RpcServer {
 	readonly #options: RpcServerOptions;
 	readonly #createId: () => string;
@@ -512,13 +523,9 @@ export class RpcServer {
 			const models = [...(lists[index] ?? [])];
 			// The aliases that stand for claude-code's models: a session that runs `opus` runs one of them.
 			const aliases = name === "claude-code" ? claudeCodeAliases(models) : {};
-			// claude-code's default, the alias opus, as the model it stands for now; its backend still runs the alias.
-			const fallback = name === "claude-code" ? claudeCodeIdOf(BACKEND_DEFAULTS[name]) : BACKEND_DEFAULTS[name];
 			return {
 				name,
-				// Always one of its models: absent when the list lacks it, as a subscription's list that does not say what
-				// opus stands for, rather than a guess.
-				...(models.includes(fallback) ? { default: fallback } : {}),
+				...defaultOf(name, models),
 				models,
 				...(Object.keys(aliases).length === 0 ? {} : { aliases }),
 			};
