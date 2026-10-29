@@ -33,17 +33,11 @@ function instruction(outcome: SummaryOutcome, key: string): string {
 	}
 }
 
-/** The longest preview of a saved summary, in characters, the ellipsis included. */
-export const SUMMARY_PREVIEW_CHARS = 120;
-
 /**
- * The summary's first line that says something, as plain text: hidden characters as markers, blanks as one space, cut
- * with `…` past `SUMMARY_PREVIEW_CHARS`.
+ * The summary's first line that says something, whole, as plain text: hidden characters as markers, blanks as one
+ * space. Clients cut it to their columns.
  */
 export function summaryPreview(summary: string): string {
 	const line = summary.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
-	const plain = visibleText(line).text.replace(/\s+/g, " ").trim();
-	const chars = [...plain];
-	if (chars.length <= SUMMARY_PREVIEW_CHARS) return plain;
-	return `${chars.slice(0, SUMMARY_PREVIEW_CHARS - 1).join("")}…`;
+	return visibleText(line).text.replace(/\s+/g, " ").trim();
 }

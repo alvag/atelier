@@ -510,7 +510,7 @@ describe("compaction summary", () => {
 		expect(events.filter((e) => e.type === "error")).toEqual([]);
 	});
 
-	it("gives the summary's first line as plain text, cut", async () => {
+	it("gives the summary's first line as plain text, whole: clients cut it to their columns", async () => {
 		const memory = new FakeMemory("proj");
 		const long = `\n\n  ## Goal \u001b[31mred\u001b[0m\t${"x".repeat(200)}\nnext line`;
 		const s = await Session.start({ backend: summarizing([long]), cwd, tools, memory });
@@ -520,8 +520,7 @@ describe("compaction summary", () => {
 		const preview = saved?.type === "memory_summary_saved" ? saved.preview : "";
 		expect(preview.startsWith("## Goal ␛[31mred␛[0m x")).toBe(true);
 		expect(preview).not.toContain("\u001b");
-		expect([...preview]).toHaveLength(120);
-		expect(preview.endsWith("…")).toBe(true);
+		expect(preview).toBe(`## Goal ␛[31mred␛[0m ${"x".repeat(200)}`);
 	});
 
 	it("warns once when memory fails or saves with a warning, without retrying, and the turn goes on", async () => {
