@@ -114,6 +114,10 @@ type TurnEvent = AtelierEventBody & SubagentTag;
 const CREDENTIAL_ERRORS: ReadonlySet<string> = new Set(["not_logged_in", "authentication_error"]);
 /** How long a turn a job's notice woke waits for others before it takes them: jobs that end together share one turn. */
 const WAKE_GATHER_MS = 250;
+/** What a subagent in the background is told instead of a question to the user: nobody would answer it. */
+const UNATTENDED_DENIAL =
+	"Denied without asking: a background subagent cannot ask the user. Leave this out and say in your report what needs approval.";
+
 /** Tools a subagent never gets: delegation and the ODD document belong to the parent. */
 const PARENT_ONLY = new Set([
 	ASK_USER_TOOL,
@@ -285,6 +289,11 @@ export interface SessionOptions {
 	 * it, the event goes first in the next turn instead.
 	 */
 	idleEvent?: (event: AtelierEventBody) => void;
+	/**
+	 * Nobody answers this session's questions: a call that would ask the user is denied at once, without asking. For a
+	 * subagent in the background.
+	 */
+	unattended?: boolean;
 }
 
 /** What the main agent runs with, as `Session.configure` and the `session_configured` event say it. */
@@ -1767,6 +1776,8 @@ export class Session {
 			if (verdict?.decision === "deny") return fail(denialMessage(verdict.reason));
 			if (approval && (skipped || verdict?.decision === "allow")) {
 				if (approval.grant !== undefined) this.#approvedPaths.add(approval.grant);
+			} else if (approval && this.#options.unattended === true) {
+				return fail(UNATTENDED_DENIAL);
 			} else if (approval) {
 				const { command, reason, tool: asking, confirm, sandboxFailed } = approval;
 				const store = this.#options.permissionRules;
