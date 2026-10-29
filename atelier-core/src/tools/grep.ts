@@ -70,6 +70,8 @@ function runSearch(
 		const hits: Hit[] = [];
 		let found = 0;
 		let stopped: SearchResult["stopped"];
+		/** An error while reading the output; the search is stopped and fails with it. */
+		let failed: unknown;
 		let pending = "";
 		let stderr = "";
 
@@ -125,8 +127,7 @@ function runSearch(
 			pending = pending.slice(nl + 1);
 			return true;
 		};
-		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-			if (stopped) return;
+		const consume = (chunk: string) => {
 			pending += chunk;
 			// A record is `path NUL rest NL`; the path may hold newlines, the rest never does.
 			while (true) {
@@ -146,6 +147,16 @@ function runSearch(
 				pending = pending.slice(end + 1);
 				if (found > scan.limit) return stop("limit");
 			}
+		};
+		// An exception must not escape the stream callback, where nothing catches it and it ends the process.
+		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+			if (stopped) return;
+			try {
+				consume(chunk);
+			} catch (error) {
+				failed = error;
+				stop("aborted");
+			}
 		});
 		child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
 			if (stderr.length < 4096) stderr += chunk;
@@ -158,10 +169,19 @@ function runSearch(
 		child.on("close", (code) => {
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", onAbort);
+			if (failed !== undefined) {
+				reject(failed);
+				return;
+			}
 			// A partial last line only counts when the command finished on its own.
-			if (!stopped) while (takeNotice(true));
-			const nul = pending.indexOf("\0");
-			if (!stopped && nul !== -1) add(pending, nul);
+			try {
+				if (!stopped) while (takeNotice(true));
+				const nul = pending.indexOf("\0");
+				if (!stopped && nul !== -1) add(pending, nul);
+			} catch (error) {
+				reject(error);
+				return;
+			}
 			if (!stopped && code === 2 && hits.length === 0) {
 				reject(new Error(stderr.trim() || `${command} failed`));
 				return;
@@ -171,8 +191,19 @@ function runSearch(
 	});
 }
 
-/** Whether something is at `path` (relative to `root`), without following a final symbolic link. */
-const exists = (root: string, path: string) => lstatSync(resolve(root, path), { throwIfNoEntry: false }) !== undefined;
+/**
+ * Whether something is at `path` (relative to `root`), without following a final symbolic link. It never
+ * throws: a name too long or through a non-directory cannot be a file, and any other failure counts as one,
+ * so the line stays part of a name that the filter then checks whole.
+ */
+function exists(root: string, path: string): boolean {
+	try {
+		return lstatSync(resolve(root, path), { throwIfNoEntry: false }) !== undefined;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code !== "ENAMETOOLONG" && code !== "ENOTDIR";
+	}
+}
 
 /** `path` as a literal ripgrep glob. */
 const escapeGlob = (path: string) => path.replace(/[\\*?[\]{}!]/g, "\\$&");
