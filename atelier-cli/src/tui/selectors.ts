@@ -13,8 +13,10 @@ export interface ListedModel {
 
 /** What `options.list` answers, as the selectors read it. */
 export interface Options {
-	/** `default`: the model the backend runs when none was chosen; absent from a core that does not say it. */
-	/** `aliases`: the names that stand for one of the models, as claude-code's `opus`, each with the model. */
+	/**
+	 * `default`: the model the backend runs when none was chosen; absent from a core that does not say it. `aliases`: the
+	 * names that stand for one of the models, as claude-code's `opus`, each with the model.
+	 */
 	backends: { name: string; default?: string; models: string[]; aliases?: Record<string, string> }[];
 	/** Absent from a core that does not list them. */
 	models?: ListedModel[];
