@@ -38,6 +38,23 @@ function formatDuration(ms: number): string {
 	return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+type JobItem = Extract<TurnItem, { kind: "job" }>;
+
+/** `Job 1 started — ci wait`, `Job 1 ended — exit 1 after 4m 12s`; the label comes from the model, its hidden characters shown. */
+function jobText(item: JobItem): string {
+	const name = `Job ${item.jobId}`;
+	const label = visibleText(item.label).text;
+	const after = item.durationMs === undefined ? "" : ` after ${formatDuration(item.durationMs)}`;
+	if (item.status === "started") return `${name} started — ${label}`;
+	if (item.status === "stopped") return `${name} stopped — ${label}${after}`;
+	if (item.status === "failed") return `${name} could not start — ${label}`;
+	const how = item.signal === undefined ? `exit ${item.exitCode ?? "?"}` : `killed by ${item.signal}`;
+	return `${name} ended — ${how}${after}`;
+}
+
+/** A job that could not start, was killed by a signal or exited with an error. */
+const jobFailed = (item: JobItem) => item.status === "failed" || (item.status === "exited" && item.exitCode !== 0);
+
 function ToolRow({ item }: { item: Extract<TurnItem, { kind: "tool" }> }) {
 	const mark = { running: "…", ok: "✓", error: "✗", denied: "⊘" }[item.status];
 	return (
@@ -516,6 +533,12 @@ function Items({
 				return <ReviewBlock key={key} item={item} onAnswer={onAnswer} onUndo={onUndo} />;
 			case "verification":
 				return <VerificationBlock key={`${item.kind}-${item.verifyId}`} item={item} onAnswer={onAnswer} />;
+			case "job":
+				return (
+					<div key={key} className={jobFailed(item) ? "job warning" : "job"}>
+						{jobText(item)}
+					</div>
+				);
 			case "sandbox_warning":
 				return (
 					<div key={key} className="warning sandbox-warning">

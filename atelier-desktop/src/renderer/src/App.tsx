@@ -278,6 +278,16 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 					</select>
 				) : null}
 				{state.phase ? <span className="phase">{state.phase}</span> : null}
+				{state.jobs && state.jobs.running > 0 ? (
+					<span title="Background jobs running">
+						{state.jobs.running} {state.jobs.running === 1 ? "job" : "jobs"}
+					</span>
+				) : null}
+				{state.jobs && state.jobs.waiting > 0 ? (
+					<span className="warning" title="Notices of ended jobs the agent reads with your next prompt">
+						{state.jobs.waiting} {state.jobs.waiting === 1 ? "notice" : "notices"} waiting
+					</span>
+				) : null}
 				{state.context ? <ContextLabel context={state.context} /> : null}
 				{state.session?.noSandbox ? (
 					<span className="warning" title={`${SANDBOX_TURNED_OFF}: ${UNSANDBOXED_EFFECT}`}>

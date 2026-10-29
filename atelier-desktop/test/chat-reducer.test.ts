@@ -999,3 +999,40 @@ describe("reduceChat: verification", () => {
 		expect((items(done)[0] as { ended?: boolean }).ended).toBeUndefined();
 	});
 });
+
+describe("background jobs", () => {
+	const job = { jobId: "1", label: "ci", outputPath: "/s/job-1.log" };
+	const ended = {
+		...job,
+		type: "job_finished",
+		status: "exited",
+		exitCode: 1,
+		durationMs: 252_000,
+		notified: true,
+		running: 0,
+		waiting: 1,
+	} as const;
+
+	it("shows a job's start and end in their turns and counts the jobs and the notices waiting", () => {
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "start" },
+			{ type: "turn_accepted", turnId: "t1" },
+			event({ ...job, type: "job_started", command: "gh run watch", running: 1 }),
+			event({ type: "turn_finished", stopReason: "end_turn", usage }),
+		]);
+		expect(state.jobs).toEqual({ running: 1, waiting: 0 });
+		expect(state.turns[0]?.items).toEqual([{ kind: "job", jobId: "1", label: "ci", status: "started" }]);
+		// A job that ends with no turn running wakes one of the core's own: its end is that turn's first event.
+		const woken = run([event(ended, "t2")], state);
+		expect(woken.busy).toBe(true);
+		expect(woken.jobs).toEqual({ running: 0, waiting: 1 });
+		expect(woken.turns[1]).toMatchObject({
+			id: "t2",
+			prompt: "",
+			items: [{ kind: "job", jobId: "1", label: "ci", status: "exited", exitCode: 1, durationMs: 252_000 }],
+		});
+		const read = run([event({ type: "jobs_status", running: 0, waiting: 0 }, "t2")], woken);
+		expect(read.jobs).toEqual({ running: 0, waiting: 0 });
+	});
+});
