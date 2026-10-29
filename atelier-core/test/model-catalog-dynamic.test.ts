@@ -174,6 +174,29 @@ it("keeps the newest read when two reads of the cache overlap and the older one 
 	expect(costOfRequest("claude-older-6", USAGE)).toBeUndefined();
 });
 
+it("answers a list asked before a newer read with that read's data, when the newer one ends first", async () => {
+	const held: (() => void)[] = [];
+	let reads = 0;
+	const catalog = new DynamicModelCatalog({
+		file,
+		sources: [],
+		read: async () => {
+			if (++reads === 1) {
+				await new Promise<void>((resolve) => held.push(resolve));
+				return listing("claude-old-6");
+			}
+			return listing("claude-new-7");
+		},
+	});
+	await until(() => held.length === 1);
+	const asked = catalog.models("anthropic-api");
+	await catalog.refresh();
+	held[0]?.();
+	const models = await asked;
+	expect(models).toContain("claude-new-7");
+	expect(models).not.toContain("claude-old-6");
+});
+
 it("keeps offering the last lists while a new read of the cache is under way", async () => {
 	await new DynamicModelCatalog({ file, sources: [anthropic(["claude-new-6"])] }).refresh();
 	let release: () => void = () => {};
