@@ -3516,7 +3516,7 @@ describe("paste question", () => {
 describe("TUI and background jobs", { timeout: 20_000 }, () => {
 	it("shows a job's start and end, counts it in the footer, and takes the turn its notice wakes as running", async () => {
 		const go = join(cwd, "go");
-		const command = `while [ ! -f ${go} ]; do sleep 0.02; done; echo done`;
+		const command = `while [ ! -f ${go} ]; do sleep 0.1; done; echo done`;
 		const gate: { release?: () => void } = {};
 		const h = harness([
 			[
