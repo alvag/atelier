@@ -55,7 +55,7 @@ describe("AskDialog", () => {
 		const { lines } = asked([language, checks]);
 		expect(lines(120).slice(0, 4)).toEqual([
 			"─".repeat(120),
-			" ←  ○ Language   ○ Checks  →",
+			" ←  ○ Language   ○ Checks   ✔ Submit  →",
 			"",
 			" Which language should commit messages use?",
 		]);
@@ -65,7 +65,7 @@ describe("AskDialog", () => {
 	it("names a tab Q1, Q2… when its question has no header", () => {
 		const { header: _language, ...first } = language;
 		const { header: _checks, ...second } = checks;
-		expect(asked([first, second]).lines(120)[1]).toBe(" ←  ○ Q1   ○ Q2  →");
+		expect(asked([first, second]).lines(120)[1]).toBe(" ←  ○ Q1   ○ Q2   ✔ Submit  →");
 	});
 
 	it("highlights the tab you are on, marks answered tabs in the success color and the others dimmed", () => {
@@ -80,7 +80,7 @@ describe("AskDialog", () => {
 	it("moves to the next question once one is answered, goes back with ←, keeps and replaces answers", () => {
 		const { dialog, sent, lines } = asked([language, checks]);
 		dialog.handleInput("1");
-		expect(lines(120)[1]).toBe(" ←  ✔ Language   ○ Checks  →");
+		expect(lines(120)[1]).toBe(" ←  ✔ Language   ○ Checks   ✔ Submit  →");
 		expect(lines(120)[3]).toBe(" Which checks should run before each commit?");
 		dialog.handleInput(LEFT);
 		// The answer given is where the cursor is.
@@ -89,6 +89,10 @@ describe("AskDialog", () => {
 		expect(sent).toEqual([]);
 		dialog.handleInput("3");
 		dialog.handleInput("only Vitest");
+		dialog.handleInput("\r");
+		// The last question leads to the review, which sends with Submit answers.
+		expect(sent).toEqual([]);
+		expect(lines(120)[3]).toBe(" Review your answers");
 		dialog.handleInput("\r");
 		expect(sent).toEqual([[{ option: 1 }, { other: "only Vitest" }]]);
 	});
@@ -101,7 +105,12 @@ describe("AskDialog", () => {
 		dialog.handleInput(LEFT);
 		dialog.handleInput("b");
 		dialog.handleInput("\r");
+		// Back on Checks the cursor is on the text again, where ← edits: Up leaves it first.
 		dialog.handleInput(LEFT);
+		dialog.handleInput(UP);
+		dialog.handleInput(LEFT);
+		dialog.handleInput("1");
+		dialog.handleInput(RIGHT);
 		dialog.handleInput("1");
 		expect(sent).toEqual([[{ option: 0 }, { other: "abc" }]]);
 	});
@@ -119,14 +128,19 @@ describe("AskDialog", () => {
 		vi.useFakeTimers();
 		const { dialog, sent, lines } = asked([language, checks], { guardMs: 400 });
 		dialog.handleInput("1");
-		expect(lines(120)[1]).toBe(" ←  ○ Language   ○ Checks  →");
+		expect(lines(120)[1]).toBe(" ←  ○ Language   ○ Checks   ✔ Submit  →");
 		vi.advanceTimersByTime(500);
 		dialog.handleInput("1");
-		expect(lines(120)[1]).toBe(" ←  ✔ Language   ○ Checks  →");
+		expect(lines(120)[1]).toBe(" ←  ✔ Language   ○ Checks   ✔ Submit  →");
 		dialog.handleInput("1");
+		expect(lines(120)[1]).toBe(" ←  ✔ Language   ○ Checks   ✔ Submit  →");
+		vi.advanceTimersByTime(500);
+		dialog.handleInput("1");
+		// The review guards its Enter too: a second Enter right after the last answer sends nothing.
+		dialog.handleInput("\r");
 		expect(sent).toEqual([]);
 		vi.advanceTimersByTime(500);
-		dialog.handleInput("1");
+		dialog.handleInput("\r");
 		expect(sent).toEqual([[{ option: 0 }, { option: 0 }]]);
 	});
 
@@ -144,5 +158,77 @@ describe("AskDialog", () => {
 		// The tab you are on stays in sight.
 		expect(lines(40)[1]).toMatch(/○ (Q3|He)/);
 		expect(lines(40)[1]).not.toContain("\x1b");
+	});
+
+	it("reviews the answers before sending, saying which question has none", () => {
+		const { dialog, lines } = asked([language, checks]);
+		dialog.handleInput("1");
+		dialog.handleInput(RIGHT);
+		expect(lines(120)).toEqual([
+			"─".repeat(120),
+			" ←  ✔ Language   ○ Checks   ✔ Submit  →",
+			"",
+			" Review your answers",
+			" ⚠ 1 question has no answer",
+			"",
+			"  ✔ Language   English",
+			"  ○ Checks     — no answer",
+			"",
+			" ❯ 1. Submit answers",
+			"   2. Cancel",
+			"",
+			" ←→ tabs · ↑↓ move · 1-2 pick · enter select · esc cancel",
+			"─".repeat(120),
+		]);
+	});
+
+	it("paints the warning in the warning color, the answered rows in the success color and the others dimmed", () => {
+		const { dialog, lines } = asked([language, checks], {}, sgr);
+		dialog.handleInput("1");
+		dialog.handleInput(RIGHT);
+		const text = lines(120).join("\n");
+		expect(text).toContain("\x1b[33m⚠ 1 question has no answer\x1b[0m");
+		expect(text).toContain("\x1b[32m✔ Language\x1b[0m");
+		expect(text).toContain("\x1b[2m○ Checks  \x1b[0m");
+		expect(text).toContain("\x1b[7m ✔ Submit \x1b[0m");
+	});
+
+	it("goes to the question with no answer on Submit, says so, and sends only once every question has one", () => {
+		const { dialog, sent, lines } = asked([language, checks]);
+		dialog.handleInput(RIGHT);
+		dialog.handleInput(RIGHT);
+		expect(lines(120)).toContain(" ⚠ 2 questions have no answer");
+		dialog.handleInput("1");
+		expect(sent).toEqual([]);
+		expect(lines(120)[3]).toBe(" Which language should commit messages use?");
+		expect(lines(120)).toContain(" Answer this question to submit");
+		dialog.handleInput("2");
+		dialog.handleInput("2");
+		expect(lines(120)).not.toContain(" ⚠ 1 question has no answer");
+		expect(lines(120).join("\n")).not.toContain("⚠");
+		expect(lines(120)).toContain("  ✔ Checks     Only Vitest");
+		dialog.handleInput("1");
+		expect(sent).toEqual([[{ option: 1 }, { option: 1 }]]);
+	});
+
+	it("cancels the whole batch with Cancel", () => {
+		const { dialog, sent } = asked([language, checks]);
+		dialog.handleInput("1");
+		dialog.handleInput("1");
+		dialog.handleInput("\x1b[B");
+		dialog.handleInput("\r");
+		expect(sent).toEqual([null]);
+	});
+
+	it("shows the user's own text in the review on one line, and fits a very narrow terminal", () => {
+		const { dialog, lines } = asked([language, checks]);
+		dialog.handleInput("1");
+		dialog.handleInput("3");
+		dialog.handleInput("\x1b[200~a long answer that goes\non\x1b[201~");
+		dialog.handleInput("\r");
+		expect(lines(120)).toContain("  ✔ Checks     Type something: a long answer that goes on");
+		for (const width of [40, 24])
+			for (const line of lines(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+		expect(lines(40).join("\n")).toContain("Review your answers");
 	});
 });

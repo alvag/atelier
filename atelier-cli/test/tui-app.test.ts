@@ -2354,6 +2354,10 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(answers()).toHaveLength(0);
 			h.screen.type("my cache");
 			h.screen.type("\r");
+			// The review comes before anything is sent.
+			await until(() => h.screen.screen().includes("Review your answers"));
+			expect(answers()).toHaveLength(0);
+			h.screen.type("1");
 			await until(() => answers().length === 1);
 			expect(answers()[0]).toMatchObject({
 				callId: "u1",
@@ -2397,6 +2401,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\x1b[D");
 			h.screen.type("2");
 			h.screen.type("1");
+			await until(() => h.screen.screen().includes("Review your answers"));
+			h.screen.type("\r");
 			await until(() => answers().length === 1);
 			expect(answers()[0]).toMatchObject({
 				callId: "u3",

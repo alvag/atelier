@@ -58,7 +58,7 @@ function tailFit(text: string, width: number): string {
 }
 
 /** The parts of `parts` that fit in `width`, joined, dropping the least needed first; cut as a last resort. */
-function fitHint(parts: readonly string[], width: number): string {
+export function fitHint(parts: readonly string[], width: number): string {
 	let kept = [...parts];
 	for (const drop of dropOrder) {
 		if (visibleWidth(kept.join(" · ")) <= width) break;
@@ -132,6 +132,11 @@ export class QuestionDialog implements Component, Focusable {
 	/** Takes keys again after it answered, as a batch's tab the user goes back to: the cursor stays on the answer. */
 	reopen(): void {
 		this.#answered = false;
+	}
+
+	/** Says `problem` in the hint line until the next key, such as why a batch was not sent. */
+	need(problem: string): void {
+		this.#problem = problem;
 	}
 
 	/** Whether ← and → are the text's: the cursor is on `Type something…` and something is typed there. */
