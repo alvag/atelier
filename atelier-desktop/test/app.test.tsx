@@ -66,7 +66,7 @@ describe("App", () => {
 		const fake = fakeBridge();
 		await openFolderAndSend(fake, "add validation");
 		expect(fake.commands).toEqual([
-			{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
+			{ command: "session.start", cwd: "/work", sessionEvents: true, model: "opus", backend: "claude-code" },
 			{ command: "session.send", sessionId: "s1", prompt: "add validation" },
 		]);
 		expect(screen.getByText("add validation")).toBeTruthy();
@@ -86,7 +86,14 @@ describe("App", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() =>
 			expect(fake.commands).toEqual([
-				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code", profile: "cheap" },
+				{
+					command: "session.start",
+					cwd: "/work",
+					sessionEvents: true,
+					model: "opus",
+					backend: "claude-code",
+					profile: "cheap",
+				},
 			]),
 		);
 	});
@@ -107,7 +114,7 @@ describe("App", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() =>
 			expect(fake.commands).toEqual([
-				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
+				{ command: "session.start", cwd: "/work", sessionEvents: true, model: "opus", backend: "claude-code" },
 			]),
 		);
 	});
@@ -128,7 +135,7 @@ describe("App", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() =>
 			expect(fake.commands).toEqual([
-				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
+				{ command: "session.start", cwd: "/work", sessionEvents: true, model: "opus", backend: "claude-code" },
 			]),
 		);
 	});
@@ -183,7 +190,13 @@ describe("App", () => {
 		).toEqual(["default", "normal", "auto", "yolo"]);
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() => expect(fake.commands).toHaveLength(1));
-		expect(fake.commands[0]).toEqual({ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" });
+		expect(fake.commands[0]).toEqual({
+			command: "session.start",
+			cwd: "/work",
+			sessionEvents: true,
+			model: "opus",
+			backend: "claude-code",
+		});
 
 		fireEvent.change(select, { target: { value: "auto" } });
 		fireEvent.click(screen.getByRole("button", { name: "New session…" }));
@@ -191,6 +204,7 @@ describe("App", () => {
 			expect(fake.commands.at(-1)).toEqual({
 				command: "session.start",
 				cwd: "/work",
+				sessionEvents: true,
 				model: "opus",
 				backend: "claude-code",
 				mode: "auto",
@@ -295,7 +309,7 @@ describe("App", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() =>
 			expect(fake.commands).toEqual([
-				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
+				{ command: "session.start", cwd: "/work", sessionEvents: true, model: "opus", backend: "claude-code" },
 			]),
 		);
 	});
@@ -315,7 +329,13 @@ describe("App", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() =>
 			expect(fake.commands).toEqual([
-				{ command: "session.start", cwd: "/work", model: "claude-sonnet-5-5", backend: "anthropic-api" },
+				{
+					command: "session.start",
+					cwd: "/work",
+					sessionEvents: true,
+					model: "claude-sonnet-5-5",
+					backend: "anthropic-api",
+				},
 			]),
 		);
 		fake.emit({ type: "session_started", backend: "anthropic-api", model: "claude-sonnet-5-5", authSource: "api_key" });
@@ -819,7 +839,7 @@ describe("App", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
 		await waitFor(() =>
 			expect(fake.commands).toEqual([
-				{ command: "session.start", cwd: "/work", model: "opus", backend: "claude-code" },
+				{ command: "session.start", cwd: "/work", sessionEvents: true, model: "opus", backend: "claude-code" },
 			]),
 		);
 		expect(screen.queryByText("bash: NOT SANDBOXED (turned off)")).toBeNull();
@@ -830,6 +850,7 @@ describe("App", () => {
 			expect(fake.commands.at(-1)).toEqual({
 				command: "session.start",
 				cwd: "/work",
+				sessionEvents: true,
 				model: "opus",
 				backend: "claude-code",
 				noSandbox: true,

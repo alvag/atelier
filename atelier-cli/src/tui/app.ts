@@ -307,6 +307,8 @@ async function startSession(
 	const started = (await link.request({
 		command: "session.start",
 		cwd: args.cwd,
+		// The TUI shows a job's end outside any turn (`session_event`).
+		sessionEvents: true,
 		...(chosen.model === undefined ? {} : { model: chosen.model }),
 		...(chosen.backend === undefined ? {} : { backend: chosen.backend }),
 		...(mode === undefined ? {} : { mode }),
@@ -334,7 +336,12 @@ async function resumeSession(
 	savedId: string,
 	conversation: Conversation,
 ): Promise<Opened> {
-	const resumed = (await link.request({ command: "session.resume", sessionId: savedId, cwd })) as Opened & {
+	const resumed = (await link.request({
+		command: "session.resume",
+		sessionId: savedId,
+		cwd,
+		sessionEvents: true,
+	})) as Opened & {
 		name?: string;
 		entries: JsonValue[];
 	};
