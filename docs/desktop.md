@@ -13,4 +13,10 @@ While a turn runs, the composer queues instead of sending (its button says `Queu
 
 When the session has MCP servers, the status bar shows `MCP <connected>/<enabled>` from `mcp_status`, in the warning style when a server failed, an entry is invalid or the file has a problem. Clicking it asks the core for the servers as they are now (`session.mcp`) and opens a side panel with each server's state, tools, error and the end of its stderr, and the file's problems; a server that needs a sign-in has a `Sign in` button, which asks the core to sign it in (`session.mcp_login`) through the browser. Clicking the label again closes the panel. When the classifier leaves an MCP call to you in `auto`, the approval card is titled `Call this MCP tool?`. See [MCP servers](mcp.md).
 
+## Structured questions
+
+When the main agent calls `ask_user`, an approval-style card shows the entire batch. Each question has its recommended option first with `(Recommended)`, optional descriptions below labels, and `Other…` for your own text. Nothing is preselected. Other text must be nonblank and at most 2000 UTF-16 units; spaces and line breaks are preserved.
+
+`Send answers` stays disabled until every question is answered. `Cancel` drops the whole batch without returning partial answers. Sending disables the controls to prevent duplicate replies; a rejected command preserves the draft and lets you retry. The core's `user_question_resolved` event replaces the inputs with the result, including when a queued message supersedes the question or the turn is interrupted. Only you answer, even in `yolo`. The desktop opts in with `userQuestions: true` and sends `session.answer_user`, separate from permission approvals. See [structured questions](ask-user.md) for limits and lifecycle.
+
 The desktop starts the core with Electron's own Node (no system Node needed) and talks to it over the Atelier protocol (version 7): one JSON message per line on stdin/stdout, a `hello` with the protocol version, an `id` on every command and exactly one response per command, and events tagged with their session.

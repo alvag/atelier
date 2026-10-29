@@ -198,7 +198,13 @@ export function App({ bridge = window.atelier }: { bridge?: AtelierBridge }) {
 
 			<div className="workspace">
 				<main>
-					<Transcript turns={state.turns} onAnswer={onAnswer} onConsent={onConsent} onUndo={onUndo} />
+					<Transcript
+						turns={state.turns}
+						onAnswer={onAnswer}
+						onConsent={onConsent}
+						onUndo={onUndo}
+						onAnswerUser={chat.answerUser}
+					/>
 				</main>
 				{state.feature ? <FeaturePanel feature={state.feature} /> : null}
 				{mcpOpen && state.mcp ? <McpPanel mcp={state.mcp} onLogin={(server) => void chat.loginMcp(server)} /> : null}

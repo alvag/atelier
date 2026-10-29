@@ -4,6 +4,7 @@ import type {
 	McpServerStatus,
 	QueueKind,
 	ReviewConsentAnswer,
+	UserAnswer,
 } from "@atelier/core/protocol";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { AtelierBridge, CommandResult, HostMessage } from "../../../shared/bridge.ts";
@@ -42,6 +43,8 @@ export interface Chat {
 	unqueue(messageId: string): Promise<void>;
 	interrupt(): Promise<void>;
 	answerApproval(callId: string, approved: boolean, remember?: "session" | "always"): Promise<void>;
+	/** Answers an `ask_user` batch, or cancels it with `null`; false when the core refused, the card then stays pending. */
+	answerUser(callId: string, answers: UserAnswer[] | null): Promise<boolean>;
 	answerReviewConsent(reviewId: string, answer: ReviewConsentAnswer): Promise<void>;
 	/** Reviews the session's current uncommitted change, at any risk. */
 	review(): Promise<void>;
@@ -162,6 +165,7 @@ export function useChat(bridge: AtelierBridge): Chat {
 				cwd,
 				...(model ? { model } : {}),
 				backend,
+				userQuestions: true,
 				...(noSandbox ? { noSandbox: true } : {}),
 				...(profile ? { profile } : {}),
 				...(mode ? { mode } : {}),
@@ -221,6 +225,11 @@ export function useChat(bridge: AtelierBridge): Chat {
 			const remembering = approved && remember !== undefined ? { remember } : {};
 			dispatch({ type: "approval_answered", callId, approved, ...remembering });
 			await request({ command: "session.approve", sessionId: session.id, callId, approved, ...remembering });
+		},
+		answerUser: async (callId, answers) => {
+			const session = stateRef.current.session;
+			if (!session) return false;
+			return queueCommand({ command: "session.answer_user", sessionId: session.id, callId, answers });
 		},
 		answerReviewConsent: async (reviewId, answer) => {
 			const session = stateRef.current.session;
