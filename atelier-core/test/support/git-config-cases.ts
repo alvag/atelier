@@ -21,6 +21,7 @@ export const gitConfigCases = [
 	"individual output exceeds the old buffer",
 	"invalid UTF-8 below the old buffer",
 	"get-all just over the old buffer",
+	"combined output exceeds the finite buffer",
 ] as const;
 
 export async function gitConfigFixture(base: string, kind: (typeof gitConfigCases)[number]) {
@@ -114,6 +115,13 @@ export async function gitConfigFixture(base: string, kind: (typeof gitConfigCase
 			await include("../team#cfg");
 			break;
 		}
+		case "combined output exceeds the finite buffer":
+			// Repeated hooks values grow the combined output, but the old --get returns only the last one.
+			await add(`[core]\n${`hooksPath = ${"x".repeat(128)}\n`.repeat(32_768)}hooksPath = final-hooks\n`);
+			await add('[include]\npath = "../team#cfg"\n');
+			await include("../team#cfg");
+			protectedPaths.push(join(cwd, "final-hooks", "pre-commit"));
+			break;
 		case "get-all just over the old buffer":
 			await add(`[include]\n${'path = "../team#cfg"\n'.repeat(89_048)}`);
 			await include("../team#cfg");
