@@ -1059,14 +1059,14 @@ describe("ClaudeCodeBackend context usage", () => {
 		}
 	});
 
-	it("asks where Claude Code compacts once per model, again after configure changes it, and drops a late answer", async () => {
+	it("asks where Claude Code compacts each turn until it answers, again after configure changes the model, and drops a late answer", async () => {
 		let answerFirst: (value: { isAutoCompactEnabled: boolean; autoCompactThreshold: number }) => void = () => {};
 		const first = () =>
 			new Promise<{ isAutoCompactEnabled: boolean; autoCompactThreshold: number }>((resolve) => {
 				answerFirst = resolve;
 			});
 		const turn = [answer(2, 4000, 500), ranWith(1_000_000)];
-		const { query, calls } = withContextUsage([turn, turn, turn, turn], first, threshold(180_000));
+		const { query, calls } = withContextUsage([turn, turn, turn, turn], first, never, threshold(180_000));
 		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
 		await collectBodies(session.send("one"));
 		await session.configure?.({ thinking: "high" });
@@ -1080,6 +1080,7 @@ describe("ClaudeCodeBackend context usage", () => {
 		expect(calls.order.filter((call) => call === "contextUsage" || call.startsWith("prompt:"))).toEqual([
 			"contextUsage",
 			"prompt:one",
+			"contextUsage",
 			"prompt:two",
 			"contextUsage",
 			"prompt:three",
@@ -1087,6 +1088,28 @@ describe("ClaudeCodeBackend context usage", () => {
 		]);
 		expect(third).toMatchObject({ context: { compactAt: 180_000 } });
 		expect(fourth).toMatchObject({ context: { compactAt: 180_000 } });
+	});
+
+	it("asks again with the next turn when getContextUsage failed, and keeps the answer once one comes", async () => {
+		const failing = async () => {
+			throw new Error("control request failed");
+		};
+		const turn = [answer(2, 4000, 500), ranWith(1_000_000)];
+		const { query, calls } = withContextUsage([turn, turn, turn], failing, threshold(500_000));
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		const contexts: unknown[] = [];
+		for (const prompt of ["one", "two", "three"]) {
+			const finish = finishOf(await collectBodies(session.send(prompt)));
+			contexts.push(finish?.type === "turn_finished" ? finish.context?.compactAt : undefined);
+		}
+		expect(calls.order.filter((call) => call === "contextUsage" || call.startsWith("prompt:"))).toEqual([
+			"contextUsage",
+			"prompt:one",
+			"contextUsage",
+			"prompt:two",
+			"prompt:three",
+		]);
+		expect(contexts).toEqual([1_000_000, 500_000, 500_000]);
 	});
 
 	it("says the size is unknown right after Claude Code compacts, until an answer measures it again", async () => {
