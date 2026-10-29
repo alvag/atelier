@@ -2311,6 +2311,64 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("wraps complete questions, labels and descriptions at 80 columns, including Other input", async () => {
+			const h = harness([], { columns: 80 });
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const question =
+				"Before changing the existing production database and its backup strategy, should we keep all existing records?";
+			const label = "Keep all existing production records and create a separate migration backup";
+			const description =
+				"Before making any change, confirm that every production record remains available and that the backup can be restored independently.";
+			const questions = [
+				{
+					id: "wide",
+					question,
+					options: [
+						{ id: "a", label, description, recommended: true },
+						{ id: "b", label: "Drop the data" },
+					],
+				},
+			];
+			stub.emit({ type: "tool_call_started", callId: "wide", tool: "ask_user", input: { questions } });
+			stub.emit({ type: "user_question_requested", callId: "wide", questions });
+			await until(() => h.screen.screen().includes("Other..."));
+			const dialog = () => {
+				const screen = h.screen.screen();
+				const start = screen.lastIndexOf("┌");
+				return screen.slice(start, screen.indexOf("┘", start) + 1);
+			};
+			const content = () =>
+				dialog()
+					.replace(/[│┌┐└┘─]/g, " ")
+					.replace(/\s+/g, " ");
+			try {
+				expect(dialog()).toContain("(Recommended)");
+				expect(dialog()).toContain("Question 1 of 1");
+				for (const text of [question, label, description]) expect(content()).toContain(text);
+				const before = h.screen.screen().length;
+				h.screen.type("\x0f");
+				await until(() => h.screen.screen().length > before);
+				expect(h.screen.screen().slice(before)).not.toContain('"recommended"');
+				for (const text of [question, label, description]) expect(content()).toContain(text);
+				// The wrapped rows do not add choices: three Down keys still select Other.
+				for (let i = 0; i < 3; i++) h.screen.type("\x1b[B");
+				h.screen.type("\r");
+				await until(() => h.screen.screen().includes("Enter sends"));
+				// Force a complete redraw: the fake terminal records incremental writes rather than a screen grid.
+				h.screen.type("\x0f");
+				await until(() => dialog().includes("Enter sends"));
+				expect(dialog()).toContain("Question 1 of 1");
+				expect(content()).toContain(question);
+			} finally {
+				h.screen.type("\x03");
+				h.screen.type("\x03");
+				expect(await code).toBe(130);
+			}
+		});
+
 		it("answers with the source id of the option selected, even an id that is a sentinel, and shows descriptions below", async () => {
 			const h = harness([]);
 			const stub = listingCore();
@@ -2335,7 +2393,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			});
 			await until(() => h.screen.screen().includes("Question 1 of 1"));
 			// The screen text has no line breaks: the frame's rows meet as "││".
-			const rows = h.screen.screen().slice(h.screen.screen().indexOf("┌ Pick")).split("││");
+			const rows = h.screen.screen().slice(h.screen.screen().indexOf("┌ Question 1 of 1")).split("││");
 			expect(rows[1]).not.toContain("→");
 			const label = rows.findIndex((row) => row.includes("Zero") && !row.includes("Zero other"));
 			expect(rows[label]).not.toContain("first detail");

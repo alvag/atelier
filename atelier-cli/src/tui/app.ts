@@ -697,7 +697,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const step = () => {
 			const item = batch[given.length];
 			if (item === undefined) return finish(given);
-			const title = `${shown(item.question).text} (Question ${given.length + 1} of ${batch.length})`;
+			const title = `Question ${given.length + 1} of ${batch.length}`;
+			const lines = [shown(item.question).text];
 			const ordered = [...item.options].sort((a, b) => Number(b.recommended === true) - Number(a.recommended === true));
 			const choices: Choice<string>[] = [
 				...ordered.map((option, index) => ({
@@ -713,7 +714,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				step();
 			};
 			entry.dialog = new ChoiceDialog(
-				{ title, lines: [], choices, cancel: ASK_CANCELLED, guardMs, paste: input, descriptionsBelow: true },
+				{ title, lines, choices, cancel: ASK_CANCELLED, guardMs, paste: input, descriptionsBelow: true },
 				paint,
 				(value) => {
 					if (closed) return;
@@ -722,8 +723,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 						const chosen = ordered.find((_, index) => optionValue(index) === value);
 						return chosen === undefined ? finish(null) : next({ questionId: item.id, optionId: chosen.id });
 					}
-					entry.dialog = new TextDialog(title, paint, (text) =>
-						text === undefined ? finish(null) : next({ questionId: item.id, other: text }),
+					entry.dialog = new TextDialog(
+						title,
+						paint,
+						(text) => (text === undefined ? finish(null) : next({ questionId: item.id, other: text })),
+						lines,
 					);
 					showQuestion();
 				},
