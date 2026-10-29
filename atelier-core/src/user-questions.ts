@@ -17,6 +17,7 @@ interface PendingQuestion {
 /** One user-only batch, registered before its event; every exit invalidates it synchronously. */
 export class UserQuestions {
 	#pending: PendingQuestion | undefined;
+	#closed = false;
 	readonly #emit: (event: AtelierEventBody) => void;
 	readonly #delivered: (signal: AbortSignal) => Promise<boolean>;
 
@@ -43,7 +44,13 @@ export class UserQuestions {
 		this.#pending?.settle(result);
 	}
 
+	close(): void {
+		this.#closed = true;
+		this.cancel({ status: "cancelled", reason: "closed" });
+	}
+
 	ask(questions: UserQuestion[], context: ToolContext, enabled: boolean, ask?: AskUser): Promise<UserQuestionResult> {
+		if (this.#closed) return Promise.resolve({ status: "cancelled", reason: "closed" });
 		if (context.signal?.aborted) return Promise.resolve({ status: "cancelled", reason: "interrupted" });
 		if (!enabled) return Promise.resolve({ status: "unavailable", reason: "no_interactive_client" });
 		if (this.#pending) return Promise.resolve({ status: "unavailable", reason: "question_pending" });

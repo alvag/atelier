@@ -32,7 +32,7 @@ Supply `Session.start({ askUser })` for a direct user-only callback, or `userQue
 
 A session registers the pending batch before emitting `user_question_requested { callId, questions }`, then emits exactly one `user_question_resolved { callId, result }` when it settles. Invalid replies leave the batch pending (`invalid_answer`); stale or duplicate replies fail with `unknown_question`. A second concurrent call returns `unavailable/question_pending`. No timeout or mode, including `yolo`, answers on the user's behalf.
 
-An accepted `steer` or `follow_up` supersedes the batch without changing queue semantics. Interrupting or abandoning the event stream cancels it as `interrupted`; closing the session cancels it as `closed`. Resolution aborts the direct callback's signal so its UI can stop reading input, and late callback results are ignored. A disconnected or failing callback returns `unavailable/no_interactive_client`. Pending questions are never restored from saved history.
+An accepted `steer` or `follow_up` supersedes the batch without changing queue semantics. Interrupting or abandoning the event stream cancels it as `interrupted`; closing the session cancels it as `closed` and permanently prevents new questions, including calls still waiting for permission rules. Those calls return `cancelled/closed` without emitting a request. Resolution aborts the direct callback's signal so its UI can stop reading input, and late callback results are ignored. A disconnected or failing callback returns `unavailable/no_interactive_client`. Pending questions are never restored from saved history.
 
 ## RPC
 
