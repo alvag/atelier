@@ -204,3 +204,40 @@ describe("what yolo waives", () => {
 		expect(await waived(command)).toBe(false);
 	});
 });
+
+describe("the nesting cap of the guard", () => {
+	const wrapped = (count: number, command: string) => `${"nohup ".repeat(count)}${command}`;
+	const shells = (count: number, command: string) =>
+		Array.from({ length: count }).reduce<string>((inner) => `sh -c ${JSON.stringify(inner)}`, command);
+
+	it("reads a command behind eight wrappers as usual", async () => {
+		expect((await gateOf(wrapped(8, "ls")))?.approval).toBeUndefined();
+		expect((await gateOf(wrapped(8, "rm -r build")))?.approval?.confirm).toBe("recursive removal");
+	});
+
+	it("asks about a command behind nine wrappers, whatever it is", async () => {
+		expect((await gateOf(wrapped(9, "ls")))?.approval?.confirm).toBe("nested too deeply");
+	});
+
+	it("counts wrappers and nested command lines together", async () => {
+		expect((await gateOf(shells(4, wrapped(4, "ls"))))?.approval).toBeUndefined();
+		expect((await gateOf(shells(5, wrapped(4, "ls"))))?.approval?.confirm).toBe("nested too deeply");
+		expect((await gateOf(shells(9, "ls")))?.approval?.confirm).toBe("nested too deeply");
+	});
+
+	it("asks in yolo too: it is never waived", async () => {
+		const gate = await gateOf(shells(9, "git push"));
+		expect(gate?.approval?.confirm).toContain("nested too deeply");
+		expect(gate?.approval?.yoloWaived).toBeUndefined();
+	});
+
+	it("is never covered by a rule and offers nothing to remember", async () => {
+		const command = wrapped(9, "open x.png");
+		const gate = await createBashTool({ sandbox: sandboxed() }).gate?.(
+			{ command, unsandboxed: true, reason: "r" },
+			{ cwd, bashRules: ["open", "nohup"] },
+		);
+		expect(gate?.approval?.confirm).toBe("nested too deeply");
+		expect(gate?.approval?.remember).toBeUndefined();
+	});
+});

@@ -24,7 +24,13 @@ interface Token {
 }
 
 const SEPARATORS = new Set([";", "&&", "||", "|", "&", "\n", "(", ")"]);
-const MAX_DEPTH = 4;
+/**
+ * How deep the guard reads: each wrapper passed (`env`, `nohup`, `xargs`, ...) and each command line run by another
+ * (`sh -c`, `eval`, `find -exec`, `$(...)`) is one level. A command nested deeper is asked about in every mode
+ * (`NESTED_TOO_DEEPLY`) and never covered by a rule.
+ */
+export const MAX_NESTING = 8;
+const NESTED_TOO_DEEPLY = "nested too deeply";
 
 interface Heredoc {
 	/** Where its `<<` is. */
@@ -711,7 +717,8 @@ function joinContinuations(command: string): string {
  * heredoc body where the shell keeps it, pull the next command into data.
  */
 export function findDestructiveCommand(command: string, context: GuardContext, depth = 0): string | undefined {
-	if (depth > MAX_DEPTH) return undefined;
+	// Deeper than that the confirm category asks about it.
+	if (depth > MAX_NESTING) return undefined;
 	const joined = joinContinuations(command);
 	return (
 		destructiveRule(joined, context, depth) ??
@@ -767,6 +774,7 @@ export function simpleCommands(command: string): SimpleCommand[] | undefined {
 		start = end + 1;
 		for (let at = 0; at < queue.length; at++) {
 			const { segment, cursor, wrappers, extra } = head(queue[at] as Token[]);
+			if (wrappers.length > MAX_NESTING) return undefined;
 			queue.push(...extra);
 			const words = segment.slice(cursor).map(({ value, raw }) => ({ value, raw }));
 			const writes = writesFile(segment);
@@ -800,7 +808,7 @@ function destructiveRule(command: string, context: GuardContext, depth: number):
 			// The broadest removal wins between a command and the command lines it runs.
 			const found: string[] = [];
 			for (const payload of nested) {
-				const rule = findDestructiveCommand(payload, context, depth + 1);
+				const rule = findDestructiveCommand(payload, context, depth + wrappers.length + 1);
 				if (rule) found.push(rule);
 			}
 			const own = commandRule(name, args, context);
@@ -996,7 +1004,7 @@ function segmentConfirmations(
  * continuations is judged both joined and as written, like the refusals, and `yolo` waives none of it.
  */
 export function findConfirmCommands(command: string, depth = 0): ConfirmMatch[] {
-	if (depth > MAX_DEPTH) return [];
+	if (depth > MAX_NESTING) return [{ rule: NESTED_TOO_DEEPLY, yoloWaived: false }];
 	const joined = joinContinuations(command);
 	if (joined === command) return confirmRules(command, depth);
 	return [...confirmRules(joined, depth), ...confirmRules(command, depth)].map(({ rule }) => ({
@@ -1011,17 +1019,22 @@ function confirmRules(command: string, depth: number): ConfirmMatch[] {
 	const parts = splitParts(tokenize(text));
 	const matches: ConfirmMatch[] = [];
 	// What another command line runs is never waived: `sh -c 'git push'` hides what the shell does.
-	const nested = (payload: string) =>
-		findConfirmCommands(payload, depth + 1).map(({ rule }) => ({ rule, yoloWaived: false }));
+	const nested = (payload: string, levels = 1) =>
+		findConfirmCommands(payload, depth + levels).map(({ rule }) => ({ rule, yoloWaived: false }));
 	parts.forEach((part, at) => {
 		const queue = [part.tokens];
 		for (let item = 0; item < queue.length; item++) {
 			const resolved = head(queue[item] as Token[]);
 			queue.push(...resolved.extra);
+			const levels = resolved.wrappers.length;
+			if (depth + levels > MAX_NESTING) {
+				matches.push({ rule: NESTED_TOO_DEEPLY, yoloWaived: false });
+				continue;
+			}
 			const first = resolved.segment[resolved.cursor];
 			if (first === undefined) continue;
 			const args = resolved.segment.slice(resolved.cursor + 1).map((token) => token.value);
-			for (const payload of nestedCommands(executable(first.value), args)) matches.push(...nested(payload));
+			for (const payload of nestedCommands(executable(first.value), args)) matches.push(...nested(payload, levels + 1));
 			matches.push(...segmentConfirmations(command, parts, at, item > 0, resolved));
 		}
 	});
