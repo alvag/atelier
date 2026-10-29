@@ -479,7 +479,8 @@ class ClaudeCodeSession implements BackendSession {
 
 	/**
 	 * Asks where Claude Code compacts the model in use, without waiting: until it answers, the window stands for it. A
-	 * request that failed or has not answered yet is asked again with the next turn, once per turn.
+	 * request that failed or has not answered yet is asked again with the next turn, once per turn; the first valid answer
+	 * stays for the model, and any other request about it that answers later is dropped.
 	 */
 	#askCompactAt(): void {
 		const model = this.#compactAtModels;
@@ -487,7 +488,7 @@ class ClaudeCodeSession implements BackendSession {
 		if (!getContextUsage) return;
 		getContextUsage.call(this.#query, { detail: "summary" }).then(
 			(usage) => {
-				if (model !== this.#compactAtModels) return;
+				if (model !== this.#compactAtModels || this.#compactAtKnown) return;
 				this.#compactAtKnown = true;
 				this.#contextTracker.compactAt = compactThresholdOf(usage);
 			},
