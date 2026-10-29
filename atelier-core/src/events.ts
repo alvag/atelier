@@ -104,11 +104,15 @@ export interface PhaseSpent {
 /** A turn's cost by part; a part that did not run is absent. */
 export type TurnPhases = Partial<Record<TurnPhase, PhaseSpent>>;
 
-/** Context tokens the next request carries, the model's window, and where compaction starts. */
+/**
+ * Context tokens the next request carries, the model's window, and where compaction starts. `unknown`: the size is not
+ * known, right after a compaction no answer measured yet; `tokens` is then only the backend's estimate, or 0.
+ */
 export interface ContextUsage {
 	tokens: number;
 	window: number;
 	compactAt: number;
+	unknown?: true;
 }
 
 export type CompactionReason = "threshold" | "overflow" | "manual";

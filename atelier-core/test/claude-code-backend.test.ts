@@ -933,6 +933,190 @@ describe("ClaudeCodeBackend compaction", () => {
 	});
 });
 
+describe("ClaudeCodeBackend context usage", () => {
+	/** A main-thread answer of `model`: its usage is what its request carried; `output_tokens` is only partial there. */
+	const answer = (input: number, cacheRead: number, cacheWrite: number, extra: Record<string, unknown> = {}) =>
+		msg({
+			type: "assistant",
+			parent_tool_use_id: null,
+			message: {
+				role: "assistant",
+				model: "claude-opus-5-5",
+				content: [],
+				usage: {
+					input_tokens: input,
+					cache_read_input_tokens: cacheRead,
+					cache_creation_input_tokens: cacheWrite,
+					output_tokens: 24,
+				},
+			},
+			...extra,
+		});
+	/** A turn's result that says the window Claude Code ran opus with, under its `[1m]` key. */
+	const ranWith = (contextWindow: number) =>
+		msg({
+			...(result(0.01) as unknown as Record<string, unknown>),
+			modelUsage: {
+				"claude-opus-5-5[1m]": {
+					inputTokens: 1,
+					outputTokens: 1,
+					cacheReadInputTokens: 0,
+					cacheCreationInputTokens: 0,
+					webSearchRequests: 0,
+					costUSD: 0,
+					contextWindow,
+					maxOutputTokens: 128_000,
+					canonicalModel: "claude-opus-5-5",
+				},
+				"claude-haiku-5-5": {
+					inputTokens: 1,
+					outputTokens: 1,
+					cacheReadInputTokens: 0,
+					cacheCreationInputTokens: 0,
+					webSearchRequests: 0,
+					costUSD: 0,
+					contextWindow: 200_000,
+					maxOutputTokens: 64_000,
+				},
+			},
+		});
+	const boundary = (trigger: "manual" | "auto", postTokens?: number) =>
+		msg({
+			type: "system",
+			subtype: "compact_boundary",
+			compact_metadata: {
+				trigger,
+				pre_tokens: 9000,
+				...(postTokens === undefined ? {} : { post_tokens: postTokens }),
+			},
+		});
+
+	/** The fake query, answering `getContextUsage` with what `answers` gives for each call, in order. */
+	function withContextUsage(
+		replies: SDKMessage[][],
+		...answers: (() => Promise<{ isAutoCompactEnabled: boolean; autoCompactThreshold?: number }>)[]
+	) {
+		const { query, calls } = fakeQuery([init], replies);
+		const asked: unknown[] = [];
+		const withUsage: QueryFunction = (params) =>
+			Object.assign(query(params), {
+				async getContextUsage(opts?: unknown) {
+					asked.push(opts);
+					calls.order.push("contextUsage");
+					const next = answers.shift();
+					if (!next) throw new Error("no answer scripted");
+					return next();
+				},
+			}) as SdkQuery;
+		return { query: withUsage, calls, asked };
+	}
+
+	const threshold = (autoCompactThreshold: number) => async () => ({
+		isAutoCompactEnabled: true,
+		autoCompactThreshold,
+	});
+	const never = () => new Promise<never>(() => {});
+	const finishOf = (events: AtelierEventBody[]) => events.find((event) => event.type === "turn_finished");
+
+	it("reports what the last main-thread request carried against the model's window, compacting where Claude Code does", async () => {
+		const child = answer(50_000, 0, 0, { parent_tool_use_id: "t1" });
+		const synthetic = answer(0, 0, 0, {});
+		(synthetic as unknown as { message: { model: string } }).message.model = "<synthetic>";
+		const { query, asked } = withContextUsage(
+			[[answer(2, 4000, 500), answer(3, 4500, 300), child, synthetic, ranWith(1_000_000)]],
+			threshold(967_000),
+		);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		const finish = finishOf(await collectBodies(session.send("one")));
+		expect(finish).toMatchObject({ context: { tokens: 4803, window: 1_000_000, compactAt: 967_000 } });
+		expect(finish).not.toHaveProperty("context.unknown");
+		expect(asked).toEqual([{ detail: "summary" }]);
+	});
+
+	it("says no context while Claude Code has not said the model's window", async () => {
+		const { query } = withContextUsage([[answer(2, 4000, 500), result(0.01)]], threshold(967_000));
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		expect(finishOf(await collectBodies(session.send("one")))).not.toHaveProperty("context");
+	});
+
+	it("does not wait for getContextUsage: until it answers, compaction is said to start at the window", async () => {
+		const { query } = withContextUsage([[answer(2, 4000, 500), ranWith(1_000_000)]], never);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		const finish = finishOf(await collectBodies(session.send("one")));
+		expect(finish).toMatchObject({ context: { tokens: 4502, window: 1_000_000, compactAt: 1_000_000 } });
+	});
+
+	it("says compaction starts at the window when getContextUsage fails or Claude Code does not compact on its own", async () => {
+		const off = async () => ({ isAutoCompactEnabled: false, autoCompactThreshold: 500_000 });
+		const failing = async () => {
+			throw new Error("control request failed");
+		};
+		for (const answers of [off, failing, async () => ({ isAutoCompactEnabled: true })]) {
+			const { query } = withContextUsage([[answer(2, 4000, 500), ranWith(1_000_000)]], answers);
+			const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+			const finish = finishOf(await collectBodies(session.send("one")));
+			expect(finish).toMatchObject({ context: { window: 1_000_000, compactAt: 1_000_000 } });
+		}
+	});
+
+	it("asks where Claude Code compacts once per model, again after configure changes it, and drops a late answer", async () => {
+		let answerFirst: (value: { isAutoCompactEnabled: boolean; autoCompactThreshold: number }) => void = () => {};
+		const first = () =>
+			new Promise<{ isAutoCompactEnabled: boolean; autoCompactThreshold: number }>((resolve) => {
+				answerFirst = resolve;
+			});
+		const turn = [answer(2, 4000, 500), ranWith(1_000_000)];
+		const { query, calls } = withContextUsage([turn, turn, turn, turn], first, threshold(180_000));
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		await collectBodies(session.send("one"));
+		await session.configure?.({ thinking: "high" });
+		await collectBodies(session.send("two"));
+		await session.configure?.({ model: "sonnet" });
+		const third = finishOf(await collectBodies(session.send("three")));
+		// The answer about the model before the change comes after the new one's, too late to count.
+		answerFirst({ isAutoCompactEnabled: true, autoCompactThreshold: 967_000 });
+		await Promise.resolve();
+		const fourth = finishOf(await collectBodies(session.send("four")));
+		expect(calls.order.filter((call) => call === "contextUsage" || call.startsWith("prompt:"))).toEqual([
+			"contextUsage",
+			"prompt:one",
+			"prompt:two",
+			"contextUsage",
+			"prompt:three",
+			"prompt:four",
+		]);
+		expect(third).toMatchObject({ context: { compactAt: 180_000 } });
+		expect(fourth).toMatchObject({ context: { compactAt: 180_000 } });
+	});
+
+	it("says the size is unknown right after Claude Code compacts, until an answer measures it again", async () => {
+		const { query } = withContextUsage(
+			[
+				[answer(2, 40_000, 500), ranWith(1_000_000)],
+				[boundary("manual", 3000), result(0.02)],
+				[boundary("manual"), result(0.03)],
+				[answer(2, 3000, 800), ranWith(1_000_000)],
+				[boundary("auto", 2500), answer(5, 2500, 100), ranWith(1_000_000)],
+			],
+			threshold(967_000),
+		);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		const contexts: unknown[] = [];
+		for (const prompt of ["one", "/compact", "/compact", "two", "three"]) {
+			const finish = finishOf(await collectBodies(session.send(prompt)));
+			contexts.push(finish?.type === "turn_finished" ? finish.context : undefined);
+		}
+		const at = { window: 1_000_000, compactAt: 967_000 };
+		expect(contexts).toEqual([
+			{ tokens: 40_502, ...at },
+			{ tokens: 3000, ...at, unknown: true },
+			{ tokens: 0, ...at, unknown: true },
+			{ tokens: 3802, ...at },
+			{ tokens: 2605, ...at },
+		]);
+	});
+});
+
 describe("createToolBridge", () => {
 	function bridgeWith(results: { ok: boolean; output: string; steering?: string }[]) {
 		const received: ToolCall[] = [];
