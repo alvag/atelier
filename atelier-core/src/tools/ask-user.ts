@@ -19,6 +19,7 @@ const option = z.strictObject({
 });
 const question = z.strictObject({
 	id,
+	header: text(16).optional().describe("A short title for the question, such as its tab in a batch"),
 	question: text(500),
 	options: z
 		.array(option)
