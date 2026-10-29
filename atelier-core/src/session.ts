@@ -222,9 +222,10 @@ export interface SessionOptions {
 	resume?: ResumeState;
 	/**
 	 * With `resume`: whether the saved conversation last told the model it runs in yolo, so a session resumed in another
-	 * mode says the change in its first prompt. Absent (a file saved before it was kept): the mode it starts in.
+	 * mode says the change in its first prompt; `null`, unknown, says the mode. Absent (a file saved before it was
+	 * kept): the mode it starts in.
 	 */
-	resumedYoloTold?: boolean;
+	resumedYoloTold?: boolean | null;
 }
 
 /** What the main agent runs with, as `Session.configure` and the `session_configured` event say it. */
@@ -340,8 +341,11 @@ export class Session {
 	#announced = false;
 	/** The session started in yolo, so the system prompt has its rules. */
 	#startedYolo = false;
-	/** Whether the model was last told it runs in yolo: by the system prompt, then by the note of a later prompt. */
-	#toldYolo = false;
+	/**
+	 * Whether the model was last told it runs in yolo: by the system prompt, then by the note of a later prompt. `null`:
+	 * unknown, as after a note the backend failed on, which it may have kept in its history; the next prompt says the mode.
+	 */
+	#toldYolo: boolean | null = false;
 	/** The MCP servers whose instructions the model was already given. */
 	readonly #mcpGiven = new Set<string>();
 	/** The last `mcp_status` said, as JSON, so a turn says it again only when it changed. */
@@ -468,7 +472,10 @@ export class Session {
 		const scratch = await createScratchDir("session");
 		session.#scratch = scratch;
 		session.#startedYolo = options.permissionMode === "yolo";
-		session.#toldYolo = (options.resume === undefined ? undefined : options.resumedYoloTold) ?? session.#startedYolo;
+		session.#toldYolo =
+			options.resume !== undefined && options.resumedYoloTold !== undefined
+				? options.resumedYoloTold
+				: session.#startedYolo;
 		session.#systemPrompt = [
 			options.systemPromptAppend ?? "",
 			options.odd ? oddRules(options.subagents?.agents.map((agent) => agent.name) ?? []) : "",
@@ -540,7 +547,9 @@ export class Session {
 		}
 		if (odd?.phase !== undefined) lines.push(`phase: ${odd.phase}`);
 		// The note of a change of mode was a prompt the summary may lose; the system prompt says the starting mode.
-		if (this.#toldYolo !== this.#startedYolo) lines.push(`mode:\n${this.#toldYolo ? YOLO_RULES : LEFT_YOLO}`);
+		// When it is unknown what the model was told, the state says the mode now.
+		const told = this.#toldYolo ?? this.#options.permissionMode === "yolo";
+		if (this.#toldYolo !== this.#startedYolo) lines.push(`mode:\n${told ? YOLO_RULES : LEFT_YOLO}`);
 		// The recovery notice brings the memory with the same prompt; said twice, it would only cost context.
 		const memory = this.#memoryContext.trim();
 		if (memory !== "" && !this.#recovery?.fetched && !this.#recoveryInFlight?.fetched) lines.push(`memory:\n${memory}`);
@@ -701,9 +710,11 @@ export class Session {
 			const yolo = this.#options.permissionMode === "yolo";
 			const telling = yolo !== this.#toldYolo;
 			// What the prompt carried is the model's once it answered or called a tool, even if the turn fails after.
+			let noteTaken = false;
 			this.#promptTaken = () => {
 				reviewNotice = undefined;
 				if (telling) this.#toldYolo = yolo;
+				noteTaken = true;
 			};
 			if (telling) sent = `${yolo ? YOLO_RULES : LEFT_YOLO}\n\n${sent}`;
 			// A backend that took the conversation over by a summary gets it with its first prompt.
@@ -735,6 +746,8 @@ export class Session {
 			} finally {
 				this.#steerable = false;
 				this.#promptTaken = undefined;
+				// A backend may keep a prompt it failed on (anthropic-api does), so whether the model saw the note is unknown.
+				if (telling && !noteTaken) this.#toldYolo = null;
 				// Never taken: it goes with the next prompt, unless a later compaction left a newer one.
 				if (this.#recoveryInFlight !== undefined) this.#recovery ??= this.#recoveryInFlight;
 				this.#recoveryInFlight = undefined;

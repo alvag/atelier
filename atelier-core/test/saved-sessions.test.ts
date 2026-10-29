@@ -19,14 +19,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
+	defineTool,
 	FakeBackend,
 	type FakeStep,
-	defineTool,
 	folderKey,
 	Session,
 	type SessionOptions,
 	SessionStore,
 } from "../src/index.ts";
+import { LEFT_YOLO } from "../src/prompt.ts";
 import type { SessionRecorder } from "../src/sessions/index.ts";
 
 const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 };
@@ -280,6 +281,29 @@ describe("the backend state", () => {
 		await drain(session, "first");
 		await session.close();
 		expect((await new SessionStore(home).load(cwd, record.id)).yoloTold).toBe(true);
+	});
+
+	it("saves that it is unknown whether the model saw a note the backend rejected, and resumes saying the mode", async () => {
+		const { store, record, backend, session } = await started([[{ throw: "overloaded before output" }]]);
+		backend.resumeState = { sessionId: "cc-1" };
+		session.setPermissionMode("yolo");
+		await drain(session, "first");
+		await session.close();
+		const loaded = await store.load(cwd, record.id);
+		expect(loaded.yoloTold).toBeNull();
+
+		const next = new FakeBackend([[{ event: finished }]], "claude-code");
+		const resumed = await Session.start({
+			backend: next,
+			cwd,
+			tools: [],
+			permissionMode: "normal",
+			...(loaded.resume === undefined ? {} : { resume: loaded.resume }),
+			...(loaded.yoloTold === undefined ? {} : { resumedYoloTold: loaded.yoloTold }),
+		});
+		await drain(resumed, "go");
+		await resumed.close();
+		expect(next.prompts).toEqual([`${LEFT_YOLO}\n\ngo`]);
 	});
 
 	it("resumes with the configuration of the backend that wrote the state", async () => {

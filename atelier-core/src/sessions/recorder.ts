@@ -31,7 +31,7 @@ export interface RecorderOptions {
 	/** What the file already holds of the backend's state, so the next one is written as what follows it. */
 	known?: ResumeState;
 	/** What the file last said the model was told about yolo, so the next state writes it only when it changes. */
-	knownYoloTold?: boolean;
+	knownYoloTold?: boolean | null;
 }
 
 /**
@@ -53,7 +53,7 @@ export class SessionRecorder {
 	#messages: string[];
 	#sessionId: string | undefined;
 	/** What the file says the model was last told about yolo; undefined until it says it, so the first state does. */
-	#yoloTold: boolean | undefined;
+	#yoloTold: boolean | null | undefined;
 	/** The turn of the last prompt: a queued message that started it is already saved as that prompt. */
 	#promptTurn: string | undefined;
 
@@ -131,23 +131,24 @@ export class SessionRecorder {
 	 * conversation instead of with its square. `yoloTold`, what the model was last told about yolo, goes with it when
 	 * it changed, and makes a state worth writing by itself.
 	 */
-	state(backend: string, state: ResumeState | undefined, yoloTold?: boolean): void {
+	state(backend: string, state: ResumeState | undefined, yoloTold?: boolean | null): void {
 		if (state === undefined) return;
 		this.#endSegment();
 		// What the file holds moves forward only once the write succeeded, so a failed one is written again, in full.
 		this.#enqueue(async () => {
-			const told = yoloTold !== undefined && yoloTold !== this.#yoloTold ? { yoloTold } : {};
+			const changed = yoloTold !== undefined && yoloTold !== this.#yoloTold;
+			const told = changed ? { yoloTold } : {};
 			if ("sessionId" in state) {
-				if (state.sessionId === this.#sessionId && told.yoloTold === undefined) return;
+				if (state.sessionId === this.#sessionId && !changed) return;
 				await this.#write({ type: "state", backend, sessionId: state.sessionId, ...told });
 				this.#sessionId = state.sessionId;
-				this.#yoloTold = yoloTold ?? this.#yoloTold;
+				if (changed) this.#yoloTold = yoloTold;
 				return;
 			}
 			const digests = state.messages.map(digest);
 			const kept = this.#messages;
 			const appended = digests.length >= kept.length && kept.every((one, index) => one === digests[index]);
-			if (appended && digests.length === kept.length && told.yoloTold === undefined) return;
+			if (appended && digests.length === kept.length && !changed) return;
 			await this.#write({
 				type: "state",
 				backend,
@@ -156,7 +157,7 @@ export class SessionRecorder {
 				...told,
 			});
 			this.#messages = digests;
-			this.#yoloTold = yoloTold ?? this.#yoloTold;
+			if (changed) this.#yoloTold = yoloTold;
 		});
 	}
 
