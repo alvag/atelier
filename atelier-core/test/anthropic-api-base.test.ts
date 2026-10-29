@@ -23,6 +23,9 @@ describe("toAnthropicTools", () => {
 			"grep",
 			"web_fetch",
 			"web_search",
+			"bash_background",
+			"job_list",
+			"job_stop",
 		]);
 		for (const tool of tools) {
 			expect(tool.description?.length).toBeGreaterThan(0);

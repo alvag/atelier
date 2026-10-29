@@ -1,3 +1,4 @@
+import { createBackgroundTools } from "./background.ts";
 import { bashTool } from "./bash.ts";
 import { editTool } from "./edit.ts";
 import { openGrepTool } from "./grep.ts";
@@ -59,4 +60,6 @@ export const coreTools: readonly ToolDefinition[] = [
 	openGrepTool,
 	webFetchTool,
 	webSearchTool,
+	// Commands through `bash`'s gate that run while the agent goes on.
+	...createBackgroundTools(),
 ];

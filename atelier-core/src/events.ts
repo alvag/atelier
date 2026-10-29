@@ -373,6 +373,29 @@ export type AtelierEventBody =
 	 * no tool result took) as the prompt of the turn it starts, as that turn's first event. Clients show it as a prompt.
 	 */
 	| ({ type: "queued_message" } & QueuedMessage)
+	/** A background job started (`bash_background`). `running`: the session's jobs running now, this one included. */
+	| { type: "job_started"; jobId: string; label: string; command: string; outputPath: string; running: number }
+	/**
+	 * A background job ended: `exited` on its own (`exitCode`, or `signal` when a signal Atelier did not send killed it),
+	 * `stopped` by `job_stop` or the session's close, `failed` when it could not start. `notified`: the agent gets a
+	 * notice of it, as of every end but a stop. `running`: jobs still running; `waiting`: notices the agent has not read
+	 * yet, this one included. Said in the turn that runs as it ends, else first in the turn its notice wakes, or the next.
+	 */
+	| {
+			type: "job_finished";
+			jobId: string;
+			label: string;
+			status: "exited" | "stopped" | "failed";
+			exitCode?: number;
+			signal?: string;
+			durationMs: number;
+			outputPath: string;
+			notified: boolean;
+			running: number;
+			waiting: number;
+	  }
+	/** The agent read the notices that waited (with a tool result or a prompt): the jobs running and the notices left. */
+	| { type: "jobs_status"; running: number; waiting: number }
 	/**
 	 * The user's MCP servers and what is wrong with their file, at the start of the first turn and of any turn in which
 	 * they changed. Never a value of their configuration: secrets are hidden as `***`.

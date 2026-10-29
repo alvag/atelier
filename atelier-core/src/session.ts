@@ -86,7 +86,9 @@ import type { SessionRecorder } from "./sessions/recorder.ts";
 import { type LoadedSkills, loadSkills, skillsPrompt } from "./skills.ts";
 import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
+import { BASH_BACKGROUND_TOOL, JOB_LIST_TOOL, JOB_STOP_TOOL } from "./tools/background.ts";
 import { commandRuleScope } from "./tools/command-rules.ts";
+import { type EndedJob, type JobInfo, Jobs } from "./tools/jobs.ts";
 import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
 import {
 	type ToolContext,
@@ -109,6 +111,10 @@ const PARENT_ONLY = new Set([
 	RISK_TOOL,
 	MCP_SEARCH_TOOL,
 	MCP_CALL_TOOL,
+	// A subagent's session closes with its report, and its jobs with it.
+	BASH_BACKGROUND_TOOL,
+	JOB_LIST_TOOL,
+	JOB_STOP_TOOL,
 ]);
 
 /** Tells the agent which commands run outside the sandbox on their own, so it asks to leave it only when needed. */
@@ -242,6 +248,11 @@ export interface SessionOptions {
 	record?: SessionRecorder;
 	/** The backend resumes this saved conversation instead of starting an empty one; start rejects when it cannot. */
 	resume?: ResumeState;
+	/**
+	 * Called when a background job ended with no turn running: its notice waits, and the caller starts its turn with
+	 * `nextQueued`. A job that ends while a turn runs goes with its next tool result, or waits for `nextQueued` after it.
+	 */
+	wake?: () => void;
 }
 
 /** What the main agent runs with, as `Session.configure` and the `session_configured` event say it. */
@@ -401,6 +412,12 @@ export class Session {
 	readonly #memoryWrites = new Set<Promise<void>>();
 	/** Saving the user's prompts failed once and was said; later failures are not. */
 	#promptFailureSaid = false;
+	/** The background jobs, when the session's tools include `bash_background`. */
+	#jobs: Jobs | undefined;
+	/** Notices of ended jobs the agent has not read yet, oldest first. */
+	#jobNotices: string[] = [];
+	/** The waiting notices may start a turn of their own: not after a turn that ended interrupted or failed left them. */
+	#jobsWake = false;
 
 	private constructor(options: SessionOptions) {
 		const subagents = options.subagents;
@@ -479,6 +496,12 @@ export class Session {
 		}
 		const scratch = await createScratchDir("session");
 		session.#scratch = scratch;
+		if (session.#tools.has(BASH_BACKGROUND_TOOL))
+			session.#jobs = new Jobs({
+				scratchDir: scratch.path,
+				onStarted: (job) => session.#jobStarted(job),
+				onEnded: (ended) => session.#jobEnded(ended),
+			});
 		session.#systemPrompt = [
 			options.systemPromptAppend ?? "",
 			options.odd ? ODD_RULES : "",
@@ -625,7 +648,7 @@ export class Session {
 	nextQueued(turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> | undefined {
 		if (this.#givenBack) return undefined;
 		const next = this.#queue.find((message) => message.kind === "steer") ?? this.#queue[0];
-		if (!next) return undefined;
+		if (!next) return this.#wokenTurn(turnId);
 		this.#queue = this.#queue.filter((message) => message !== next);
 		return this.#send(next.text, turnId, next);
 	}
@@ -644,15 +667,20 @@ export class Session {
 		yield* this.#send(prompt, turnId);
 	}
 
-	async *#send(prompt: string, turnId: string, entered?: QueuedMessage): AsyncGenerator<AtelierEvent> {
-		yield* this.#stream(turnId, prompt, entered, async (turn, signal, backendSession) => {
+	/**
+	 * `woken`: the turn of job notices with no prompt of the user's (`prompt` is empty): nothing is logged or kept as the
+	 * user's words, the classifier has no request, and the review takes the user's last request.
+	 */
+	async *#send(prompt: string, turnId: string, entered?: QueuedMessage, woken = false): AsyncGenerator<AtelierEvent> {
+		yield* this.#stream(turnId, woken ? undefined : prompt, entered, async (turn, signal, backendSession) => {
 			// The user's words reach the feature log as the turn starts, without delaying the backend;
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
-			this.#turnPrompt = prompt;
-			const logged = this.#odd?.userMessage(prompt);
-			this.#keepPrompt(prompt);
+			this.#turnPrompt = woken ? undefined : prompt;
+			const logged = woken ? undefined : this.#odd?.userMessage(prompt);
+			if (!woken) this.#keepPrompt(prompt);
+			const request = woken ? (this.#previousTurn?.request ?? prompt) : prompt;
 			// What the agent declared in an earlier turn does not cover this one, and its candidate starts from today's HEAD.
-			this.#review?.startTurn(this.#options.cwd, prompt);
+			this.#review?.startTurn(this.#options.cwd, request);
 			// The first turn says whether memory works and gives the model the recent memory, outside the system prompt.
 			let sent = prompt;
 			if (!this.#announced) {
@@ -695,6 +723,9 @@ export class Session {
 			// The outcome of the latest review, once: the agent hears about it, and acts only if the user asks.
 			let reviewNotice = this.#review?.takeNotice();
 			if (reviewNotice !== undefined) sent = `${reviewNotice}\n\n${sent}`;
+			// The notices of ended jobs that waited: the whole prompt of a turn they woke, else before the user's words.
+			const jobNotices = this.#takeJobNotices(turn);
+			if (jobNotices !== undefined) sent = woken ? `${sent}${jobNotices}` : `${jobNotices}\n\n${sent}`;
 			const mcpStatus = this.mcpStatus();
 			if (mcpStatus !== undefined && JSON.stringify(mcpStatus) !== this.#mcpSaid) {
 				this.#mcpSaid = JSON.stringify(mcpStatus);
@@ -736,7 +767,7 @@ export class Session {
 				this.#recoveryInFlight = undefined;
 				if (reviewNotice !== undefined) this.#review?.returnNotice(reviewNotice);
 			}
-			this.#previousTurn = { request: prompt, lastMessage: lastMessageTail(this.#lastMessage) };
+			this.#previousTurn = { request, lastMessage: lastMessageTail(this.#lastMessage) };
 			await logged;
 			const ended = withMainPhase(
 				finish ?? {
@@ -883,6 +914,8 @@ export class Session {
 			// it was ending; from here until it is over, nothing more is queued.
 			if (abort.signal.aborted || UNCLEAN_ENDS.has(finish.stopReason)) {
 				this.#givenBack = true;
+				// Job notices it left wait for the user's next prompt instead of starting a turn.
+				this.#jobsWake = false;
 				const returned = this.#queue;
 				this.#queue = [];
 				if (returned.length > 0) this.#sayQueue(returned);
@@ -1360,6 +1393,7 @@ export class Session {
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
 			this.#closing = Promise.resolve()
 				.then(() => this.#child?.close())
+				.then(() => this.#jobs?.stopAll())
 				.then(() => this.#review?.close())
 				.then(() => this.#odd?.close())
 				.then(() => Promise.all(this.#memoryWrites))
@@ -1388,15 +1422,71 @@ export class Session {
 		if (signal?.aborted) return { ok: false, output: "Not run: the turn was interrupted." };
 		const result = await this.#runTool(call);
 		if (!this.#steerable || this.#abort?.signal.aborted) return result;
+		// The notices of jobs that ended go with the result too, after the user's steers.
+		const notices = this.#takeJobNotices(this.#turn);
 		const steers = this.#queue.filter((message) => message.kind === "steer");
-		if (steers.length === 0) return result;
+		if (steers.length === 0) return notices === undefined ? result : { ...result, steering: notices };
 		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
 		for (const steer of steers) {
 			this.#turn?.push({ type: "queued_message", ...steer });
 			this.#keepPrompt(steer.text);
 		}
 		this.#sayQueue();
-		return { ...result, steering: steeringText(steers.map((steer) => steer.text)) };
+		const steering = steeringText(steers.map((steer) => steer.text));
+		return { ...result, steering: notices === undefined ? steering : `${steering}\n\n${notices}` };
+	}
+
+	/** The turn of the job notices that wait, when they may start one; it takes them, so a second call answers undefined. */
+	#wokenTurn(turnId: string): AsyncGenerator<AtelierEvent> | undefined {
+		if (!this.#jobsWake || this.#jobNotices.length === 0) return undefined;
+		this.#jobsWake = false;
+		return this.#send("", turnId, undefined, true);
+	}
+
+	/** A job started: the clients hear it in the turn whose call started it. */
+	#jobStarted(job: JobInfo): void {
+		this.#say({
+			type: "job_started",
+			jobId: job.id,
+			label: job.label,
+			command: job.command,
+			outputPath: job.outputPath,
+			running: this.#jobs?.running ?? 0,
+		});
+	}
+
+	/**
+	 * A job ended: its notice waits for the agent, and the clients hear of it in the running turn or the next. With no
+	 * turn running, the notice asks for a turn of its own (`wake`).
+	 */
+	#jobEnded({ job, notice }: EndedJob): void {
+		if (notice !== undefined) {
+			this.#jobNotices.push(notice);
+			this.#jobsWake = true;
+		}
+		this.#say({
+			type: "job_finished",
+			jobId: job.id,
+			label: job.label,
+			status: job.status === "stopped" || job.status === "failed" ? job.status : "exited",
+			...(job.exitCode === undefined ? {} : { exitCode: job.exitCode }),
+			...(job.signal === undefined ? {} : { signal: job.signal }),
+			durationMs: job.durationMs,
+			outputPath: job.outputPath,
+			notified: notice !== undefined,
+			running: this.#jobs?.running ?? 0,
+			waiting: this.#jobNotices.length,
+		});
+		if (notice !== undefined && this.#turn === undefined && !this.#closed) this.#options.wake?.();
+	}
+
+	/** The waiting notices as the agent reads them, the clients told none waits now; undefined when none waited. */
+	#takeJobNotices(turn: Channel<TurnEvent> | undefined): string | undefined {
+		if (this.#jobNotices.length === 0) return undefined;
+		const notices = this.#jobNotices.splice(0);
+		this.#jobsWake = false;
+		turn?.push({ type: "jobs_status", running: this.#jobs?.running ?? 0, waiting: 0 });
+		return notices.join("\n\n");
 	}
 
 	async #runTool(call: ToolCall): Promise<ToolCallResult> {
@@ -1423,6 +1513,7 @@ export class Session {
 				callId,
 				...(this.#options.noSandbox ? { sandboxOff: true } : {}),
 				approvedPaths: this.#approvedPaths,
+				...(this.#jobs === undefined ? {} : { jobs: this.#jobs }),
 				...(await this.#currentRules(emit)),
 			};
 			const gate = await this.#gate(tool, call.input, context);

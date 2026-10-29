@@ -506,6 +506,9 @@ describe("who has write", () => {
 			"grep",
 			"web_fetch",
 			"web_search",
+			"bash_background",
+			"job_list",
+			"job_stop",
 		]);
 		const tools = Object.fromEntries(BUILTIN_AGENTS.map((agent) => [agent.name, agent.tools]));
 		expect(tools.worker).toEqual(["read", "edit", "write", "grep", "bash", "web_fetch", "web_search"]);
