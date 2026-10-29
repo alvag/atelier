@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { FakeBackend, type FakeStep, Session } from "../src/index.ts";
 import { createEditTool, createWriteTool } from "../src/tools/index.ts";
+import { gitConfigFixture } from "./support/git-config-cases.ts";
 
 type FakeToolInput = Extract<FakeStep, { toolCall: unknown }>["toolCall"]["input"];
 
@@ -112,6 +113,31 @@ describe.skipIf(process.platform === "win32")("how many git processes one edit o
 		process.env.PATH = path;
 		await rm(bin, { recursive: true, force: true });
 	});
+
+	it.each(["invalid UTF-8 below the old buffer", "get-all just over the old buffer"] as const)(
+		"uses actual git query results rather than an emulated cutoff: %s",
+		async (kind) => {
+			await gitConfigFixture(base, kind);
+			await writeFile(log, "");
+			const result = await createWriteTool({ home }).gate?.(
+				{ path: "team#cfg", content: "[core]\nhooksPath = evil-hooks\n" },
+				{ cwd },
+			);
+			expect(result).toEqual({ refusal: { output: refusal("team#cfg").output, summary: refusal("team#cfg").output } });
+			const configs = (await readFile(log, "utf8"))
+				.split("\n")
+				.filter((line) => line.startsWith(`config --file ${join(cwd, ".git", "config")} `));
+			// Invalid UTF-8 must not inflate the raw byte count into the compatibility path.
+			if (kind === "invalid UTF-8 below the old buffer") expect(configs).toHaveLength(1);
+			else {
+				expect(configs).toHaveLength(4);
+				expect(configs[1]).toContain("--get-all include.path");
+				expect(configs[2]).toContain("--get-regexp ^includeif\\..*\\.path$");
+				expect(configs[3]).toContain("--get core.hooksPath");
+			}
+		},
+		90_000,
+	);
 
 	for (const warm of [false, true])
 		it.each<[string, FakeToolInput]>([

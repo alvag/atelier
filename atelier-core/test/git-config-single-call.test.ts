@@ -25,9 +25,11 @@ it.each(gitConfigCases)(
 					const input =
 						tool.name === "edit"
 							? { path, edits: [{ oldText: before ?? "original", newText: "changed" }] }
-							: { path, content: "changed\n" };
-					expect(await tool.gate?.(input, { cwd })).toEqual({ refusal: { output: message, summary: message } });
-					expect(await tool.execute(input, { cwd })).toMatchObject({ ok: false, output: message });
+							: { path, content: "[core]\nhooksPath = evil-hooks\n" };
+					const gate = await tool.gate?.(input, { cwd });
+					const result = await tool.execute(input, { cwd });
+					expect(gate).toEqual({ refusal: { output: message, summary: message } });
+					expect(result).toMatchObject({ ok: false, output: message });
 					expect(await contents(path)).toBe(before);
 				}
 			}

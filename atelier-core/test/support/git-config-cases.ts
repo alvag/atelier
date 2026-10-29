@@ -19,6 +19,8 @@ export const gitConfigCases = [
 	"valueless entries",
 	"combined output exceeds the old buffer",
 	"individual output exceeds the old buffer",
+	"invalid UTF-8 below the old buffer",
+	"get-all just over the old buffer",
 ] as const;
 
 export async function gitConfigFixture(base: string, kind: (typeof gitConfigCases)[number]) {
@@ -104,6 +106,17 @@ export async function gitConfigFixture(base: string, kind: (typeof gitConfigCase
 			await add("[include]\npath = ../unreadable/config\n");
 			await include("../unreadable/config");
 			await chmod(join(cwd, "unreadable", "config"), 0);
+			break;
+		case "invalid UTF-8 below the old buffer": {
+			await add('[include]\npath = "../team#cfg"\n');
+			const line = Buffer.concat([Buffer.from("path = junk/"), Buffer.alloc(200, 0xff), Buffer.from("\n")]);
+			await appendFile(config, Buffer.concat(Array.from({ length: 1800 }, () => line)));
+			await include("../team#cfg");
+			break;
+		}
+		case "get-all just over the old buffer":
+			await add(`[include]\n${'path = "../team#cfg"\n'.repeat(89_048)}`);
+			await include("../team#cfg");
 			break;
 		case "combined output exceeds the old buffer":
 			await add(`[include]\n${'path = "../team#cfg"\n'.repeat(50_000)}`);
