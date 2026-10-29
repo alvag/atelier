@@ -1,4 +1,4 @@
-import { isVersionedClaudeId } from "../backends/claude-code/models.ts";
+import { isVersionedClaudeId, resolvedClaudeCodeList } from "../backends/claude-code/models.ts";
 import { BACKEND_MODELS, type ModelCatalog } from "../options.ts";
 import type { BackendName } from "../protocol/types.ts";
 import { useModelData } from "./current.ts";
@@ -8,6 +8,7 @@ import { claudeCodeModelsSource } from "./providers.ts";
 import {
 	type CatalogFile,
 	type CatalogSource,
+	CLAUDE_CODE_RUNS,
 	modelDataOf,
 	type RefreshOptions,
 	type RefreshOutcome,
@@ -48,12 +49,18 @@ export class DynamicModelCatalog implements ModelCatalog {
 		this.#loaded = this.#load();
 	}
 
-	/** Never fails: whatever the cache holds, the code's list stays. */
+	/**
+	 * Never fails: whatever the cache holds, the code's list stays, but for claude-code once the subscription's list is
+	 * resolved: that list alone says what the subscription offers.
+	 */
 	async models(backend: BackendName): Promise<readonly string[]> {
-		const base = BACKEND_MODELS[backend];
 		const data = await this.#latest();
+		const released = (id: string) => data.model(backend, id)?.released;
+		const subscription = backend === "claude-code" ? resolvedClaudeCodeList(data) : undefined;
+		if (subscription !== undefined) return newestFirst(subscription, released);
+		const base = BACKEND_MODELS[backend];
 		const listed = (data.listed(backend) ?? []).filter((id) => !base.includes(id) && offered(backend, id));
-		return newestFirst([...base, ...listed], (id) => data.model(backend, id)?.released);
+		return newestFirst([...base, ...listed], released);
 	}
 
 	/** What the catalog knows of a model: its window, price, levels and whether it takes images, each when a source said it. */
@@ -93,9 +100,9 @@ export class DynamicModelCatalog implements ModelCatalog {
 	async listClaudeCode(list: () => Promise<readonly unknown[]>): Promise<void> {
 		if (this.#options.network === false) return;
 		try {
-			// A list kept before Claude Code's aliases were resolved is asked again, whenever it was kept.
-			const kept = (await this.#latest()).listed("claude-code") ?? [];
-			const force = kept.some((id) => !isVersionedClaudeId(id));
+			// A list kept without the aliases resolved, as an older Atelier kept it, is asked again, whenever it was kept.
+			const data = await this.#latest();
+			const force = data.listed("claude-code") !== undefined && resolvedClaudeCodeList(data) === undefined;
 			await refreshSource(this.#options.file, claudeCodeModelsSource(list), {
 				...this.#options.refresh,
 				...(force ? { force } : {}),
@@ -107,28 +114,24 @@ export class DynamicModelCatalog implements ModelCatalog {
 	}
 
 	/**
-	 * Keeps the window Claude Code ran each model with, as a turn's end says it, in its list: a model the list lacks is
-	 * not added, and nothing is written when the windows are the ones kept. Never fails.
+	 * Keeps the window Claude Code ran each model with, as a turn's end says it, apart from its list
+	 * (`CLAUDE_CODE_RUNS`): a model the list lacks keeps it too, without being offered, and a new list keeps them all.
+	 * It is no network request, so it is kept with the refresh off too. Nothing is written when the windows are the
+	 * ones kept. Never fails.
 	 */
 	async noteClaudeCodeWindows(windows: Record<string, number>): Promise<void> {
 		const data = await this.#latest();
-		const kept = new Set(data.listed("claude-code") ?? []);
 		const changed = Object.entries(windows).filter(
-			([id, window]) => kept.has(id) && data.model("claude-code", id)?.contextWindow !== window,
+			([id, window]) => data.model("claude-code", id)?.contextWindow !== window,
 		);
 		if (changed.length === 0) return;
 		const noted = new Map(changed);
 		try {
-			await updateSource(this.#options.file, "claude-code", (entry) => ({
-				...entry,
-				models: {
-					...entry.models,
-					"claude-code": (entry.models["claude-code"] ?? []).map((model) => {
-						const window = noted.get(model.id);
-						return window === undefined ? model : { ...model, contextWindow: window };
-					}),
-				},
-			}));
+			await updateSource(this.#options.file, CLAUDE_CODE_RUNS, (entry) => {
+				const kept = (entry?.models["claude-code"] ?? []).filter((model) => !noted.has(model.id));
+				const added = [...noted].map(([id, contextWindow]) => ({ id, contextWindow }));
+				return { checkedAt: Date.now(), models: { "claude-code": [...kept, ...added] } };
+			});
 			await this.#reload();
 		} catch {
 			// The window is said again at the next turn's end.

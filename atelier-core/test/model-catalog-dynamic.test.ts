@@ -111,7 +111,8 @@ it("lists Claude Code's models from a session it is lent, unless the network is 
 
 	const catalog = new DynamicModelCatalog({ file, sources: [] });
 	await catalog.listClaudeCode(list);
-	expect(await catalog.models("claude-code")).toEqual([...BACKEND_MODELS["claude-code"], "claude-fable-5-1"]);
+	// The subscription's resolved list alone: what opus stands for, and fable.
+	expect(await catalog.models("claude-code")).toEqual(["claude-opus-5-5", "claude-fable-5-1"]);
 	// Within the interval the next session's list is not asked for.
 	let asked = 0;
 	await catalog.listClaudeCode(async () => {
@@ -354,35 +355,68 @@ it("lists Claude Code's versioned ids only, and asks again a session for a list 
 		{ value: "fable", resolvedModel: "claude-fable-5-1" },
 		{ value: "claude-opus-4-8" },
 	]);
-	expect(await catalog.models("claude-code")).toEqual([
-		...BACKEND_MODELS["claude-code"],
-		"claude-fable-5-1",
-		"claude-opus-4-8",
-	]);
+	// Once the subscription's list is resolved, it alone is offered: sonnet and haiku are not on it.
+	expect(await catalog.models("claude-code")).toEqual(["claude-opus-5-5", "claude-fable-5-1", "claude-opus-4-8"]);
 	expect((await catalog.model("claude-code", "claude-fable-5-1"))?.aliases).toEqual(["fable"]);
 });
 
-it("keeps the window Claude Code ran a model with, through the next list of the subscription's models", async () => {
+it("offers the subscription's resolved list alone, without the code's models it lacks", async () => {
 	const catalog = new DynamicModelCatalog({ file, sources: [] });
-	// Without a list of Claude Code's models there is nothing to keep it in.
-	await catalog.noteClaudeCodeWindows({ "claude-opus-5-5": 1_000_000 });
-	expect((await readCatalog(file)).sources).toEqual({});
+	await catalog.listClaudeCode(async () => [
+		{ value: "opus", resolvedModel: "claude-opus-6" },
+		{ value: "sonnet", resolvedModel: "claude-sonnet-6" },
+	]);
+	expect(await catalog.models("claude-code")).toEqual(["claude-opus-6", "claude-sonnet-6"]);
+});
 
+it("asks again a session for any list kept without the aliases resolved, whenever it was kept", async () => {
+	await mkdir(join(home, ".atelier"), { recursive: true });
+	await writeFile(
+		file,
+		JSON.stringify({
+			version: 1,
+			sources: { "claude-code": { checkedAt: Date.now(), models: { "claude-code": [{ id: "claude-opus-4-8" }] } } },
+		}),
+	);
+	const catalog = new DynamicModelCatalog({ file, sources: [] });
+	let asked = 0;
+	await catalog.listClaudeCode(async () => {
+		asked++;
+		return [{ value: "opus", resolvedModel: "claude-opus-5-5" }, { value: "claude-opus-4-8" }];
+	});
+	expect(asked).toBe(1);
+	expect((await catalog.model("claude-code", "claude-opus-5-5"))?.aliases).toEqual(["opus"]);
+	// A resolved list within the interval is not asked for again.
+	await catalog.listClaudeCode(async () => {
+		asked++;
+		return [];
+	});
+	expect(asked).toBe(1);
+});
+
+it("keeps the window Claude Code ran a model with, listed or not, offline too, through the next list", async () => {
+	// Without a cache and with the refresh off, the window is kept all the same.
+	const offline = new DynamicModelCatalog({ file, sources: [], network: false });
+	await offline.noteClaudeCodeWindows({ "claude-opus-5-5": 1_000_000 });
+	expect((await offline.model("claude-code", "claude-opus-5-5"))?.contextWindow).toBe(1_000_000);
+
+	const catalog = new DynamicModelCatalog({ file, sources: [] });
 	const list = async () => [
 		{ value: "opus", resolvedModel: "claude-opus-5-5" },
 		{ value: "claude-opus-4-8", supportedEffortLevels: ["low"] },
 	];
 	await catalog.listClaudeCode(list);
 	const checkedAt = (await readCatalog(file)).sources["claude-code"]?.checkedAt;
-	await catalog.noteClaudeCodeWindows({ "claude-opus-5-5": 1_000_000, "claude-opus-4-8": 200_000, "claude-x-9": 1 });
+	await catalog.noteClaudeCodeWindows({ "claude-opus-4-8": 200_000, "claude-opus-4-1": 200_000 });
 	expect(await catalog.model("claude-code", "claude-opus-5-5")).toEqual({
 		id: "claude-opus-5-5",
 		aliases: ["opus"],
 		contextWindow: 1_000_000,
 	});
 	expect((await catalog.model("claude-code", "claude-opus-4-8"))?.contextWindow).toBe(200_000);
-	// A model the list lacks is not added, and the list's age stays: it is not a new list.
-	expect(await catalog.models("claude-code")).not.toContain("claude-x-9");
+	// A model the list lacks keeps its window, but is not offered; the list's age stays: it is not a new list.
+	expect((await catalog.model("claude-code", "claude-opus-4-1"))?.contextWindow).toBe(200_000);
+	expect(await catalog.models("claude-code")).not.toContain("claude-opus-4-1");
 	expect((await readCatalog(file)).sources["claude-code"]?.checkedAt).toBe(checkedAt);
 
 	await new DynamicModelCatalog({ file, sources: [], refresh: { force: true } }).listClaudeCode(list);
