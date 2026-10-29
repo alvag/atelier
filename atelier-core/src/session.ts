@@ -1520,10 +1520,11 @@ export class Session {
 			this.#closed = true;
 			this.#userQuestions.close();
 			const scratch = this.#scratch;
+			// The jobs stop whatever else fails below: apart from the chain, and waited for before their files go.
+			const stoppingJobs = this.#jobs?.stopAll().catch(() => {});
 			// .then() turns a synchronous throw from close() into a rejection, so cleanup still runs.
 			this.#closing = Promise.resolve()
 				.then(() => this.#child?.close())
-				.then(() => this.#jobs?.stopAll())
 				.then(() => this.#review?.close())
 				.then(() => this.#odd?.close())
 				.then(() => Promise.all(this.#memoryWrites))
@@ -1534,6 +1535,7 @@ export class Session {
 				.then(() => this.#options.mcp?.close().catch(() => {}))
 				.then(() => this.#backendSession?.close())
 				.finally(async () => {
+					await stoppingJobs;
 					// Whatever failed above, the saved session is let go once its entries are written.
 					await this.#options.record?.release();
 					await scratch?.remove();
