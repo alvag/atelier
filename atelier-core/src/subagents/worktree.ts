@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { lstat, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -29,6 +29,12 @@ export interface WorktreeChanges {
 	deletions: number;
 }
 
+/**
+ * How a worker got the parent's dependencies (each ignored `node_modules` folder): `cloned`, copies that share their
+ * blocks until written; `linked`, links to the parent's, which the worker's sandbox cannot write; `none`.
+ */
+export type Dependencies = "cloned" | "linked" | "none";
+
 /** A worker's own worktree of the parent's tree as it was when the task started. */
 export interface TaskWorktree {
 	/** The top of the parent's checkout: where the patch applies. */
@@ -38,6 +44,7 @@ export interface TaskWorktree {
 	/** HEAD's short id when the snapshot was taken, and whether the snapshot has uncommitted changes on top of it. */
 	head: string;
 	dirty: boolean;
+	dependencies: Dependencies;
 	/** Writes the patch of what changed to `patchPath`; undefined when nothing changed. */
 	collect(patchPath: string): Promise<WorktreeChanges | undefined>;
 	/** The files of the parent's tree that differ from the snapshot now: what the parent changed since. */
@@ -72,7 +79,7 @@ async function treeOfWorkingTree(top: string, base: string, index: string): Prom
  * Makes a worktree in `dir` of `cwd`'s repository, detached at a snapshot of its working tree: HEAD plus the changes
  * not committed yet. Throws WorktreeRefusedError when `cwd` is not in a repository with a commit.
  */
-export async function createTaskWorktree(cwd: string, dir: string): Promise<TaskWorktree> {
+export async function createTaskWorktree(cwd: string, dir: string, { link }: { link: boolean }): Promise<TaskWorktree> {
 	const refused = () =>
 		new WorktreeRefusedError(
 			`Refused: a worker runs in the background in a git worktree of its own, and ${cwd} is not in a git repository with a commit; run it without background.`,
@@ -92,6 +99,7 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 	let snapshotTree: string;
 	let snapshot: string;
 	let place: string;
+	let dependencies: Dependencies;
 	try {
 		headTree = (await git(top, ["rev-parse", "HEAD^{tree}"])).trim();
 		snapshotTree = await treeOfWorkingTree(top, head, index);
@@ -105,6 +113,7 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 		// What a crash left of earlier worktrees (their folder gone) is cleared first.
 		await git(top, ["worktree", "prune"]).catch(() => "");
 		await git(top, ["worktree", "add", "--detach", tree, snapshot]);
+		dependencies = await shareDependencies(top, tree, link);
 		place = join(tree, relative(top, await realpath(cwd)));
 		await mkdir(place, { recursive: true });
 	} catch (error) {
@@ -119,6 +128,7 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 		cwd: place,
 		head: head.slice(0, 7),
 		dirty: snapshotTree !== headTree,
+		dependencies,
 		async collect(patchPath) {
 			const changed = await treeOfWorkingTree(tree, snapshot, index);
 			if (changed === snapshotTree) return undefined;
@@ -152,4 +162,61 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 			return removed;
 		},
 	};
+}
+
+/** The folders of the checkout git ignores that are named `node_modules`, from the top; none nested in another. */
+async function dependencyFolders(top: string): Promise<string[]> {
+	const listed = await git(top, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
+	return listed
+		.split("\0")
+		.filter((entry) => entry.endsWith("/") && basename(entry.slice(0, -1)) === "node_modules")
+		.map((entry) => entry.slice(0, -1));
+}
+
+/** Copies `from` to `to` sharing its blocks (APFS clones, reflinks); false where the file system cannot. */
+async function cloneFolder(from: string, to: string): Promise<boolean> {
+	const args =
+		process.platform === "darwin"
+			? ["-c", "-R", from, to]
+			: process.platform === "linux"
+				? ["-R", "--reflink=always", from, to]
+				: undefined;
+	if (args === undefined) return false;
+	try {
+		await execFileAsync("cp", args);
+		return true;
+	} catch {
+		await rm(to, { recursive: true, force: true });
+		return false;
+	}
+}
+
+/**
+ * Gives the worktree the parent's dependencies, so the worker can run its tests: each `node_modules` folder cloned,
+ * or, where the file system cannot clone and `link` allows it (the worker's sandbox keeps it from writing outside its
+ * worktree), linked. Nothing to share, or nothing allowed, is `none`.
+ */
+async function shareDependencies(top: string, tree: string, link: boolean): Promise<Dependencies> {
+	const folders = await dependencyFolders(top).catch((): string[] => []);
+	let shared: Dependencies = "none";
+	for (const folder of folders) {
+		const from = join(top, folder);
+		const to = join(tree, folder);
+		if (
+			await lstat(to).then(
+				() => true,
+				() => false,
+			)
+		)
+			continue;
+		await mkdir(dirname(to), { recursive: true });
+		if (await cloneFolder(from, to)) {
+			if (shared === "none") shared = "cloned";
+			continue;
+		}
+		if (!link) continue;
+		await symlink(from, to, "dir");
+		shared = "linked";
+	}
+	return shared;
 }

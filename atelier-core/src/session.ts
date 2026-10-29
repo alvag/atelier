@@ -106,6 +106,7 @@ import {
 } from "./subagents/tasks.ts";
 import {
 	createTaskWorktree,
+	type Dependencies,
 	type TaskWorktree,
 	type WorktreeChanges,
 	WorktreeRefusedError,
@@ -136,6 +137,19 @@ const UNATTENDED_DENIAL =
 /** What a background worker is told of its folder. */
 const WORKTREE_NOTE =
 	"You work in a git worktree made for this task alone, from the other agent's working tree. Do not commit: your changes are collected from its files as a patch.";
+/** What the parent and the worker are told of the dependencies in the worker's worktree. */
+const DEPENDENCIES_SAID: Record<Dependencies, { parent: string; worker: string }> = {
+	cloned: {
+		parent: " Its node_modules folders are copy-on-write copies of yours.",
+		worker: " Its node_modules folders are copy-on-write copies of the other agent's: use them, and install nothing.",
+	},
+	linked: {
+		parent: " Its node_modules folders are links to yours, which its sandbox cannot write.",
+		worker:
+			" Its node_modules folders are links to the other agent's, which you cannot write: use them, and install nothing.",
+	},
+	none: { parent: "", worker: "" },
+};
 /** The patches of background workers whose files a new patch is compared with. */
 const MAX_KEPT_PATCHES = 20;
 /** How long a stopped background subagent has to end its turn before its session is closed under it. */
@@ -2170,9 +2184,11 @@ export class Session {
 		let worktree: TaskWorktree | undefined;
 		if (agent.name === "worker") {
 			try {
+				// A link to the parent's dependencies is only safe where the sandbox keeps the worker inside its worktree.
 				worktree = await createTaskWorktree(
 					this.#options.cwd,
 					join(this.#scratch?.path ?? tmpdir(), "worktrees", String(++this.#worktrees)),
+					{ link: this.#options.noSandbox !== true },
 				);
 			} catch (error) {
 				place.release();
@@ -2181,7 +2197,7 @@ export class Session {
 			}
 		}
 		const settings = this.#subagentSettings(agent);
-		const child = await this.#startChild(options, agent, settings, true, worktree?.cwd);
+		const child = await this.#startChild(options, agent, settings, true, worktree);
 		if (typeof child === "string") {
 			place.release();
 			await worktree?.remove();
@@ -2218,7 +2234,7 @@ export class Session {
 		const where =
 			worktree === undefined
 				? ""
-				: ` It works in its own git worktree, from your working tree as it is now (HEAD ${worktree.head}${worktree.dirty ? " plus uncommitted changes" : ""}); its changes come back as a patch.`;
+				: ` It works in its own git worktree, from your working tree as it is now (HEAD ${worktree.head}${worktree.dirty ? " plus uncommitted changes" : ""}); its changes come back as a patch.${DEPENDENCIES_SAID[worktree.dependencies].parent}`;
 		return {
 			ok: true,
 			output: `${taskStartedText(task)}${where}`,
@@ -2292,7 +2308,7 @@ export class Session {
 		agent: SubagentDefinition,
 		settings: ReturnType<typeof roleSettings>,
 		unattended: boolean,
-		worktree?: string,
+		worktree?: TaskWorktree,
 	): Promise<Session | string> {
 		try {
 			const backend = await options.createBackend(settings.backend);
@@ -2301,7 +2317,7 @@ export class Session {
 			return await Session.start({
 				backend,
 				userQuestions: false,
-				cwd: worktree ?? this.#options.cwd,
+				cwd: worktree?.cwd ?? this.#options.cwd,
 				...(model === undefined ? {} : { model }),
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
 				...(childCompaction === undefined ? {} : { compaction: childCompaction }),
@@ -2310,7 +2326,10 @@ export class Session {
 					const tool = PARENT_ONLY.has(name) ? undefined : this.#tools.get(name);
 					return tool ? [tool] : [];
 				}),
-				systemPromptAppend: worktree === undefined ? agent.prompt : `${agent.prompt}\n\n${WORKTREE_NOTE}`,
+				systemPromptAppend:
+					worktree === undefined
+						? agent.prompt
+						: `${agent.prompt}\n\n${WORKTREE_NOTE}${DEPENDENCIES_SAID[worktree.dependencies].worker}`,
 				maxRequestsPerTurn: agent.maxRequests,
 				// The mode is not passed on: the child runs in normal.
 				...(this.#options.noSandbox ? { noSandbox: true } : {}),
