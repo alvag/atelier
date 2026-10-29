@@ -10,6 +10,8 @@ import { resolveApiKey, resolveOpenCodeGoKey } from "./credentials.ts";
 import type { BackendName } from "./protocol/types.ts";
 
 export interface BackendFactoryOptions {
+	/** Context tokens at which the backends Atelier compacts summarize (`ATELIER_COMPACT_AT`); their own options win. */
+	compactAt?: number;
 	claudeCode?: ClaudeCodeBackendOptions;
 	anthropicApi?: Omit<AnthropicApiBackendOptions, "apiKey">;
 	/** Defaults to the `anthropicApi` options that both loops share (`compactAt`). */
@@ -30,11 +32,14 @@ export interface BackendFactoryOptions {
  */
 export async function createBackend(name: BackendName, options: BackendFactoryOptions = {}): Promise<AgentBackend> {
 	if (name === "claude-code") return new ClaudeCodeBackend(options.claudeCode);
+	// Claude Code compacts on its own; the other backends compact where ATELIER_COMPACT_AT says, when it is set.
+	const shared = options.compactAt === undefined ? {} : { compactAt: options.compactAt };
 	if (name === "openai-codex") {
 		const variant = codexVariantFrom(options.env ?? process.env);
 		return new OpenAiCodexBackend({
 			store: new AuthStore(authFile(homedir())),
 			...(variant === undefined ? {} : { variant }),
+			...shared,
 			...options.openaiCodex,
 		});
 	}
@@ -42,11 +47,12 @@ export async function createBackend(name: BackendName, options: BackendFactoryOp
 		const apiKey = await (options.resolveOpenCodeGoKey ?? (() => resolveOpenCodeGoKey()))();
 		const { compactAt } = options.anthropicApi ?? {};
 		return createOpenCodeGoBackend({
+			...shared,
 			...(compactAt === undefined ? {} : { compactAt }),
 			...options.opencodeGo,
 			apiKey,
 		});
 	}
 	const apiKey = await (options.resolveApiKey ?? (() => resolveApiKey()))();
-	return new AnthropicApiBackend({ ...options.anthropicApi, apiKey });
+	return new AnthropicApiBackend({ ...shared, ...options.anthropicApi, apiKey });
 }

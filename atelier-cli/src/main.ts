@@ -1,12 +1,9 @@
 #!/usr/bin/env node
-import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
-	type BackendName,
 	connectMemory,
-	createBackend as createNamedBackend,
 	describeError,
 	loginWarning,
 	MemoryUnavailableError,
@@ -16,6 +13,7 @@ import {
 } from "@atelier/core";
 import { RpcClient } from "@atelier/core/client";
 import { ProcessTerminal } from "@earendil-works/pi-tui";
+import { cliBackends } from "./backends.ts";
 import { run } from "./run.ts";
 
 let compactAt: number | undefined;
@@ -28,13 +26,10 @@ try {
 
 // ATELIER_RECORD_SDK=<file.jsonl> appends every raw SDK message, to record test fixtures.
 const recordPath = process.env.ATELIER_RECORD_SDK;
-const createBackend = (name: BackendName) =>
-	createNamedBackend(name, {
-		...(recordPath
-			? { claudeCode: { onSdkMessage: (message) => appendFileSync(recordPath, `${JSON.stringify(message)}\n`) } }
-			: {}),
-		...(compactAt === undefined ? {} : { anthropicApi: { compactAt } }),
-	});
+const createBackend = cliBackends({
+	...(compactAt === undefined ? {} : { compactAt }),
+	...(recordPath === undefined ? {} : { recordPath }),
+});
 
 /** The core's protocol server, which the TUI runs as a separate process. */
 const coreServer = fileURLToPath(new URL("src/server/main.ts", import.meta.resolve("@atelier/core/package.json")));
