@@ -68,6 +68,18 @@ export function parseUserQuestionResult(questions: readonly UserQuestion[], inpu
 	return response;
 }
 
+/** What the model is told: each option answer also carries the label of the option chosen, so it need not look it up. */
+function forModel(questions: readonly UserQuestion[], response: UserQuestionResult): unknown {
+	if (response.status !== "answered") return response;
+	const answers = response.answers.map((entry) => {
+		if (!("optionId" in entry)) return entry;
+		const question = questions.find((candidate) => candidate.id === entry.questionId);
+		const label = question?.options.find((option) => option.id === entry.optionId)?.label;
+		return label === undefined ? entry : { ...entry, label };
+	});
+	return { ...response, answers };
+}
+
 /** Created by the main session, not included in coreTools or inherited by subagents. */
 export function createAskUserTool(ask?: AskUser): ToolDefinition {
 	return defineTool({
@@ -87,7 +99,7 @@ export function createAskUserTool(ask?: AskUser): ToolDefinition {
 			);
 			return {
 				ok: response.status === "answered",
-				output: JSON.stringify(response),
+				output: JSON.stringify(forModel(questions, response)),
 				summary:
 					response.status === "answered"
 						? `User answered ${response.answers.length} question${response.answers.length === 1 ? "" : "s"}.`

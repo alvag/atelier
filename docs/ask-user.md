@@ -56,7 +56,7 @@ These additions keep protocol version 7:
 `createAskUserTool(ask)` validates input before calling `ask(questions, context)`. The context includes the call ID and abort signal when supplied. The callback must be a user-only channel, never a model, classifier or automatic approval. It owns waiting and cancellation; the factory itself has no queue, timeout or pending-question state, and does not request permission approval. Without a callback it returns `unavailable` immediately. The factory is not part of `coreTools`; the session restricts it to the main agent.
 
 The tool returns JSON text. Only `answered` has `ok: true`; all other outcomes have `ok: false`:
-- `{"status":"answered","answers":[{"questionId":"q1","optionId":"a"}]}`
+- `{"status":"answered","answers":[{"questionId":"q1","optionId":"a","label":"Minimal change"}]}`: each option answer also carries the chosen option's `label`, so the model need not match the ids itself. Only the tool's output has it: `user_question_resolved` and `session.answer_user` keep `{ questionId, optionId }`.
 - `{"status":"answered","answers":[{"questionId":"q1","other":"Use a third approach"}]}`
 - `{"status":"cancelled","reason":"user"}` (`reason` may also be `interrupted` or `closed`).
 - `{"status":"superseded"}`
