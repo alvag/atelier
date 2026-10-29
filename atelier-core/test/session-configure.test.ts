@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -7,6 +7,7 @@ import {
 	Session,
 	type SessionOptions,
 } from "../src/index.ts";
+import { ModelData, useModelData } from "../src/model-catalog/index.ts";
 
 const usage = { input: 10, output: 5, cacheRead: 3, cacheWrite: 2 };
 const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage };
@@ -153,6 +154,39 @@ describe("Session.configure", () => {
 		const done = events.find((event) => event.type === "turn_finished");
 		expect(done).toMatchObject({
 			phases: { main: { agents: [{ role: "orchestrator", model: "claude-sonnet-5-5" }] } },
+		});
+	});
+
+	describe("on claude-code", () => {
+		afterEach(() => useModelData(new ModelData()));
+
+		it("reports the level of the model an alias stands for, as the backend sends it", async () => {
+			useModelData(
+				new ModelData(
+					{ "claude-code": [{ id: "claude-fable-5-1", aliases: ["fable"] }] },
+					{ "claude-code": ["claude-fable-5-1"] },
+				),
+			);
+			const backend = new FakeBackend(
+				[
+					[
+						{
+							event: { type: "session_started", backend: "claude-code", model: "claude-opus-5-5", authSource: "none" },
+						},
+						{ event: finished },
+					],
+					[{ event: finished }],
+				],
+				"claude-code",
+			);
+			const session = await Session.start({ backend, cwd: "/work", tools: [], model: "claude-opus-5-5" });
+			await collect(session.send("one"));
+			await session.configure({ model: "fable", thinking: "xhigh" });
+			const events = await collect(session.send("two"));
+			expect(configured(events)).toMatchObject([{ model: "fable", thinking: "xhigh" }]);
+			expect(events.find((event) => event.type === "turn_finished")).toMatchObject({
+				phases: { main: { agents: [{ role: "orchestrator", model: "fable", effort: "xhigh" }] } },
+			});
 		});
 	});
 });

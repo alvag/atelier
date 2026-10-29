@@ -1,3 +1,4 @@
+import { claudeCodeIdOf } from "./backends/claude-code/models.ts";
 import { knownOpenCodeGoModel, OPENCODE_GO_MODELS } from "./backends/opencode-go/models.ts";
 import type { Effort, Usage } from "./events.ts";
 import { currentModelData } from "./model-catalog/current.ts";
@@ -120,7 +121,10 @@ export function thinkingToSend(
 	backend: ThinkingBackend,
 ): ThinkingSend | undefined {
 	if (level === undefined) return undefined;
-	const id = ALIASES[model] ?? model;
+	// A claude-code alias takes the levels of the model it stands for now (`fable` those of claude-fable-5-1): the
+	// session reports what the backend sends.
+	const named = backend === "claude-code" ? claudeCodeIdOf(model) : model;
+	const id = ALIASES[named] ?? named;
 	// OpenCode Go's Claude models take what Anthropic's do; the rest take the levels of its table, or of the catalog.
 	if (backend === "opencode-go" && EFFORT_LEVELS[id] === undefined) {
 		const entry = knownOpenCodeGoModel(model);
