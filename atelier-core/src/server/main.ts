@@ -49,9 +49,10 @@ Environment:
   ATELIER_OFFLINE=1      The same (any value but empty or 0)
   ATELIER_ALLOW_ROOT     As root (uid 0) the server refuses to start unless this is exactly
                          "I accept the risk"; it then warns on every start
-  ATELIER_COMPACT_AT=<n> Context tokens at which anthropic-api sessions summarize their
-                         older history (default: the model's window minus a reserve,
-                         at most 200000; never more than the window minus the reserve)
+  ATELIER_COMPACT_AT=<n> Context tokens at which the sessions Atelier compacts summarize
+                         their older history (default: the model's window minus 16384,
+                         and 32000 more on openai-codex; it can only lower that point;
+                         Claude Code compacts on its own)
 `;
 
 if (process.argv.length !== 3 || process.argv[2] !== "serve") {

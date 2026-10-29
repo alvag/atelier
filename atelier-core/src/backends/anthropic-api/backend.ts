@@ -310,7 +310,7 @@ export class AnthropicApiBackend implements AgentBackend {
 				: Promise.resolve(contextWindow)
 			).then((window) => ({
 				window,
-				compactAt: compactThreshold({ window, maxTokens: state.maxTokens, override: compactAt }),
+				compactAt: compactThreshold({ window, override: compactAt }),
 				keepRecent: keepRecentTokens ?? KEEP_RECENT_TOKENS,
 			}));
 		return new AnthropicApiSession(
@@ -619,7 +619,14 @@ class AnthropicApiSession implements BackendSession {
 	}
 
 	#context(): ContextUsage {
-		return { tokens: this.#contextTokens(), window: this.#compaction.window, compactAt: this.#compaction.compactAt };
+		const { window, compactAt } = this.#compaction;
+		// Until an answer measures the compacted history, its size is only an estimate.
+		return {
+			tokens: this.#contextTokens(),
+			window,
+			compactAt,
+			...(this.#unmeasured ? { unknown: true as const } : {}),
+		};
 	}
 
 	/** The last measured size plus an estimate of what was appended since. */

@@ -49,7 +49,6 @@ export {
 	contextTokens,
 	type FileActivity,
 	KEEP_RECENT_TOKENS,
-	MAX_COMPACT_AT,
 	parseCompactAt,
 	RESERVE_TOKENS,
 } from "./compaction/compactor.ts";
