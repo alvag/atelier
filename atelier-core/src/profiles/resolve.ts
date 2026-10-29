@@ -3,6 +3,7 @@ import { type PinPlaces, pinPlaces, readPin } from "./pins.ts";
 import {
 	describeProfileName,
 	isValidProfileName,
+	PROFILE_NAME_RULE,
 	type Profile,
 	type ProfileReport,
 	type ProfilesFile,
@@ -74,17 +75,17 @@ export async function resolveProfile({
 	];
 	for (const [origin, name, source] of layers) {
 		if (name === undefined) continue;
-		// A name that is not valid names no profile at all: it is said so and the layer is skipped.
+		// A name that is not valid names no profile at all: it is said so, with the rule, and the layer is skipped.
 		if (!isValidProfileName(name)) {
 			reports.push({
 				path: source,
-				message: `profile ${describeProfileName(name)} is not a valid profile name, skipped`,
+				message: `profile ${describeProfileName(name)} is not a valid profile name, skipped. ${PROFILE_NAME_RULE}`,
 			});
 			continue;
 		}
 		const profile = file.profiles.get(name);
 		if (profile !== undefined) return { name, origin, profile, reports };
-		reports.push({ path: source, message: `profile "${name}" does not exist, skipped` });
+		reports.push({ path: source, message: `profile ${describeProfileName(name)} does not exist, skipped` });
 	}
 	return { origin: "default", profile: {}, reports };
 }

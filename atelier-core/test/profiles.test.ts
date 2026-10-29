@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	describeProfileName,
 	formatModel,
 	isValidProfileName,
+	PROFILE_NAME_RULE,
 	ProfileNameError,
 	type ProfilesFile,
 	parseModel,
@@ -133,6 +135,23 @@ describe("profile names", () => {
 		for (const value of [undefined, null, 5, {}, []]) expect(isValidProfileName(value)).toBe(false);
 	});
 
+	it("names the whole rule when it refuses a name, reserved names included", () => {
+		expect(PROFILE_NAME_RULE).toContain("ASCII");
+		expect(PROFILE_NAME_RULE).toContain("64");
+		for (const name of ["__proto__", "constructor", "prototype"]) expect(PROFILE_NAME_RULE).toContain(name);
+	});
+
+	it("describes any value without throwing, even one JSON cannot write", () => {
+		expect(describeProfileName("plain")).toBe('"plain"');
+		expect(describeProfileName("with space")).toBe('"with space"');
+		expect(describeProfileName(5)).toBe("5");
+		expect(describeProfileName(undefined)).toBe("undefined");
+		expect(describeProfileName(null)).toBe("null");
+		expect(describeProfileName({ a: 1 })).toBe('{"a":1}');
+		// JSON.stringify throws on a BigInt; the name is described all the same.
+		expect(describeProfileName(10n)).toBe("10");
+	});
+
 	it("drops a profile whose name is not valid, naming the entry, and keeps the rest of the file", () => {
 		const read = parseProfiles(
 			file({
@@ -146,42 +165,46 @@ describe("profile names", () => {
 		if (!read.valid) throw new Error(read.reason);
 		expect([...read.file.profiles.keys()]).toEqual(["good"]);
 		expect(messages(read.reports)).toEqual([
-			'profile "bad name": invalid profile name, dropped',
-			'profile "": invalid profile name, dropped',
+			`profile "bad name": invalid profile name, dropped. ${PROFILE_NAME_RULE}`,
+			`profile "": invalid profile name, dropped. ${PROFILE_NAME_RULE}`,
 		]);
 	});
 
-	it("drops the names that collide with the members of an object, naming the entry", () => {
+	it("drops the reserved names, naming the entry", () => {
 		const read = parseProfiles(
 			'{"kind":"atelier.agent_model_profiles","version":1,"profiles":{"__proto__":{"worker":{"model":"m"}},"constructor":{},"prototype":{},"good":{}}}',
 		);
 		if (!read.valid) throw new Error(read.reason);
 		expect([...read.file.profiles.keys()]).toEqual(["good"]);
 		expect(messages(read.reports)).toEqual([
-			'profile "__proto__": invalid profile name, dropped',
-			'profile "constructor": invalid profile name, dropped',
-			'profile "prototype": invalid profile name, dropped',
+			`profile "__proto__": invalid profile name, dropped. ${PROFILE_NAME_RULE}`,
+			`profile "constructor": invalid profile name, dropped. ${PROFILE_NAME_RULE}`,
+			`profile "prototype": invalid profile name, dropped. ${PROFILE_NAME_RULE}`,
 		]);
 	});
 
 	it("quotes the name of a dropped entry, so it cannot break the line it is read on", () => {
 		const read = parseProfiles(file({ profiles: { 'a "quoted"\nname': {} } }));
 		if (!read.valid) throw new Error(read.reason);
-		expect(messages(read.reports)).toEqual(['profile "a \\"quoted\\"\\nname": invalid profile name, dropped']);
+		expect(messages(read.reports)).toEqual([
+			`profile "a \\"quoted\\"\\nname": invalid profile name, dropped. ${PROFILE_NAME_RULE}`,
+		]);
 	});
 
 	it("echoes the invalid active value and ignores it", () => {
 		const read = parseProfiles(file({ active: "bad name", profiles: { good: {} } }));
 		if (!read.valid) throw new Error(read.reason);
 		expect(read.file.active).toBeUndefined();
-		expect(messages(read.reports)).toEqual(['"active" is not a valid profile name ("bad name"), ignored']);
+		expect(messages(read.reports)).toEqual([
+			`"active" is not a valid profile name ("bad name"), ignored. ${PROFILE_NAME_RULE}`,
+		]);
 	});
 
 	it("echoes an active that is not a string, and ignores it", () => {
 		const read = parseProfiles(file({ active: 5, profiles: { good: {} } }));
 		if (!read.valid) throw new Error(read.reason);
 		expect(read.file.active).toBeUndefined();
-		expect(messages(read.reports)).toEqual(['"active" is not a profile name (5), ignored']);
+		expect(messages(read.reports)).toEqual([`"active" is not a profile name (5), ignored. ${PROFILE_NAME_RULE}`]);
 	});
 
 	it("keeps an active that is a valid name", () => {
