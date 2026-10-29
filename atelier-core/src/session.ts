@@ -1439,8 +1439,13 @@ export class Session {
 
 	/** In the turn running, or in the next one when none runs. */
 	#say(event: AtelierEventBody): void {
-		if (this.#turn) this.#turn.push(event);
+		if (this.#turnOpen()) this.#turn?.push(event);
 		else this.#notices.push(event);
+	}
+
+	/** A turn runs and still takes events: its last one closes them before the turn is over. */
+	#turnOpen(): boolean {
+		return this.#turn !== undefined && !this.#turn.closed;
 	}
 
 	/** `session_started` says the session's permission mode. */
@@ -1631,7 +1636,7 @@ export class Session {
 			waiting: this.#jobNotices.length,
 		};
 		// Held notices start no turn: the clients hear of the end now, not when the user's next prompt runs.
-		const idle = this.#turn === undefined && this.#jobsHeld && !this.#closed ? this.#options.idleEvent : undefined;
+		const idle = !this.#turnOpen() && this.#jobsHeld && !this.#closed ? this.#options.idleEvent : undefined;
 		if (idle !== undefined) this.#sayIdle(idle, ended);
 		else this.#say(ended);
 		if (notice !== undefined && this.#turn === undefined && !this.#closed && !this.#jobsHeld) this.#gatherWake();

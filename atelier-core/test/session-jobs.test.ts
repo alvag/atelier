@@ -288,4 +288,25 @@ describe("a job's end outside any turn", () => {
 		});
 		await rm(home, { recursive: true, force: true });
 	});
+
+	it("is said when the job ends after the turn's last event and before the turn is over", async () => {
+		const heard: AtelierEventBody[] = [];
+		const backend = new FakeBackend([
+			[call("bash_background", { command: waitsForGo() }, "c1"), { throw: "backend failed" }],
+		]);
+		const session = await Session.start({
+			backend,
+			cwd,
+			tools: createBackgroundTools({ sandbox: sandbox() }),
+			idleEvent: (event) => heard.push(event),
+		});
+		sessions.push(session);
+		// The client holds the turn after its turn_finished: the turn's events are closed, the turn is not over yet.
+		const turn = session.send("start it");
+		for (let next = await turn.next(); !next.done && next.value.type !== "turn_finished"; next = await turn.next()) {}
+		await go();
+		await until(() => heard.length === 1);
+		expect(heard[0]).toMatchObject({ type: "job_finished", jobId: "1", waiting: 1 });
+		expect((await turn.next()).done).toBe(true);
+	});
 });
