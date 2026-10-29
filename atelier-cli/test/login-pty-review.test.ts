@@ -11,7 +11,10 @@ requireIsolatedHome();
 // No real Claude binary, credential file, Keychain or network is used.
 const driver = String.raw`
 import os, pty, sys, json, time, select, termios, signal
-node, runner, mode, folder = sys.argv[1:]
+node, runner, mode, folder, budget = sys.argv[1:]
+# One deadline for the whole probe: the CLI's cold start grows with the machine's load, and no step is timed.
+began = time.monotonic()
+deadline = began+float(budget)
 marker = b'REVIEW_CANARY_NOT_A_CREDENTIAL'
 redirect = os.path.join(folder,'stdout.txt')
 pid, master = pty.fork()
@@ -33,32 +36,30 @@ def shown():
    with open(redirect,'rb') as f: return f.read()
   except FileNotFoundError: return b''
  return data
-def wait_for(check):
- deadline = time.monotonic()+8
+def wait_for(what, check):
  while time.monotonic()<deadline:
   pump()
   if check(): return
- raise RuntimeError('PTY condition timed out')
+ raise RuntimeError('PTY condition timed out after %.1f s: %s' % (time.monotonic()-began, what))
 try:
  if mode == 'handoff':
-  wait_for(lambda: b'> ' in data)
+  wait_for('the prompt', lambda: b'> ' in data)
   os.write(master,b'/login account anthropic\r')
-  wait_for(lambda: os.path.exists(os.path.join(folder,'fake-started')))
+  wait_for('the fake Claude Code', lambda: os.path.exists(os.path.join(folder,'fake-started')))
   attrs = termios.tcgetattr(master)
   result['child_cooked'] = bool(attrs[3]&termios.ECHO) and bool(attrs[3]&termios.ICANON)
   os.write(master,b'\x03')
-  wait_for(lambda: b'Claude Code is still not logged in' in data)
+  wait_for('the sign-in outcome', lambda: b'Claude Code is still not logged in' in data)
   result['parent_resumed_raw'] = not bool(termios.tcgetattr(master)[3]&termios.ICANON)
   os.write(master,b'/exit\r')
  else:
-  wait_for(lambda: b'API key (hidden):' in shown())
+  wait_for('the key question', lambda: b'API key (hidden):' in shown())
   result['echo_disabled'] = not bool(termios.tcgetattr(master)[3]&termios.ECHO)
   if mode == 'redirect': os.write(master,marker+b'\r')
   else:
    os.write(master,b'\x1b[200~'+marker+b'\x1b[201~')
    pump(); os.write(master,b'\x03')
  status = None
- deadline = time.monotonic()+8
  while time.monotonic()<deadline:
   pump()
   done, status = os.waitpid(pid, os.WNOHANG)
@@ -75,6 +76,9 @@ finally:
   os.kill(pid,signal.SIGKILL); os.waitpid(pid,0)
  os.close(master)
 `;
+
+/** The driver's own deadline for a whole probe, under the test's 30 s: the driver always ends and kills its child first. */
+const PROBE_BUDGET_S = 25;
 
 const childGuard = new URL("../../atelier-core/test/support/child-guard.ts", import.meta.url).href;
 
@@ -109,9 +113,10 @@ async function probe(mode: "redirect" | "cancel" | "handoff") {
 				? injectedRunner
 				: `process.argv=[process.execPath,'atelier','login','api-key','anthropic']; await import(${JSON.stringify(mainModule)});`),
 	);
-	const result = spawnSync("python3", ["-c", driver, process.execPath, runner, mode, folder], {
+	const result = spawnSync("python3", ["-c", driver, process.execPath, runner, mode, folder, String(PROBE_BUDGET_S)], {
 		encoding: "utf8",
-		timeout: 25000,
+		// Only if the driver itself hangs: its own deadline comes first.
+		timeout: (PROBE_BUDGET_S + 3) * 1000,
 		env: {
 			PATH: process.env.PATH,
 			HOME: home,
