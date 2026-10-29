@@ -3,7 +3,7 @@ import { type Component, Container, Markdown, Text, type TuiMouseEvent } from "@
 import { MEMORY_TOOL, summaryCall } from "../memory-call.ts";
 import { API_KEY_BACKENDS, phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
 import { ActivityBlock } from "./activity-block.ts";
-import { AnsweredBlock, type AskOutcome, answerLines, questionsOf } from "./answered-block.ts";
+import { AnsweredBlock, type AskOutcome, answerLines, finishedOutcome, questionsOf } from "./answered-block.ts";
 import { PromptBlock } from "./prompt.ts";
 import { ReviewBlock } from "./review-block.ts";
 import { markdownTheme, type Paint, Shade, Tones } from "./style.ts";
@@ -259,8 +259,9 @@ export class Conversation extends Container {
 				return;
 			case "tool_call_finished":
 				this.#cards.get(event.callId)?.finish(event);
-				// A batch the core ended without asking it, such as one while another waited, has no resolution of its own.
-				if (this.#asked.has(event.callId)) this.#settled(event.callId, { status: "not_asked" });
+				// A batch the core ended without asking it, such as one while another waited or one whose input failed, has
+				// no resolution of its own.
+				if (this.#asked.has(event.callId)) this.#settled(event.callId, finishedOutcome(event));
 				return;
 			case "memory_summary_saved":
 				this.#summarySaved(event);

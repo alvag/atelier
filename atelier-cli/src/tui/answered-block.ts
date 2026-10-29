@@ -2,8 +2,31 @@ import { type JsonValue, type UserQuestion, type UserQuestionResult, visibleText
 import { type Component, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Paint } from "./style.ts";
 
-/** What a batch came to: the core's result, or `not_asked` when the call ended without the core asking it. */
-export type AskOutcome = UserQuestionResult | { status: "not_asked" } | { status: "waiting" };
+/**
+ * What a batch came to: the core's result; `not_asked` when the tool ended it without asking (another question was
+ * waiting, the session had closed); `failed` with the tool's error when the call failed, as on an invalid input.
+ */
+export type AskOutcome =
+	| UserQuestionResult
+	| { status: "not_asked" }
+	| { status: "waiting" }
+	| { status: "failed"; message: string };
+
+/** The summaries of the outcomes the tool returns itself, which have their own resolution or none to say. */
+const OWN_OUTCOME = /^User (question (cancelled|superseded|unavailable)|answered \d+ questions?)\.$/;
+
+/** What an `ask_user` call that ended without a resolution came to, from how it finished. */
+export function finishedOutcome(event: { ok: boolean; summary: string }): AskOutcome {
+	return event.ok || OWN_OUTCOME.test(event.summary)
+		? { status: "not_asked" }
+		: { status: "failed", message: event.summary };
+}
+
+/** A failed call's error as shown, one row per line of it, in `room` columns. */
+const failureLines = (message: string, room: number) =>
+	shown(message)
+		.split("\n")
+		.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, room)));
 
 const shown = (text: string) => visibleText(text).text;
 
@@ -43,6 +66,8 @@ export function outcomeTitle(count: number, outcome: AskOutcome): string {
 			return `${questions} not asked`;
 		case "waiting":
 			return `Waiting for ${plural(count, "answer")}`;
+		case "failed":
+			return "ask_user failed";
 	}
 }
 
@@ -67,6 +92,7 @@ export function answerLines(
 	room: number,
 ): string[] {
 	const width = Math.max(1, room);
+	if (outcome.status === "failed") return failureLines(outcome.message, width);
 	const texts = questions.map((question) => shown(oneLine(question.question)));
 	const column = Math.max(0, ...texts.map((text) => visibleWidth(text)));
 	const aligned = column <= Math.floor(width / 2);
@@ -114,7 +140,8 @@ export class AnsweredBlock implements Component {
 
 	render(width: number): string[] {
 		const paint = this.#paint;
-		const mark = paint(this.outcome.status === "answered" ? "green" : "yellow", "●");
+		const status = this.outcome.status;
+		const mark = paint(status === "answered" ? "green" : status === "failed" ? "red" : "yellow", "●");
 		const title = wrapTextWithAnsi(outcomeTitle(this.#questions.length, this.outcome), Math.max(1, width - 3));
 		const lines = answerLines(this.#questions, this.outcome, paint, width - 5);
 		return [

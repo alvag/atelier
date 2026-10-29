@@ -838,6 +838,29 @@ describe("Conversation ask_user answers", () => {
 		expect(text).not.toContain("other tool");
 	});
 
+	it.each([
+		["questions it could read", { questions }],
+		["no questions it could read", { questions: "not a list" }],
+	])("says an ask_user call failed with %s, with the tool's error, never a count", (_name, input) => {
+		const { text } = shown(
+			[
+				{ type: "tool_call_started", callId: "u1", tool: "ask_user", input },
+				{
+					type: "tool_call_finished",
+					callId: "u1",
+					ok: false,
+					summary: "Invalid input: ✖ Too big\n  → at questions[0].header \x1b[31m",
+					truncated: false,
+				},
+			] as Body[],
+			120,
+		);
+		expect(text).toContain(" ● ask_user failed\n   ⎿ Invalid input: ✖ Too big\n       → at questions[0].header ␛[31m");
+		expect(text).not.toContain("not asked");
+		expect(text).not.toContain("0 questions");
+		expect(text).not.toContain("\x1b");
+	});
+
 	it("opens the ask_user card into the answers instead of its input", () => {
 		const { text } = shown(asked(answered), 120, true);
 		expect(text).toContain("ask_user");
