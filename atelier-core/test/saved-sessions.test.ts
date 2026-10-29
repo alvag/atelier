@@ -21,6 +21,7 @@ import {
 	type AtelierEventBody,
 	FakeBackend,
 	type FakeStep,
+	defineTool,
 	folderKey,
 	Session,
 	type SessionOptions,
@@ -260,6 +261,25 @@ describe("the backend state", () => {
 			{ type: "state", backend: "claude-code", sessionId: "x", yoloTold: "yes" },
 		]);
 		await expect(store.load(cwd, "bad")).rejects.toMatchObject({ code: "corrupt" });
+	});
+
+	it("saves the yolo rules as told when the model took them with a tool call and the turn then failed", async () => {
+		const read = defineTool({
+			name: "read",
+			description: "read",
+			inputShape: {},
+			execute: async () => ({ ok: true, output: "", summary: "read", truncated: false }),
+		});
+		const toolThenError: FakeStep[] = [
+			{ toolCall: { tool: "read", input: {}, callId: "c1" } },
+			{ throw: "second model request failed" },
+		];
+		const { record, backend, session } = await started([toolThenError], { tools: [read] });
+		backend.resumeState = { sessionId: "cc-1" };
+		session.setPermissionMode("yolo");
+		await drain(session, "first");
+		await session.close();
+		expect((await new SessionStore(home).load(cwd, record.id)).yoloTold).toBe(true);
 	});
 
 	it("resumes with the configuration of the backend that wrote the state", async () => {

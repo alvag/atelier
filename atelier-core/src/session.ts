@@ -373,6 +373,8 @@ export class Session {
 	#queue: QueuedMessage[] = [];
 	/** The running turn answers a prompt, so a steer can go with its tool results. */
 	#steerable = false;
+	/** Marks what the running turn's prompt carried as the model's: the mode note and the review notice. */
+	#promptTaken: (() => void) | undefined;
 	/** The running turn ended interrupted or failed and gave its queue back: nothing more is queued behind it. */
 	#givenBack = false;
 	#abort: AbortController | undefined;
@@ -698,6 +700,11 @@ export class Session {
 			// It counts as told once the model took the prompt; until then the next prompt carries it again.
 			const yolo = this.#options.permissionMode === "yolo";
 			const telling = yolo !== this.#toldYolo;
+			// What the prompt carried is the model's once it answered or called a tool, even if the turn fails after.
+			this.#promptTaken = () => {
+				reviewNotice = undefined;
+				if (telling) this.#toldYolo = yolo;
+			};
 			if (telling) sent = `${yolo ? YOLO_RULES : LEFT_YOLO}\n\n${sent}`;
 			// A backend that took the conversation over by a summary gets it with its first prompt.
 			if (this.#handoff !== undefined) {
@@ -713,10 +720,7 @@ export class Session {
 			try {
 				for await (const event of backendSession.send(sent)) {
 					if (!refusal(event)) this.#recoveryInFlight = undefined;
-					if (answered(event)) {
-						reviewNotice = undefined;
-						if (telling) this.#toldYolo = yolo;
-					}
+					if (answered(event)) this.#promptTaken?.();
 					if (event.type === "turn_finished") finish ??= event;
 					else {
 						if (event.type === "error") failed = true;
@@ -730,6 +734,7 @@ export class Session {
 				turn.push(errorEvent("backend_error", describeError(error)));
 			} finally {
 				this.#steerable = false;
+				this.#promptTaken = undefined;
 				// Never taken: it goes with the next prompt, unless a later compaction left a newer one.
 				if (this.#recoveryInFlight !== undefined) this.#recovery ??= this.#recoveryInFlight;
 				this.#recoveryInFlight = undefined;
@@ -1380,6 +1385,8 @@ export class Session {
 
 	/** Runs a call of the main agent; in a turn that answers a prompt, the steers queued so far go with its result. */
 	async #executeTool(call: ToolCall): Promise<ToolCallResult> {
+		// A tool call comes from the model's answer, which backends do not always stream as an event.
+		this.#promptTaken?.();
 		// HEAD is read where the turn started before any command of the agent can move it; the backend got the prompt at once.
 		// An interrupt ends the wait, and a call of an interrupted turn does not run.
 		const signal = this.#abort?.signal;

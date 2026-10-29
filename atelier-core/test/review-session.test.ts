@@ -3100,6 +3100,17 @@ describe("the notice of the last review", () => {
 		expect(notices(s.main.prompts[1])).toBe(1);
 		expect(notices(s.main.prompts[2])).toBe(1);
 	});
+
+	it("counts the notice as given once the model called a tool for its prompt, even when the turn then fails", async () => {
+		const roles = reporting(warning("A follow-up."));
+		const toolThenError: FakeStep[] = [call("git", { args: ["status"] }), { throw: "second model request failed" }];
+		const s = await start({ turns: [HIGH_TURN, toolThenError, NEXT], roles });
+		await s.send("add auth");
+		await s.send("took it");
+		await s.send("again");
+		expect(notices(s.main.prompts[1])).toBe(1);
+		expect(notices(s.main.prompts[2])).toBe(0);
+	});
 });
 
 describe("the notice of the last verification", () => {
