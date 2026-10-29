@@ -230,6 +230,36 @@ describe("QuestionDialog's Type something row", () => {
 		expect(later).toEqual([{ other: "y" }]);
 	});
 
+	it("takes a chunk's keys and pastes in the order they came: an Enter before a paste does not send it", () => {
+		const { shown, answers, lines } = dialog();
+		shown.handleInput("3");
+		shown.handleInput(`\r${PASTE("evil")}`);
+		expect(answers).toEqual([]);
+		expect(typeRow(lines(120))).toBe(" ❯ 3. evil");
+		expect(lines(120)).toContain(" Type an answer, or esc to cancel");
+		const ordered = dialog();
+		ordered.shown.handleInput("3");
+		ordered.shown.handleInput(`a${PASTE("b")}c`);
+		ordered.shown.handleInput("\r");
+		expect(ordered.answers).toEqual([{ other: "abc" }]);
+	});
+
+	it("takes a paste that starts after a number put the cursor on the text, in the same chunk", () => {
+		const { shown, answers } = dialog();
+		shown.handleInput(`3${PASTE("x")}`);
+		expect(answers).toEqual([]);
+		shown.handleInput("\r");
+		expect(answers).toEqual([{ other: "x" }]);
+	});
+
+	it("drops the rest of a chunk once it answered", () => {
+		const { shown, answers } = dialog();
+		shown.handleInput("3");
+		shown.handleInput("y");
+		shown.handleInput(`\r${PASTE("more")}\r`);
+		expect(answers).toEqual([{ other: "y" }]);
+	});
+
 	it("shows control characters as markers and sends them as typed", () => {
 		const { shown, answers, lines } = dialog();
 		shown.handleInput("3");

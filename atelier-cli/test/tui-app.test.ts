@@ -2608,6 +2608,26 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("never sends a pasted answer without an Enter after the paste, even in one chunk of input", async () => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
+			stub.emit({ type: "user_question_requested", callId: "u4", questions: [batch[0]] });
+			await until(() => h.screen.screen().includes("Type something…"));
+			h.screen.type("3");
+			h.screen.type("\r\x1b[200~evil\x1b[201~");
+			await until(() => h.screen.screen().includes("evil"));
+			expect(answers()).toHaveLength(0);
+			h.screen.type("\r");
+			await until(() => answers().length === 1);
+			expect(answers()[0]).toMatchObject({ callId: "u4", answers: [{ questionId: "q1", other: "evil" }] });
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
 		it("neutralizes Arabic Letter Mark in TUI questions, labels and descriptions", async () => {
 			const h = harness([]);
 			const stub = listingCore();

@@ -22,38 +22,49 @@ function partialMarker(text: string, marker: string, least: number): number {
 	return 0;
 }
 
+/** What a chunk of input holds, in the order it came: keys typed, and pastes for a reader that keeps them. */
+export interface InputParts {
+	keys(keys: string): void;
+	/** Whether the paste starting now is kept, asked at its start marker after the keys before it. */
+	keep(): boolean;
+	pasted(text: string): void;
+}
+
 /**
  * Drops what is pasted from the terminal's input: what lies between a paste's start marker and its end marker, which
- * may arrive in different chunks of input. Feeding it every chunk also tells whether a paste is open. A paste that
- * starts while `keeping` is on is also kept, for `takePasted()` to give once it ends.
+ * may arrive in different chunks of input. Feeding it every chunk also tells whether a paste is open. `read` gives a
+ * chunk's keys and kept pastes in the order they came, so a text input can take a paste where it was made.
  */
 export class PasteFilter {
 	/** Between a paste's start marker and its end marker. */
 	pasting = false;
-	/** Whether a paste that starts now is kept, for a text input that takes pastes. */
-	keeping = false;
 	/** The end of a chunk that may be the start of a marker, kept until the next chunk says. */
 	#pending = "";
 	/** What the open paste holds so far, when it is kept. */
 	#kept: string | undefined;
-	/** The kept pastes that ended, not taken yet. */
-	#ended: string[] = [];
 
 	/** Whether nothing is pending: no paste open and no cut marker waiting for the rest of it. */
 	get idle(): boolean {
 		return !this.pasting && this.#pending === "";
 	}
 
-	/** The kept pastes that ended since the last call, in order. */
-	takePasted(): string[] {
-		return this.#ended.splice(0);
-	}
-
 	/** The keys in `data`, without what was pasted. */
 	feed(data: string): string {
+		let keys = "";
+		this.read(data, {
+			keys: (part) => {
+				keys += part;
+			},
+			keep: () => false,
+			pasted: () => {},
+		});
+		return keys;
+	}
+
+	/** `data`'s keys and pastes, each given to `parts` as it comes; a paste is given once it ends, if it was kept. */
+	read(data: string, parts: InputParts): void {
 		let rest = this.#pending + data;
 		this.#pending = "";
-		let keys = "";
 		while (rest !== "") {
 			if (this.pasting) {
 				const end = rest.indexOf(PASTE_END);
@@ -64,26 +75,26 @@ export class PasteFilter {
 					this.#pending = rest.slice(rest.length - cut);
 					break;
 				}
-				if (this.#kept !== undefined) this.#ended.push(this.#kept + rest.slice(0, end));
+				const kept = this.#kept === undefined ? undefined : this.#kept + rest.slice(0, end);
 				this.#kept = undefined;
 				rest = rest.slice(end + PASTE_END.length);
 				this.pasting = false;
+				if (kept !== undefined) parts.pasted(kept);
 				continue;
 			}
 			const start = rest.indexOf(PASTE_START);
 			if (start === -1) {
 				// A lone Esc is the key, not a cut marker: only "ESC [" and longer wait for the rest.
 				const cut = partialMarker(rest, PASTE_START, 2);
-				keys += rest.slice(0, rest.length - cut);
+				if (rest.length > cut) parts.keys(rest.slice(0, rest.length - cut));
 				this.#pending = rest.slice(rest.length - cut);
 				break;
 			}
-			keys += rest.slice(0, start);
+			if (start > 0) parts.keys(rest.slice(0, start));
 			rest = rest.slice(start + PASTE_START.length);
 			this.pasting = true;
-			this.#kept = this.keeping ? "" : undefined;
+			this.#kept = parts.keep() ? "" : undefined;
 		}
-		return keys;
 	}
 }
 
