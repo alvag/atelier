@@ -113,16 +113,24 @@ describe.skipIf(process.platform === "win32")("how many git processes one edit o
 		await rm(bin, { recursive: true, force: true });
 	});
 
-	it.each<[string, FakeToolInput]>([
-		["edit", { path: "a.txt", edits: [{ oldText: "old", newText: "new" }] }],
-		["write", { path: "a.txt", content: "new\n" }],
-	])("%s asks git for the repository once when it is checked and once before it writes", async (tool, input) => {
-		await writeFile(log, "");
-		const results = await session([[{ toolCall: { tool, callId: "c", input } }]]);
-		expect(results[0]?.ok).toBe(true);
-		const runs = (await readFile(log, "utf8")).split("\n").filter((line) => line !== "");
-		expect(runs.filter((line) => line.includes("--absolute-git-dir"))).toHaveLength(2);
-		// The repository's config is read with three `git config` each time, not twice as the git and the common directory.
-		expect(runs.filter((line) => line.startsWith(`config --file ${join(cwd, ".git", "config")} `))).toHaveLength(6);
-	});
+	for (const warm of [false, true])
+		it.each<[string, FakeToolInput]>([
+			["edit", { path: "a.txt", edits: [{ oldText: "old", newText: "new" }] }],
+			["write", { path: "a.txt", content: "new\n" }],
+		])(`%s checks git before writing (${warm ? "warm" : "cold"} worktree lookup)`, async (tool, input) => {
+			if (warm) {
+				await session([[{ toolCall: { tool, callId: "warm", input } }]]);
+				await writeFile(join(cwd, "a.txt"), "old\n");
+			}
+			await writeFile(log, "");
+			const results = await session([[{ toolCall: { tool, callId: "c", input } }]]);
+			expect(results[0]?.ok).toBe(true);
+			const runs = (await readFile(log, "utf8")).split("\n").filter((line) => line !== "");
+			expect(runs).toHaveLength(warm ? 4 : 5);
+			expect(runs.filter((line) => line.includes("--absolute-git-dir"))).toHaveLength(2);
+			// Both gate and execute read the config; a plain checkout's git and common directories are the same.
+			const configs = runs.filter((line) => line.startsWith(`config --file ${join(cwd, ".git", "config")} `));
+			expect(configs).toHaveLength(2);
+			expect(configs.every((line) => line.includes("--no-includes -z --get-regexp"))).toBe(true);
+		});
 });
