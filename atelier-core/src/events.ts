@@ -86,7 +86,7 @@ export interface PhaseAgent {
 	role: string;
 	backend: string;
 	model: string;
-	effort?: Effort | "off" | EffortNotSent;
+	effort?: Effort | "off" | "auto" | EffortNotSent;
 	effectiveEffort?: Effort;
 }
 
@@ -244,7 +244,8 @@ export type QueuedMessage = {
 export type AtelierEventBody =
 	/**
 	 * `effort`: the thinking level asked for, as sent with every request: the reasoning effort, `off` when thinking
-	 * was turned off, or `<level> not sent` when the model cannot take that level. Absent when no level was asked.
+	 * was turned off, `auto` when the model reasons on its own and takes no level, or `<level> not sent` when the
+	 * model cannot take that level. Absent when no level was asked.
 	 * `profile`: the main session's frozen profile, when it resolved one; set by the session.
 	 */
 	| {
@@ -252,7 +253,7 @@ export type AtelierEventBody =
 			backend: string;
 			model: string;
 			authSource: AuthSource;
-			effort?: Effort | "off" | EffortNotSent;
+			effort?: Effort | "off" | "auto" | EffortNotSent;
 			profile?: SessionProfile;
 			/** Set by the session: how much it asks before a tool call. */
 			permissionMode?: "normal" | "auto" | "yolo";
