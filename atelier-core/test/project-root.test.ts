@@ -115,6 +115,8 @@ describe("projectRoot", () => {
 		'[remote "origin]\n\turl = x\n[core]\n\tbare = false\n',
 		"[co re]\n\tbare = false\n",
 		'[core]\n\tbare = "false # not a comment"\n',
+		'[core]\n\tbare = " false "\n',
+		'[core]\n\tbare = " true "\n',
 	])(
 		"stops at a bare-looking folder whose config %j it cannot read, never reaching the checkout around it",
 		async (config) => {
