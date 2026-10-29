@@ -261,6 +261,13 @@ describe("coveredBy with project rules", () => {
 		expect(coveredBy("xargs make -C < targets.txt", ["make"])).toBe(true);
 	});
 
+	it("holds the whole line to the project's bounds when a project rule covers one of its commands", () => {
+		expect(coveredBy("printf '%s' /tmp | make -f -", ["printf"], ["make"])).toBe(false);
+		expect(coveredBy("printf x | xargs echo; make", ["printf", "echo"], ["make"])).toBe(false);
+		expect(coveredBy("printf '%s' /tmp", ["printf"], ["make"])).toBe(true);
+		expect(coveredBy("printf x | make -f -", ["printf"], ["make"])).toBe(true);
+	});
+
 	it("still covers such a line by a session rule", () => {
 		expect(coveredBy("pnpm -C /other install", ["pnpm"])).toBe(true);
 	});

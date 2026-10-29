@@ -299,8 +299,8 @@ const covers = (rules: ReadonlySet<string>, key: Key) =>
 
 /**
  * Whether the allowed rules cover every command of the line. `project` are the rules allowed always in this
- * session's project: they cover a command only when the line cannot take it elsewhere (no `cd`, `pushd` or `popd`, no
- * word that names a place outside the project).
+ * session's project: they cover a command only when no command of the line can take it elsewhere (no `cd`, `pushd`
+ * or `popd`, no `xargs`, no word that names a place outside the project).
  */
 export function coveredBy(command: string, allowed: Iterable<string>, project: Iterable<string> = []): boolean {
 	const rules = new Set(allowed);
@@ -308,8 +308,9 @@ export function coveredBy(command: string, allowed: Iterable<string>, project: I
 	if (rules.size === 0 && projectRules.size === 0) return false;
 	const keys = keysOf(command);
 	if (keys === undefined) return false;
-	const staysInProject = !keys.some((key) => CHANGES_DIRECTORY.has(key.program));
-	return keys.every((key) => covers(rules, key) || (staysInProject && !key.leavesProject && covers(projectRules, key)));
+	// A project rule holds the whole line to the project: any command of it can hand a place to the one it covers.
+	const staysInProject = !keys.some((key) => CHANGES_DIRECTORY.has(key.program) || key.leavesProject);
+	return keys.every((key) => covers(rules, key) || (staysInProject && covers(projectRules, key)));
 }
 
 /** How broadly `rule` may be kept: only for the session, in a project, or always; undefined when it is no rule `commandRules` could give. */
