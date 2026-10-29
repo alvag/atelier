@@ -555,14 +555,18 @@ function sandboxExecWorks(): boolean {
 	return probe.status === 0;
 }
 
-/** A path of a policy as a Seatbelt filter: a glob (with `*` or `**`) as a regular expression, anything else as itself and below. */
+/**
+ * A path of a policy as a Seatbelt filter, itself and below: a glob (with `*` or `**`) as a regular expression that
+ * also takes what is under a name it matches, as the library denies a pattern (a `.git` is a directory), anything
+ * else as a subpath.
+ */
 function seatbeltFilter(path: string): string {
 	if (!path.includes("*")) return `(subpath ${JSON.stringify(path)})`;
 	const regex = path
 		.split(/(\*\*\/|\*)/)
 		.map((part) => (part === "**/" ? "(.*/)?" : part === "*" ? "[^/]*" : part.replace(/[.^$+?()[\]{}|\\"]/g, "\\$&")))
 		.join("");
-	return `(regex #"^${regex}$")`;
+	return `(regex #"^${regex}(/.*)?$")`;
 }
 
 /** The real path of `place`, or undefined when it cannot be resolved or is the same. */
