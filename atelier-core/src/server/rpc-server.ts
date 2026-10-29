@@ -136,13 +136,6 @@ interface StartRequest {
 const MAX_REMEMBERED_IDS = 10_000;
 
 /**
- * Serves the protocol over a line stream: one Session per session.start,
- * every command answered exactly once, events forwarded with their
- * sessionId, and approvals answered by session.approve. Approvals still
- * pending are denied when their turn is interrupted, their session closes
- * or the client goes away.
- */
-/**
  * A backend's `default` for `options.list`. claude-code's is the alias opus, said as the model it stands for now so
  * a client finds it among the models (its backend still runs the alias), and absent when the list does not say what
  * opus stands for, rather than a guess. The others' is their own default, listed or not.
@@ -153,6 +146,13 @@ function defaultOf(name: BackendName, models: readonly string[]): { default?: st
 	return models.includes(id) ? { default: id } : {};
 }
 
+/**
+ * Serves the protocol over a line stream: one Session per session.start,
+ * every command answered exactly once, events forwarded with their
+ * sessionId, and approvals answered by session.approve. Approvals still
+ * pending are denied when their turn is interrupted, their session closes
+ * or the client goes away.
+ */
 export class RpcServer {
 	readonly #options: RpcServerOptions;
 	readonly #createId: () => string;
