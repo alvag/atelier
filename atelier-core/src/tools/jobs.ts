@@ -117,6 +117,8 @@ interface Entry {
 	stopping: boolean;
 	/** Settles once the job is over and its end was reported. */
 	done: Promise<void>;
+	/** Where its end comes among the jobs' ends, once it ended: the latest ones are kept. */
+	endOrder?: number;
 }
 
 /** The background jobs of one session: started, listed and stopped by the agent, all stopped when the session closes. */
@@ -124,6 +126,8 @@ export class Jobs {
 	readonly #options: JobsOptions;
 	readonly #entries = new Map<string, Entry>();
 	#next = 0;
+	/** How many jobs ended so far: the order of their ends. */
+	#ends = 0;
 	#closing = false;
 
 	constructor(options: JobsOptions) {
@@ -256,6 +260,7 @@ export class Jobs {
 		request.cleanup?.();
 		const { info } = entry;
 		info.durationMs = Date.now() - entry.startedAt;
+		entry.endOrder = ++this.#ends;
 		info.outputCapped = entry.sink.capped;
 		if (ended.error !== undefined) {
 			info.status = "failed";
@@ -277,9 +282,11 @@ export class Jobs {
 		this.#options.onEnded({ job: { ...info }, notice: noticeText(info, tail, blocked) });
 	}
 
-	/** Keeps the running jobs and the latest finished ones. */
+	/** Keeps the running jobs and the last MAX_FINISHED_JOBS to end, whenever they started. */
 	#forgetOld(): void {
-		const finished = [...this.#entries.values()].filter((entry) => entry.info.status !== "running");
+		const finished = [...this.#entries.values()]
+			.filter((entry) => entry.endOrder !== undefined)
+			.sort((a, b) => (a.endOrder ?? 0) - (b.endOrder ?? 0));
 		for (const entry of finished.slice(0, Math.max(0, finished.length - MAX_FINISHED_JOBS)))
 			this.#entries.delete(entry.info.id);
 	}
