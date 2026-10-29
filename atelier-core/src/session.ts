@@ -255,6 +255,12 @@ export interface SessionOptions {
 	 * `nextQueued`. A job that ends while a turn runs goes with its next tool result, or waits for `nextQueued` after it.
 	 */
 	wake?: () => void;
+	/**
+	 * Hears what happens while no turn runs and none will start for it: the end of a background job after a turn that
+	 * was interrupted or failed, whose notice waits for the user's next prompt (`job_finished`, with `waiting`). Without
+	 * it, the event goes first in the next turn instead.
+	 */
+	idleEvent?: (event: AtelierEventBody) => void;
 }
 
 /** What the main agent runs with, as `Session.configure` and the `session_configured` event say it. */
@@ -1484,7 +1490,7 @@ export class Session {
 			this.#jobNotices.push(notice);
 			if (!this.#jobsHeld) this.#jobsWake = true;
 		}
-		this.#say({
+		const ended: AtelierEventBody = {
 			type: "job_finished",
 			jobId: job.id,
 			label: job.label,
@@ -1496,7 +1502,11 @@ export class Session {
 			notified: notice !== undefined,
 			running: this.#jobs?.running ?? 0,
 			waiting: this.#jobNotices.length,
-		});
+		};
+		// Held notices start no turn: the clients hear of the end now, not when the user's next prompt runs.
+		const idle = this.#turn === undefined && this.#jobsHeld && !this.#closed ? this.#options.idleEvent : undefined;
+		if (idle !== undefined) idle(ended);
+		else this.#say(ended);
 		if (notice !== undefined && this.#turn === undefined && !this.#closed && !this.#jobsHeld) this.#gatherWake();
 	}
 

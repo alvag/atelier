@@ -5,7 +5,7 @@ import type { Readable } from "node:stream";
 import type { AgentBackend } from "../backend.ts";
 import { claudeCodeAliases, claudeCodeIdOf } from "../backends/claude-code/models.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
-import { type AtelierEvent, describeError, type JsonValue } from "../events.ts";
+import { type AtelierEvent, type AtelierEventBody, describeError, type JsonValue } from "../events.ts";
 import type { McpManager } from "../mcp/index.ts";
 import type { MemoryPort } from "../memory/index.ts";
 import { PERMISSION_MODES } from "../modes.ts";
@@ -723,6 +723,8 @@ export class RpcServer {
 		const mcp = this.#options.connectMcp?.(cwd);
 		/** Starts the turn of a job notice that came with no turn running, once the session is served. */
 		let wake: (() => void) | undefined;
+		/** Says an event outside any turn, once the session is served. */
+		let idleEvent: ((event: AtelierEventBody) => void) | undefined;
 		let session: Session;
 		try {
 			session = await Session.start({
@@ -765,6 +767,7 @@ export class RpcServer {
 					createBackend: (name) => this.#options.createBackend(name ?? backend),
 				},
 				wake: () => wake?.(),
+				idleEvent: (event) => idleEvent?.(event),
 			});
 		} catch (error) {
 			if (recorder) this.#writing.delete(recorder.path);
@@ -802,6 +805,9 @@ export class RpcServer {
 		wake = () => {
 			const entry = this.#sessions.get(sessionId);
 			if (entry !== undefined && !entry.session.busy) this.#runQueued(sessionId, entry);
+		};
+		idleEvent = (event) => {
+			if (this.#sessions.has(sessionId)) this.#send({ type: "session_event", sessionId, event });
 		};
 		return { sessionId, session, ...(recorder === undefined ? {} : { savedId: recorder.id }) };
 	}

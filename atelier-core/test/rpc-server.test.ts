@@ -1182,4 +1182,29 @@ describe("RpcServer and background jobs", () => {
 		await h.responseTo(h.send({ command: "shutdown" }));
 		await h.done;
 	});
+
+	it("says the end of a job after an interrupted turn at once, outside any turn, and starts no turn for it", async () => {
+		const go = join(cwd, "go");
+		const background = createBackgroundTools({ sandbox: new Sandbox({ platform: "darwin", manager: fakeManager }) });
+		const command = `while [ ! -f ${go} ]; do sleep 0.1; done; echo done`;
+		const h = harness(
+			[[[{ toolCall: { tool: "bash_background", input: { command }, callId: "c1" } }, { waitForInterrupt: true }]]],
+			background,
+		);
+		const sessionId = await h.start();
+		await h.responseTo(h.send({ command: "session.send", sessionId, prompt: "start it" }));
+		await until(() => h.events(sessionId).some((e) => e.type === "job_started"));
+		await h.responseTo(h.send({ command: "session.interrupt", sessionId }));
+		await until(() => h.events(sessionId).some((e) => e.type === "turn_finished"));
+		await writeFile(go, "");
+		await until(() => h.messages.some((m) => m.type === "session_event"));
+		expect(h.messages.find((m) => m.type === "session_event")).toEqual({
+			type: "session_event",
+			sessionId,
+			event: expect.objectContaining({ type: "job_finished", jobId: "1", notified: true, running: 0, waiting: 1 }),
+		});
+		expect(h.backends[0]?.prompts).toHaveLength(1);
+		await h.responseTo(h.send({ command: "shutdown" }));
+		await h.done;
+	});
 });

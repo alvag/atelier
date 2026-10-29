@@ -170,6 +170,7 @@ const serverMessageSchema = z.union([
 		sessionId,
 		event: z.looseObject({ type: z.string(), seq: z.number(), turnId: z.string() }),
 	}),
+	z.object({ type: z.literal("session_event"), sessionId, event: z.looseObject({ type: z.string() }) }),
 	z.object({ type: z.literal("protocol_error"), message: z.string() }),
 ]);
 
