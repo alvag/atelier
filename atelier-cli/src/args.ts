@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
 	formatModel,
@@ -14,6 +14,13 @@ import { parseSubcommand, type Subcommand } from "./subcommands.ts";
 
 export class UsageError extends Error {
 	override name = "UsageError";
+}
+
+export class WorkingDirectoryUnavailableError extends Error {
+	override name = "WorkingDirectoryUnavailableError";
+	constructor() {
+		super("The working directory no longer exists. Change to an existing directory and run atelier again.");
+	}
 }
 
 export interface CliArgs {
@@ -181,7 +188,7 @@ Environment:
 
 export function parseCliArgs(
 	argv: readonly string[],
-	baseDir: string,
+	baseDir: string | (() => string),
 	env: Record<string, string | undefined> = {},
 ): CliArgs {
 	let parsed: ReturnType<typeof parse>;
@@ -248,7 +255,7 @@ export function parseCliArgs(
 		...(chosenBackend === undefined ? {} : { explicitBackend: chosenBackend }),
 		...(values.backend === undefined && named.backend !== undefined ? { backendFromModel: true as const } : {}),
 		...(values.profile === undefined ? {} : { profile: values.profile }),
-		cwd: resolve(baseDir, values.cwd ?? "."),
+		cwd: resolveCwd(values.cwd ?? ".", baseDir),
 		help: values.help ?? false,
 		version: values.version ?? false,
 		review: !(values["no-review"] ?? false) && reviewEnabled(env),
@@ -270,6 +277,19 @@ export function parseCliArgs(
 				}
 			: {}),
 	};
+}
+
+function resolveCwd(value: string, baseDir: string | (() => string)): string {
+	if (isAbsolute(value)) return resolve(value);
+	let base: string;
+	try {
+		base = typeof baseDir === "function" ? baseDir() : baseDir;
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT")
+			throw new WorkingDirectoryUnavailableError();
+		throw error;
+	}
+	return resolve(base, value);
 }
 
 function parse(argv: readonly string[]) {

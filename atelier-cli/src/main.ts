@@ -59,7 +59,7 @@ const exitCode = await run(
 		isTTY: Boolean(process.stdin.isTTY),
 		stdout: (text) => process.stdout.write(text),
 		stderr: (text) => process.stderr.write(text),
-		cwd: process.cwd(),
+		cwd: () => process.cwd(),
 		env: process.env,
 		...(process.getuid ? { uid: process.getuid() } : {}),
 		home: homedir(),
