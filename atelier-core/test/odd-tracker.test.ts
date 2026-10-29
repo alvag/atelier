@@ -69,7 +69,7 @@ describe("feature tool", () => {
 	it("is offered only when ODD is on, and never to subagents", async () => {
 		const plain = new FakeBackend([]);
 		await (await Session.start({ backend: plain, cwd, tools })).close();
-		expect(plain.startOptions?.tools.map((t) => t.name)).toEqual(["read", "edit", "bash", "grep"]);
+		expect(plain.startOptions?.tools.map((t) => t.name)).toEqual(["read", "edit", "bash", "grep", "ask_user"]);
 
 		const child = new FakeBackend([[{ event: { type: "text_delta", text: "r" } }, { event: finished }]]);
 		const {
@@ -99,6 +99,7 @@ describe("feature tool", () => {
 			"bash",
 			"grep",
 			"task",
+			"ask_user",
 			"feature",
 			"phase",
 		]);

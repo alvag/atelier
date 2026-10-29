@@ -245,6 +245,7 @@ describe("run", () => {
 			"web_fetch",
 			"web_search",
 			"task",
+			"ask_user",
 			"risk",
 			"feature",
 			"phase",

@@ -62,6 +62,12 @@ export function parseUserAnswers(questions: readonly UserQuestion[], input: unkn
 	return answers;
 }
 
+export function parseUserQuestionResult(questions: readonly UserQuestion[], input: unknown): UserQuestionResult {
+	const response = result.parse(input);
+	if (response.status === "answered") response.answers = parseUserAnswers(questions, response.answers);
+	return response;
+}
+
 /** Created by the main session, not included in coreTools or inherited by subagents. */
 export function createAskUserTool(ask?: AskUser): ToolDefinition {
 	return defineTool({
@@ -75,10 +81,10 @@ export function createAskUserTool(ask?: AskUser): ToolDefinition {
 			"Wait for the result; never infer an answer from a cancelled, superseded or unavailable question.",
 		inputShape: { questions: questions.describe("One complete batch of questions for the user") },
 		execute: async ({ questions }, context) => {
-			const response = result.parse(
+			const response = parseUserQuestionResult(
+				questions,
 				(await ask?.(questions, context)) ?? { status: "unavailable", reason: "no_interactive_client" },
 			);
-			if (response.status === "answered") response.answers = parseUserAnswers(questions, response.answers);
 			return {
 				ok: response.status === "answered",
 				output: JSON.stringify(response),

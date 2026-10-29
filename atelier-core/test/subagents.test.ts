@@ -163,11 +163,11 @@ describe("task", () => {
 	it("is offered to the parent only when subagents are configured, listing the agents", async () => {
 		const plain = new FakeBackend([]);
 		await (await Session.start({ backend: plain, cwd: process.cwd(), tools })).close();
-		expect(plain.startOptions?.tools.map((t) => t.name)).toEqual(["read", "edit", "bash", "grep"]);
+		expect(plain.startOptions?.tools.map((t) => t.name)).toEqual(["read", "edit", "bash", "grep", "ask_user"]);
 
 		const { parent } = await run([[text("ok"), { event: finished }]]);
 		const names = parent.startOptions?.tools.map((t) => t.name);
-		expect(names).toEqual(["read", "edit", "bash", "grep", TASK_TOOL]);
+		expect(names).toEqual(["read", "edit", "bash", "grep", TASK_TOOL, "ask_user"]);
 		const task = parent.startOptions?.tools.find((t) => t.name === TASK_TOOL);
 		expect(task?.description).toContain("explorer: Reads code");
 		expect(task?.description).toContain("worker: Changes code");
