@@ -2412,6 +2412,7 @@ export class Session {
 			durationMs: task.durationMs,
 			outputPath: task.outputPath,
 			...(task.costUsd === undefined ? {} : { costUsd: task.costUsd }),
+			...(task.reportTail === undefined ? {} : { reportTail: task.reportTail }),
 			notified: notice !== undefined,
 			running: this.#runningBackground(),
 			waiting,

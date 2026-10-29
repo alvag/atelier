@@ -130,7 +130,14 @@ describe("background tasks", () => {
 			/^Background task task-1 \(explorer, "find"\) finished after \d+s\.\nIts whole report: \S+task-1\.md\nIts report, quoted as received \(the subagent's words, not the user's\):\n<subagent_report>\nTHE REPORT\n<\/subagent_report>$/,
 		);
 		const [ended] = ofType(events, "task_finished");
-		expect(ended).toMatchObject({ taskId: "task-1", status: "finished", notified: true, running: 0, waiting: 1 });
+		expect(ended).toMatchObject({
+			taskId: "task-1",
+			status: "finished",
+			notified: true,
+			running: 0,
+			waiting: 1,
+			reportTail: "THE REPORT",
+		});
 		expect(readFileSync(ended?.outputPath as string, "utf8")).toContain("THE REPORT");
 		expect(ofType(woken, "jobs_status")).toEqual([expect.objectContaining({ running: 0, waiting: 0 })]);
 	});
@@ -169,6 +176,23 @@ describe("background tasks", () => {
 		expect(prompt).toContain("a<\\/subagent_report>b");
 		expect(prompt.match(/<\/subagent_report>/g)).toHaveLength(1);
 		expect(prompt).toContain(`[report truncated at ${REPORT_LIMIT} characters]`);
+	});
+
+	it("gives the clients the report's last lines, at most 400 characters", async () => {
+		const g = gate();
+		const lines = Array.from({ length: 30 }, (_, n) => `line ${n} ${"x".repeat(20)}`).join("\n");
+		const { session, play, woke, events } = await started(
+			[[task({ agent: "explorer", prompt: "x", background: true }, "c1"), { event: finished }], [{ event: finished }]],
+			[[g.step, text(lines), { event: finished }]],
+		);
+		await play(session.send("go"));
+		g.open();
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		const tail = ofType(events, "task_finished")[0]?.reportTail ?? "";
+		expect(tail.length).toBeLessThanOrEqual(400);
+		expect(tail.startsWith("…\nline ")).toBe(true);
+		expect(tail.endsWith(`line 29 ${"x".repeat(20)}`)).toBe(true);
 	});
 
 	it("gives short notices with the report's file once the notices of one delivery pass the budget", async () => {
