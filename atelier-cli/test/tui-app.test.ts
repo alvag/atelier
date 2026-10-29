@@ -2538,11 +2538,12 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("Question 2 of 2"));
 			expect(answers()).toHaveLength(0);
-			// A number answers its row at once: 3 is Type something.
+			// A number answers its row at once; 3, Type something, takes the text typed in place.
 			h.screen.type("3");
-			await until(() => h.screen.screen().includes("Enter sends"));
+			await until(() => h.screen.screen().includes("enter send · ↑↓ move · esc cancel"));
 			h.screen.type("   ");
 			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("Type an answer, or esc to cancel"));
 			expect(answers()).toHaveLength(0);
 			h.screen.type("my cache");
 			h.screen.type("\r");
@@ -2696,18 +2697,16 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => answers().length === 1);
 			expect(answers()[0]).toMatchObject({ callId: "u1", answers: null });
 			stub.emit({ type: "user_question_resolved", callId: "u1", result: { status: "cancelled", reason: "user" } });
-			// Resolved by the core while the Other input is open and an approval waits behind it.
+			// Resolved by the core while the user types an answer and an approval waits behind it.
 			askUser(stub.emit, "u2");
 			stub.emit({ type: "approval_requested", tool: "bash", callId: "a1", command: "echo hi" });
 			await until(() => h.screen.screen().includes("Question 1 of 2"));
-			h.screen.type("\x1b[B");
-			h.screen.type("\x1b[B");
-			h.screen.type("\x1b[B");
-			h.screen.type("\r");
-			await until(() => h.screen.screen().includes("Enter sends"));
+			h.screen.type("\x1b[A");
+			h.screen.type("half typed");
+			await until(() => h.screen.screen().includes("half typed"));
 			stub.emit({ type: "user_question_resolved", callId: "u2", result: { status: "superseded" } });
 			await until(() => h.screen.screen().includes("Run this command?"));
-			// Keys go to the approval left behind, not to the closed text input.
+			// Keys go to the approval left behind, not to the closed question.
 			h.screen.type("\x1b[B");
 			h.screen.type("\r");
 			await until(() => stub.log.commands.some((command) => command.command === "session.approve"));

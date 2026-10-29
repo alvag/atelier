@@ -24,13 +24,25 @@ function partialMarker(text: string, marker: string, least: number): number {
 
 /**
  * Drops what is pasted from the terminal's input: what lies between a paste's start marker and its end marker, which
- * may arrive in different chunks of input. Feeding it every chunk also tells whether a paste is open.
+ * may arrive in different chunks of input. Feeding it every chunk also tells whether a paste is open. A paste that
+ * starts while `keeping` is on is also kept, for `takePasted()` to give once it ends.
  */
 export class PasteFilter {
 	/** Between a paste's start marker and its end marker. */
 	pasting = false;
+	/** Whether a paste that starts now is kept, for a text input that takes pastes. */
+	keeping = false;
 	/** The end of a chunk that may be the start of a marker, kept until the next chunk says. */
 	#pending = "";
+	/** What the open paste holds so far, when it is kept. */
+	#kept: string | undefined;
+	/** The kept pastes that ended, not taken yet. */
+	#ended: string[] = [];
+
+	/** The kept pastes that ended since the last call, in order. */
+	takePasted(): string[] {
+		return this.#ended.splice(0);
+	}
 
 	/** The keys in `data`, without what was pasted. */
 	feed(data: string): string {
@@ -42,9 +54,13 @@ export class PasteFilter {
 				const end = rest.indexOf(PASTE_END);
 				if (end === -1) {
 					// Everything in a paste is dropped; only a cut end marker is kept.
-					this.#pending = rest.slice(rest.length - partialMarker(rest, PASTE_END, 1));
+					const cut = partialMarker(rest, PASTE_END, 1);
+					if (this.#kept !== undefined) this.#kept += rest.slice(0, rest.length - cut);
+					this.#pending = rest.slice(rest.length - cut);
 					break;
 				}
+				if (this.#kept !== undefined) this.#ended.push(this.#kept + rest.slice(0, end));
+				this.#kept = undefined;
 				rest = rest.slice(end + PASTE_END.length);
 				this.pasting = false;
 				continue;
@@ -60,6 +76,7 @@ export class PasteFilter {
 			keys += rest.slice(0, start);
 			rest = rest.slice(start + PASTE_START.length);
 			this.pasting = true;
+			this.#kept = this.keeping ? "" : undefined;
 		}
 		return keys;
 	}
@@ -474,78 +491,6 @@ export class PasteDialog implements Component, Focusable {
 		return [
 			truncateToWidth(paint("yellow", `┌${title}${"─".repeat(fill)}┐`), width),
 			line(hint),
-			line(`> ${shown}`),
-			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
-		];
-	}
-}
-
-/** The longest text an `ask_user` answer of the user's own words may have. */
-const OTHER_MAX = 2000;
-
-/**
- * A text to type, in a frame like a question's, for the answer a list does not offer. Typing, pasting and editing are
- * the input line's; Enter sends what was typed as it is, but not nothing, blank or longer than 2000 characters (it says
- * so and keeps the text); Esc answers nothing.
- */
-export class TextDialog implements Component, Focusable {
-	focused = false;
-	readonly #title: string;
-	readonly #lines: readonly string[];
-	readonly #paint: Paint;
-	readonly #input = new Input();
-	#problem = "";
-	/** Whether it has answered: a late key or submit after that answers nothing. */
-	#answered = false;
-
-	constructor(title: string, paint: Paint, answer: (value: string | undefined) => void, lines: readonly string[] = []) {
-		this.#title = title;
-		this.#lines = lines;
-		this.#paint = paint;
-		const once = (value: string | undefined) => {
-			if (this.#answered) return;
-			this.#answered = true;
-			answer(value);
-		};
-		this.#input.onSubmit = (value) => {
-			if (this.#answered) return;
-			if (value.trim() === "") this.#problem = "Type an answer, or Esc to cancel";
-			else if (value.length > OTHER_MAX) this.#problem = `Too long: ${value.length} of ${OTHER_MAX} characters`;
-			else once(value);
-		};
-		this.#input.onEscape = () => once(undefined);
-	}
-
-	handleInput(data: string): void {
-		if (this.#answered) return;
-		this.#problem = "";
-		this.#input.handleInput(data);
-	}
-
-	reveal(): void {}
-
-	toggle(): boolean {
-		return true;
-	}
-
-	invalidate(): void {}
-
-	render(width: number): string[] {
-		const paint = this.#paint;
-		const inner = Math.max(1, width - 4);
-		const title = truncateToWidth(` ${this.#title} `, inner);
-		const fill = Math.max(0, width - 2 - visibleWidth(title));
-		const line = (text: string) => {
-			const cut = truncateToWidth(text, inner, "…", true);
-			return `${paint("yellow", "│")} ${cut} ${paint("yellow", "│")}`;
-		};
-		const typed = visibleText(this.#input.getValue()).text;
-		// The end of a long text is what changes as it is typed or pasted.
-		const shown = typed.length > inner - 2 ? `…${typed.slice(typed.length - (inner - 3))}` : typed;
-		return [
-			truncateToWidth(paint("yellow", `┌${title}${"─".repeat(fill)}┐`), width),
-			...this.#lines.flatMap((text) => wrapTextWithAnsi(text, inner)).map(line),
-			line(paint("dim", this.#problem || "Type your answer · Enter sends · Esc cancels")),
 			line(`> ${shown}`),
 			truncateToWidth(paint("yellow", `└${"─".repeat(Math.max(0, width - 2))}┘`), width),
 		];
