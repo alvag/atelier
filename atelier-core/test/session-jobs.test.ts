@@ -3,7 +3,14 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type AtelierEvent, type AtelierEventBody, FakeBackend, type FakeStep, Session } from "../src/index.ts";
+import {
+	type AtelierEvent,
+	type AtelierEventBody,
+	BUILTIN_AGENTS,
+	FakeBackend,
+	type FakeStep,
+	Session,
+} from "../src/index.ts";
 import { createBackgroundTools } from "../src/tools/background.ts";
 import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 
@@ -193,5 +200,39 @@ describe("background jobs in a session", () => {
 		await session.close();
 		expect(() => process.kill(pid, 0)).toThrow();
 		expect(session.nextQueued()).toBeUndefined();
+	});
+});
+
+describe("closing a session with background jobs", () => {
+	it("stops every job even when another part of the close fails, and still says that failure", async () => {
+		const pidFile = join(cwd, "pid");
+		const child = new FakeBackend([[{ hang: true }]]);
+		child.closeError = "child close failed";
+		const backend = new FakeBackend([
+			[
+				call("bash_background", { command: `echo $$ > ${pidFile}; exec sleep 300` }, "c1"),
+				call("task", { agent: "worker", prompt: "work" }, "c2"),
+				{ event: finished },
+			],
+		]);
+		const session = await Session.start({
+			backend,
+			cwd,
+			tools: createBackgroundTools({ sandbox: sandbox() }),
+			subagents: { agents: BUILTIN_AGENTS, createBackend: async () => child },
+		});
+		const turn = (async () => {
+			for await (const _event of session.send("start")) {
+			}
+		})();
+		let pid = 0;
+		await until(() => {
+			pid = existsSync(pidFile) ? Number.parseInt(readFileSync(pidFile, "utf8"), 10) || 0 : 0;
+			return pid > 0 && child.startOptions !== undefined;
+		});
+		await expect(session.close()).rejects.toThrow("child close failed");
+		expect(session.jobs).toEqual({ running: 0, waiting: 0 });
+		expect(() => process.kill(pid, 0)).toThrow();
+		await turn;
 	});
 });
