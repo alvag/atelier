@@ -4,12 +4,14 @@ import {
 	type AtelierEvent,
 	cacheHitRate,
 	describeRefusal,
+	type JsonValue,
 	type PhaseAgent,
 	type PhaseSpent,
 	type ReviewStep,
 	type TurnPhase,
 	visibleText,
 } from "@atelier/core";
+import { MEMORY_TOOL, memoryCallText, memoryOutcome } from "./memory-call.ts";
 
 export interface RendererOptions {
 	stdout: (text: string) => void;
@@ -192,7 +194,8 @@ export function stepText(step: ReviewStep): string {
 /** Turns core events into terminal output. Keeps track of the line so tool and token lines start clean. */
 export class Renderer {
 	readonly #options: RendererOptions;
-	readonly #tools = new Map<string, string>();
+	/** The calls under way, by id: what each line names once the call finishes. */
+	readonly #tools = new Map<string, { tool: string; input: JsonValue }>();
 	/** The profile the header last said: a later session_started without one repeats it. */
 	#profile: NonNullable<Extract<AtelierEvent, { type: "session_started" }>["profile"]> | undefined;
 	/** The backend the header last said: the phases line names another backend only. */
@@ -248,13 +251,13 @@ export class Renderer {
 				this.#writeIndented(event.text);
 				return;
 			case "tool_call_started":
-				this.#tools.set(event.callId, event.tool);
+				this.#tools.set(event.callId, { tool: event.tool, input: event.input });
 				return;
 			case "tool_call_finished": {
-				const tool = this.#tools.get(event.callId) ?? "tool";
+				const { tool, input } = this.#tools.get(event.callId) ?? { tool: "tool", input: null };
 				this.#tools.delete(event.callId);
 				const mark = event.ok ? this.#style("green", "✓") : this.#style("red", "✗");
-				this.#line(`${CHILD}${this.#style("cyan", "▸")} ${shownTool(tool, event.summary)} ${mark}`);
+				this.#line(`${CHILD}${this.#style("cyan", "▸")} ${shownTool(tool, event.summary, input)} ${mark}`);
 				this.#blocked(event.blocked, `${CHILD}  `);
 				return;
 			}
@@ -451,14 +454,14 @@ export class Renderer {
 			case "review_consent_requested":
 				return;
 			case "tool_call_started":
-				this.#tools.set(event.callId, event.tool);
+				this.#tools.set(event.callId, { tool: event.tool, input: event.input });
 				return;
 			case "tool_call_finished": {
-				const tool = this.#tools.get(event.callId) ?? "tool";
+				const { tool, input } = this.#tools.get(event.callId) ?? { tool: "tool", input: null };
 				this.#tools.delete(event.callId);
 				const mark = event.ok ? this.#style("green", "✓") : this.#style("red", "✗");
 				const note = event.truncated ? this.#style("dim", " (truncated)") : "";
-				this.#line(`${this.#style("cyan", "▸")} ${shownTool(tool, event.summary)} ${mark}${note}`);
+				this.#line(`${this.#style("cyan", "▸")} ${shownTool(tool, event.summary, input)} ${mark}${note}`);
 				this.#blocked(event.blocked, "  ");
 				return;
 			}
@@ -610,7 +613,18 @@ export function mcpStatusLines(event: Extract<AtelierEvent, { type: "mcp_status"
 	return { ...(up.length === 0 ? {} : { ok: `mcp: ${up.join(", ")}` }), warnings };
 }
 
-/** A tool's name and summary as a line shows them: the model and MCP servers choose them, so control characters show as markers. */
-function shownTool(tool: string, summary: string): string {
+/**
+ * A tool's name and summary as a line shows them: the model and MCP servers choose them, so control characters show as
+ * markers. A memory call says what it did and how it came out, `memory search "query" · 2 results`.
+ */
+function shownTool(tool: string, summary: string, input: JsonValue): string {
+	if (tool === MEMORY_TOOL) {
+		const { outcome, warning } = memoryOutcome(input, summary);
+		return [
+			`${tool} ${memoryCallText(input)}`,
+			outcome,
+			...(warning === undefined ? [] : [`warning: ${warning}`]),
+		].join(" · ");
+	}
 	return `${visibleText(tool).text} ${visibleText(summary).text}`;
 }

@@ -45,6 +45,29 @@ describe("Renderer", () => {
 		expect(stderr).toBe("");
 	});
 
+	it("says what a memory call did and how it came out", () => {
+		const call = (callId: string, input: Record<string, string | number>, ok: boolean, summary: string) =>
+			[
+				{ type: "tool_call_started", callId, tool: "memory", input },
+				{ type: "tool_call_finished", callId, ok, summary, truncated: false },
+			] as const;
+		const { stdout } = render([
+			...call("m1", { action: "search", query: "tui\ncards" }, true, "2 results"),
+			...call("m2", { action: "get", id: 7 }, true, "#7 [decision] Use MCP"),
+			...call("m3", { action: "save", title: "Cards", type: "decision" }, true, "Saved memory #8. Warning: slow"),
+			...call("m4", { action: "get", id: 9 }, false, "No memory #9."),
+		]);
+		expect(stdout).toBe(
+			[
+				'▸ memory search "tui cards" · 2 results ✓',
+				"▸ memory get #7 · [decision] Use MCP ✓",
+				'▸ memory save "Cards" · saved #8 · warning: slow ✓',
+				"▸ memory get #9 · No memory #9. ✗",
+				"",
+			].join("\n"),
+		);
+	});
+
 	describe("the sandbox", () => {
 		it("says on stdout that bash is sandboxed", () => {
 			const { stdout, stderr } = render([{ type: "sandbox_status", sandboxed: true, mechanism: "macOS seatbelt" }]);
