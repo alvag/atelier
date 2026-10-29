@@ -1,3 +1,4 @@
+import { isInsideFolded } from "./paths.ts";
 import type { SandboxPolicyName } from "./sandbox.ts";
 
 /**
@@ -9,14 +10,19 @@ import type { SandboxPolicyName } from "./sandbox.ts";
 
 const FILE_WRITE = /\bfile-write[\w-]*\s+(\S.*)$/;
 const FILE_READ = /\bfile-read[\w-]*\s+(\S.*)$/;
-/** A path in a `.git` or a `.git` itself. */
-const IN_GIT = /\/\.git(\/|$)/;
+const NETWORK = /\bnetwork-outbound\s+(\S+)(?:\s+\((.*)\))?\s*$/;
+/** A path in a `.git` or a `.git` itself, in any letter case: macOS's file system does not tell `.GIT` from `.git`. */
+const IN_GIT = /\/\.git(\/|$)/i;
 
 /** Under a directory the agent writes, a denied write in a `.git` is one of the git protections, not a place left out. */
 function isGitProtection(path: string, writable: readonly string[]): boolean {
-	return IN_GIT.test(path) && writable.some((dir) => path.startsWith(`${dir}/`));
+	return IN_GIT.test(path) && writable.some((dir) => isInsideFolded(dir, path));
 }
-const NETWORK = /\bnetwork-outbound\s+(\S+)(?:\s+\((.*)\))?\s*$/;
+
+/** Why a write was denied, as the user reads it. */
+function writeReason(path: string, writable: readonly string[]): string {
+	return isGitProtection(path, writable) ? "git state that runs code" : "not an allowed write path";
+}
 
 /**
  * Reads the system itself makes on behalf of almost any tool (preferences,
@@ -39,8 +45,7 @@ export function describeViolation(
 		return `network connect to ${network[1]}${reason === undefined ? "" : ` (${reason})`}`;
 	}
 	const write = FILE_WRITE.exec(line);
-	if (write)
-		return `write to ${write[1]} (${isGitProtection(write[1] ?? "", writable) ? "git state that runs code" : "not an allowed write path"})`;
+	if (write) return `write to ${write[1]} (${writeReason(write[1] ?? "", writable)})`;
 	const read = FILE_READ.exec(line);
 	if (read && !SYSTEM_PROBE.test(read[1] ?? "")) return `read of ${read[1]} (denied by the sandbox policy)`;
 	return undefined;
