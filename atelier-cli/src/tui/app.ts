@@ -300,6 +300,15 @@ interface Chosen {
 /** Whether a prompt can name the session in the terminal's title: a slash command does not. */
 const namesSession = (prompt: string) => !prompt.trim().startsWith("/");
 
+/** What the user sent in a saved session, in order: its prompts and the main agent's queued messages that entered. */
+const sentTexts = (entries: readonly SavedEntry[]) =>
+	entries.flatMap((entry) => {
+		if (entry.type === "prompt") return [entry.text];
+		if (entry.type === "event" && entry.event.type === "queued_message" && entry.event.parentCallId === undefined)
+			return [entry.event.text];
+		return [];
+	});
+
 /** The core refused the level chosen for a session it had just started. */
 class EffortRefused extends Error {}
 
@@ -349,8 +358,7 @@ async function resumeSession(
 	};
 	const entries = resumed.entries as unknown as SavedEntry[];
 	conversation.plain(savedTranscript(savedId, resumed.name, entries));
-	const prompts = entries.flatMap((entry) => (entry.type === "prompt" ? [entry.text] : []));
-	const name = resumed.name ?? prompts.find(namesSession);
+	const name = resumed.name ?? sentTexts(entries).find(namesSession);
 	return {
 		sessionId: resumed.sessionId,
 		savedId,

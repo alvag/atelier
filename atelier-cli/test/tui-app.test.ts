@@ -2830,6 +2830,34 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("titles a resumed session with a saved queued message that came before its first prompt", async () => {
+			const h = harness([]);
+			const queued = { type: "queued_message", seq: 1, turnId: "t1", kind: "steer", text: "first queued prompt" };
+			const stub = stubCore({
+				answer: (command) =>
+					command.command === "session.resume"
+						? {
+								sessionId: "s2",
+								entries: [
+									{ type: "prompt", turnId: "t1", text: "/review" },
+									{ type: "event", event: queued },
+									{ type: "prompt", turnId: "t2", text: "later" },
+								],
+							}
+						: undefined,
+			});
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("/resume abc");
+			h.screen.type("\r");
+			await until(() => h.screen.titles.length === 2);
+			expect(h.screen.titles.at(-1)).toBe(`Atelier - first queued prompt - ${basename(cwd)}`);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
 		it("does not report a list of the TUI's own as blocked", async () => {
 			const h = harness([]);
 			const stub = listingCore();
