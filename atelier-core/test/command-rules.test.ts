@@ -173,3 +173,11 @@ describe("isValidCommandRule", () => {
 		}
 	});
 });
+
+describe("the nesting cap", () => {
+	it("covers a command behind eight wrappers and never one behind nine", () => {
+		expect(coveredBy(`${"nohup ".repeat(8)}open x.png`, ["open"])).toBe(true);
+		expect(coveredBy(`${"nohup ".repeat(9)}open x.png`, ["open"])).toBe(false);
+		expect(commandRules(`${"nohup ".repeat(9)}open x.png`).rules).toBeUndefined();
+	});
+});
