@@ -735,23 +735,41 @@ describe.skipIf(!onMac)("the verifier's bash in the sandbox", () => {
 			expect(result.output).toContain("+candidate");
 			expect(result.output).toContain("base\nbase\ncandidate\n");
 
+			async function expectDeniedReads(secret: string) {
+				const commands = [first, second].map((operation) => (operation === "ls" ? "ls /var/" : `cat ${secret}`));
+				const command = `readlink /var; ${commands.join("; ")}`;
+				const beyond = await verifier().execute({ command }, { cwd: linked });
+				const diagnostic = `cwd=${linked}\n${command}\n${beyond.output}`;
+				expect(beyond.ok, diagnostic).toBe(false);
+				expect(beyond.output, diagnostic).toMatch(/^private\/var$/m);
+				expect(beyond.output, diagnostic).not.toContain("OUTSIDE-SECRET");
+				expect(beyond.output.match(/Operation not permitted/g), diagnostic).toHaveLength(2);
+				for (const command of commands) {
+					const denied = await verifier().execute({ command }, { cwd: linked });
+					const detail = `cwd=${linked}\n${command}\n${denied.output}`;
+					expect(denied.ok, detail).toBe(false);
+					expect(denied.output, detail).not.toContain("OUTSIDE-SECRET");
+					expect(denied.output.match(/Operation not permitted/g), detail).toHaveLength(1);
+				}
+			}
+
 			// Keep the TMPDIR sibling and link-spelled cwd: only genuine /private/var paths have a /var alias.
 			const secret = join(outside, "secret.txt").replace(/^\/private\/var\//, "/var/");
 			expect(await realpath(secret)).toBe(join(outside, "secret.txt"));
 			expect(await readFile(secret, "utf8")).toBe("OUTSIDE-SECRET\n");
-			const commands = [first, second].map((operation) => (operation === "ls" ? "ls /var/" : `cat ${secret}`));
-			const beyond = await verifier().execute({ command: `readlink /var; ${commands.join("; ")}` }, { cwd: linked });
-			const diagnostic = `cwd=${linked}\n${beyond.output}`;
-			expect(beyond.ok, diagnostic).toBe(false);
-			expect(beyond.output, diagnostic).toMatch(/^private\/var$/m);
-			expect(beyond.output, diagnostic).not.toContain("OUTSIDE-SECRET");
-			expect(beyond.output.match(/Operation not permitted/g), diagnostic).toHaveLength(2);
-			for (const command of commands) {
-				const denied = await verifier().execute({ command }, { cwd: linked });
-				const detail = `cwd=${linked}\n${command}\n${denied.output}`;
-				expect(denied.ok, detail).toBe(false);
-				expect(denied.output, detail).not.toContain("OUTSIDE-SECRET");
-				expect(denied.output.match(/Operation not permitted/g), detail).toHaveLength(1);
+			await expectDeniedReads(secret);
+
+			// Always cover the /var alias, including when TMPDIR is under /tmp.
+			const deniedDir = await mkdtemp("/var/tmp/atelier-verify-denied-");
+			try {
+				const varSecret = join(deniedDir, "secret.txt");
+				await writeFile(varSecret, "OUTSIDE-SECRET\n");
+				expect(varSecret).toMatch(/^\/var\//);
+				expect(await realpath(varSecret)).toBe(`/private${varSecret}`);
+				expect(await readFile(varSecret, "utf8")).toBe("OUTSIDE-SECRET\n");
+				await expectDeniedReads(varSecret);
+			} finally {
+				await rm(deniedDir, { recursive: true, force: true });
 			}
 		} finally {
 			await rm(linked, { recursive: true, force: true });
