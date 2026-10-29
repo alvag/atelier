@@ -26,9 +26,9 @@ export async function projectOf(cwd: string): Promise<{ project: string; checkou
 		if (info?.isFile()) return { project: (await mainCheckout(dir, dotGit)) ?? dir, checkout: dir };
 		const bare = await isBareRepository(dir);
 		if (bare === true) return own(dir);
-		// A folder that looks like a bare repository whose config is not read with certainty ends the search: the
-		// session's own folder is the project, never the checkout around it nor that folder above the session.
-		if (bare === undefined) return own(start);
+		// A folder that looks like a bare repository whose config is not read with certainty ends the search: it is
+		// its own project, never the checkout around it.
+		if (bare === undefined) return own(dir);
 		if (dirname(dir) === dir) return own(start);
 	}
 }
@@ -73,10 +73,18 @@ function configValue(text: string): string | undefined {
 	return quoted ? undefined : value;
 }
 
+/** A config boolean as git reads it: `true`, `yes`, `on`, `1`, or `false`, `no`, `off`, `0` and empty; undefined otherwise. */
+function booleanOf(value: string): boolean | undefined {
+	const word = value.trim().toLowerCase();
+	if (["true", "yes", "on", "1"].includes(word)) return true;
+	if (["false", "no", "off", "0", ""].includes(word)) return false;
+	return undefined;
+}
+
 /**
  * `core.bare` as git reads a config file: only in the `[core]` section (any case, no subsection), the last one wins,
  * `true`, `yes`, `on`, `1` or a key alone. Undefined when the file is not one this reads with certainty (a backslash
- * anywhere, an unclosed quote, a line that is no section, key or comment).
+ * anywhere, an unclosed quote, a header or a line that is no section, key or comment, a `bare` that is no boolean).
  */
 function coreBare(text: string): boolean | undefined {
 	// A backslash anywhere, in a value or a comment, is an escape or a continuation this does not read.
@@ -85,18 +93,23 @@ function coreBare(text: string): boolean | undefined {
 	let bare = false;
 	for (const raw of text.split(/\r?\n/)) {
 		let line = raw.trim();
-		const section = /^\[([^\]\\]*)\](.*)$/.exec(line);
-		if (section) {
-			inCore = (section[1] ?? "").trim().toLowerCase() === "core";
-			line = (section[2] ?? "").trim();
+		if (line.startsWith("[")) {
+			// `[name]`, `[name.sub]` or `[name "sub"]`; anything else is a header git refuses.
+			const section = /^\[([A-Za-z0-9.-]+)(\s+"[^"]*")?\](.*)$/.exec(line);
+			if (section === null) return undefined;
+			inCore = section[2] === undefined && (section[1] ?? "").toLowerCase() === "core";
+			line = (section[3] ?? "").trim();
 		}
 		if (line === "" || line.startsWith("#") || line.startsWith(";")) continue;
 		const entry = /^([A-Za-z][A-Za-z0-9-]*)\s*(=(.*))?$/.exec(line);
 		if (entry === null) return undefined;
 		const value = entry[2] === undefined ? "true" : configValue(entry[3] ?? "");
 		if (value === undefined) return undefined;
-		if (inCore && entry[1]?.toLowerCase() === "bare")
-			bare = ["true", "yes", "on", "1"].includes(value.trim().toLowerCase());
+		if (inCore && entry[1]?.toLowerCase() === "bare") {
+			const known = booleanOf(value);
+			if (known === undefined) return undefined;
+			bare = known;
+		}
 	}
 	return bare;
 }
