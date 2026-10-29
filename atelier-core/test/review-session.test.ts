@@ -1178,6 +1178,45 @@ describe("the turn's candidate", () => {
 		);
 	});
 
+	it.skipIf(process.platform === "win32")(
+		"takes where the turn started before the agent's first command, even when git answers late",
+		async () => {
+			const cwd = await repo();
+			await writeFile(join(cwd, "b.ts"), "second\n");
+			gitIn(cwd, "add", "-A");
+			gitIn(cwd, "commit", "-qm", "second");
+			const from = gitIn(cwd, "rev-parse", "HEAD").trim();
+			// A git that answers the turn's HEAD lookup half a second late, as on a loaded machine.
+			const shim = await mkdtemp(join(tmpdir(), "atelier-slow-git-"));
+			dirs.push(shim);
+			const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+			await writeFile(
+				join(shim, "git"),
+				`#!/bin/sh\ncase "$*" in "rev-parse --verify --quiet HEAD^{commit}") sleep 0.5;; esac\nexec "${realGit}" "$@"\n`,
+			);
+			await chmod(join(shim, "git"), 0o755);
+			const path = process.env.PATH;
+			process.env.PATH = `${shim}:${path}`;
+			try {
+				const turn = [
+					DECLARED_NONE,
+					call("git", { args: ["reset", "-q", "--hard", "HEAD~1"] }),
+					change("a.ts", "base\nmore\n"),
+					text("done"),
+					{ event: finished },
+				];
+				const s = await start({ cwd, turns: [turn] });
+				const [assessed] = ofType(await s.send("rewind"), "review_assessed");
+				expect(assessed?.baseNote).toBe(
+					`HEAD no longer descends from ${from.slice(0, 7)}, where the turn started: the base is the current HEAD`,
+				);
+			} finally {
+				process.env.PATH = path;
+			}
+		},
+		15_000,
+	);
+
 	it("does not offer the same candidate twice when a later turn commits it unchanged", async () => {
 		const cwd = await repo();
 		const turns = [HIGH_TURN, [text("committing"), ...commit("auth"), { event: finished }]];
