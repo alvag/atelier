@@ -41,7 +41,7 @@ export function summaryText(summary: string): string {
 }
 
 /** What a call works on, from its input, while it has no summary yet: what it names, or its first text. */
-export function target(input: JsonValue): string {
+function target(input: JsonValue): string {
 	const first = isRecord(input) ? Object.values(input).find((value) => typeof value === "string") : undefined;
 	const value =
 		field(input, "path") ??
@@ -50,6 +50,11 @@ export function target(input: JsonValue): string {
 		field(input, "agent") ??
 		(typeof first === "string" ? first : "");
 	return shown(value.split("\n")[0] ?? "");
+}
+
+/** A call as the transcript names it while it runs: `bash pnpm test`, `memory search "query"`. */
+export function callLabel(tool: string, input: JsonValue): string {
+	return `${shown(tool)} ${tool === MEMORY_TOOL ? memoryCallText(input) : target(input)}`.trimEnd();
 }
 
 /** At most `max` of `lines`, then how many were left out. */
@@ -292,7 +297,7 @@ export class ToolCard implements Component {
 
 	/** `bash pnpm test`, `memory search "query"`, or `task worker · edit src/a.ts` with the call its subagent runs now. */
 	current(): string {
-		const label = `${shown(this.tool)} ${this.pinned ? memoryCallText(this.#input) : target(this.#input)}`.trimEnd();
+		const label = callLabel(this.tool, this.#input);
 		const child = this.#activity?.current();
 		return child === undefined ? label : `${label} · ${child}`;
 	}

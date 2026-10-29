@@ -2647,6 +2647,37 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("keeps reporting an earlier main call that still runs when a later one ends", async () => {
+			const { h, stub, code } = stubbed();
+			await until(h.screen.started);
+			h.screen.type("go");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.length === 2);
+			stub.emit(callStarted("a", "bash", { command: "pnpm test" }));
+			stub.emit(callStarted("b", "read", { path: "file.ts" }));
+			await until(() => h.screen.statuses.at(-1)?.message === "read file.ts");
+			stub.emit(callFinished("b"));
+			await until(() => h.screen.statuses.length === 5);
+			expect(h.screen.statuses.at(-1)).toEqual(atelier("working", { message: "bash pnpm test" }));
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("names a memory call as the transcript does", async () => {
+			const { h, stub, code } = stubbed();
+			await until(h.screen.started);
+			h.screen.type("go");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.length === 2);
+			stub.emit(callStarted("a", "memory", { action: "search", query: "footer" }));
+			await until(() => h.screen.statuses.length === 3);
+			expect(h.screen.statuses.at(-1)).toEqual(atelier("working", { message: 'memory search "footer"' }));
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
 		it("reports at done the agent's last text even when a call came after it", async () => {
 			const { h, stub, code } = stubbed();
 			await until(h.screen.started);
