@@ -76,6 +76,51 @@ async function run(childTurns: FakeStep[][], input: unknown = { agent: "explorer
 	return { parent, children, result: parent.toolResults[0] };
 }
 
+describe("the delegation rules", () => {
+	const RULES = [
+		"When to delegate:",
+		"- Read inline when it takes up to about 3 parallel calls or 10k tokens; beyond that, send one explorer and ask for an answer of at most about 2k tokens with path:line evidence.",
+		"- Pass paths, the spec reference and what to change, never file contents: the subagent reads them itself.",
+		"- Reading that prepares a delegated change belongs to the worker: do not read it first yourself.",
+	].join("\n");
+
+	/** The task tool's description as the main agent of a session with the built-in subagents gets it. */
+	async function taskDescription(): Promise<string> {
+		const backend = new FakeBackend([]);
+		const session = await Session.start({
+			backend,
+			cwd: process.cwd(),
+			tools,
+			subagents: { agents: BUILTIN_AGENTS, createBackend: () => new FakeBackend([]) },
+		});
+		await session.close();
+		return backend.startOptions?.tools.find((t) => t.name === TASK_TOOL)?.description ?? "";
+	}
+
+	it("tell the main agent when to delegate and to pass paths, not contents, before the agents", async () => {
+		const description = await taskDescription();
+		expect(description).toContain(
+			`The prompt must be self-contained: the subagent does not see this conversation.\n${RULES}\nAgents:\n`,
+		);
+	});
+
+	it("ask for the worker's paths, spec and change, not everything it needs", async () => {
+		const description = await taskDescription();
+		expect(description).toContain(
+			"- worker: Makes a well-specified, bounded change and checks it. Give it the paths, the spec and what to change: it does not see this conversation.",
+		);
+		expect(description).not.toContain("everything it needs");
+	});
+
+	it("tie an ODD task's route to them", async () => {
+		const backend = new FakeBackend([]);
+		await (await Session.start({ backend, cwd: process.cwd(), tools, odd: true })).close();
+		expect(backend.startOptions?.systemPromptAppend).toContain(
+			"one task per deliverable. You never write the user's words into the log: Atelier logs them verbatim.\n- A task's route says who does it: inline (you), explorer or worker, following the task tool's rules on when to delegate.\n- Then go task by task",
+		);
+	});
+});
+
 describe("task", () => {
 	it("is offered to the parent only when subagents are configured, listing the agents", async () => {
 		const plain = new FakeBackend([]);
