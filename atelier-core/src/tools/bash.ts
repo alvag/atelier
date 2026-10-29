@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, openSync, realpathSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readlinkSync, realpathSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
@@ -165,24 +165,44 @@ function confirmation(command: string): { confirm?: string; yoloWaived?: true } 
  * Whether the user's rules cover the command, so it runs outside the sandbox without asking: never what the guard
  * asks about, never the verifier's, and only where the profile that keeps `~/.atelier` unwritable runs.
  */
+/** How many links a place is followed through before it counts as outside, as the system's own limit does. */
+const MAX_LINKS = 40;
+
 /**
- * Whether a place a command names, relative to `cwd`, really is inside `root`: its nearest existing folder is followed
- * through every link, so a link in the project cannot lead a project rule out of it. Fails closed on what cannot be read.
+ * The real path a place would have once created: its nearest existing folder followed through every link, and a
+ * dangling link on the way followed to where it points, so writing through it lands where the result says.
+ * Undefined for what cannot be read or loops.
+ */
+function realPlace(path: string, links = 0): string | undefined {
+	if (links > MAX_LINKS) return undefined;
+	let existing = path;
+	const rest: string[] = [];
+	for (;;) {
+		try {
+			return join(realpathSync(existing), ...rest);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT" && code !== "ENOTDIR") return undefined;
+			const link = lstatSync(existing, { throwIfNoEntry: false });
+			if (link?.isSymbolicLink()) {
+				const target = resolve(dirname(existing), readlinkSync(existing));
+				return realPlace(join(target, ...rest), links + 1);
+			}
+			if (dirname(existing) === existing) return undefined;
+			rest.unshift(basename(existing));
+			existing = dirname(existing);
+		}
+	}
+}
+
+/**
+ * Whether a place a command names, relative to `cwd`, really is inside `root` (`realPlace`), so a link in the
+ * project, dangling or not, cannot lead a project rule out of it. Fails closed on what cannot be read.
  */
 function insideProject(root: string, cwd: string): (place: string) => boolean {
 	return (place) => {
-		let existing = resolve(cwd, place);
-		const rest: string[] = [];
-		for (;;) {
-			try {
-				return isInside(root, join(realpathSync(existing), ...rest));
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code;
-				if ((code !== "ENOENT" && code !== "ENOTDIR") || dirname(existing) === existing) return false;
-				rest.unshift(basename(existing));
-				existing = dirname(existing);
-			}
-		}
+		const real = realPlace(resolve(cwd, place));
+		return real !== undefined && isInside(root, real);
 	};
 }
 

@@ -143,6 +143,16 @@ describe("rules allowed always in this project", () => {
 		expect(results[3]?.output).toContain("ran");
 	});
 
+	it("asks when an argument is a dangling link out of the project, and not for one that stays in it", async () => {
+		const outside = join(await realpath(tmpdir()), `atelier-dangling-${process.pid}-${Date.now()}`, "made");
+		await symlink(outside, join(app, "out"));
+		await symlink("missing-inside", join(app, "in"));
+		const rules = new PermissionRules({ home, cwd: app });
+		await rules.allow([{ kind: "bash", value: "./run.sh" }], "project");
+		const { questions } = await run(app, [leave("./run.sh out", "c1"), leave("./run.sh in", "c2")], { rules });
+		expect(questions.map(({ callId }) => callId)).toEqual(["c1"]);
+	});
+
 	it("asks when the program itself is a link out of the project", async () => {
 		await symlink(join(clone, "run.sh"), join(app, "tool.sh"));
 		const rules = new PermissionRules({ home, cwd: app });
