@@ -9,10 +9,8 @@ import { MAX_COMPACT_INSTRUCTIONS_BYTES } from "../protocol/types.ts";
  * history. The backend makes the request and owns the history (M8).
  */
 
-/** Room kept below the window, on top of the output budget. */
+/** Room kept below the window: compaction starts when the context passes `window − RESERVE_TOKENS`. */
 export const RESERVE_TOKENS = 16_384;
-/** Compacting later than this carries a large context on every request, whatever the window. */
-export const MAX_COMPACT_AT = 200_000;
 /** Size of the history tail that stays verbatim. */
 export const KEEP_RECENT_TOKENS = 20_000;
 export const MAX_INSTRUCTIONS_BYTES = MAX_COMPACT_INSTRUCTIONS_BYTES;
@@ -53,13 +51,17 @@ export function contextTokens(usage: Usage): number {
 	return usage.input + usage.cacheRead + usage.cacheWrite + usage.output;
 }
 
-/** `override` (ATELIER_COMPACT_AT) replaces the 200,000 cap, never the window: past it compaction would never start. */
+/**
+ * Where compaction starts: the window minus the reserve, and minus `outputReserve` for a backend that sends no output
+ * cap. `override` (ATELIER_COMPACT_AT) sets it lower, never higher: past it compaction would never start.
+ */
 export function compactThreshold(options: {
 	window: number;
-	maxTokens: number;
+	outputReserve?: number | undefined;
 	override?: number | undefined;
 }): number {
-	return Math.min(options.window - (options.maxTokens + RESERVE_TOKENS), options.override ?? MAX_COMPACT_AT);
+	const limit = options.window - ((options.outputReserve ?? 0) + RESERVE_TOKENS);
+	return options.override === undefined ? limit : Math.min(limit, options.override);
 }
 
 /** Reads `ATELIER_COMPACT_AT`; a value that is set but invalid is an error, never a silent default. */

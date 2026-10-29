@@ -9,7 +9,6 @@ import type { BackendSession, BackendStartOptions, ToolCall } from "../src/backe
 import { createBackend } from "../src/backend-factory.ts";
 import { CodexAccess, type CodexVariant } from "../src/backends/openai-codex/access.ts";
 import { OpenAiCodexBackend } from "../src/backends/openai-codex/backend.ts";
-import { compactThreshold } from "../src/compaction/compactor.ts";
 import type { AtelierEventBody } from "../src/events.ts";
 import { ModelData, useModelData } from "../src/model-catalog/index.ts";
 import { defineTool } from "../src/tools/types.ts";
@@ -108,7 +107,7 @@ it("takes the window of the model it runs, also after the model changes", async 
 		await session.configure?.({ model: "gpt-6.1-terra" });
 		api.answers.push({ events: completed([textItem("two")]) });
 		expect((await turn(session, "next")).at(-1)).toMatchObject({
-			context: { window: 400_000, compactAt: compactThreshold({ window: 400_000, maxTokens: 32_000 }) },
+			context: { window: 400_000, compactAt: 400_000 - 32_000 - 16_384 },
 		});
 	} finally {
 		useModelData(new ModelData());

@@ -84,14 +84,15 @@ describe("context measurement and threshold", () => {
 	});
 
 	it.each([
-		{ window: 200_000, maxTokens: 16_000, override: undefined, expected: 200_000 - 16_000 - 16_384 },
-		{ window: 1_000_000, maxTokens: 16_000, override: undefined, expected: 200_000 },
-		{ window: 216_384, maxTokens: 0, override: undefined, expected: 200_000 },
-		{ window: 1_000_000, maxTokens: 16_000, override: 50_000, expected: 50_000 },
+		{ window: 200_000, outputReserve: undefined, override: undefined, expected: 200_000 - 16_384 },
+		// No cap: a 1M window compacts near its end.
+		{ window: 1_000_000, outputReserve: undefined, override: undefined, expected: 1_000_000 - 16_384 },
+		{ window: 272_000, outputReserve: 32_000, override: undefined, expected: 272_000 - 32_000 - 16_384 },
+		{ window: 1_000_000, outputReserve: undefined, override: 50_000, expected: 50_000 },
 		// An override above what the window allows would turn compaction off: it is capped like the default.
-		{ window: 200_000, maxTokens: 16_000, override: 500_000, expected: 200_000 - 16_000 - 16_384 },
-		{ window: 1_000_000, maxTokens: 16_000, override: 400_000, expected: 400_000 },
-	])("window $window, maxTokens $maxTokens, override $override → $expected", ({ expected, ...input }) => {
+		{ window: 200_000, outputReserve: undefined, override: 500_000, expected: 200_000 - 16_384 },
+		{ window: 1_000_000, outputReserve: undefined, override: 400_000, expected: 400_000 },
+	])("window $window, outputReserve $outputReserve, override $override → $expected", ({ expected, ...input }) => {
 		expect(compactThreshold(input)).toBe(expected);
 	});
 

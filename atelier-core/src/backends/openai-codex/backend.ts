@@ -103,7 +103,7 @@ export class OpenAiCodexBackend implements AgentBackend {
 				const window = contextWindow ?? codexContextWindow(forModel);
 				return {
 					window,
-					compactAt: compactThreshold({ window, maxTokens: OUTPUT_RESERVE, override: compactAt }),
+					compactAt: compactThreshold({ window, outputReserve: OUTPUT_RESERVE, override: compactAt }),
 					keepRecent,
 				};
 			},
@@ -453,7 +453,13 @@ class OpenAiCodexSession implements BackendSession {
 
 	#context(): ContextUsage {
 		const { window, compactAt } = this.#compaction;
-		return { tokens: this.#contextTokens(), window, compactAt };
+		// Until an answer measures the compacted history, its size is only an estimate.
+		return {
+			tokens: this.#contextTokens(),
+			window,
+			compactAt,
+			...(this.#unmeasured ? { unknown: true as const } : {}),
+		};
 	}
 
 	/** The last measured size plus an estimate of what was appended since. */

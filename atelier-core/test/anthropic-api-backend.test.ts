@@ -249,7 +249,7 @@ describe("AnthropicApiBackend", () => {
 				usage: { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 },
 				costUsd: 12,
 				requests: 1,
-				context: { tokens: 2000000, window: 200_000, compactAt: 167_616 },
+				context: { tokens: 2000000, window: 200_000, compactAt: 183_616 },
 			},
 		]);
 		const body = api.bodies[0];
@@ -481,7 +481,7 @@ describe("AnthropicApiBackend", () => {
 				usage: { input: 170, output: 17, cacheRead: 200, cacheWrite: 30 },
 				costUsd: (170 * 2 + 17 * 10 + 200 * 0.1 + 30 * 2.5) / 1_000_000,
 				requests: 3,
-				context: { tokens: 52, window: 200_000, compactAt: 167_616 },
+				context: { tokens: 52, window: 200_000, compactAt: 183_616 },
 			},
 		]);
 		expect(api.bodies).toHaveLength(3);
@@ -614,7 +614,7 @@ describe("AnthropicApiBackend", () => {
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				costUsd: 0,
 				requests: 0,
-				context: { tokens: 14, window: 200_000, compactAt: 167_616 },
+				context: { tokens: 14, window: 200_000, compactAt: 183_616 },
 			},
 		]);
 	});
@@ -986,6 +986,30 @@ describe("AnthropicApiBackend compaction", () => {
 		expect(turn?.type === "turn_finished" && turn.context).toEqual({ tokens: 15, window: 200_000, compactAt: 1000 });
 	});
 
+	it("compacts a 1M window only past the window minus 16,384, with no 200,000 cap", async () => {
+		const toolCall = (id: string, input: number): Scripted => ({
+			blocks: [{ type: "tool_use", id, name: "echo", input: { text: id } }],
+			stopReason: "tool_use",
+			usage: { input },
+		});
+		const { session, api } = await start(
+			[
+				toolCall("tu_1", 900_000),
+				toolCall("tu_2", 1_000_000 - 16_384),
+				summaryReply(),
+				{ blocks: [{ type: "text", text: "done" }] },
+			],
+			async () => ({ ok: true, output: "x".repeat(400) }),
+			{ contextWindow: 1_000_000, keepRecentTokens: 1 },
+		);
+		const events = await collect(session.send("Refactor"));
+		// 900,000 tokens go on as they are; past 983,616 the next request is the summary.
+		expect(textOfBody(api.bodies[1])).not.toContain("Summarize the conversation above");
+		expect(textOfBody(api.bodies[2])).toContain("Summarize the conversation above");
+		expect(ofType(events, "compaction_started")).toMatchObject([{ reason: "threshold" }]);
+		expect(finished(events)[0]).toMatchObject({ context: { window: 1_000_000, compactAt: 983_616 } });
+	});
+
 	it("keeps the whole history when the summary is cut short, and does not retry it in the same turn", async () => {
 		const { session, api } = await compacting([
 			{
@@ -1063,6 +1087,8 @@ describe("AnthropicApiBackend compaction", () => {
 		expect(events.map((e) => e.type)).toEqual(["compaction_started", "compaction_finished", "turn_finished"]);
 		expect(ofType(events, "compaction_finished")[0]).toMatchObject({ ok: true, reason: "manual", kept: 1 });
 		expect(finished(events)[0]).toMatchObject({ stopReason: "end_turn", requests: 1 });
+		// No answer measured the new history yet: its size is unknown, not the estimate.
+		expect(finished(events)[0]).toMatchObject({ context: { unknown: true, window: 200_000 } });
 		expect(textOfBody(api.bodies[2])).toContain("Keep the API decisions.");
 		// Between turns no request is carried into the summary.
 		expect(textOfBody(api.bodies[2])).not.toContain("<request>");
@@ -1175,7 +1201,7 @@ describe("AnthropicApiBackend compaction", () => {
 		expect(api.bodies).toEqual([]);
 		answer();
 		const events = await turn;
-		expect(finished(events)[0]).toMatchObject({ context: { window: 500_000, compactAt: 200_000 } });
+		expect(finished(events)[0]).toMatchObject({ context: { window: 500_000, compactAt: 500_000 - 16_384 } });
 	});
 
 	it("ends the turn at once when interrupted while it waits for the window, and stays usable", async () => {
@@ -1235,8 +1261,8 @@ describe("AnthropicApiBackend compaction", () => {
 
 	it("takes the window from the models API, and falls back when it does not answer", async () => {
 		for (const [modelWindow, window, compactAt] of [
-			[500_000, 500_000, 200_000],
-			[undefined, 200_000, 200_000 - 16_000 - 16_384],
+			[500_000, 500_000, 500_000 - 16_384],
+			[undefined, 200_000, 200_000 - 16_384],
 		] as const) {
 			const api = fakeApi(
 				[{ blocks: [{ type: "text", text: "hi" }] }],

@@ -129,7 +129,7 @@ it("keeps the history when the summary lacks a section, and compacts by hand wit
 
 	api.answers.push({ events: completed([textItem(SUMMARY)]) });
 	const done = await all(session.compact?.() ?? []);
-	expect(done.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+	expect(done.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn", context: { unknown: true } });
 	expect(((session.resumeState?.() ?? { messages: [] }) as { messages: unknown[] }).messages.length).toBeLessThan(6);
 });
 
