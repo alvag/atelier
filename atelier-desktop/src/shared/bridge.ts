@@ -1,4 +1,4 @@
-import type { AtelierEvent, ClientCommand, JsonValue } from "@atelier/core/protocol";
+import type { AtelierEvent, AtelierEventBody, ClientCommand, JsonValue } from "@atelier/core/protocol";
 
 /** Whether the core is up; the latest one can be asked for with getStatus(). */
 export type CoreStatus =
@@ -12,6 +12,8 @@ export type CoreStatus =
 export type HostMessage =
 	| CoreStatus
 	| { type: "event"; sessionId: string; event: AtelierEvent }
+	/** An event outside any turn: a background job that ended while no turn ran and none will start for it. */
+	| { type: "session_event"; sessionId: string; event: AtelierEventBody }
 	| { type: "protocol_error"; message: string };
 
 export type CommandResult =

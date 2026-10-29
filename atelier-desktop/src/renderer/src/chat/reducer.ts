@@ -1,5 +1,6 @@
 import type {
 	AtelierEvent,
+	AtelierEventBody,
 	AuthSource,
 	CompactionReason,
 	ContextUsage,
@@ -356,6 +357,9 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
 		case "event":
 			if (action.sessionId !== state.session?.id) return state;
 			return applyEvent(state, action.event);
+		case "session_event":
+			if (action.sessionId !== state.session?.id) return state;
+			return applyIdleEvent(state, action.event);
 	}
 }
 
@@ -861,6 +865,19 @@ function closeConsents(items: TurnItem[], reviewId?: string): TurnItem[] {
 }
 
 /** Updates the turn with this id; else adopts the turn still waiting for its id; else starts one. */
+/**
+ * An event outside any turn, which starts none: a job's end after an interrupted or failed turn. Its row goes under the
+ * last turn, its counts to the status bar, and the chat stays idle.
+ */
+function applyIdleEvent(state: ChatState, event: AtelierEventBody): ChatState {
+	if (event.type !== "job_finished") return state;
+	const stamped = { ...event, seq: 0, turnId: "" } as Extract<AtelierEvent, { type: "job_finished" }>;
+	return {
+		...updateLast(state, (turn) => ({ ...turn, items: [...turn.items, jobItem(stamped)] })),
+		jobs: { running: event.running, waiting: event.waiting },
+	};
+}
+
 /** A job's start or end as the transcript shows it. */
 function jobItem(
 	event: Extract<AtelierEvent, { type: "job_started" }> | Extract<AtelierEvent, { type: "job_finished" }>,

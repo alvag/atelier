@@ -1035,4 +1035,28 @@ describe("background jobs", () => {
 		const read = run([event({ type: "jobs_status", running: 0, waiting: 0 }, "t2")], woken);
 		expect(read.jobs).toEqual({ running: 0, waiting: 0 });
 	});
+
+	it("counts the notice of a job that ended outside any turn and shows its end under the last turn, staying idle", () => {
+		const state = run([
+			...ready,
+			{ type: "prompt_sent", text: "start" },
+			{ type: "turn_accepted", turnId: "t1" },
+			event({ ...job, type: "job_started", command: "gh run watch", running: 1 }),
+			event({ type: "turn_finished", stopReason: "interrupted", usage }),
+		]);
+		const idle = run([{ type: "session_event", sessionId: "s1", event: { ...ended, durationMs: 3000 } }], state);
+		expect(idle.busy).toBe(false);
+		expect(idle.jobs).toEqual({ running: 0, waiting: 1 });
+		expect(idle.turns).toHaveLength(1);
+		expect(idle.turns[0]?.items.at(-1)).toEqual({
+			kind: "job",
+			jobId: "1",
+			label: "ci",
+			status: "exited",
+			exitCode: 1,
+			durationMs: 3000,
+		});
+		// Another session's says nothing here.
+		expect(run([{ type: "session_event", sessionId: "s2", event: ended }], state)).toBe(state);
+	});
 });
