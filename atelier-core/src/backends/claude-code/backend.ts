@@ -155,8 +155,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 		const input = new Channel<SDKUserMessage>();
 		const run = this.#options.query ?? (sdkQuery as QueryFunction);
 		const model = start.model ?? DEFAULT_MODEL;
-		// The levels are the ones of the model an alias stands for (`fable` takes claude-fable-5-1's).
-		const sent = thinkingToSend(claudeCodeIdOf(model), start.thinking, "claude-code");
+		const sent = thinkingToSend(model, start.thinking, "claude-code");
 		// Claude Code tells the effort it applied only to hooks inside a turn; read it when Atelier asked none.
 		const applied: AppliedEffort = {};
 		// A summary asked for by `summarize` goes to it; the others go to the core when it wants them.
@@ -173,6 +172,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 				...(sent?.effort === undefined ? {} : { effort: sent.effort }),
 				...(sent?.thinking === "disabled" ? { thinking: { type: "disabled" as const } } : {}),
 				// The API omits the thinking text by default on these models; the setting alone did not bring it back.
+				// Thinking is on by default on the model an alias stands for, as on the model itself.
 				...(summarizesThinking(claudeCodeIdOf(model), sent)
 					? { thinking: { type: "adaptive" as const, display: "summarized" as const } }
 					: {}),
@@ -488,7 +488,7 @@ class ClaudeCodeSession implements BackendSession {
 		if (!setModel || !applyFlagSettings) throw new Error("This Claude Code query cannot change an open session.");
 		const model = change.model ?? this.#model;
 		const thinking = change.thinking ?? this.#thinking;
-		const sent = thinkingToSend(claudeCodeIdOf(model), thinking, "claude-code");
+		const sent = thinkingToSend(model, thinking, "claude-code");
 		// The Agent SDK has no way to turn thinking off in an open query; refuse before changing anything.
 		if (change.thinking !== undefined && sent?.report === "off")
 			throw new Error("claude-code cannot turn thinking off in an open session.");
