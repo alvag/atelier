@@ -396,8 +396,10 @@ export class ToolCard implements Component {
 			if (this.#tookMs !== undefined && this.#tookMs >= 1000)
 				parts.push(paint("dim", `· ${(this.#tookMs / 1000).toFixed(1)}s`));
 		}
-		const second = `${" ".repeat(visibleWidth(lead))}↳ ${parts.join(" ")}`;
-		const lines = [truncateToWidth(first, width), truncateToWidth(second, width)];
+		// The outcome is wrapped under its text, never cut: a failure or a warning must read whole.
+		const indent = " ".repeat(visibleWidth(lead));
+		const [head2 = "", ...rest2] = wrapTextWithAnsi(parts.join(" "), Math.max(1, width - visibleWidth(indent) - 2));
+		const lines = [truncateToWidth(first, width), `${indent}↳ ${head2}`, ...rest2.map((part) => `${indent}  ${part}`)];
 		if (!open || !isRecord(this.#input)) return lines;
 		const rest = Object.fromEntries(Object.entries(this.#input).filter(([key]) => !MEMORY_SHOWN.has(key)));
 		if (Object.keys(rest).length === 0) return lines;
