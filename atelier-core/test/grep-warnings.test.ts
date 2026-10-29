@@ -73,6 +73,19 @@ for (const outside of [false, true]) {
 			},
 		);
 
+		it.skipIf(!hasRipgrep).each(["a: WARNING: b.bin", "WARNING: b.bin"])(
+			"shows and counts a real binary-match diagnostic for %s",
+			async (path) => {
+				await writeFile(join(cwd, path), Buffer.from("TOKEN\n\0tail\n"));
+				expect(await tool.execute({ pattern: "TOKEN", path, limit: 1 }, { cwd })).toEqual({
+					ok: true,
+					output: `${path}: binary file matches (found "\\0" byte around offset 6)`,
+					summary: "TOKEN: 1 matches",
+					truncated: false,
+				});
+			},
+		);
+
 		it.each(["src/a.bin: WARNING: arbitrary notice", "WARNING: arbitrary notice", ".env: WARNING: private notice"])(
 			"discards %s across chunk boundaries, including at end of output",
 			async (warning) => {
