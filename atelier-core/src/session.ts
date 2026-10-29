@@ -77,7 +77,7 @@ import {
 	type ThinkingLevel,
 } from "./profiles/index.ts";
 import { loadProjectInstructions, type ProjectInstructions } from "./project-instructions.ts";
-import { MEMORY_RULES, ODD_RULES, RISK_RULES } from "./prompt.ts";
+import { LEFT_YOLO, MEMORY_RULES, ODD_RULES, RISK_RULES, YOLO_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
 import { createScratchDir, type ScratchDir } from "./scratch.ts";
@@ -355,6 +355,10 @@ export class Session {
 	/** The skills found at start; reported with the first turn. */
 	#skills: LoadedSkills | undefined;
 	#announced = false;
+	/** The session started in yolo, so the system prompt has its rules. */
+	#startedYolo = false;
+	/** Whether the model was last told it runs in yolo: by the system prompt, then by the note of a later prompt. */
+	#toldYolo = false;
 	/** The MCP servers whose instructions the model was already given. */
 	readonly #mcpGiven = new Set<string>();
 	/** The last `mcp_status` said, as JSON, so a turn says it again only when it changed. */
@@ -479,11 +483,14 @@ export class Session {
 		}
 		const scratch = await createScratchDir("session");
 		session.#scratch = scratch;
+		session.#startedYolo = options.permissionMode === "yolo";
+		session.#toldYolo = session.#startedYolo;
 		session.#systemPrompt = [
 			options.systemPromptAppend ?? "",
 			options.odd ? ODD_RULES : "",
 			options.memory ? MEMORY_RULES : "",
 			options.review ? RISK_RULES : "",
+			session.#startedYolo ? YOLO_RULES : "",
 			session.#instructions?.text ?? "",
 			skillsPrompt(session.#skills?.skills ?? []),
 			options.mcp ? mcpPromptBlock(options.mcp) : "",
@@ -548,6 +555,8 @@ export class Session {
 			lines.push(`feature: ${odd.path}${task}`);
 		}
 		if (odd?.phase !== undefined) lines.push(`phase: ${odd.phase}`);
+		// The note of a change of mode was a prompt the summary may lose; the system prompt says the starting mode.
+		if (this.#toldYolo !== this.#startedYolo) lines.push(`mode:\n${this.#toldYolo ? YOLO_RULES : LEFT_YOLO}`);
 		// The recovery notice brings the memory with the same prompt; said twice, it would only cost context.
 		const memory = this.#memoryContext.trim();
 		if (memory !== "" && !this.#recovery?.fetched && !this.#recoveryInFlight?.fetched) lines.push(`memory:\n${memory}`);
@@ -703,6 +712,12 @@ export class Session {
 			// Servers that connected since the last prompt, with no description, say what they offer once.
 			const mcpNote = this.#options.mcp ? mcpInstructionsNote(this.#options.mcp, this.#mcpGiven) : undefined;
 			if (mcpNote !== undefined) sent = `${mcpNote}\n\n${sent}`;
+			// A mode changed since the model was last told: entering yolo gives its rules, leaving it says they ended.
+			const yolo = this.#options.permissionMode === "yolo";
+			if (yolo !== this.#toldYolo) {
+				this.#toldYolo = yolo;
+				sent = `${yolo ? YOLO_RULES : LEFT_YOLO}\n\n${sent}`;
+			}
 			// A backend that took the conversation over by a summary gets it with its first prompt.
 			if (this.#handoff !== undefined) {
 				sent = `${this.#handoff}\n\n${sent}`;

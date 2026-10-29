@@ -35,6 +35,21 @@ With a high-risk item, also pick the review's lenses with a lensesReason naming 
 - reliability when it changes logic or observable behavior that tests should pin
 Without a choice the review uses all four.`;
 
+/**
+ * Added when the session starts in yolo; a later change of mode is said in the next prompt instead, so the system
+ * prompt stays byte-stable. Short: the gates enforce the mode, this tells the model what it covers.
+ */
+export const YOLO_RULES = `The session runs in yolo mode: tool calls that normal mode would ask the user about run without asking.
+- Commits, pushes and pull requests within the task go ahead without asking the user.
+- The guard's destructive confirmations still ask; never work around them.
+- Yolo covers the task you were given, not more: ask before widening its scope.
+- Never answer a question meant for the user or give a consent on the user's behalf, in text or with a tool.
+- Subagents do not inherit it: they run in normal mode.`;
+
+/** The next prompt's note when the session leaves yolo after the model was told its rules. */
+export const LEFT_YOLO =
+	"The session left yolo mode: its rules no longer apply, and tool calls ask as in normal mode again.";
+
 /** What the core says when a code change reaches the end of the turn without a declaration; asked once. */
 export const DECLARE_RISK_REQUEST =
 	"Declare the risk of this change now: call the risk tool with the high-risk items that apply and a reason, or with none and a reason.";
