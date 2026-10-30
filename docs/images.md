@@ -21,6 +21,25 @@ An explicit catalog `images: false` overrides a fallback. A refusal says
 `Image input is not supported by <backend>/<model>.` or
 `Image input support is unknown for <backend>/<model>.` Text tools remain usable.
 
+## Images with a prompt over RPC
+
+`session.send` accepts optional `images: [{ mimeType, data }]` alongside `prompt`. MIME types are
+`image/png`, `image/jpeg`, `image/gif` and `image/webp`; `data` is canonical standard base64,
+without a data-URL prefix or whitespace. An empty prompt requires at least one image. Existing
+text-only commands and protocol version 7 are unchanged.
+
+Before answering with a `turnId`, the server checks the effective model and prepares the images
+within the limits below, then checks the model again. Invalid command shapes return
+`invalid_command`; invalid image bytes or preparation limits return `invalid_image`; an unknown
+or unsupported model returns `image_input_unsupported`. None starts a turn or records a prompt.
+
+Images cannot be queued. An image send during a turn or another image preparation returns `busy`:
+`Images cannot be queued. Wait for the current turn to finish.` Keep the draft on any failed
+response. During preparation, commands that start turns or change configuration also return
+`busy`; an in-flight configuration change prevents image preparation from starting. Interrupting
+preparation returns `interrupted`; closing the session or disconnecting returns `session_closed`.
+Background notices wait until preparation ends rather than starting a competing turn.
+
 ## Changing models with image history
 
 New image results are refused when the selected model does not accept images or its support is

@@ -1,4 +1,5 @@
 import type { AtelierEvent, AtelierEventBody, JsonValue, QueueKind } from "../events.ts";
+import type { ImageAttachment } from "../images.ts";
 import type { PermissionRuleScope } from "../permission-rules.ts";
 import type { ReviewConsentAnswer } from "../review/session-review.ts";
 import type { PermissionMode } from "../session.ts";
@@ -57,7 +58,7 @@ export type ClientCommand =
 	  }
 	/** The profiles in `~/.atelier/profiles.json`, its `active`, and with `cwd`, the profile a session there would take without a choice. */
 	| { command: "profiles.list"; cwd?: string }
-	| { command: "session.send"; sessionId: string; prompt: string }
+	| { command: "session.send"; sessionId: string; prompt: string; images?: ImageAttachment[] }
 	| { command: "session.interrupt"; sessionId: string }
 	/**
 	 * Queues a message while a turn runs: a `steer` enters the running turn with its next tool result, a `follow_up`
