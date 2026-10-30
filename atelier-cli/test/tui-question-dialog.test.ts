@@ -614,7 +614,45 @@ describe("QuestionDialog option previews", () => {
 				const match = /│ (.*) │$/.exec(line);
 				return match ? [match[1] ?? ""] : [];
 			});
-		const letters = (text: string) => text.replace(/\s+/g, "");
+		/** The rows a panel `content` columns wide shows of a preview of one-column characters: each line cut in full rows. */
+		const cut = (preview: string, content: number) =>
+			preview
+				.replaceAll("\t", "  ")
+				.split("\n")
+				.flatMap((line) =>
+					Array.from({ length: Math.max(1, Math.ceil(line.length / content)) }, (_, row) =>
+						line.slice(row * content, (row + 1) * content).padEnd(content),
+					),
+				);
+		/** Focuses the option with `preview` and renders the dialog `width` columns wide. */
+		const focused = (preview: string, width: number) => {
+			const { shown, lines } = dialog(short(preview));
+			shown.handleInput(DOWN);
+			return lines(width);
+		};
+
+		it("keeps every space of a preview cut by columns, at the start and the end of each row", () => {
+			const preview = `const value = "${" ".repeat(40)}";`;
+			const rows = inside(focused(preview, 60));
+			const content = rows[0]?.length ?? 0;
+			expect(rows.join("")).toBe(preview.padEnd(rows.length * content));
+			expect(rows.length).toBe(Math.ceil(preview.length / content));
+		});
+
+		it("keeps the indentation of each line of an indented preview longer than the panel", () => {
+			const preview = [
+				"{",
+				'  "compilerOptions": {',
+				'    "paths": { "@atelier/core": ["./atelier-core/src/index.ts"], "@atelier/core/protocol": ["./x.ts"] },',
+				'    "strict": true',
+				"  }",
+				"}",
+			].join("\n");
+			for (const width of [60, 120]) {
+				const rows = inside(focused(preview, width));
+				expect(rows, `${width}`).toEqual(cut(preview, rows[0]?.length ?? 0));
+			}
+		});
 
 		it("loses nothing of a three-line preview beside the options at 60 columns", () => {
 			const preview = `first line\n${"x".repeat(38)}CD\nthird`;
@@ -622,7 +660,9 @@ describe("QuestionDialog option previews", () => {
 			shown.handleInput(DOWN);
 			const shownLines = lines(60);
 			for (const line of shownLines) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
-			expect(letters(inside(shownLines).join(""))).toBe(letters(preview));
+			const rows = inside(shownLines);
+			expect(rows).toEqual(cut(preview, rows[0]?.length ?? 0));
+			expect(rows.join("")).toContain("CD");
 			expect(shownLines.join("\n")).toContain("3. Type something…");
 		});
 
@@ -652,16 +692,31 @@ describe("QuestionDialog option previews", () => {
 		it.each([40, 60, 80, 120])("loses no character of a valid preview at %i columns", (width) => {
 			const preview = [
 				'const answer = await fetch("https://example.com/a/very/long/path/that/keeps/going/on", {',
-				'\tmethod: "POST",',
+				'\tmethod: "POST",   ',
 				"});",
-				"漢字かな交じりの行も切れずに残ります。",
 				"x".repeat(70),
 			].join("\n");
-			const { shown, lines } = dialog(short(preview));
-			shown.handleInput(DOWN);
-			const shownLines = lines(width);
+			const shownLines = focused(preview, width);
 			for (const line of shownLines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
-			expect(letters(inside(shownLines).join(""))).toBe(letters(preview));
+			const rows = inside(shownLines);
+			expect(rows).toEqual(cut(preview, rows[0]?.length ?? 0));
+		});
+
+		it("cuts a line of wide characters between them, never through one", () => {
+			const wide = "漢字かな交じりの行も切れずに残ります。".repeat(3);
+			const shownLines = focused(`a\n${wide}`, 60);
+			const rows = inside(shownLines).slice(1);
+			for (const line of shownLines) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+			expect(rows.map((row) => row.trimEnd()).join("")).toBe(wide);
+			expect(rows.length).toBeGreaterThan(1);
+		});
+
+		it("keeps a marker of the sanitizer whole on one row", () => {
+			const marker = "⟨U+061C⟩";
+			const preview = `${"x".repeat(30)}${marker}tail`;
+			const rows = inside(focused(preview, 60));
+			expect(rows.some((row) => row.includes(marker))).toBe(true);
+			expect(rows.map((row) => row.trimEnd()).join("")).toBe(preview);
 		});
 	});
 });
