@@ -400,15 +400,23 @@ const LIBRARY_HOME_WRITES = [join(".npm", "_logs"), join(".claude", "debug")];
  * where their TMPDIR is; not the system temporary directory, a package cache, what the configuration files add, the
  * shared git data of the repository, nor what the library would make writable by itself (`LIBRARY_TEMP` is denied,
  * the home's log folders are read-denied so the library leaves them out). Everything else is as for the agent: what
- * they read, and what stays protected.
+ * they read (the configuration's `denyRead` included), and what stays protected.
  */
 export function confinedPolicy({
 	cwd,
 	scratchDir,
 	home,
 	gitPaths,
-}: Pick<AgentPolicyInput, "cwd" | "scratchDir" | "home" | "gitPaths">): SandboxPolicy {
-	const { filesystem } = agentPolicy({ cwd, tempDir: cwd, home, ...(gitPaths === undefined ? {} : { gitPaths }) });
+	additions,
+}: Pick<AgentPolicyInput, "cwd" | "scratchDir" | "home" | "gitPaths" | "additions">): SandboxPolicy {
+	// What the configuration denies reading still holds; what it adds to write does not.
+	const { filesystem } = agentPolicy({
+		cwd,
+		tempDir: cwd,
+		home,
+		additions: { allowWrite: [], denyRead: additions?.denyRead ?? [] },
+		...(gitPaths === undefined ? {} : { gitPaths }),
+	});
 	return {
 		filesystem: {
 			denyRead: [...filesystem.denyRead, ...LIBRARY_HOME_WRITES.map((folder) => join(home, folder))],
@@ -885,6 +893,8 @@ export class Sandbox {
 						cwd,
 						...(scratchDir === undefined ? {} : { scratchDir }),
 						home,
+						// Read at each command, as for the agent: an invalid file stops the command.
+						additions: loadSandboxAdditions({ cwd, home }),
 						...(this.#options.manager ? {} : { gitPaths: gitProtectedPaths(cwd, home) }),
 					})
 				: policy === "agent"
