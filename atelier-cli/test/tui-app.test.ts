@@ -5295,11 +5295,41 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 			const { h, code } = await openWith(r);
 			h.screen.type(CTRL_V);
 			h.screen.type("\r");
-			await shows(h, "still reading");
+			await shows(h, "still reading the clipboard image; press Enter again in a moment");
 			expect(sends(h)).toEqual([]);
 			release();
 			await shows(h, "[Image #1]");
 			await quit(h, code);
+		});
+
+		it.each(["pasted file", "clipboard image"])("names the pending %s and then the next source", async (first) => {
+			const r = reader();
+			const releaseClipboard = r.hold();
+			const releasePath = holdReads();
+			const { h, code } = await openWith(r);
+			const path = await imageFile();
+			if (first === "pasted file") {
+				paste(h, path);
+				h.screen.type(CTRL_V);
+			} else {
+				h.screen.type(CTRL_V);
+				paste(h, path);
+			}
+			try {
+				h.screen.type("\r");
+				await shows(h, `still reading the ${first}; press Enter again in a moment`);
+				if (first === "pasted file") releasePath();
+				else releaseClipboard();
+				await until(() => (first === "pasted file" ? r.read.mock.calls.length === 1 : fake.calls.length === 1));
+				h.screen.type("\x1b\r");
+				const next = first === "pasted file" ? "clipboard image" : "pasted file";
+				await shows(h, `still reading the ${next}; press Enter again in a moment`);
+				expect(sends(h)).toEqual([]);
+			} finally {
+				releaseClipboard();
+				releasePath();
+				await quit(h, code);
+			}
 		});
 
 		it.each([
@@ -5392,6 +5422,51 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 			await shows(h, "no key given; nothing changed");
 			await quit(h, code);
 		});
+
+		it.each([false, true])(
+			"discards pending clipboard reads across a secret question (close first: %s)",
+			async (closeFirst) => {
+				const r = reader();
+				const release = r.hold();
+				const { h, code } = await openWith(r);
+				// Login yields before opening its secret dialog; both reads are queued in that interval.
+				h.screen.type("/login api-key anthropic");
+				h.screen.type("\r");
+				h.screen.type("draft");
+				h.screen.type(CTRL_V);
+				h.screen.type(CTRL_V);
+				await shows(h, "0 characters (hidden)");
+				expect(r.read).toHaveBeenCalledTimes(1);
+				h.screen.type("x");
+				await shows(h, "1 character (hidden)");
+				const aborted = r.signals[0]?.aborted;
+				if (closeFirst) {
+					h.screen.type("\x03");
+					await shows(h, "no key given; nothing changed");
+				}
+				release();
+				await until(() => r.read.mock.settledResults[0]?.type === "fulfilled");
+				await new Promise((resolve) => setImmediate(resolve));
+				if (!closeFirst) {
+					h.screen.type("y");
+					await shows(h, "2 characters (hidden)");
+					h.screen.type("\x03");
+					await shows(h, "no key given; nothing changed");
+				}
+				try {
+					expect(aborted).toBe(true);
+					expect(r.read).toHaveBeenCalledTimes(1);
+					expect(h.screen.screen()).not.toContain("[Image #");
+					expect(h.screen.frame().join("\n")).toContain("draft");
+					h.screen.type("\r");
+					await until(() => sends(h).length === 1);
+					expect(sends(h)[0]?.prompt).toBe("draft");
+					expect(sends(h)[0]?.images).toBeUndefined();
+				} finally {
+					await quit(h, code);
+				}
+			},
+		);
 
 		it("invokes no reader and says so outside macOS", async () => {
 			const r = reader();
