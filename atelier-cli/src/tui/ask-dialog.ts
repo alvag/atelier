@@ -143,20 +143,40 @@ export class AskDialog implements Component, Focusable {
 		return this.#tab === this.#dialogs.length;
 	}
 
-	/** Whether question `index` still needs an answer: it has none and is not a multi-select one. */
-	#missing(index: number): boolean {
-		return this.#answers[index] === undefined && this.#questions[index]?.multiSelect !== true;
+	/**
+	 * What question `index` comes to: its answer; a multi-select question's boxes as they stand, also on a tab left
+	 * without `Next →`, and none while they cannot be sent.
+	 */
+	#given(index: number): AskAnswer | undefined {
+		const now = this.#dialogs[index]?.current();
+		if (now === undefined) return this.#answers[index];
+		return "problem" in now ? undefined : now;
 	}
 
-	/** `Submit answers`: sends the batch, or goes to the first question without an answer and says why. */
+	/** Why a multi-select question's boxes cannot be sent as they stand, if they cannot. */
+	#problem(index: number): string | undefined {
+		const now = this.#dialogs[index]?.current();
+		return now !== undefined && "problem" in now ? now.problem : undefined;
+	}
+
+	/** Whether question `index` still needs an answer: it has none and is not a multi-select one. */
+	#missing(index: number): boolean {
+		return this.#given(index) === undefined && this.#questions[index]?.multiSelect !== true;
+	}
+
+	/**
+	 * `Submit answers`: sends the batch, or goes to the first multi-select question that cannot be sent, then to the
+	 * first question without an answer, and says why.
+	 */
 	#submit(): void {
-		const missing = this.#answers.findIndex((_, index) => this.#missing(index));
+		const blocked = this.#questions.findIndex((_, index) => this.#problem(index) !== undefined);
+		const missing = blocked !== -1 ? blocked : this.#questions.findIndex((_, index) => this.#missing(index));
 		if (missing === -1) {
-			this.#finish(this.#answers.map((given) => given ?? { options: [] }));
+			this.#finish(this.#questions.map((_, index) => this.#given(index) ?? { options: [] }));
 			return;
 		}
 		this.#show(missing);
-		this.#dialog?.need("Answer this question to submit");
+		this.#dialog?.need(this.#problem(missing) ?? "Answer this question to submit");
 	}
 
 	/** A key on the review: Up/Down, 1 or 2, Enter, and Esc; the paste filter takes out what was pasted. */
@@ -213,7 +233,7 @@ export class AskDialog implements Component, Focusable {
 	 * checked and the text, separated by commas, or null for none (an untouched multi-select question's too).
 	 */
 	#answerText(index: number): string | null | undefined {
-		const answer = this.#answers[index];
+		const answer = this.#given(index);
 		const options = this.#questions[index]?.options ?? [];
 		const typed = (other: string) => `Type something: ${visibleText(other.replace(/\s*[\r\n]+\s*/g, " ").trim()).text}`;
 		if (answer === undefined) return this.#missing(index) ? undefined : null;
@@ -232,7 +252,7 @@ export class AskDialog implements Component, Focusable {
 	#reviewLines(width: number): string[] {
 		const paint = this.#paint;
 		const room = Math.max(1, width - 1);
-		const missing = this.#answers.filter((_, index) => this.#missing(index)).length;
+		const missing = this.#questions.filter((_, index) => this.#missing(index)).length;
 		const warning =
 			missing === 0
 				? []
@@ -244,9 +264,13 @@ export class AskDialog implements Component, Focusable {
 		const column = Math.max(...titles.map((title) => visibleWidth(title)));
 		const rows = titles.map((title, index) => {
 			const answer = this.#answerText(index);
-			const given = this.#answers[index] !== undefined;
+			const given = this.#given(index) !== undefined;
+			const problem = this.#problem(index);
 			const cell = `${given ? "✔" : "○"} ${title}${" ".repeat(column - visibleWidth(title))}`;
-			const said = typeof answer === "string" ? answer : paint("dim", answer === null ? "— none" : "— no answer");
+			const said =
+				typeof answer === "string"
+					? answer
+					: paint("dim", problem !== undefined ? `— ${problem}` : answer === null ? "— none" : "— no answer");
 			const line = `  ${paint(given ? "green" : "dim", cell)}   ${said}`;
 			return truncateToWidth(line, width, "…");
 		});
@@ -273,7 +297,7 @@ export class AskDialog implements Component, Focusable {
 		const tabs: Tab[] = [
 			...this.#questions.map((_, index) => ({
 				title: this.#title(index),
-				answered: this.#answers[index] !== undefined,
+				answered: this.#given(index) !== undefined,
 			})),
 			{ title: SUBMIT, answered: true },
 		];
