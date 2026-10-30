@@ -886,7 +886,7 @@ describe("Renderer", () => {
 			]);
 			expect(stdout).toBe(
 				[
-					"◇ review unavailable: context_too_large (215000 bytes, limit 204800)",
+					"◇ review unavailable: context_too_large (215000 bytes, limit 204800) · review smaller candidates: commit in steps, or /review <ref> from a nearer commit",
 					"✗ review escalated: over_budget (30 lines, budget 12)",
 					"",
 				].join("\n"),

@@ -183,10 +183,20 @@ export function excerpt(text: string): string {
 	return line.length > EXCERPT_CHARS ? `${line.slice(0, EXCERPT_CHARS)}…` : line;
 }
 
-/** What clients show for a refusal: the cause and the value observed, else the reason, else that none was given. */
+/** What to do next after a refusal that names it, for the causes whose way out is the user's (following gentle-ai's review stop reasons). */
+export const REFUSAL_NEXT_ACTIONS: Partial<Record<RefusalCause, string>> = {
+	context_too_large: "review smaller candidates: commit in steps, or /review <ref> from a nearer commit",
+};
+
+/**
+ * What clients show for a refusal: the cause and the value observed, then the next action when the cause has one;
+ * else the reason, else that none was given.
+ */
 export function describeRefusal(event: { cause?: RefusalCause; observed?: string; reason?: string }): string {
 	if (event.cause === undefined) return event.reason ?? "no reason given";
-	return event.observed === undefined ? event.cause : `${event.cause} (${event.observed})`;
+	const refusal = event.observed === undefined ? event.cause : `${event.cause} (${event.observed})`;
+	const next = REFUSAL_NEXT_ACTIONS[event.cause];
+	return next === undefined ? refusal : `${refusal} · ${next}`;
 }
 
 /** Anthropic's reasoning effort levels, from the cheapest to the most thorough. */

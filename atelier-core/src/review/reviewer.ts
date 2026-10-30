@@ -2,7 +2,7 @@ import { describeError, excerpt, type PhaseAgent, type Refusal, type Usage, ZERO
 import { type Candidate, type FreezeResult, holdsCommits } from "./candidate.ts";
 import { type Finding, isBlocking, numberFindings, parseFindings } from "./findings.ts";
 import { runGit } from "./git.ts";
-import { type BudgetExceeded, buildLensPrompts, LENS_INSTRUCTIONS, readPatch } from "./lenses.ts";
+import { type BudgetExceeded, buildLensPrompts, LENS_INSTRUCTIONS, MAX_LENS_PARTS, readPatch } from "./lenses.ts";
 import type { Receipt } from "./receipts.ts";
 import type { Assessment, Lens } from "./risk.ts";
 import { commitInstruction, parseResults, parseVerdicts, REFUTER_INSTRUCTION, VALIDATOR_INSTRUCTION } from "./roles.ts";
@@ -135,6 +135,13 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		cause: "context_too_large",
 		observed: `${refused.bytes} bytes, limit ${refused.limit}`,
 	});
+	/** The reason names the next action too: the agent reads the reason, not the cause. */
+	const refuseSize = (refused: BudgetExceeded) =>
+		finish(
+			"unavailable",
+			`The change is too large to review: ${refused.bytes} bytes, over ${refused.limit} in one part or more than ${MAX_LENS_PARTS} parts. Review smaller candidates: commit in steps, or /review <ref> from a nearer commit.`,
+			tooLarge(refused),
+		);
 
 	if (interrupted()) return stopped();
 	if (assessment.lenses.length === 0) return finish("approved");
@@ -143,7 +150,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	let patch: string;
 	try {
 		const read = await readPatch(candidate);
-		if (!read.ok) return finish("unavailable", read.code, tooLarge(read));
+		if (!read.ok) return refuseSize(read);
 		patch = read.patch;
 	} catch (error) {
 		return finish("unavailable", `Could not read the patch: ${describeError(error)}`, {
@@ -152,7 +159,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		});
 	}
 	const built = buildLensPrompts({ candidate, patch, reasons: assessment.reasons }, assessment.lenses);
-	if (!built.ok) return finish("unavailable", built.code, tooLarge(built));
+	if (!built.ok) return refuseSize(built);
 	const prompts = built.prompts;
 	parts = prompts.get(assessment.lenses[0] as Lens)?.length ?? 1;
 
