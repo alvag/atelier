@@ -27,10 +27,9 @@
  * whose answer a change needs. It counts the background launches and the
  * responses that made them, the tasks run without background, polls, git apply
  * calls and the checks run after the last one, and, after the session, how many
- * of the asked test files exist and whether the checks pass. With it, --variant
- * picks the background rules of #154 the main agent gets (baseline by default).
+ * of the asked test files exist and whether the checks pass.
  *
- *   node atelier-core/scripts/measure-delegation.ts [--model <id>] [--explorer-model <id>] [--background] [--variant <name>] [--runs <n>] [--tasks <id,...>] [--max-usd <n>] [--json <file>] [--compare <file>]
+ *   node atelier-core/scripts/measure-delegation.ts [--model <id>] [--explorer-model <id>] [--background] [--runs <n>] [--tasks <id,...>] [--max-usd <n>] [--json <file>] [--compare <file>]
  */
 import { access, cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -52,7 +51,6 @@ import {
 	SYSTEM_PROMPT_APPEND,
 	type Usage,
 } from "../src/index.ts";
-import { BACKGROUND_RULES_VARIANTS, type BackgroundRulesVariant } from "../src/prompt.ts";
 import { sandbox } from "../src/tools/sandbox.ts";
 import { CHECKS, checksPass, makeBackgroundRepo } from "./background-repo.ts";
 import { runWokenTurns } from "./background-turns.ts";
@@ -160,7 +158,6 @@ const { values } = parseArgs({
 		tasks: { type: "string" },
 		"fake-backend": { type: "boolean" },
 		background: { type: "boolean" },
-		variant: { type: "string" },
 		"explorer-model": { type: "string" },
 		"max-usd": { type: "string" },
 		json: { type: "string" },
@@ -182,15 +179,6 @@ const background = values.background === true;
 const tasks = TASKS.filter((task) =>
 	picked === undefined ? background || !task.background : picked.includes(task.id),
 );
-const variant = (values.variant ?? "baseline") as BackgroundRulesVariant;
-if (!BACKGROUND_RULES_VARIANTS.includes(variant)) {
-	process.stderr.write(`Unknown variant ${variant}; the variants are ${BACKGROUND_RULES_VARIANTS.join(", ")}.\n`);
-	process.exit(2);
-}
-if (variant !== "baseline" && !background) {
-	process.stderr.write(`--variant ${variant} needs --background: its rules speak of background subagents.\n`);
-	process.exit(2);
-}
 const needBackground = background ? [] : tasks.filter((task) => task.background);
 if (needBackground.length > 0) {
 	process.stderr.write(`${needBackground.map((task) => task.id).join(", ")} runs only with --background.\n`);
@@ -272,7 +260,7 @@ async function measure(task: Task): Promise<Run> {
 		odd: true,
 		maxRequestsPerTurn: 40,
 		subagents: { agents, createBackend: backend },
-		...(background ? { wake: () => woken.resolve(), backgroundRules: variant } : {}),
+		...(background ? { wake: () => woken.resolve() } : {}),
 	});
 	const run: Run = {
 		task: task.id,
@@ -411,7 +399,7 @@ const before = compared?.results;
 const at = (c: Commit | undefined) =>
 	c === undefined ? "unknown commit" : `${c.sha.slice(0, 7)}${c.dirty ? " (uncommitted changes)" : ""}`;
 const lines = [
-	`Model: ${model}, at ${at(commit)}.${explorerModel === undefined ? "" : ` Explorer model: ${explorerModel}.`}${background ? ` With background subagents. Variant: ${variant}.` : ""} Runs per task: ${runs}. Spent: ${usd(spent)}${stopped ? ` (stopped: the next session could pass $${maxUsd})` : ""}.`,
+	`Model: ${model}, at ${at(commit)}.${explorerModel === undefined ? "" : ` Explorer model: ${explorerModel}.`}${background ? " With background subagents." : ""} Runs per task: ${runs}. Spent: ${usd(spent)}${stopped ? ` (stopped: the next session could pass $${maxUsd})` : ""}.`,
 	...(compared ? [`Before: at ${at(compared.commit)}.`] : []),
 	"",
 ];
@@ -434,5 +422,5 @@ process.stdout.write(`${lines.join("\n")}\n`);
 if (values.json)
 	await writeFile(
 		values.json,
-		`${JSON.stringify({ model, variant, explorerModel, background, commit, runs, spent, stopped, results }, null, 2)}\n`,
+		`${JSON.stringify({ model, explorerModel, background, commit, runs, spent, stopped, results }, null, 2)}\n`,
 	);

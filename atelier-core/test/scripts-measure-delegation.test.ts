@@ -89,7 +89,7 @@ describe("measure-delegation", () => {
 		expect(run.stderr).toContain("needed-first runs only with --background");
 	}, 30_000);
 
-	it("records the explorer model and the variant of the background rules it measured, and refuses another", async () => {
+	it("records the explorer model it measured, and refuses the variants it no longer has", async () => {
 		const script = new URL("../scripts/measure-delegation.ts", import.meta.url).pathname;
 		const json = join(root, "run.json");
 		const measured = (...more: string[]) => {
@@ -98,30 +98,17 @@ describe("measure-delegation", () => {
 			child = run;
 			return run;
 		};
-		const written = async () =>
-			JSON.parse(await readFile(json, "utf8")) as { variant?: string; explorerModel?: string };
 
 		const run = measured("--explorer-model", "claude-haiku-5-5");
 		await until(() => run.exited !== undefined, 15_000);
 		expect(run.exited).toBe(0);
-		expect(await written()).toMatchObject({ variant: "baseline", explorerModel: "claude-haiku-5-5" });
+		const written = JSON.parse(await readFile(json, "utf8")) as { variant?: string; explorerModel?: string };
+		expect([written.variant, written.explorerModel]).toEqual([undefined, "claude-haiku-5-5"]);
 
-		const rules = measured("--background", "--variant", "rules");
-		await until(() => rules.exited !== undefined, 30_000);
-		expect(rules.exited).toBe(0);
-		expect(rules.stdout).toContain("Variant: rules");
-		expect((await written()).variant).toBe("rules");
-
-		// The rules speak of background subagents: a session without --background has none.
-		const alone = measured("--variant", "rules");
-		await until(() => alone.exited !== undefined, 15_000);
-		expect(alone.exited).toBe(2);
-		expect(alone.stderr).toContain("--variant rules needs --background");
-
-		// #124's variants are gone.
-		const wrong = measured("--variant", "rule");
+		// #124's and #154's variants are gone.
+		const wrong = measured("--background", "--variant", "rules");
 		await until(() => wrong.exited !== undefined, 15_000);
-		expect(wrong.exited).toBe(2);
-		expect(wrong.stderr).toContain("Unknown variant rule; the variants are baseline, rules.");
-	}, 60_000);
+		expect(wrong.exited).not.toBe(0);
+		expect(wrong.stderr).toContain("Unknown option '--variant'");
+	}, 30_000);
 });

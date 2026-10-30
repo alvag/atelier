@@ -6,10 +6,9 @@ export const SYSTEM_PROMPT_APPEND =
  * Added when ODD tracking is on. Byte-stable for a session, and kept short: the code enforces the rules that matter.
  * With subagents, a line ties a task's route to the task tool's rules, naming only the agents the session has. With an
  * explorer, the breadth rule follows it: of the rules measured in #124, the only one that made the main agent hand a wide
- * question to an explorer before reading it, while narrow questions stayed inline. `background` names the agents that
- * can run in the background (#154): one line says when to, and with a worker another says when to run several.
+ * question to an explorer before reading it, while narrow questions stayed inline.
  */
-export function oddRules(agents: readonly string[], background: readonly string[] = []): string {
+export function oddRules(agents: readonly string[]): string {
 	return [
 		"Work in ODD (Organic Driven Development):",
 		"- A small task (understood, low risk, finishable from the diff alone): just do it. Read only what you change and its helpers, in one batch, and run the focused test and the suite in one command.",
@@ -20,8 +19,6 @@ export function oddRules(agents: readonly string[], background: readonly string[
 					`- A task's route says who does it: ${orList(["inline (you)", ...agents])}, following the task tool's rules on when to delegate.`,
 				]),
 		...(agents.includes("explorer") ? [BREADTH_RULE] : []),
-		...(background.length === 0 ? [] : [backgroundRule(background)]),
-		...(background.includes("worker") ? [PARALLEL_RULE] : []),
 		"- Then go task by task: update_task to in_progress before starting one, to done (with its commit, if any) once its checks pass, to blocked with a note when it waits on something.",
 		"- To resume earlier work, open its feature by name.",
 		"- Reading, editing and running tests show your phase by themselves; use the phase tool only for authorizing, deciding and closing.",
@@ -32,23 +29,6 @@ export function oddRules(agents: readonly string[], background: readonly string[
 /** When the main agent decides to read a question itself or send an explorer: before it starts reading. */
 const BREADTH_RULE =
 	"- Before your first read for a question, judge its breadth: if answering needs more than about 3 reads or 10k tokens of code, do not read it yourself; send one explorer with the question and the paths you know, and ask for at most about 2k tokens with path:line evidence. A question you can answer in up to 3 reads stays inline.";
-
-/** When the main agent runs a subagent in the background or waits for it: as it decides how to call it. */
-function backgroundRule(agents: readonly string[]): string {
-	const who = orList(agents.map((agent) => `${/^[aeiou]/.test(agent) ? "an" : "a"} ${agent}`));
-	return `- Run ${who} in the background when its work does not decide your next step, so you keep working or answer the user meanwhile; run it without background when you need its answer to go on, or when it may need the user's approval or a decision: a background subagent cannot ask the user.`;
-}
-
-/** When several background workers are worth their start, and how to launch them. */
-const PARALLEL_RULE =
-	"- Use several background workers only for two or more independent units of behavior, each more than a subagent's start (several files or about 100 changed lines); the code, tests and docs of one behavior are one unit, and dependent work is not parallel. Launch them together, in one response.";
-
-/**
- * The variants of #154's background rules, measured by `scripts/measure-delegation.ts` before one becomes the default.
- * Temporary: the winner's text stays in the ODD rules, and `SessionOptions.backgroundRules` goes away.
- */
-export const BACKGROUND_RULES_VARIANTS = ["baseline", "rules"] as const;
-export type BackgroundRulesVariant = (typeof BACKGROUND_RULES_VARIANTS)[number];
 
 /** `a`, `a or b`, `a, b or c`. */
 function orList(items: readonly string[]): string {
