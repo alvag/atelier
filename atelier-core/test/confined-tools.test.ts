@@ -21,7 +21,7 @@ beforeEach(async () => {
 	scratch = join(base, "scratch");
 	parent = join(base, "parent");
 	home = join(base, "home");
-	for (const dir of [cwd, scratch, join(parent, "pkg"), home, join(cwd, ".atelier")])
+	for (const dir of [cwd, scratch, join(parent, "pkg"), home, join(cwd, ".atelier"), join(base, "s")])
 		await mkdir(dir, { recursive: true });
 	await writeFile(join(parent, "pkg", "index.js"), "parent\n");
 	// The worktree's dependencies are a link to the parent's, and the project's configuration lets commands write there.
@@ -88,7 +88,8 @@ describe("the confined policy", () => {
 describe.skipIf(!onMac)("a confined command in the sandbox", () => {
 	let sandbox: Sandbox;
 	beforeEach(() => {
-		sandbox = new Sandbox({ home, tempDir: join(base, "temp") });
+		// Its own root for the library's socket folder, as the other sandbox tests: never the shared /tmp one.
+		sandbox = new Sandbox({ home, tempDir: join(base, "temp"), socketRoot: join(base, "s") });
 	});
 	afterEach(async () => {
 		await sandbox.reset();
