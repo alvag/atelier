@@ -46,6 +46,8 @@ const PREVIEW_ROOM = 32;
 const PREVIEW_GAP = 2;
 const PREVIEW_HINT = "↑↓ to see each option's preview";
 const NO_PREVIEW = "No preview";
+/** The fewest rows of a panel: its borders and one row between them. */
+const PANEL_LEAST = 3;
 
 /** The hint's parts in the order they are dropped when it does not fit: the first goes first. */
 const dropOrder = ["enter select", "↑↓ move", "←→ tabs"];
@@ -103,8 +105,8 @@ export function fitHint(parts: readonly string[], width: number): string {
  * When options of a single-choice question have a preview, a panel beside the options (under them when the width
  * leaves no room) shows the preview of the one the cursor is on, titled with its number and label; before the cursor is
  * on one it says how to see them. The panel is as tall as the tallest preview, so the rows do not move with the cursor,
- * and with `height` it is cut to the rows left, saying how many more there are: the question, the options and the hint
- * line always stay in sight.
+ * and with `height` it is cut to the rows left, saying how many more there are, or left out when not even its borders
+ * fit: the question, the options and the hint line always stay in sight.
  */
 export class QuestionDialog implements Component, Focusable {
 	focused = false;
@@ -438,19 +440,26 @@ export class QuestionDialog implements Component, Focusable {
 		);
 		const listWidth = this.#listWidth();
 		const beside = width - listWidth - PREVIEW_GAP - PANEL_FRAME;
+		const options = this.#optionRows(width);
 		if (beside >= Math.min(longest, PREVIEW_ROOM)) {
+			// Beside the panel the descriptions go under the labels: only when that takes no rows the screen lacks.
 			const list = this.#optionRows(listWidth);
-			const panel = this.#panel(Math.min(longest, beside), Math.max(list.length, rows));
-			return Array.from({ length: Math.max(list.length, panel.length) }, (_, row) => {
-				const left = list[row] ?? "";
-				const right = panel[row];
-				if (right === undefined) return left;
-				return `${left}${" ".repeat(Math.max(0, listWidth - visibleWidth(left)) + PREVIEW_GAP)}${right}`;
-			});
+			const room = Math.max(list.length, rows);
+			if (list.length <= Math.max(rows, options.length) && room >= PANEL_LEAST) {
+				const panel = this.#panel(Math.min(longest, beside), room);
+				return Array.from({ length: Math.max(list.length, panel.length) }, (_, row) => {
+					const left = list[row] ?? "";
+					const right = panel[row];
+					if (right === undefined) return left;
+					return `${left}${" ".repeat(Math.max(0, listWidth - visibleWidth(left)) + PREVIEW_GAP)}${right}`;
+				});
+			}
 		}
-		const list = this.#optionRows(width);
-		const panel = this.#panel(Math.min(longest, Math.max(1, width - 1 - PANEL_FRAME)), rows - list.length - 1);
-		return [...list, "", ...panel.map((line) => ` ${line}`)];
+		// Under the options, after a blank row; left out when not even its borders and one row fit.
+		const room = rows - options.length - 1;
+		if (room < PANEL_LEAST) return options;
+		const panel = this.#panel(Math.min(longest, Math.max(1, width - 1 - PANEL_FRAME)), room);
+		return [...options, "", ...panel.map((line) => ` ${line}`)];
 	}
 
 	/** The columns of the options' rows with their descriptions under them: up to the `Recommended` tag. */
