@@ -75,6 +75,9 @@ const textOf = (content: string | readonly { type: string; text?: string }[]): s
 				.map((block) => block.text ?? "")
 				.join("\n");
 
+const fileImageOmission = (model: string): string =>
+	`[image omitted: ${model} cannot receive this image source through Chat Completions]`;
+
 /** A user message: its tool results, each as a `tool` message, and its text as a `user` message, in order. */
 function userMessages(message: Anthropic.MessageParam, model: string): ChatMessage[] {
 	if (typeof message.content === "string") return [{ role: "user", content: message.content }];
@@ -91,11 +94,7 @@ function userMessages(message: Anthropic.MessageParam, model: string): ChatMessa
 	};
 	const imagePart = (block: Anthropic.ImageBlockParam): ChatContent => {
 		const source = block.source;
-		if (source.type === "file")
-			return {
-				type: "text",
-				text: `[image omitted: ${model} cannot receive this image source through Chat Completions]`,
-			};
+		if (source.type === "file") return { type: "text", text: fileImageOmission(model) };
 		return {
 			type: "image_url",
 			image_url: { url: source.type === "base64" ? `data:${source.media_type};base64,${source.data}` : source.url },
@@ -335,6 +334,7 @@ export function chatCompletionsTransport(options: ChatCompletionsOptions): Model
 		}
 	};
 	return {
+		fileImageOmission,
 		async *request(params, signal): AsyncGenerator<ModelDelta, Anthropic.Message> {
 			const body = await connect(JSON.stringify(toChatRequest(params)), signal);
 			let id = "chatcmpl";

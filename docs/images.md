@@ -84,8 +84,9 @@ resuming with one sends the original normalized pixels again. Compaction can sti
 older history with a summary. A text-only carried prompt marks images it cannot retain with
 `[image omitted: the carried prompt is text-only; see the summary]`.
 
-Responses uses an **8,192-token allowance per unmeasured image that is actually sent to the current
-model** for context and compaction-tail estimates, rather than treating base64 as text. Text keeps its
+Messages (including both OpenCode Go transports) and Responses use an **8,192-token allowance per
+unmeasured image that is actually sent to the current model** for context and compaction-tail
+estimates, rather than treating base64 as text. Text keeps its
 character-based estimate. This is a compaction heuristic, not a billing estimate: API-reported usage
 replaces it after a response, including the first response after resuming.
 
@@ -96,7 +97,7 @@ request after resuming a history with many images. The allowances still count in
 context size and in choosing the retained tail. A request that really exceeds the context window
 still triggers the existing overflow compaction and one retry.
 
-An image the current model does not accept counts as its omission notice text, not as an allowance,
+An image the current model or transport cannot receive counts as its omission notice text, not as an allowance,
 for the context size, the retained-tail cut and the compacted-history estimate alike. The saved
 bytes are untouched: each request builds its own view, so returning to an image-capable model sends
 the original images again.

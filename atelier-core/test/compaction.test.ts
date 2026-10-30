@@ -1,4 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import type { RequestState } from "../src/backends/anthropic-api/backend.ts";
 import { systemPrompt } from "../src/backends/anthropic-api/system-prompt.ts";
@@ -116,6 +117,29 @@ describe("context measurement and threshold", () => {
 		expect(estimateTokens(message)).toBe(Math.ceil(JSON.stringify(message).length / 4));
 	});
 
+	it("sizes native prompt and nested tool images independently of their encoded bytes", async () => {
+		const image = async (width: number): Promise<Anthropic.ImageBlockParam> => ({
+			type: "image",
+			source: {
+				type: "base64",
+				media_type: "image/png",
+				data: (
+					await sharp({ create: { width, height: width, channels: 4, background: "red" } })
+						.png()
+						.toBuffer()
+				).toString("base64"),
+			},
+		});
+		const message = (part: Anthropic.ImageBlockParam): Message => ({
+			role: "user",
+			content: [part, { type: "tool_result", tool_use_id: "read", content: [part] }],
+		});
+		const small = message(await image(1));
+		const large = message(await image(512));
+		expect(estimateTokens(small)).toBe(estimateTokens(large));
+		expect(estimateTokens(large)).toBeGreaterThanOrEqual(2 * 8_192);
+	});
+
 	it("sizes a message as the API takes it, without the effort Atelier keeps next to it", () => {
 		const answer = { role: "assistant" as const, content: "y".repeat(400) };
 		expect(estimateTokens({ ...answer, effort: "xhigh" } as Anthropic.MessageParam)).toBe(estimateTokens(answer));
@@ -123,6 +147,31 @@ describe("context measurement and threshold", () => {
 });
 
 describe("findCut", () => {
+	it("does not let a large encoded image replace the text-sized verbatim tail", async () => {
+		const raw = Buffer.alloc(128 * 128 * 4);
+		let seed = 17;
+		for (let i = 0; i < raw.length; i++) {
+			seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+			raw[i] = seed >>> 24;
+		}
+		const data = (
+			await sharp(raw, { raw: { width: 128, height: 128, channels: 4 } })
+				.png()
+				.toBuffer()
+		).toString("base64");
+		const messages: Message[] = [
+			user("old"),
+			assistant("old"),
+			user("q".repeat(40_000)),
+			assistant("read"),
+			{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data } }] },
+			assistant("done"),
+			user("next"),
+		];
+		// One 8,192-token allowance cannot fill a 9,000-token tail: keep the older text too.
+		expect(findCut(messages, 9_000)).toBe(1);
+	});
+
 	it("cuts a long single turn before an assistant, keeping each tool result with its call", () => {
 		const messages = longTurn("Refactor the parser", 40, 8000);
 		const cut = findCut(messages, 20_000);

@@ -73,9 +73,49 @@ export function parseCompactAt(value: string | undefined): number | undefined {
 	return Number(trimmed);
 }
 
-/** About four characters per token, of the message as the API takes it (no `effort`): only used to size the verbatim tail. */
-export function estimateTokens(message: Anthropic.MessageParam): number {
-	return Math.ceil(JSON.stringify({ role: message.role, content: message.content }).length / 4);
+// A coarse allowance until API usage measures the image; encoded bytes are not text tokens.
+export const IMAGE_TOKENS = 8_192;
+
+/** How the current model sees images: an `omission` text stands in for each when it accepts none. */
+export interface ImageView {
+	omission?: string | undefined;
+	/** A transport-specific omission for a file source, when the model otherwise accepts images. */
+	fileOmission?: string | undefined;
+	/** False leaves the allowance out: the size the text alone is known to have. */
+	allowance?: boolean;
+}
+
+/** Four text characters per token, plus an allowance per native image, including nested tool results. */
+export function estimateTokens(message: Anthropic.MessageParam, view: ImageView = {}): number {
+	let images = 0;
+	const imageText = (image: Anthropic.ImageBlockParam): Anthropic.TextBlockParam[] => {
+		const omission = view.omission ?? (image.source.type === "file" ? view.fileOmission : undefined);
+		if (omission !== undefined) return [{ type: "text", text: omission }];
+		images++;
+		return [];
+	};
+	const content =
+		typeof message.content === "string"
+			? message.content
+			: message.content.flatMap((block): Anthropic.ContentBlockParam[] => {
+					if (block.type === "image") return imageText(block);
+					if (block.type === "tool_result" && Array.isArray(block.content)) {
+						const parts = block.content;
+						return [
+							{
+								...block,
+								content: parts.flatMap<(typeof parts)[number]>((part) =>
+									part.type === "image" ? imageText(part) : [part],
+								),
+							},
+						];
+					}
+					return [block];
+				});
+	return (
+		Math.ceil(JSON.stringify({ role: message.role, content }).length / 4) +
+		(view.allowance === false ? 0 : images * IMAGE_TOKENS)
+	);
 }
 
 /** A cut is valid before an assistant message that follows a user message: both sides stay well formed. */
@@ -92,10 +132,11 @@ function isCut(messages: readonly Anthropic.MessageParam[], index: number): bool
 export function findCut(
 	messages: readonly Anthropic.MessageParam[],
 	keepRecent: number = KEEP_RECENT_TOKENS,
+	view: ImageView = {},
 ): number | undefined {
 	let tail = 0;
 	for (let index = messages.length - 1; index > 0; index--) {
-		tail += estimateTokens(messages[index] as Anthropic.MessageParam);
+		tail += estimateTokens(messages[index] as Anthropic.MessageParam, view);
 		if (tail >= keepRecent && isCut(messages, index)) return index;
 	}
 	return undefined;

@@ -298,6 +298,102 @@ describe("opencode-go on Chat Completions", () => {
 			await session.close();
 		}
 	});
+	describe("with unmeasured native images", () => {
+		// Noise does not compress, so the base64 is far larger than the compaction point below.
+		const noisePng = async (): Promise<Buffer> => {
+			const raw = Buffer.alloc(64 * 64 * 4);
+			let seed = 17;
+			for (let i = 0; i < raw.length; i++) {
+				seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+				raw[i] = seed >>> 24;
+			}
+			return sharp(raw, { raw: { width: 64, height: 64, channels: 4 } })
+				.png()
+				.toBuffer();
+		};
+		const startLow = async (options: Partial<BackendStartOptions> = {}): Promise<BackendSession> => {
+			const backend = await createBackend("opencode-go", {
+				resolveOpenCodeGoKey: async () => KEY,
+				opencodeGo: { baseUrl: provider.url, maxRetries: 0, model: MODEL },
+				anthropicApi: { compactAt: 1000 },
+			});
+			return backend.start({
+				cwd: "/tmp",
+				systemPromptAppend: "",
+				tools: [echoTool],
+				executeTool: async () => ({ ok: true, output: "" }),
+				...options,
+			});
+		};
+
+		it("counts a file image omitted by Chat as notice text, not an image allowance", async () => {
+			useModelData(new ModelData({ "opencode-go": [{ id: MODEL, images: true }] }));
+			const session = await startLow({
+				resume: {
+					messages: [{ role: "user", content: [{ type: "image", source: { type: "file", file_id: "saved-image" } }] }],
+				},
+			});
+			try {
+				if (!session.compact) throw new Error("This backend session cannot compact.");
+				const events = await collect(session.compact());
+				const begin = events.find((event) => event.type === "compaction_started");
+				expect(begin?.tokens).toBeGreaterThanOrEqual(
+					Math.ceil(`[image omitted: ${MODEL} cannot receive this image source through Chat Completions]`.length / 4),
+				);
+				expect(begin?.tokens).toBeLessThan(1000);
+				expect(provider.received).toHaveLength(0);
+			} finally {
+				await session.close();
+			}
+		});
+
+		it("does not compact a prompt image before the first request", async () => {
+			useModelData(new ModelData({ "opencode-go": [{ id: MODEL, images: true }] }));
+			const data = (await noisePng()).toString("base64");
+			expect(data.length).toBeGreaterThan(8000);
+			provider.answer(textReply("Seen."));
+			const session = await startLow();
+			try {
+				const events = await collect(session.send("What is this?", [{ mimeType: "image/png", data }]));
+				expect(events.filter((event) => event.type === "compaction_started")).toEqual([]);
+				expect(provider.received).toHaveLength(1);
+				expect(JSON.stringify(provider.received[0]?.body.messages)).toContain(`data:image/png;base64,${data}`);
+			} finally {
+				await session.close();
+			}
+		});
+
+		it("does not compact a read tool-result image before the next request", async () => {
+			useModelData(new ModelData({ "opencode-go": [{ id: MODEL, images: true }] }));
+			await writeFile(join(cwd, "capture.png"), await noisePng());
+			const call = {
+				index: 0,
+				id: "a",
+				type: "function",
+				function: { name: "read", arguments: '{"path":"capture.png"}' },
+			};
+			provider.answer(
+				{ sse: sse([chunk({ tool_calls: [call] }), chunk({}, "tool_calls")], { done: true }) },
+				textReply("I see noise."),
+			);
+			const session = await startLow({
+				cwd,
+				tools: [readTool],
+				executeTool: (tool) => readTool.execute(tool.input, { cwd }),
+			});
+			try {
+				const events = await collect(session.send("Inspect."));
+				expect(events.filter((event) => event.type === "compaction_started")).toEqual([]);
+				expect(provider.received).toHaveLength(2);
+				expect(JSON.stringify(provider.received[1]?.body.messages)).toMatch(
+					/"image_url":\{"url":"data:image\/png;base64,/,
+				);
+			} finally {
+				await session.close();
+			}
+		});
+	});
+
 	it("refuses fresh images for a Chat model without image input", async () => {
 		useModelData(new ModelData({ "opencode-go": [{ id: MODEL, images: false }] }));
 		const session = await start();
