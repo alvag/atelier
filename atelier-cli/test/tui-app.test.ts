@@ -4791,6 +4791,7 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 	const START = "\x1b[200~";
 	const END = "\x1b[201~";
 	const BUSY = "Images cannot be queued. Wait for the current turn to finish.";
+	const DROPPED = "paste it again";
 	type Harness = ReturnType<typeof harness>;
 	let images: string;
 	beforeEach(async () => {
@@ -4867,6 +4868,28 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 		await quit(h, code);
 	});
 
+	it("pastes ordinary text unchanged, and sends no image once a marker is deleted", async () => {
+		const { h, code } = await open([
+			[{ event: started }, { event: finished }],
+			[{ event: started }, { event: finished }],
+		]);
+		paste(h, "not a file path");
+		await shows(h, "not a file path");
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 1);
+		expect(h.backend.prompts).toEqual(["not a file path"]);
+		expect(sends(h)[0]?.images).toBeUndefined();
+		await shows(h, "$0.50");
+		await pasteImage(h, await imageFile());
+		for (let i = 0; i < "[Image #1]".length; i++) h.screen.type("\x7f");
+		h.screen.type("hi");
+		h.screen.type("\r");
+		await until(() => sends(h).length === 2);
+		expect(sends(h)[1]?.prompt).toBe("hi");
+		expect(sends(h)[1]?.images).toBeUndefined();
+		await quit(h, code);
+	});
+
 	it("never queues an image draft while a turn runs, and sends it after, with Enter or Alt+Enter", async () => {
 		const { h, code } = await open([
 			[{ event: started }, { waitForInterrupt: true }],
@@ -4919,6 +4942,25 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 		await quit(h, code);
 	});
 
+	it("gives a refused send back before what was typed meanwhile, with its image", async () => {
+		const { h, code } = await open();
+		await pasteImage(h, await imageFile());
+		h.core.failing.add("session.send");
+		const release = holdAck(h);
+		h.screen.type("\r");
+		await until(() => sends(h).length === 1);
+		h.screen.type("next");
+		release();
+		await shows(h, "session.send refused");
+		h.core.failing.delete("session.send");
+		await shows(h, "[Image #1]");
+		h.screen.type("\r");
+		await until(() => sends(h).length === 2);
+		expect(sends(h)[1]?.prompt?.trim()).toBe("next");
+		expect(sends(h)[1]?.images).toEqual(sends(h)[0]?.images);
+		await quit(h, code);
+	});
+
 	it("keeps image drafts instead of consuming them as a stats command", async () => {
 		const { h, code } = await open();
 		h.screen.type("/stats ");
@@ -4955,6 +4997,144 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 		await until(() => sends(h).length === 1);
 		expect(sends(h)[0]?.images).toHaveLength(1);
 		expect(JSON.stringify(sends(h)[0])).not.toContain(images);
+		await quit(h, code);
+	});
+
+	it("drops a path still being read when the draft or the cursor changes, never inserting elsewhere", async () => {
+		const { h, code } = await open();
+		const path = await imageFile();
+		const release = holdReads();
+		paste(h, path);
+		await until(() => fake.calls.length === 1);
+		h.screen.type("x");
+		paste(h, path);
+		release();
+		await until(() => h.screen.screen().split(DROPPED).length === 3);
+		expect(fake.calls).toHaveLength(1);
+		expect(h.screen.screen()).not.toContain("[Image #1]");
+		h.screen.type("\r");
+		await until(() => sends(h).length === 1);
+		expect(sends(h)[0]?.prompt).toBe("x");
+		await shows(h, "$0.50");
+		h.screen.type("ab");
+		const again = holdReads();
+		paste(h, path);
+		await until(() => fake.calls.length === 2);
+		h.screen.type("\x1b[D");
+		again();
+		await until(() => h.screen.screen().split(DROPPED).length === 4);
+		expect(h.screen.screen()).not.toContain("[Image #1]");
+		await quit(h, code);
+	});
+
+	it("keeps pastes in order behind a path being read", async () => {
+		const { h, code } = await open();
+		const release = holdReads();
+		paste(h, await imageFile());
+		paste(h, "then text");
+		release();
+		await shows(h, "[Image #1]then text");
+		await quit(h, code);
+	});
+
+	it("never brings a cleared draft back when a pasted path finishes reading after Ctrl+C", async () => {
+		const { h, code } = await open();
+		h.screen.type("abc");
+		const release = holdReads();
+		paste(h, await imageFile());
+		h.screen.type("\x03");
+		release();
+		await shows(h, DROPPED);
+		expect(h.screen.frame().join("\n")).not.toContain("[Image #1]");
+		h.screen.type("\r");
+		expect(sends(h)).toEqual([]);
+		await quit(h, code);
+	});
+
+	it("reads nothing more once the TUI quits while a path is read", async () => {
+		const { h, code } = await open();
+		const path = await imageFile();
+		const release = holdReads();
+		paste(h, path);
+		paste(h, path);
+		await until(() => fake.calls.length === 1);
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+		release();
+		await until(() => fake.finished === 1);
+		expect(fake.calls).toHaveLength(1);
+	});
+
+	it("drops a path read across /new instead of giving it to the new session", async () => {
+		const { h, code } = await open();
+		const path = await imageFile();
+		let starts!: () => void;
+		h.core.holds.set(
+			"session.start",
+			new Promise<void>((resolve) => {
+				starts = resolve;
+			}),
+		);
+		h.screen.type("/new");
+		h.screen.type("\r");
+		await until(() => h.core.commands.filter((command) => command.command === "session.start").length === 2);
+		const release = holdReads();
+		paste(h, path);
+		await until(() => fake.calls.length === 1);
+		starts();
+		await until(() => h.core.commands.some((command) => command.command === "session.close"));
+		release();
+		await shows(h, DROPPED);
+		expect(h.screen.screen()).not.toContain("[Image #1]");
+		h.screen.type("hi");
+		h.screen.type("\r");
+		await until(() => sends(h).length === 1);
+		expect(sends(h)[0]?.images).toBeUndefined();
+		await quit(h, code);
+	});
+
+	it("shows that only the first frame of an animated image is attached", async () => {
+		const { h, code } = await open();
+		fake.animated = true;
+		await pasteImage(h, await imageFile());
+		await shows(h, "Animated image: only the first frame was attached.");
+		await quit(h, code);
+	});
+
+	it("bounds the images of repeated pastes by count and by size", async () => {
+		const { h, code } = await open();
+		const path = await imageFile();
+		for (let i = 0; i < 21; i++) paste(h, path);
+		await shows(h, "at most 20 images");
+		expect(h.screen.screen()).toContain("[Image #20]");
+		expect(h.screen.screen()).not.toContain("[Image #21]");
+		h.screen.type("\r");
+		await until(() => sends(h).length === 1);
+		expect(sends(h)[0]?.images).toHaveLength(20);
+		await shows(h, "$0.50");
+		fake.huge = true;
+		await pasteImage(h, path, "[Image #21]");
+		paste(h, path);
+		await shows(h, "20 MiB");
+		expect(h.screen.screen()).not.toContain("[Image #22]");
+		await quit(h, code);
+	});
+
+	it("gives the keys beside a paste to the shortcuts, not to the editor", async () => {
+		const { h, code } = await open();
+		h.screen.type("abc");
+		paste(h, "x", "\x03");
+		await until(() => !h.screen.screen().includes("abc"));
+		expect(h.screen.stopped()).toBe(false);
+		paste(h, "hello", "\x1b\r");
+		await until(() => sends(h).length === 1);
+		expect(sends(h)[0]?.prompt).toBe("hello");
+		await shows(h, "$0.50");
+		h.screen.type(`${START}x`);
+		h.screen.type("\x03");
+		h.screen.type(`y${END}`);
+		await shows(h, "xy");
+		expect(h.screen.stopped()).toBe(false);
 		await quit(h, code);
 	});
 });
