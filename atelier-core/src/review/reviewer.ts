@@ -198,7 +198,8 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		for (let tries = 0; tries < 2; tries++) {
 			const reply = await callRole(lens, LENS_INSTRUCTIONS[lens], attempt, candidate.tree, part, used);
 			if (!reply.ok) return { error: `Lens ${lens} failed: ${reply.error}`, refusal: roleFailure(reply) };
-			used += reply.requests ?? 0;
+			// A backend that reports no requests made at least one.
+			used += reply.requests ?? 1;
 			const parsed = parseFindings(reply.text, lens);
 			if (parsed.ok) return { findings: parsed.findings };
 			if (tries === 1)
