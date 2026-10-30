@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -265,6 +266,75 @@ describe("a worker in the background", () => {
 		expect(started_).toMatch(/Its node_modules folders are (copy-on-write )?copies of yours\./);
 		expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
 		await play(session.nextQueued());
+		expect(parent.prompts[1]).toContain("It changed no files.");
+	});
+
+	it("points no link of its worktree at the parent's tree, so nothing written through one reaches the parent's", async () => {
+		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
+		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
+		writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
+		// pnpm-like: an absolute link inside the dependencies, and one in the tree itself.
+		symlinkSync(join(repo, "node_modules/pkg"), join(repo, "node_modules/abs"));
+		symlinkSync(join(repo, "a.txt"), join(repo, "here"));
+		const before = readFileSync(join(repo, "a.txt"));
+		const targets: string[] = [];
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				(cwd) => [
+					{
+						run: () => {
+							targets.push(readlinkSync(join(cwd(), "node_modules/abs")), readlinkSync(join(cwd(), "here")));
+							writeFileSync(join(cwd(), "node_modules/abs/index.js"), "child\n");
+							writeFileSync(join(cwd(), "here"), "through the link\n");
+						},
+					},
+					text("done"),
+					{ event: finished },
+				],
+			],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
+		expect(readFileSync(join(repo, "a.txt")).equals(before)).toBe(true);
+		for (const target of targets) expect(target.startsWith(`${repo}/`)).toBe(false);
+		// The worker changed a.txt through the link; the link itself is as the snapshot has it.
+		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed, \+1 -2/);
+	});
+
+	it("gets every node_modules the parent has: inside an ignored folder, not ignored, or a link", async () => {
+		writeFileSync(join(repo, ".gitignore"), "ignored.log\nvendor/\n.store/\n");
+		for (const dir of ["vendor/node_modules/v", "plain/node_modules/p", ".store/nm/l"])
+			mkdirSync(join(repo, dir), { recursive: true });
+		writeFileSync(join(repo, "vendor/node_modules/v/index.js"), "vendored\n");
+		writeFileSync(join(repo, "plain/node_modules/p/index.js"), "plain\n");
+		writeFileSync(join(repo, ".store/nm/l/index.js"), "linked\n");
+		symlinkSync(join(repo, ".store/nm"), join(repo, "node_modules"));
+		const seen: string[] = [];
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				(cwd) => [
+					{
+						run: () => {
+							for (const file of ["vendor/node_modules/v", "plain/node_modules/p", "node_modules/l"])
+								seen.push(readFileSync(join(cwd(), file, "index.js"), "utf8"));
+							seen.push(String(lstatSync(join(cwd(), "node_modules")).isSymbolicLink()));
+							writeFileSync(join(cwd(), "node_modules/l/index.js"), "child\n");
+						},
+					},
+					text("done"),
+					{ event: finished },
+				],
+			],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(seen).toEqual(["vendored\n", "plain\n", "linked\n", "false"]);
+		expect(readFileSync(join(repo, ".store/nm/l/index.js"), "utf8")).toBe("linked\n");
 		expect(parent.prompts[1]).toContain("It changed no files.");
 	});
 

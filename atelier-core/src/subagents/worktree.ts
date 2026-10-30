@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { mkdir, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -120,12 +120,18 @@ const NOT_DEPENDENCIES = ["--", ".", ":(exclude,glob)**/node_modules", ":(exclud
 /**
  * The tree of `top`'s working tree as it is now, tracked and untracked files but not ignored ones, written with an
  * index of its own (`index`), so the user's index, branches and stash are never touched. Whatever is under a
- * `node_modules` stays as it is in `base`: the dependencies are never part of a snapshot or a patch.
+ * `node_modules` stays as it is in `base`: the dependencies are never part of a snapshot or a patch; so do the `kept`
+ * paths.
  */
-async function treeOfWorkingTree(top: string, base: string, index: string): Promise<string> {
+async function treeOfWorkingTree(
+	top: string,
+	base: string,
+	index: string,
+	kept: readonly string[] = [],
+): Promise<string> {
 	const options = { env: { GIT_INDEX_FILE: index }, overrides: await filterOverrides(top) };
 	await git(top, ["read-tree", base], options);
-	await git(top, ["add", "-A", ...NOT_DEPENDENCIES], options);
+	await git(top, ["add", "-A", ...NOT_DEPENDENCIES, ...kept.map((path) => `:(exclude,literal)${path}`)], options);
 	return (await git(top, ["write-tree"], options)).trim();
 }
 
@@ -173,6 +179,7 @@ export async function createTaskWorktree(
 	let snapshotTree: string;
 	let snapshot: string;
 	let place: string;
+	let relinked = new Map<string, string>();
 	try {
 		headTree = (await git(top, ["rev-parse", "HEAD^{tree}"])).trim();
 		snapshotTree = await treeOfWorkingTree(top, head, index);
@@ -189,6 +196,7 @@ export async function createTaskWorktree(
 		await git(top, ["worktree", "add", "--no-checkout", "--detach", tree, snapshot]);
 		await git(tree, ["reset", "-q", "--hard"], { overrides: await filterOverrides(tree) });
 		await placeDependencies(tree, copies.staged);
+		relinked = await relinkIntoWorktree(top, tree);
 		place = join(tree, relative(top, await realpath(cwd)));
 		await mkdir(place, { recursive: true });
 	} catch (error) {
@@ -197,6 +205,13 @@ export async function createTaskWorktree(
 		throw error;
 	}
 	let removed: Promise<void> | undefined;
+	// A link Atelier made lead into the worktree is as the snapshot has it, unless the worker changed it since.
+	const stillRelinked = async () => {
+		const kept: string[] = [];
+		for (const [path, target] of relinked)
+			if ((await readlink(join(tree, path)).catch(() => undefined)) === target) kept.push(path);
+		return kept;
+	};
 	return {
 		top,
 		cwd: place,
@@ -204,7 +219,7 @@ export async function createTaskWorktree(
 		dirty: snapshotTree !== headTree,
 		dependencies: copies.dependencies,
 		async collect(patchPath) {
-			const changed = await treeOfWorkingTree(tree, snapshot, index);
+			const changed = await treeOfWorkingTree(tree, snapshot, index, await stillRelinked());
 			if (changed === snapshotTree) return undefined;
 			await writeFile(patchPath, await diffTrees(tree, snapshot, changed, ["--binary"]));
 			const counts = await diffTrees(tree, snapshot, changed, ["--numstat"]);
@@ -249,22 +264,86 @@ async function forgetStaleWorktrees(top: string): Promise<void> {
 	}
 }
 
-/** The folders of the checkout git ignores that are named `node_modules`, from the top; none nested in another. */
+/**
+ * Every `node_modules` of the checkout that is not tracked, folder or link, ignored or not, also inside a folder that is
+ * not tracked as a whole: what the snapshot leaves out and the worker needs. From the top; none inside another.
+ */
 async function dependencyFolders(top: string): Promise<string[]> {
-	const listed = await git(top, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
-	return listed
-		.split("\0")
-		.filter((entry) => entry.endsWith("/") && basename(entry.slice(0, -1)) === "node_modules")
-		.map((entry) => entry.slice(0, -1));
+	const untracked = ["ls-files", "--others", "--exclude-standard", "--directory", "-z"];
+	const entries = [
+		...(await git(top, [...untracked, "--ignored"])).split("\0"),
+		...(await git(top, untracked)).split("\0"),
+	].filter((entry) => entry !== "");
+	const found = new Set<string>();
+	for (const entry of entries) {
+		const path = entry.endsWith("/") ? entry.slice(0, -1) : entry;
+		if (basename(path) === "node_modules") found.add(path);
+		else if (entry.endsWith("/"))
+			for (const nested of await nestedDependencyFolders(join(top, path))) found.add(join(path, nested));
+	}
+	return [...found].sort();
+}
+
+/** The `node_modules` folders or links inside `dir`, as paths from it, without going into links or into one found. */
+async function nestedDependencyFolders(dir: string): Promise<string[]> {
+	const found: string[] = [];
+	const pending = [""];
+	for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
+		const entries = await readdir(join(dir, at), { withFileTypes: true }).catch(() => []);
+		for (const entry of entries) {
+			const path = at === "" ? entry.name : join(at, entry.name);
+			if (entry.name === "node_modules" && (entry.isDirectory() || entry.isSymbolicLink())) found.push(path);
+			else if (entry.isDirectory() && entry.name !== ".git") pending.push(path);
+		}
+	}
+	return found;
+}
+
+/** Whether `path` is `top` or inside it. */
+function within(top: string, path: string): boolean {
+	return path === top || path.startsWith(`${top}${sep}`);
+}
+
+/**
+ * Makes every link in the worktree that leads into the parent's tree lead to the same place in the worktree instead,
+ * so nothing the worker reads or writes through one is the parent's (pnpm links its packages by absolute paths).
+ * Answers the links it changed outside the dependencies, as paths from the top, with their new target.
+ */
+async function relinkIntoWorktree(top: string, tree: string): Promise<Map<string, string>> {
+	const changed = new Map<string, string>();
+	const pending = [""];
+	for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
+		const entries = await readdir(join(tree, at), { withFileTypes: true });
+		for (const entry of entries) {
+			const path = at === "" ? entry.name : join(at, entry.name);
+			if (at === "" && entry.name === ".git") continue;
+			if (entry.isDirectory()) {
+				pending.push(path);
+				continue;
+			}
+			if (!entry.isSymbolicLink()) continue;
+			const link = join(tree, path);
+			const target = await readlink(link);
+			const resolved = resolve(dirname(link), target);
+			const real = await realpath(resolved).catch(() => resolved);
+			const inParent = within(top, real) ? real : within(top, resolved) ? resolved : undefined;
+			if (inParent === undefined) continue;
+			const local = join(tree, relative(top, inParent));
+			await rm(link, { force: true });
+			await symlink(local, link);
+			if (!/(^|\/)node_modules(\/|$)/.test(path)) changed.set(path, local);
+		}
+	}
+	return changed;
 }
 
 /** Copies `from` to `to` sharing its blocks (APFS clones, reflinks); false where the file system cannot. */
 async function cloneFolder(from: string, to: string): Promise<boolean> {
 	const args =
 		process.platform === "darwin"
-			? ["-c", "-R", from, to]
+			? ["-c", "-R", "-H", from, to]
 			: process.platform === "linux"
-				? ["-R", "--reflink=always", from, to]
+				? ["-R", "-H", "--reflink=always", from, to]
 				: undefined;
 	if (args === undefined) return false;
 	try {
@@ -305,7 +384,8 @@ async function copyDependencies(
 			continue;
 		}
 		try {
-			await execFileAsync("cp", ["-R", from, path]);
+			// -H: a `node_modules` that is a link is copied as what it leads to.
+			await execFileAsync("cp", ["-R", "-H", from, path]);
 		} catch (error) {
 			throw new Error(`could not copy ${folder} into the worker's worktree: ${(error as Error).message}`);
 		}
