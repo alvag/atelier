@@ -30,6 +30,7 @@ import {
 	Session,
 	SYSTEM_PROMPT_APPEND,
 } from "../src/index.ts";
+import { MEASURE_MAX_REQUESTS_PER_TURN } from "./cost.ts";
 
 const NAMES = { alpha: "computeAlphaChecksum", beta: "normalizeBetaRecords", gamma: "scheduleGammaRetries" } as const;
 
@@ -117,6 +118,7 @@ const session = await Session.start({
 	cwd: root,
 	tools: coreTools,
 	systemPromptAppend: SYSTEM_PROMPT_APPEND,
+	maxRequestsPerTurn: MEASURE_MAX_REQUESTS_PER_TURN,
 	...(values.model === undefined ? {} : { model: values.model }),
 });
 try {

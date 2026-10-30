@@ -27,7 +27,7 @@ import {
 	SYSTEM_PROMPT_APPEND,
 	type Usage,
 } from "../src/index.ts";
-import { addCost, usd } from "./cost.ts";
+import { addCost, MEASURE_MAX_REQUESTS_PER_TURN, usd } from "./cost.ts";
 
 const QUESTION =
 	"How does Session make sure every turn ends with exactly one turn_finished event, even when the backend throws, the turn is interrupted or the backend never sends one? Answer with path:line references.";
@@ -77,6 +77,7 @@ async function measure(mode: ModeReport["mode"]): Promise<ModeReport> {
 		cwd,
 		tools: coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
+		maxRequestsPerTurn: MEASURE_MAX_REQUESTS_PER_TURN,
 		...(mode === "delegated" ? { subagents: { agents: BUILTIN_AGENTS, createBackend: backend } } : {}),
 	});
 	const report: ModeReport = {
