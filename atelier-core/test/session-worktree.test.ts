@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	existsSync,
 	lstatSync,
@@ -791,6 +791,29 @@ describe.skipIf(!onMac)("a background worker in the real sandbox", () => {
 		expect(readFileSync(parent.prompts[1]?.match(/started: (\S+\.patch)\./)?.[1] as string, "utf8")).not.toContain(
 			"node_modules",
 		);
+	});
+});
+
+describe("two workers' worktrees adopting the same objects at once", () => {
+	it("each reads them whole as soon as its own adoption ends, and no temporary file stays", async () => {
+		const base = await realpath(await mkdtemp(join(tmpdir(), "atelier-adopt-")));
+		// A large uncommitted file: both snapshots hold the same blob, which takes a while to copy.
+		writeFileSync(join(repo, "big.bin"), randomBytes(24 * 1024 * 1024));
+		const blob = git(repo, "hash-object", "big.bin").trim();
+		const [one, two] = await Promise.all([
+			createTaskWorktree(repo, join(base, "one")),
+			createTaskWorktree(repo, join(base, "two")),
+		]);
+		try {
+			const readWhole = (worktree: typeof one) => async () =>
+				execFileSync("git", ["cat-file", "blob", blob], { cwd: worktree.cwd, maxBuffer: 64 * 1024 * 1024 }).length;
+			const sizes = await Promise.all([one.adopt().then(readWhole(one)), two.adopt().then(readWhole(two))]);
+			expect(sizes).toEqual([24 * 1024 * 1024, 24 * 1024 * 1024]);
+			const objects = join(repo, ".git", "objects", blob.slice(0, 2));
+			expect(readdirSync(objects).filter((name) => name !== blob.slice(2))).toEqual([]);
+		} finally {
+			await Promise.all([one.remove(), two.remove()]);
+		}
 	});
 });
 
