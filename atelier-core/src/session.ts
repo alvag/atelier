@@ -15,7 +15,7 @@ import { type BackgroundNotice, deliveryText } from "./background-notices.ts";
 import { Channel } from "./channel.ts";
 import { COMPACTED_HEADER } from "./compaction/compactor.ts";
 import { nearCompaction } from "./context-gauge.ts";
-import type { DelegationVariant } from "./delegation.ts";
+import { type DelegationVariant, InlineReads, withReadNotice } from "./delegation.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -507,6 +507,10 @@ export class Session {
 	#queue: QueuedMessage[] = [];
 	/** The running turn answers a prompt, so a steer can go with its tool results. */
 	#steerable = false;
+	/** With the `notice` variant of #124 and an explorer: the main agent is told once a turn's reads pass the threshold. */
+	readonly #readNotice: boolean;
+	/** The reads of the turn answering a prompt, when the read notice is on. */
+	#inlineReads: InlineReads | undefined;
 	/** Marks what the running turn's prompt carried as the model's: the mode note and the review notice. */
 	#promptTaken: (() => void) | undefined;
 	/** The running turn ended interrupted or failed and gave its queue back: nothing more is queued behind it. */
@@ -572,6 +576,9 @@ export class Session {
 					),
 				]
 			: options.tools;
+		this.#readNotice =
+			withReadNotice(options.delegation?.variant) &&
+			(subagents?.agents.some((agent) => agent.name === "explorer") ?? false);
 		this.#odd = options.odd
 			? new OddTracker(
 					options.cwd,
@@ -939,6 +946,7 @@ export class Session {
 			let failed = false;
 			this.#lastMessage = "";
 			this.#steerable = true;
+			this.#inlineReads = this.#readNotice ? new InlineReads() : undefined;
 			try {
 				for await (const event of backendSession.send(sent)) {
 					if (!refusal(event)) this.#recoveryInFlight = undefined;
@@ -1684,9 +1692,11 @@ export class Session {
 		if (signal?.aborted) return { ok: false, output: "Not run: the turn was interrupted." };
 		const result = await this.#runTool(call);
 		if (!this.#steerable || this.#abort?.signal.aborted) return result;
-		// The notices of background work that ended go with the result too, after the user's steers.
+		const reads = this.#inlineReads?.after(call.tool, result.ok, result.output.length);
+		// The notices of background work that ended go with the result too, after the user's steers and the read notice.
 		const taken = this.#takeNotices(this.#turn);
-		const notices = taken === undefined ? undefined : deliveryText(taken);
+		const background = taken === undefined ? undefined : deliveryText(taken);
+		const notices = joined(reads, background);
 		const steers = this.#queue.filter((message) => message.kind === "steer");
 		if (steers.length === 0) return notices === undefined ? result : { ...result, steering: notices };
 		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
@@ -2684,6 +2694,12 @@ function untilAborted(work: Promise<void>, signal: AbortSignal | undefined): Pro
 }
 
 /** How steers reach the model with a tool result: as the user's words, apart from the tool's output. */
+/** The parts that are there, one paragraph each; undefined when none is. */
+function joined(...parts: (string | undefined)[]): string | undefined {
+	const there = parts.filter((part) => part !== undefined);
+	return there.length === 0 ? undefined : there.join("\n\n");
+}
+
 function steeringText(texts: string[]): string {
 	return `The user sent this while you were working; take it into account as you continue:\n\n${texts.join("\n\n")}`;
 }

@@ -19,3 +19,38 @@ export const withBreadthRule = (variant: DelegationVariant | undefined) =>
 export const withWhyDelegate = (variant: DelegationVariant | undefined) => variant === "why";
 export const withReadNotice = (variant: DelegationVariant | undefined) =>
 	variant === "notice" || variant === "rule+notice";
+
+/** V2: the read notice comes once both are reached by the main agent's successful reads of one turn. */
+export const NOTICE_CALLS = 5;
+export const NOTICE_CHARS = 20_000;
+
+const READS = new Set(["read", "grep"]);
+/** After one of these in the turn the notice never comes: the agent delegated or is making a change. */
+const ENDS_NOTICE = new Set(["task", "edit", "write"]);
+
+/** What the main agent is told with the result of the read that reached the threshold. */
+export function readNotice(reads: number, chars: number): string {
+	return `You have read ${reads} times in this turn, about ${Math.round(chars / 4000)}k tokens, past the task tool's limit for reading inline. For what is left, send one explorer with the question and the paths you already know, and ask for at most about 2k tokens with path:line evidence, instead of reading on yourself.`;
+}
+
+/** The main agent's reads in one turn, told once when they pass the threshold; characters stand for tokens, 4 to 1. */
+export class InlineReads {
+	#reads = 0;
+	#chars = 0;
+	#done = false;
+
+	/** The notice for the call that just ended with an output of `chars` characters; undefined for every other call. */
+	after(tool: string, ok: boolean, chars: number): string | undefined {
+		if (this.#done) return undefined;
+		if (ENDS_NOTICE.has(tool)) {
+			this.#done = true;
+			return undefined;
+		}
+		if (!ok || !READS.has(tool)) return undefined;
+		this.#reads++;
+		this.#chars += chars;
+		if (this.#reads < NOTICE_CALLS || this.#chars < NOTICE_CHARS) return undefined;
+		this.#done = true;
+		return readNotice(this.#reads, this.#chars);
+	}
+}
