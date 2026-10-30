@@ -5002,6 +5002,69 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 		await quit(h, code);
 	});
 
+	it.each(["path", "clipboard"])(
+		"keeps holding Enter for a %s read when a job notice wakes a turn, then refuses to queue the image",
+		async (source) => {
+			const go = join(cwd, "go");
+			const command = `while [ ! -f ${go} ]; do sleep 0.1; done; echo done`;
+			const woken: { release?: () => void } = {};
+			let releaseClipboard!: () => void;
+			const clipboard = new Promise<void>((resolve) => (releaseClipboard = resolve));
+			const { h, code } = await open(
+				[
+					[
+						{ event: started },
+						{ toolCall: { tool: "bash_background", input: { command, label: "ci wait" }, callId: "c1" } },
+						{ event: finished },
+					],
+					[{ run: () => new Promise<void>((resolve) => (woken.release = resolve)) }, { event: finished }],
+					[{ event: started }, { event: finished }],
+				],
+				{
+					platform: "darwin",
+					readClipboardImage: async () => {
+						await clipboard;
+						return png();
+					},
+				},
+			);
+			h.screen.type("start it");
+			h.screen.type("\r");
+			await shows(h, "⧗ job 1 started");
+			await shows(h, "$0.50");
+			const releasePath = holdReads();
+			if (source === "clipboard") h.screen.type("\x16");
+			else paste(h, await imageFile());
+			await writeFile(go, "");
+			await until(() => woken.release !== undefined);
+			await shows(h, "■ job 1 ended");
+			const before = h.core.commands.length;
+			for (const key of ["\r", "\x1b\r"]) {
+				const notes = h.screen.screen().split("still reading").length;
+				h.screen.type(key);
+				await until(() => h.screen.screen().split("still reading").length > notes);
+			}
+			expect(h.core.commands).toHaveLength(before);
+			expect(h.screen.screen()).not.toContain("[Image #1]");
+			releasePath();
+			releaseClipboard();
+			await shows(h, "[Image #1]");
+			// The woken turn still runs: the image is kept in the editor and cannot be queued.
+			h.screen.type("\r");
+			await shows(h, BUSY);
+			expect(h.screen.screen()).toContain("[Image #1]");
+			expect(h.core.commands.some((sent) => sent.command === "session.queue")).toBe(false);
+			expect(sends(h)).toHaveLength(1);
+			woken.release?.();
+			await shows(h, "$1.00");
+			h.screen.type("\r");
+			await until(() => sends(h).length === 2);
+			expect(sends(h)[1]?.images).toHaveLength(1);
+			expect(h.core.commands.some((sent) => sent.command === "session.queue")).toBe(false);
+			await quit(h, code);
+		},
+	);
+
 	it("drops a path still being read when the draft or the cursor changes, never inserting elsewhere", async () => {
 		const { h, code } = await open();
 		const path = await imageFile();
