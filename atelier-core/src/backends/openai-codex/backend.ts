@@ -242,6 +242,10 @@ class OpenAiCodexSession implements BackendSession {
 		this.#summary = setup.summary;
 	}
 
+	currentModel(): string {
+		return this.#model;
+	}
+
 	resumeState(): ResumeState | undefined {
 		return this.#history.length === 0 ? undefined : { messages: this.#history as unknown as JsonValue[] };
 	}

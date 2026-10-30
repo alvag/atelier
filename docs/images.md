@@ -11,7 +11,9 @@ Image results currently work through Anthropic Messages (`anthropic-api`, and Op
 served through Messages) and Claude Code's MCP bridge. Other transports reject image results
 until their image conversion is available; they never silently drop them.
 
-The model must also accept image input. Atelier uses its loaded model catalog and explicit
+The model must also accept image input. The check uses the backend's resolved model, including
+its constructor default and subsequent model changes, rather than an unset Session option.
+Atelier uses its loaded model catalog and explicit
 fallbacks for known Claude models, including Claude Code's `opus`, `sonnet` and `haiku` aliases.
 An explicit catalog `images: false` overrides a fallback. A refusal says
 `Image input is not supported by <backend>/<model>.` or

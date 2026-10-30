@@ -76,6 +76,8 @@ export interface BackendSummary {
 }
 
 export interface BackendSession {
+	/** The resolved model used for requests, including constructor defaults and the last successful configure. */
+	currentModel?(): string;
 	/** Runs one turn. The core stamps `seq` and `turnId` on every yielded event. */
 	send(prompt: string): AsyncIterable<AtelierEventBody>;
 	/** Summarizes the older history now, like a turn ending in `turn_finished`; absent when the backend cannot. */

@@ -1,13 +1,17 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { BackendSession, BackendStartOptions, SessionChange, ToolCall, ToolCallResult } from "../src/backend.ts";
 import { AnthropicApiBackend, type AnthropicApiBackendOptions } from "../src/backends/anthropic-api/backend.ts";
+import { createOpenCodeGoBackend } from "../src/backends/opencode-go/backend.ts";
 import type { AtelierEvent, AtelierEventBody } from "../src/events.ts";
 import { FakeBackend } from "../src/fake-backend.ts";
 import { FakeMemory } from "../src/memory/port.ts";
 import { costOfRequest } from "../src/pricing.ts";
 import { Session } from "../src/session.ts";
+import { readTool } from "../src/tools/read.ts";
 import { defineTool } from "../src/tools/types.ts";
 
 const API_KEY = "sk-ant-test-SECRET-123";
@@ -229,6 +233,50 @@ const withoutBreakpoints = (value: unknown) =>
 	JSON.parse(JSON.stringify(value, (key, v) => (key === "cache_control" ? undefined : v)));
 
 describe("AnthropicApiBackend", () => {
+	it("accepts read images using the OpenCode Go constructor model when Session has no model", async () => {
+		const cwd = await mkdtemp(resolve("node_modules/.cache/resolved-image-model-"));
+		const api = fakeApi([
+			{
+				blocks: [{ type: "tool_use", id: "capture", name: "read", input: { path: "capture.png" } }],
+				stopReason: "tool_use",
+			},
+			{ blocks: [{ type: "text", text: "I see the picture." }] },
+		]);
+		const backend = createOpenCodeGoBackend({
+			apiKey: "test-key",
+			model: "claude-haiku-5-5",
+			fetch: api.fetch,
+			maxRetries: 0,
+		});
+		const session = await Session.start({ cwd, backend, tools: [readTool] });
+		try {
+			await writeFile(
+				join(cwd, "capture.png"),
+				await sharp({
+					create: { width: 1, height: 1, channels: 4, background: "transparent" },
+				})
+					.png()
+					.toBuffer(),
+			);
+			const events = await collect(session.send("Inspect the image."));
+			expect(events).toContainEqual(expect.objectContaining({ type: "tool_call_finished", ok: true }));
+			expect(api.bodies[1]?.model).toBe("claude-haiku-5-5");
+			expect(withoutBreakpoints(messagesOf(api.bodies[1]).at(-1))).toMatchObject({
+				content: [
+					{
+						type: "tool_result",
+						content: [
+							{ type: "text", text: "Image: 1×1 (image/png)" },
+							{ type: "image", source: { type: "base64", media_type: "image/png", data: expect.any(String) } },
+						],
+					},
+				],
+			});
+		} finally {
+			await session.close();
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
 	it("sends tool images as image blocks rather than text", async () => {
 		const bytes = await sharp({ create: { width: 2, height: 1, channels: 3, background: "red" } })
 			.png()
