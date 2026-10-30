@@ -51,13 +51,13 @@ import {
 import { type CodexReasoning, codexContextWindow, codexReasoning, DEFAULT_CODEX_MODEL } from "./models.ts";
 
 export const BACKEND_ID = "openai-codex";
-export const DEFAULT_MAX_REQUESTS_PER_TURN = 50;
 /** No output cap is sent; this is the room kept for the answer when deciding when to compact. */
 const OUTPUT_RESERVE = 32_000;
 const INTERRUPTED_TOOL = "Interrupted by the user.";
 
 export interface OpenAiCodexBackendOptions extends CodexAccessOptions {
 	model?: string;
+	/** Caps the model requests of every turn; without it (nor the start option) a turn runs until the model stops. */
 	maxRequestsPerTurn?: number;
 	contextWindow?: number;
 	/** Context tokens that start a compaction (`ATELIER_COMPACT_AT`). */
@@ -94,7 +94,7 @@ export class OpenAiCodexBackend implements AgentBackend {
 			instructions: systemPrompt(start.cwd, start.systemPromptAppend),
 			tools: responsesTools(start),
 			executeTool: start.executeTool,
-			maxRequests: start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN,
+			maxRequests: start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn,
 			history: savedHistory(start.resume),
 			compactionState: start.compactionState,
 			compacted: start.compacted,
@@ -178,7 +178,8 @@ export interface SessionSetup {
 	instructions: string;
 	tools: ResponsesTool[];
 	executeTool: ToolExecutor;
-	maxRequests: number;
+	/** Undefined: no limit, the turn runs until the model stops, an interrupt or an error. */
+	maxRequests: number | undefined;
 	history: ResponsesItem[];
 	/** The compaction of each model the session runs: the window depends on it. */
 	compaction: (model: string) => CompactionConfig;
@@ -284,7 +285,7 @@ class OpenAiCodexSession implements BackendSession {
 		let overflowTried = false;
 		try {
 			for (;;) {
-				if (requests >= this.#setup.maxRequests) {
+				if (this.#setup.maxRequests !== undefined && requests >= this.#setup.maxRequests) {
 					yield errorEvent(
 						"turn_limit",
 						`The turn reached its limit of ${this.#setup.maxRequests} model requests.`,

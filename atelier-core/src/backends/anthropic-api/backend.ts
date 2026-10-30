@@ -55,7 +55,6 @@ export const BACKEND_ID = "anthropic-api";
 export const DEFAULT_API_MODEL = BACKEND_DEFAULTS["anthropic-api"];
 /** Output budget per request; a turn that needs more continues after its tool results. */
 export const DEFAULT_MAX_TOKENS = 16_000;
-export const DEFAULT_MAX_REQUESTS_PER_TURN = 50;
 const INTERRUPTED_TOOL = "Interrupted by the user.";
 /** 5-minute TTL, the API default. */
 const BREAKPOINT: Anthropic.CacheControlEphemeral = Object.freeze({ type: "ephemeral" });
@@ -67,6 +66,7 @@ export interface AnthropicApiBackendOptions {
 	fetch?: typeof globalThis.fetch;
 	model?: string;
 	maxTokens?: number;
+	/** Caps the model requests of every turn; without it (nor the start option) a turn runs until the model stops. */
 	maxRequestsPerTurn?: number;
 	/** SDK retries for 429, 5xx and connection errors (SDK default: 2). */
 	maxRetries?: number;
@@ -300,7 +300,7 @@ export class AnthropicApiBackend implements AgentBackend {
 			start.compaction === undefined
 				? undefined
 				: summaryRequest(this.id, model, start.thinking, start.compaction, maxTokens);
-		const maxRequests = start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
+		const maxRequests = start.maxRequestsPerTurn ?? this.#options.maxRequestsPerTurn;
 		const transportFor = this.#connect();
 		// The window lookup runs while the session starts; the first request waits for it, never the start.
 		const { contextWindow, compactAt, keepRecentTokens } = this.#options;
@@ -353,7 +353,8 @@ class AnthropicApiSession implements BackendSession {
 	readonly #transportFor: (model: string) => ModelTransport;
 	readonly #state: RequestState;
 	readonly #executeTool: ToolExecutor;
-	readonly #maxRequests: number;
+	/** Undefined: no limit, the turn runs until the model stops, an interrupt or an error. */
+	readonly #maxRequests: number | undefined;
 	readonly #apiKey: string;
 	readonly #id: ThinkingBackend;
 	readonly #compactionFor: (model: string) => Promise<CompactionConfig>;
@@ -385,7 +386,7 @@ class AnthropicApiSession implements BackendSession {
 		transportFor: (model: string) => ModelTransport,
 		state: RequestState,
 		executeTool: ToolExecutor,
-		maxRequests: number,
+		maxRequests: number | undefined,
 		apiKey: string,
 		id: ThinkingBackend,
 		compactionFor: (model: string) => Promise<CompactionConfig>,
@@ -449,7 +450,7 @@ class AnthropicApiSession implements BackendSession {
 		let overflowTried = false;
 		try {
 			for (let request = 0; ; request++) {
-				if (request >= this.#maxRequests) {
+				if (this.#maxRequests !== undefined && request >= this.#maxRequests) {
 					yield errorEvent("turn_limit", `The turn reached its limit of ${this.#maxRequests} model requests.`, true);
 					stopReason = "turn_limit";
 					break;
