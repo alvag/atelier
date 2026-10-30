@@ -48,6 +48,26 @@ describe("image normalization", () => {
 		expect(Buffer.from(image.data, "base64").length).toBeLessThan(input.length);
 	});
 
+	it("preserves alpha as PNG even when a JPEG would be smaller", async () => {
+		const raw = Buffer.alloc(64 * 64 * 4);
+		let seed = 42;
+		for (let index = 0; index < raw.length; index++) {
+			seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+			raw[index] = index % 4 === 3 ? (index % 8 === 3 ? 0 : 128) : seed >>> 24;
+		}
+		const input = await sharp(raw, { raw: { width: 64, height: 64, channels: 4 } })
+			.png()
+			.toBuffer();
+		const jpeg = await sharp(input).flatten({ background: "white" }).jpeg({ quality: 85 }).toBuffer();
+		expect(jpeg.length).toBeLessThan(input.length);
+		const { image } = await normalizeImage(input);
+		expect(image.mimeType).toBe("image/png");
+		const bytes = Buffer.from(image.data, "base64");
+		expect((await sharp(bytes).metadata()).hasAlpha).toBe(true);
+		const pixels = await sharp(bytes).ensureAlpha().raw().toBuffer();
+		expect([...pixels].filter((_, index) => index % 4 === 3)).toEqual([...raw].filter((_, index) => index % 4 === 3));
+	});
+
 	it("applies EXIF orientation and removes metadata", async () => {
 		const input = await picture().jpeg().withMetadata({ orientation: 6 }).toBuffer();
 		const result = await normalizeImage(input);
