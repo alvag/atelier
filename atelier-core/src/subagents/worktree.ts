@@ -15,11 +15,27 @@ const SNAPSHOT_IDENTITY = {
 	GIT_COMMITTER_EMAIL: "atelier@localhost",
 };
 /**
- * What git would otherwise run of the repository's own configuration: hooks (`worktree add` runs post-checkout) and
- * the file system monitor. Filters are turned off per driver (`filterOverrides`), and diffs take no textconv or
+ * What git would otherwise run or write of the repository's own configuration: hooks (`worktree add` runs
+ * post-checkout), the file system monitor, submodules, automatic gc and maintenance, and a split index's shared file
+ * in the repository's .git. Filters are turned off per driver (`filterOverrides`), and diffs take no textconv or
  * external diff.
  */
-const NO_PROGRAMS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+const NO_PROGRAMS = [
+	"-c",
+	"core.hooksPath=/dev/null",
+	"-c",
+	"core.fsmonitor=false",
+	"-c",
+	"core.splitIndex=false",
+	"-c",
+	"submodule.recurse=false",
+	"-c",
+	"gc.auto=0",
+	"-c",
+	"maintenance.auto=false",
+];
+/** Where Atelier makes a worker's worktree: `worktrees/<n>/tree` in a session's scratch directory. */
+const OWN_WORKTREE = /\/atelier-session-[^/]+\/[^/]+\/worktrees\/\d+\/tree$/;
 
 /** A worktree refused before anything was made: the folder is not in a git repository with a commit. */
 export class WorktreeRefusedError extends Error {
@@ -162,8 +178,7 @@ export async function createTaskWorktree(
 				{ env: SNAPSHOT_IDENTITY },
 			)
 		).trim();
-		// What a crash left of earlier worktrees (their folder gone) is cleared first.
-		await git(top, ["worktree", "prune"]).catch(() => "");
+		await forgetStaleWorktrees(top);
 		await git(top, ["worktree", "add", "--detach", tree, snapshot], { overrides: await filterOverrides(top) });
 		folders = await dependencyFolders(top);
 		dependencies = await shareDependencies(top, tree, folders, clone);
@@ -172,7 +187,6 @@ export async function createTaskWorktree(
 	} catch (error) {
 		await git(top, ["worktree", "remove", "--force", tree]).catch(() => "");
 		await rm(dir, { recursive: true, force: true });
-		await git(top, ["worktree", "prune"]).catch(() => "");
 		throw error;
 	}
 	let removed: Promise<void> | undefined;
@@ -207,14 +221,26 @@ export async function createTaskWorktree(
 			return names.split("\n").filter((name) => name !== "");
 		},
 		remove() {
+			// Only this worktree: never a prune, which would forget the user's own worktrees whose folder is gone.
 			removed ??= git(top, ["worktree", "remove", "--force", tree])
-				.catch(() => git(top, ["worktree", "prune"]).catch(() => ""))
-				.then(() => rm(dir, { recursive: true, force: true }))
-				.then(() => git(top, ["worktree", "prune"]).catch(() => ""))
-				.then(() => {});
+				.catch(() => "")
+				.then(() => rm(dir, { recursive: true, force: true }));
 			return removed;
 		},
 	};
+}
+
+/**
+ * Forgets the worktrees Atelier made that a crash left (their folder gone): those in a session's scratch directory,
+ * one by one. A worktree of the user's is never touched, whatever its state.
+ */
+async function forgetStaleWorktrees(top: string): Promise<void> {
+	const listed = await git(top, ["worktree", "list", "--porcelain"]).catch(() => "");
+	for (const entry of listed.split("\n\n")) {
+		const path = entry.match(/^worktree (.+)$/m)?.[1];
+		if (path === undefined || !OWN_WORKTREE.test(path) || !/^prunable/m.test(entry)) continue;
+		await git(top, ["worktree", "remove", "--force", path]).catch(() => "");
+	}
 }
 
 /** The folders of the checkout git ignores that are named `node_modules`, from the top; none nested in another. */
