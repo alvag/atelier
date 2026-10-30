@@ -810,7 +810,8 @@ describe("two workers' worktrees adopting the same objects at once", () => {
 			const sizes = await Promise.all([one.adopt().then(readWhole(one)), two.adopt().then(readWhole(two))]);
 			expect(sizes).toEqual([24 * 1024 * 1024, 24 * 1024 * 1024]);
 			const objects = join(repo, ".git", "objects", blob.slice(0, 2));
-			expect(readdirSync(objects).filter((name) => name !== blob.slice(2))).toEqual([]);
+			// Another object may share the blob's folder: only the copies' temporary files must be gone.
+			expect(readdirSync(objects).filter((name) => name.startsWith("tmp_obj_"))).toEqual([]);
 		} finally {
 			await Promise.all([one.remove(), two.remove()]);
 		}
@@ -854,6 +855,81 @@ describe("the notices of background workers", () => {
 			end,
 			{ event: finished },
 		];
+
+	it("keeps the checks left for later when the delivery of the last notice, without a patch, fails", async () => {
+		const a = gate();
+		const b = gate();
+		const { parent, session, play, woke } = await started(
+			[
+				[work("c1"), work("c2", "other"), { event: finished }],
+				[{ event: finished }],
+				[{ throw: "delivery failed" }],
+				[{ event: finished }],
+			],
+			[child("a.txt", a.step), child(undefined, b.step)],
+		);
+		await play(session.send("go"));
+		a.open();
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toContain("1 other background task still runs");
+		b.open();
+		await until(() => woke() === 2);
+		await play(session.nextQueued());
+		expect(session.jobs).toEqual({ running: 0, waiting: 1 });
+		await play(session.send("retry"));
+		expect(parent.prompts[3]).toContain("It changed no files.");
+		expect(parent.prompts[3]).toContain("\n\nThen run the checks once.");
+	});
+
+	it("says to run the checks left for later when job_stop stops the last task", async () => {
+		const a = gate();
+		const { parent, session, play, woke } = await started(
+			[
+				[work("c1"), work("c2", "other"), { event: finished }],
+				[{ event: finished }],
+				[{ toolCall: { tool: "job_stop", input: { id: "task-2" }, callId: "stop" } }, { event: finished }],
+			],
+			[child("a.txt", a.step), () => [{ waitForInterrupt: true }]],
+		);
+		await play(session.send("go"));
+		a.open();
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toContain("1 other background task still runs");
+		await play(session.send("stop the other task"));
+		expect(session.jobs).toEqual({ running: 0, waiting: 0 });
+		const result = parent.toolResults.at(-1);
+		expect(result?.output).toMatch(
+			/^Stopped task task-2 \("other"\) after \d+s; no notice follows\.\nThen run the checks once\.$/,
+		);
+	});
+
+	it("quotes the paths of the command that applies a patch, spaces and single quotes included", async () => {
+		const top = await realpath(await mkdtemp(join(tmpdir(), "atelier it's a repo-")));
+		try {
+			git(top, "init", "-q");
+			writeFileSync(join(top, "a.txt"), "one\n");
+			git(top, "add", ".");
+			git(top, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "start");
+			const g = gate();
+			const { parent, session, play, woke } = await started(
+				[[work("c1"), { event: finished }], [{ event: finished }]],
+				[child("a.txt", g.step)],
+				top,
+			);
+			await play(session.send("go"));
+			g.open();
+			await until(() => woke() === 1);
+			await play(session.nextQueued());
+			const command = (parent.prompts[1] ?? "").match(/Apply it with: (.+)/)?.[1] as string;
+			expect(command).toContain(`git -C '${top.replaceAll("'", "'\\''")}' apply '`);
+			execFileSync("sh", ["-c", command], { cwd: tmpdir() });
+			expect(readFileSync(join(top, "a.txt"), "utf8")).toBe("a.txt\n");
+		} finally {
+			await rm(top, { recursive: true, force: true });
+		}
+	});
 
 	it("gives the exact command that applies the patch, and says to run the checks once", async () => {
 		const g = gate();

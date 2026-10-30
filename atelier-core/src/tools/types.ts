@@ -32,6 +32,8 @@ export interface ToolContext {
 	confined?: boolean;
 	/** The session's background subagents, for `job_list` and `job_stop`; only the main agent's calls have them. */
 	tasks?: BackgroundTasks;
+	/** After `job_stop` stopped a task: the line saying to run the checks left for later, when no task runs now. */
+	checksAfterStop?: () => string | undefined;
 }
 
 /** What a tool says about a call before it runs. */

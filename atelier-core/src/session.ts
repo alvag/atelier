@@ -896,6 +896,8 @@ export class Session {
 			if (reviewNotice !== undefined) sent = `${reviewNotice}\n\n${sent}`;
 			// The notices of ended background work that waited: the whole prompt of a turn they woke, else before the user's words.
 			let backgroundNotices = this.#takeNotices(turn);
+			// The checks a delivery leaves for later are owed again if the model never sees the delivery that closed them.
+			const checksDeferred = this.#checksDeferred;
 			if (backgroundNotices !== undefined) {
 				const text = deliveryText(backgroundNotices, this.#checksTrailer(backgroundNotices));
 				sent = woken ? `${sent}${text}` : `${text}\n\n${sent}`;
@@ -957,7 +959,10 @@ export class Session {
 				this.#recoveryInFlight = undefined;
 				if (reviewNotice !== undefined) this.#review?.returnNotice(reviewNotice);
 				// The model never saw them: they wait again, before any that came since, for the next prompt.
-				if (backgroundNotices !== undefined) this.#returnNotices(backgroundNotices, turn);
+				if (backgroundNotices !== undefined) {
+					this.#returnNotices(backgroundNotices, turn);
+					this.#checksDeferred ||= checksDeferred;
+				}
 			}
 			this.#previousTurn = { request, lastMessage: lastMessageTail(this.#lastMessage) };
 			await logged;
@@ -1802,6 +1807,16 @@ export class Session {
 		return checksLine(running);
 	}
 
+	/**
+	 * What `job_stop` adds once it stopped a task: with checks left for later and no task running now, no notice will
+	 * close the wait, so the stop's answer says to run them.
+	 */
+	#checksAfterStop(): string | undefined {
+		if (!this.#checksDeferred || (this.#tasks?.running ?? 0) > 0) return undefined;
+		this.#checksDeferred = false;
+		return checksLine(0);
+	}
+
 	/** Notices a prompt took that the backend failed on before answering: they wait again, oldest first. */
 	#returnNotices(notices: readonly BackgroundNotice[], turn: Channel<TurnEvent>): void {
 		this.#backgroundNotices.unshift(...notices);
@@ -1833,7 +1848,7 @@ export class Session {
 				...(this.#options.noSandbox ? { sandboxOff: true } : {}),
 				approvedPaths: this.#approvedPaths,
 				...(this.#jobs === undefined ? {} : { jobs: this.#jobs }),
-				...(this.#tasks === undefined ? {} : { tasks: this.#tasks }),
+				...(this.#tasks === undefined ? {} : { tasks: this.#tasks, checksAfterStop: () => this.#checksAfterStop() }),
 				...(this.#options.confined === true ? { confined: true } : {}),
 				...(await this.#currentRules(emit)),
 			};

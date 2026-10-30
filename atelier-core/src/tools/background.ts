@@ -101,13 +101,14 @@ export function createBackgroundTools({
 		description:
 			"Stop a background job (its whole process tree is killed, SIGTERM then SIGKILL) or a background task (its subagent is stopped). Nothing stopped sends a notice.",
 		inputShape: { id: z.string().min(1).describe("The job id bash_background answered, or the task id task answered") },
-		async execute({ id }, { jobs, tasks }) {
+		async execute({ id }, { jobs, tasks, checksAfterStop }) {
 			if (jobs === undefined && tasks === undefined) return failed(NOT_AVAILABLE);
 			const { outcome, output, what } = await stopOne(id, jobs, tasks);
 			if (outcome === "unknown") return failed(output);
+			const checks = what === "task" && outcome === "stopped" ? checksAfterStop?.() : undefined;
 			return {
 				ok: true,
-				output,
+				output: checks === undefined ? output : `${output}\n${checks}`,
 				summary: outcome === "stopped" ? `${what} ${id} stopped` : `${what} ${id} had ended`,
 				truncated: false,
 			};
