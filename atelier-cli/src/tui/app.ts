@@ -639,17 +639,17 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const input = new PasteFilter();
 	/** The images pasted into the editor. */
 	const pasted = new PromptImages();
-	/** Pastes waiting behind a read, in the order they were made. */
-	let reading = 0;
+	type ReadSource = "pasted file" | "clipboard image";
+	/** Reads and pastes waiting in order, including clipboard reads that have not started yet. */
+	const pendingReads: { source: ReadSource; abort: AbortController; discard: boolean }[] = [];
 	let pastes = Promise.resolve();
 	/** Changes when a session starts or Ctrl+C is pressed: a paste made before it is never inserted. */
 	let pasteEpoch = 0;
 	/** Where the editor's text and cursor stand for the pastes waiting: they insert only where they were made. */
 	let pasteSpot = "";
-	/** The clipboard reads under way: Ctrl+C, a new session and quitting abort their subprocesses. */
-	const clipboardReads = new Set<AbortController>();
+	/** Ctrl+C, a new session, quitting and questions abort clipboard reads, including queued ones. */
 	const abortClipboardReads = () => {
-		for (const read of clipboardReads) read.abort();
+		for (const read of pendingReads) if (read.source === "clipboard image") read.abort.abort();
 	};
 	const spot = () => JSON.stringify([editor.getText(), editor.getCursor()]);
 	const programStatus = new ProgramStatusReporter(options.terminal, options.statusIntervalMs);
@@ -702,6 +702,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		} else tui.setFocus(editor);
 		tui.requestRender();
 	};
+	/** A question hides the draft: old clipboard work must never change it, even after the question closes. */
+	const addQuestion = (entry: (typeof questions)[number]) => {
+		for (const read of pendingReads) if (read.source === "clipboard image") read.discard = true;
+		abortClipboardReads();
+		questions.push(entry);
+		if (questions.length === 1) showQuestion();
+	};
 	const ask = <T extends string>(
 		question: {
 			title: string;
@@ -733,8 +740,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			showQuestion();
 			reportRunning();
 		};
-		questions.push(entry);
-		if (questions.length === 1) showQuestion();
+		addQuestion(entry);
 		reportRunning();
 	};
 	/**
@@ -820,8 +826,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				closed = true;
 			},
 		};
-		questions.push(entry);
-		if (questions.length === 1) showQuestion();
+		addQuestion(entry);
 		reportRunning();
 	};
 	/** Drops the questions on screen: the core denied or dropped its own; the TUI's own lists close as with Esc. */
@@ -1281,8 +1286,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				reportRunning();
 			};
 			const entry = { dialog: new SecretDialog(title, paint, settle), cancel: () => settle(undefined), local: true };
-			questions.push(entry);
-			if (questions.length === 1) showQuestion();
+			addQuestion(entry);
 		});
 	/** Chooses from `choices` through a search line, as a question of the TUI's own; nothing when Esc closes it. */
 	const search = (title: string, note: string, empty: string, choices: Choice<string>[], initial?: string) =>
@@ -1299,8 +1303,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			};
 			const options = { title, note, empty, choices, initial, rows: LIST_ROWS };
 			const entry = { dialog: new SearchDialog(options, paint, settle), cancel: () => settle(undefined), local: true };
-			questions.push(entry);
-			if (questions.length === 1) showQuestion();
+			addQuestion(entry);
 		});
 	/** A line to paste, in a question that closes by itself when `signal` aborts (the browser finished first). */
 	const askUntil = (title: string, signal: AbortSignal, hint?: string) =>
@@ -1320,8 +1323,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			const entry = { dialog: new PasteDialog(title, paint, settle, hint), cancel: stop, local: true };
 			if (signal.aborted) return resolve(undefined);
 			signal.addEventListener("abort", stop, { once: true });
-			questions.push(entry);
-			if (questions.length === 1) showQuestion();
+			addQuestion(entry);
 		});
 	/** `/login` and `/logout`, as `atelier login` and `atelier logout` do, with lists and dialogs. Not a turn. */
 	const runLogin = async (command: string, words: string[]) => {
@@ -1586,29 +1588,27 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	 * yields none. A read made before an edit, a move or a new session is dropped, never merged.
 	 */
 	const queueRead = (
+		source: ReadSource,
 		prepare: ((signal: AbortSignal) => Promise<PreparedImage[] | undefined>) | undefined,
 		none: () => void,
 	) => {
-		if (reading === 0) pasteSpot = spot();
+		if (pendingReads.length === 0) pasteSpot = spot();
 		const epoch = pasteEpoch;
 		const stale = () => quitting || epoch !== pasteEpoch || spot() !== pasteSpot;
-		reading++;
+		const read = { source, abort: new AbortController(), discard: false };
+		pendingReads.push(read);
 		pastes = pastes.then(async () => {
 			let prepared: PreparedImage[] | undefined;
 			let failure: unknown;
-			if (prepare !== undefined && !stale()) {
-				const abort = new AbortController();
-				clipboardReads.add(abort);
+			if (prepare !== undefined && !stale() && !read.discard) {
 				try {
-					prepared = await prepare(abort.signal);
+					prepared = await prepare(read.abort.signal);
 				} catch (error) {
 					failure = error;
-				} finally {
-					clipboardReads.delete(abort);
 				}
 			}
-			reading--;
-			if (quitting) return;
+			pendingReads.shift();
+			if (quitting || read.discard) return;
 			if (stale()) conversation.note("pasted text dropped: the draft changed while it was read; paste it again", true);
 			else if (failure !== undefined) conversation.note(`error: ${describeError(failure)}`, true);
 			else if (prepared === undefined) none();
@@ -1629,13 +1629,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const plain = () => editor.handleInput(`${PASTE_START}${text}${PASTE_END}`);
 		const mayBeFile = text.length <= PATH_PASTE_CHARS && /[\\/]|\.\w+['"]?(\s|$)/.test(text.trim());
 		// Text that cannot name a file goes in at once, unless a read is ahead of it.
-		if (reading === 0 && !mayBeFile) return plain();
+		if (pendingReads.length === 0 && !mayBeFile) return plain();
 		const prepare = (_signal: AbortSignal) =>
 			preparePastedImages(text, {
 				cwd: args.cwd,
 				...(options.home === undefined ? {} : { home: options.home }),
 			});
-		queueRead(mayBeFile ? prepare : undefined, () => {
+		queueRead("pasted file", mayBeFile ? prepare : undefined, () => {
 			plain();
 			pasteSpot = spot();
 		});
@@ -1645,6 +1645,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if ((options.platform ?? process.platform) !== "darwin") return conversation.note(CLIPBOARD_UNSUPPORTED);
 		const read = options.readClipboardImage ?? readClipboardImage;
 		queueRead(
+			"clipboard image",
 			async (signal) => {
 				const bytes = await read(signal);
 				signal.throwIfAborted();
@@ -1653,8 +1654,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			() => conversation.note(NO_CLIPBOARD_IMAGE),
 		);
 	};
-	const waitForPaste = () => {
-		conversation.note("still reading the pasted file; press Enter again in a moment");
+	const waitForPaste = (source: ReadSource) => {
+		conversation.note(`still reading the ${source}; press Enter again in a moment`);
 		tui.requestRender();
 		return { consume: true as const };
 	};
@@ -1662,8 +1663,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	// An open question takes every key, and Ctrl+C or Ctrl+D closes it. Otherwise Ctrl+C interrupts a turn, then quits;
 	// with no turn it clears the editor, then quits. Esc interrupts a turn, and Ctrl+D quits from an empty editor.
 	const handleKey = (data: string) => {
-		if (questions.length === 0 && reading > 0 && (matchesKey(data, "enter") || matchesKey(data, "alt+enter")))
-			return waitForPaste();
+		const pending = pendingReads[0];
+		if (questions.length === 0 && pending !== undefined && (matchesKey(data, "enter") || matchesKey(data, "alt+enter")))
+			return waitForPaste(pending.source);
 		// Nothing but the open question takes the keys, even after a click elsewhere.
 		const asked = questions[0];
 		if (asked !== undefined && !asked.dialog.focused) tui.setFocus(asked.dialog);

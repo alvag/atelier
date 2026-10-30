@@ -31,7 +31,9 @@ On macOS, Ctrl+V attaches an image from the clipboard instead: PNG or TIFF, norm
 image and counted in the same limits. It reads the image only, never text, so paste text with the
 terminal's own paste (Cmd+V). An empty or unsupported clipboard says so and leaves the draft
 unchanged; a read that fails or takes more than 3 seconds shows an error. Elsewhere Ctrl+V says it
-is macOS only. Ctrl+V does nothing while a question is open.
+is macOS only. Ctrl+V does nothing while a question is open. Opening any question cancels active
+and queued clipboard reads; their results leave the question and hidden editor draft untouched,
+even if the question closes before the read finishes.
 Delete a whole marker to remove its attachment. A prompt can contain images without text.
 
 Enter or Alt+Enter sends the text and native images; the transcript keeps the visible markers.
@@ -40,7 +42,10 @@ Images cannot be queued: while a turn runs, the draft stays in the editor with
 submitted draft and its bytes alongside any newer typing; an accepted send does not erase newer typing.
 Image prompts are not added to editor history, so recalling text never silently reattaches pixels.
 
-If Enter arrives during preparation, wait for it to finish and press Enter again. An edit or
+If Enter arrives during preparation, the wait message names the source currently being read:
+`still reading the clipboard image; press Enter again in a moment` or
+`still reading the pasted file; press Enter again in a moment`. Wait for it to finish and press
+Enter again. An edit or
 cursor move cancels an unfinished paste or clipboard read with a note to try again; Ctrl+C aborts the read. New sessions and quitting
 discard pending results rather than inserting them into a different draft.
 
