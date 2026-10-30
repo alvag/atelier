@@ -1,5 +1,6 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -235,7 +236,7 @@ const withoutBreakpoints = (value: unknown) =>
 
 describe("AnthropicApiBackend", () => {
 	it("accepts read images using the OpenCode Go constructor model when Session has no model", async () => {
-		const cwd = await mkdtemp(resolve("node_modules/.cache/resolved-image-model-"));
+		const cwd = await mkdtemp(join(tmpdir(), "resolved-image-model-"));
 		const api = fakeApi([
 			{
 				blocks: [{ type: "tool_use", id: "capture", name: "read", input: { path: "capture.png" } }],

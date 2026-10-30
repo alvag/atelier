@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, symlink, truncate, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeBackend } from "../src/fake-backend.ts";
@@ -10,7 +11,7 @@ import { createReadTool, readTool } from "../src/tools/read.ts";
 
 let cwd: string;
 beforeEach(async () => {
-	cwd = await mkdtemp(resolve("node_modules/.cache/read-images-"));
+	cwd = await mkdtemp(join(tmpdir(), "read-images-"));
 });
 afterEach(async () => {
 	useModelData(new ModelData());
