@@ -911,7 +911,7 @@ export class Session {
 			// The notices of ended background work that waited: the whole prompt of a turn they woke, else before the user's words.
 			let backgroundNotices = this.#takeNotices(turn);
 			if (backgroundNotices !== undefined) {
-				const text = deliveryText(backgroundNotices);
+				const text = deliveryText(backgroundNotices, this.#tasks?.running);
 				sent = woken ? `${sent}${text}` : `${text}\n\n${sent}`;
 			}
 			const mcpStatus = this.mcpStatus();
@@ -1693,7 +1693,7 @@ export class Session {
 		if (!this.#steerable || this.#abort?.signal.aborted) return result;
 		// The notices of background work that ended go with the result too, after the user's steers.
 		const taken = this.#takeNotices(this.#turn);
-		const notices = taken === undefined ? undefined : deliveryText(taken);
+		const notices = taken === undefined ? undefined : deliveryText(taken, this.#tasks?.running);
 		const steers = this.#queue.filter((message) => message.kind === "steer");
 		if (steers.length === 0) return notices === undefined ? result : { ...result, steering: notices };
 		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
@@ -2247,7 +2247,7 @@ export class Session {
 						});
 						// A stopped worker's changes are dropped with its worktree.
 						if (tree === undefined || signal.aborted) return result;
-						return { ...result, changes: await this.#collectChanges(task.id, tree) };
+						return { ...result, ...(await this.#collectChanges(task.id, tree)) };
 					} finally {
 						signal.removeEventListener("abort", stop);
 						clearTimeout(grace);
@@ -2280,23 +2280,18 @@ export class Session {
 	 * What a worker changed, for its notice: the patch, and the files it shares with the parent's changes since the
 	 * snapshot and with the patches of the session's other tasks. A patch that cannot be made is said instead.
 	 */
-	async #collectChanges(id: string, worktree: TaskWorktree): Promise<string> {
+	async #collectChanges(id: string, worktree: TaskWorktree): Promise<Pick<TaskResult, "changes" | "patch">> {
 		let changes: WorktreeChanges | undefined;
 		try {
 			changes = await worktree.collect(join(this.#scratch?.path ?? tmpdir(), `${id}.patch`));
 		} catch (error) {
-			return `Its changes could not be collected: ${describeError(error)}`;
+			return { changes: `Its changes could not be collected: ${describeError(error)}` };
 		}
-		if (changes === undefined) return "It changed no files.";
+		if (changes === undefined) return { changes: "It changed no files." };
 		const { files, insertions, deletions, patchPath } = changes;
-		// This task still counts as running: the others are those whose patches may come after this one.
-		const others = (this.#tasks?.running ?? 1) - 1;
 		const lines = [
 			`Its changes: ${files.length} file${files.length === 1 ? "" : "s"} changed, +${insertions} -${deletions}, as a patch against your working tree as it was when the task started: ${patchPath}.`,
 			`Apply it with: git -C ${shellQuote(worktree.top)} apply ${shellQuote(patchPath)}`,
-			others === 0
-				? "Then run the checks once."
-				: `${others} other background task${others === 1 ? " still runs" : "s still run"}: apply each patch as it comes, and run the full checks once, after the last.`,
 		];
 		const since = await worktree.changedSince().catch((): string[] => []);
 		const shared = files.filter((file) => since.includes(file));
@@ -2310,7 +2305,7 @@ export class Session {
 		// Only the latest patches: those the agent may still apply.
 		for (const old of [...this.#patches.keys()].slice(0, Math.max(0, this.#patches.size - MAX_KEPT_PATCHES)))
 			this.#patches.delete(old);
-		return lines.join("\n");
+		return { changes: lines.join("\n"), patch: true };
 	}
 
 	/**

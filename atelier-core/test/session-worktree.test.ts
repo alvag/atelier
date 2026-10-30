@@ -186,8 +186,10 @@ describe("a worker in the background", () => {
 		await play(session.nextQueued());
 		const notice = parent.prompts[1] ?? "";
 		expect(notice).toMatch(
-			/Its changes: 2 files changed, \+2 -0, as a patch against your working tree as it was when the task started: (\S+\.patch)\.\nApply it with: git -C '\S+' apply '\1'\nThen run the checks once\./,
+			/Its changes: 2 files changed, \+2 -0, as a patch against your working tree as it was when the task started: (\S+\.patch)\.\nApply it with: git -C '\S+' apply '\1'\n/,
 		);
+		// No other task runs: the checks run once, now.
+		expect(notice).toMatch(/\n\nThen run the checks once\.$/);
 		// The command the notice gives applies the patch as it is written.
 		const command = notice.match(/Apply it with: (.+)/)?.[1] as string;
 		execFileSync("sh", ["-c", command], { cwd: tmpdir() });
@@ -528,6 +530,38 @@ describe("a worker in the background", () => {
 		await play(session.nextQueued());
 		expect(parent.prompts[2]).toContain("Files the patch of task-1 also changed: a.txt.");
 		expect(parent.prompts[2]).toContain("\nThen run the checks once.");
+	});
+
+	it("says once to run the checks when workers that ran together end before their notices are read", async () => {
+		const first = gate();
+		const second = gate();
+		const { parent, session, play } = await started(
+			[[work("c1"), work("c2", "other"), { event: finished }], [{ event: finished }]],
+			[
+				(cwd) => [
+					{ run: () => writeFileSync(join(cwd(), "a.txt"), "first\n") },
+					first.step,
+					text("one"),
+					{ event: finished },
+				],
+				(cwd) => [
+					{ run: () => writeFileSync(join(cwd(), "b.txt"), "second\n") },
+					second.step,
+					text("two"),
+					{ event: finished },
+				],
+			],
+		);
+		await play(session.send("go"));
+		first.open();
+		second.open();
+		await until(() => session.jobs.running === 0 && session.jobs.waiting === 2);
+		await play(session.nextQueued());
+		const delivered = parent.prompts[1] ?? "";
+		expect(delivered.match(/Apply it with: /g)).toHaveLength(2);
+		expect(delivered).not.toContain("still run");
+		expect(delivered.match(/Then run the checks once\./g)).toHaveLength(1);
+		expect(delivered).toMatch(/\n\nThen run the checks once\.$/);
 	});
 
 	it("removes its worktree when it is stopped and when the session closes", async () => {

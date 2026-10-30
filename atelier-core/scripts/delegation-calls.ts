@@ -5,6 +5,7 @@
 import type { ModelTransport } from "../src/backends/anthropic-api/transport.ts";
 import type { AtelierEvent } from "../src/index.ts";
 import type { ToolDefinition } from "../src/tools/types.ts";
+import { sumCosts } from "./cost.ts";
 
 const READS = new Set(["read", "grep"]);
 
@@ -103,19 +104,60 @@ export function tallyBackground(
 			if (request !== undefined) responses.add(request);
 		}
 		if (event.tool !== "bash") continue;
-		const command = String(input.command ?? "");
-		if (/\bsleep\b/.test(command)) tally.polls++;
-		if (/\bgit\b.*\bapply\b/.test(command) && !command.includes("--check")) {
-			tally.applies++;
-			tally.checksAfterLastApply = 0;
-		}
-		if (command.includes("vitest")) {
-			tally.checkRuns++;
-			tally.checksAfterLastApply++;
+		for (const words of commandSegments(String(input.command ?? ""))) {
+			if (runs(words, "sleep")) tally.polls++;
+			if (appliesPatch(words)) {
+				tally.applies++;
+				tally.checksAfterLastApply = 0;
+			}
+			if (runs(words, "vitest")) {
+				tally.checkRuns++;
+				tally.checksAfterLastApply++;
+			}
 		}
 	}
 	tally.launchResponses = responses.size;
 	return tally;
+}
+
+/**
+ * What the background tasks of a session cost, from their `task_finished` events: their turns are not among the
+ * parent's events. Unknown as soon as one did not say its cost, a stopped one included: it may have spent.
+ */
+export function backgroundTaskCost(events: Iterable<AtelierEvent>): number | undefined {
+	return sumCosts(
+		[...events].flatMap((event) =>
+			event.type === "task_finished" && event.parentCallId === undefined ? [event.costUsd] : [],
+		),
+	);
+}
+
+/**
+ * The simple commands of a shell line, each as its words without quotes or leading variable assignments: split at
+ * `&&`, `||`, `;`, `|` and line ends. Enough for what a model writes; not a shell parser.
+ */
+function commandSegments(command: string): string[][] {
+	return command.split(/&&|\|\||;|\||\n/).map((segment) => {
+		const words = (segment.match(/'[^']*'|"[^"]*"|\S+/g) ?? []).map((word) => word.replace(/^(['"])(.*)\1$/, "$2"));
+		while (words.length > 0 && /^\w+=/.test(words[0] as string)) words.shift();
+		return words;
+	});
+}
+
+/** Whether the command runs `program`, by path or through npx, pnpm (exec), yarn or bunx; not one that only names it. */
+function runs(words: readonly string[], program: string): boolean {
+	const [first, second, third] = words.map((word) => word.split("/").at(-1));
+	if (first === program) return true;
+	if (first === undefined || !["npx", "pnpm", "yarn", "bunx"].includes(first)) return false;
+	return second === program || (second === "exec" && third === program);
+}
+
+/** Whether the command is a `git apply` that changes files: git's global options skipped, `--check` left out. */
+function appliesPatch(words: readonly string[]): boolean {
+	if (words[0]?.split("/").at(-1) !== "git") return false;
+	let at = 1;
+	while (words[at]?.startsWith("-")) at += words[at] === "-C" || words[at] === "-c" ? 2 : 1;
+	return words[at] === "apply" && !words.slice(at + 1).includes("--check");
 }
 
 /**

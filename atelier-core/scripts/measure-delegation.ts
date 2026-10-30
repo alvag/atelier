@@ -58,6 +58,7 @@ import { CHECKS, checksPass, makeBackgroundRepo } from "./background-repo.ts";
 import { addCost, sumCosts, usd } from "./cost.ts";
 import {
 	type BackgroundCalls,
+	backgroundTaskCost,
 	measuredTools,
 	notingResponses,
 	tallyBackground,
@@ -128,6 +129,7 @@ interface Measure {
 interface Run {
 	task: string;
 	parent: Measure;
+	/** Background subagents add only their cost: their usage and requests are not reported to the parent. */
 	subagents: Measure;
 	/** The parent's own tool calls, by tool. */
 	tools: Record<string, number>;
@@ -316,12 +318,18 @@ async function measure(task: Task): Promise<Run> {
 		const tally = tallyParentCalls(events, chars);
 		Object.assign(run, tally, { firstTool: tally.firstTool ?? "none" });
 		for await (const event of session.send(FOLLOW_UP)) {
+			// A task's end said while no turn ran comes first in the next turn: its cost counts too.
+			if (event.type === "task_finished") events.push(event);
 			if (event.type === "turn_finished" && event.parentCallId === undefined) {
 				run.followUpPrompt = prompt(event.usage);
 				run.followUpCostUsd = event.costUsd;
 			}
 		}
 		if (background) {
+			// Background subagents are not among the parent's events: only their ends say what they cost. One still
+			// running when the session closes has spent what nobody reports: the cost is unknown, and the measure stops.
+			const cost = session.jobs.running > 0 ? undefined : backgroundTaskCost(events);
+			run.subagents.costUsd = addCost(run.subagents.costUsd, cost);
 			const made = await Promise.all((task.files ?? []).map((file) => exists(join(cwd, file))));
 			run.background = {
 				...tallyBackground(events, requests),

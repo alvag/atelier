@@ -2,6 +2,8 @@
 export interface BackgroundNotice {
 	text: string;
 	short?: string;
+	/** A finished worker's notice with a patch to apply: the delivery says when to run the checks. */
+	patch?: true;
 }
 
 /** The characters one delivery of notices gives at most, the separators and the line of what did not fit included. */
@@ -16,13 +18,22 @@ function leftOutLine(count: number): string {
 /** The longest leftOutLine can be, with its separator: kept free until the last notice is in. */
 const LEFT_OUT_ROOM = SEPARATOR.length + leftOutLine(1000).length;
 
+/** When the agent runs the checks after applying patches, by the background tasks that still run. */
+function checksLine(running: number): string {
+	if (running === 0) return "Then run the checks once.";
+	return `${running} other background task${running === 1 ? " still runs" : "s still run"}: apply each patch as it comes, and run the full checks once, after the last.`;
+}
+
 /**
  * The notices of one delivery, oldest first, within NOTICE_BUDGET: each whole while it fits, else its short form when
- * that fits; from the first that fits in neither, a line says how many were left out.
+ * that fits; from the first that fits in neither, a line says how many were left out. With a worker's patch among
+ * them, a last line says when to run the checks, by the `running` background tasks, counted as the delivery is made:
+ * workers that end together each see the other still running while their patches are collected.
  */
-export function deliveryText(notices: readonly BackgroundNotice[]): string {
+export function deliveryText(notices: readonly BackgroundNotice[], running = 0): string {
 	const parts: string[] = [];
-	let used = 0;
+	const trailer = notices.some((notice) => notice.patch) ? checksLine(running) : undefined;
+	let used = trailer === undefined ? 0 : SEPARATOR.length + trailer.length;
 	for (const [index, notice] of notices.entries()) {
 		const separator = parts.length === 0 ? 0 : SEPARATOR.length;
 		const last = index === notices.length - 1;
@@ -40,5 +51,6 @@ export function deliveryText(notices: readonly BackgroundNotice[]): string {
 		parts.push(text);
 		used += separator + text.length;
 	}
+	if (trailer !== undefined) parts.push(trailer);
 	return parts.join(SEPARATOR);
 }

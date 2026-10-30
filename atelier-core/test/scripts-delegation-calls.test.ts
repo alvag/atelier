@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { measuredTools, notingResponses, tallyBackground, tallyParentCalls } from "../scripts/delegation-calls.ts";
+import {
+	backgroundTaskCost,
+	measuredTools,
+	notingResponses,
+	tallyBackground,
+	tallyParentCalls,
+} from "../scripts/delegation-calls.ts";
 import type { ModelTransport } from "../src/backends/anthropic-api/transport.ts";
 import type { AtelierEvent } from "../src/index.ts";
 import { defineTool } from "../src/tools/types.ts";
@@ -102,6 +108,21 @@ describe("the parent's background work in a measured session", () => {
 		});
 	});
 
+	it("counts the commands that run vitest, git apply or sleep, not those that only name them", () => {
+		const tally = tallyBackground(
+			[
+				bash("a", "cat vitest.config.ts"),
+				bash("b", "echo vitest; grep -n sleep src/a.ts"),
+				bash("c", "git apply --check a.patch && git apply a.patch"),
+				bash("d", "git log --grep apply"),
+				bash("e", "cd /repo && CI=1 npx vitest run test/a.test.ts"),
+				bash("f", "git -c core.x=y -C '/my repo' apply b.patch; sleep 5"),
+			],
+			new Map(),
+		);
+		expect(tally).toMatchObject({ applies: 2, checkRuns: 1, checksAfterLastApply: 0, polls: 1 });
+	});
+
 	it("counts no launch response for a launch whose request is unknown, and nothing in an idle session", () => {
 		expect(tallyBackground([task("a", "p", true)], new Map()).launchResponses).toBe(0);
 		expect(tallyBackground([], new Map())).toEqual({
@@ -114,6 +135,21 @@ describe("the parent's background work in a measured session", () => {
 			checkRuns: 0,
 			checksAfterLastApply: 0,
 		});
+	});
+});
+
+describe("the cost of the background tasks of a measured session", () => {
+	const ended = (taskId: string, status: string, costUsd?: number) =>
+		at({ type: "task_finished", taskId, status, ...(costUsd === undefined ? {} : { costUsd }) });
+
+	it("sums what each background task cost when it ended", () => {
+		expect(backgroundTaskCost([ended("task-1", "finished", 4), ended("task-2", "failed", 0.5)])).toBe(4.5);
+		expect(backgroundTaskCost([])).toBe(0);
+	});
+
+	it("is unknown when one that ended did not say its cost, so the budget stops the measure", () => {
+		expect(backgroundTaskCost([ended("task-1", "finished", 4), ended("task-2", "finished")])).toBeUndefined();
+		expect(backgroundTaskCost([ended("task-1", "stopped")])).toBeUndefined();
 	});
 });
 

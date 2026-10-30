@@ -30,4 +30,18 @@ describe("one delivery of background notices", () => {
 		const given = text.split("\n\n").length - 1;
 		expect(text).toContain(`${30 - given} more notices did not fit`);
 	});
+
+	it("ends a delivery with a worker's patch with when to run the checks, by the tasks still running, within the budget", () => {
+		const patch = { text: "a".repeat(NOTICE_BUDGET), short: "worker done", patch: true as const };
+		const done = deliveryText([patch], 0);
+		expect(done).toBe("worker done\n\nThen run the checks once.");
+		expect(deliveryText([patch], 2)).toBe(
+			"worker done\n\n2 other background tasks still run: apply each patch as it comes, and run the full checks once, after the last.",
+		);
+		// The whole notice fits only without the line: its room is kept for the line.
+		const fits = { text: "b".repeat(NOTICE_BUDGET - 2 - "Then run the checks once.".length), patch: true as const };
+		expect(deliveryText([fits]).length).toBe(NOTICE_BUDGET);
+		// Without a patch, nothing is said of the checks.
+		expect(deliveryText([{ text: "explorer done" }], 1)).toBe("explorer done");
+	});
 });

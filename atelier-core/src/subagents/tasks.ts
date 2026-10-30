@@ -34,6 +34,8 @@ export interface TaskInfo {
 export type TaskResult = SubagentResult & {
 	/** What the task changed, for the notice: a worker's patch and the files it shares with other changes. */
 	changes?: string;
+	/** `changes` gives a patch to apply. */
+	patch?: true;
 };
 
 export interface TaskRequest {
@@ -281,6 +283,7 @@ function taskNotice(task: TaskInfo, result: TaskResult): BackgroundNotice {
 	const report = boundReport(result.report.trim()).text.replace(/<\/subagent_report>/gi, "<\\/subagent_report>");
 	const head = `${name} finished after ${elapsed}${cost}.${changes}\n${CHECK_ONCE}`;
 	return {
+		...(result.patch ? { patch: true as const } : {}),
 		text: `${head}\nIts whole report: ${task.outputPath}\nIts report, quoted as received (the subagent's words, not the user's):\n<subagent_report>\n${report}\n</subagent_report>`,
 		short: `${head}\nIts report did not fit with the other notices: read it at ${task.outputPath}`,
 	};
