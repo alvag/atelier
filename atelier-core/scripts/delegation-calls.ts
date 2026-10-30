@@ -169,10 +169,16 @@ function commandSegments(command: string): string[][] {
 		} else if (char === "\\" && at + 1 < command.length) {
 			word = (word ?? "") + command[at + 1];
 			at += 2;
-		} else if (command.startsWith("<<", at) && !command.startsWith("<<<", at)) {
+		} else if (command.startsWith("<<<", at)) {
+			// A here-string: its word follows on the same line, and no body.
 			endWord();
-			const opened = /^<<(-?)[ \t]*(['"]?)([^\s'";&|<>]+)\2/.exec(command.slice(at));
-			if (opened) heredocs.push({ delimiter: opened[3] as string, tabs: opened[1] === "-" });
+			at += 3;
+		} else if (command.startsWith("<<", at)) {
+			endWord();
+			// The delimiter: quoted, spaces and all, or a plain word.
+			const opened = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|([^\s'";&|<>]+))/.exec(command.slice(at));
+			const delimiter = opened?.[2] ?? opened?.[3] ?? opened?.[4];
+			if (delimiter !== undefined) heredocs.push({ delimiter, tabs: opened?.[1] === "-" });
 			at += opened?.[0].length ?? 2;
 		} else if (char === "\n") {
 			endSegment();

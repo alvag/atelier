@@ -139,6 +139,18 @@ describe("the parent's background work in a measured session", () => {
 		expect(tally).toMatchObject({ applies: 0, checkRuns: 1, checksAfterLastApply: 1, polls: 1 });
 	});
 
+	it("reads a here-string as no heredoc, and a quoted heredoc delimiter with spaces as one", () => {
+		const tally = tallyBackground(
+			[
+				bash("a", 'cat <<< "hello"\nnode_modules/.bin/vitest run'),
+				bash("b", "cat <<'END MARK' > x\nsleep 3\nnode_modules/.bin/vitest run\nEND MARK\nsleep 1"),
+				bash("c", 'cat <<"A B"\nsleep 3\nA B\ngit apply a.patch'),
+			],
+			new Map(),
+		);
+		expect(tally).toMatchObject({ checkRuns: 1, polls: 1, applies: 1, checksAfterLastApply: 0 });
+	});
+
 	it("counts no launch response for a launch whose request is unknown, and nothing in an idle session", () => {
 		expect(tallyBackground([task("a", "p", true)], new Map()).launchResponses).toBe(0);
 		expect(tallyBackground([], new Map())).toEqual({
