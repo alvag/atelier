@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { type DelegationVariant, WHY_DELEGATE, withWhyDelegate } from "../delegation.ts";
 import { defineTool, type ToolContext, type ToolDefinition, type ToolOutcome } from "../tools/types.ts";
 
 export const TASK_TOOL = "task";
@@ -22,14 +23,16 @@ export interface SubagentDefinition {
 
 /**
  * When the main agent delegates, in the task tool's description: it exists only when there are subagents. A rule that
- * names an agent the session lacks is left out, so the model is never told to call one it cannot.
+ * names an agent the session lacks is left out, so the model is never told to call one it cannot. The `why` variant of
+ * #124 says, after the explorer's rule, why delegating keeps the context small.
  */
-function delegationRules(names: readonly string[]): string[] {
+function delegationRules(names: readonly string[], variant?: DelegationVariant): string[] {
 	return [
 		"When to delegate:",
 		...(names.includes("explorer")
 			? [
 					"- Read inline when it takes up to about 3 parallel calls or 10k tokens; beyond that, send one explorer and ask for an answer of at most about 2k tokens with path:line evidence.",
+					...(withWhyDelegate(variant) ? [WHY_DELEGATE] : []),
 				]
 			: []),
 		"- Pass paths, the spec reference and what to change, never file contents: the subagent reads them itself.",
@@ -92,6 +95,7 @@ export function createTaskTool(
 	agents: readonly SubagentDefinition[],
 	run: RunSubagent,
 	start?: StartSubagent,
+	variant?: DelegationVariant,
 ): ToolDefinition {
 	const names = agents.map((agent) => agent.name) as [string, ...string[]];
 	return defineTool({
@@ -99,7 +103,7 @@ export function createTaskTool(
 		description: [
 			"Delegates work to a subagent with its own, empty context; only its final report comes back to you.",
 			"The prompt must be self-contained: the subagent does not see this conversation.",
-			...delegationRules(names),
+			...delegationRules(names, variant),
 			...(start === undefined
 				? []
 				: [

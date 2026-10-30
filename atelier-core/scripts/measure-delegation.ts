@@ -17,13 +17,18 @@
  * after with --compare on that file. The JSON keeps the variant measured and the
  * commit it ran at:
  *
- *   node atelier-core/scripts/measure-delegation.ts [--model <id>] [--runs <n>] [--tasks <id,...>] [--max-usd <n>] [--json <file>] [--compare <file>]
+ * --variant picks one of the delegation variants of #124 (baseline by default),
+ * and --explorer-model gives the explorer its own model.
+ *
+ *   node atelier-core/scripts/measure-delegation.ts [--model <id>] [--variant <name>] [--explorer-model <id>] [--runs <n>] [--tasks <id,...>] [--max-usd <n>] [--json <file>] [--compare <file>]
  */
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { BACKEND_ID } from "../src/backends/anthropic-api/backend.ts";
+import { DELEGATION_VARIANTS, type DelegationVariant } from "../src/delegation.ts";
 import {
 	AnthropicApiBackend,
 	type AtelierEvent,
@@ -107,6 +112,8 @@ const { values } = parseArgs({
 		runs: { type: "string" },
 		tasks: { type: "string" },
 		"fake-backend": { type: "boolean" },
+		variant: { type: "string" },
+		"explorer-model": { type: "string" },
 		"max-usd": { type: "string" },
 		json: { type: "string" },
 		compare: { type: "string" },
@@ -124,8 +131,12 @@ if (unknown.length > 0) {
 	process.exit(2);
 }
 const tasks = picked === undefined ? TASKS : TASKS.filter((task) => picked.includes(task.id));
-/** Only main's rules for now: the variants of #124 come with the session option that picks them. */
-const variant = "baseline";
+const variant = (values.variant ?? "baseline") as DelegationVariant;
+if (!DELEGATION_VARIANTS.includes(variant)) {
+	process.stderr.write(`Unknown variant ${variant}; the variants are ${DELEGATION_VARIANTS.join(", ")}.\n`);
+	process.exit(2);
+}
+const explorerModel = values["explorer-model"];
 const here = dirname(fileURLToPath(import.meta.url));
 const commit = commitAt(here);
 const source = join(here, "../src");
@@ -163,6 +174,13 @@ async function readSource(cwd: string): Promise<Set<string>> {
 	return sourceLines(await Promise.all(files.map((file) => readFile(join(cwd, file), "utf8"))));
 }
 
+/** The built-in subagents, the explorer on --explorer-model when it is given. */
+const agents = BUILTIN_AGENTS.map((agent) =>
+	agent.name === "explorer" && explorerModel !== undefined
+		? { ...agent, models: { ...agent.models, [fake ? "fake" : BACKEND_ID]: explorerModel } }
+		: agent,
+);
+
 async function measure(task: (typeof TASKS)[number]): Promise<Run> {
 	const cwd = await mkdtemp(join(tmpdir(), "atelier-delegation-"));
 	await cp(source, join(cwd, "src"), { recursive: true });
@@ -177,7 +195,8 @@ async function measure(task: (typeof TASKS)[number]): Promise<Run> {
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
 		odd: true,
 		maxRequestsPerTurn: 40,
-		subagents: { agents: BUILTIN_AGENTS, createBackend: backend },
+		subagents: { agents, createBackend: backend },
+		delegation: { variant },
 	});
 	const run: Run = {
 		task: task.id,
@@ -272,7 +291,7 @@ const before = compared?.results;
 const at = (c: Commit | undefined) =>
 	c === undefined ? "unknown commit" : `${c.sha.slice(0, 7)}${c.dirty ? " (uncommitted changes)" : ""}`;
 const lines = [
-	`Model: ${model}. Variant: ${variant} at ${at(commit)}. Runs per task: ${runs}. Spent: ${usd(spent)}${stopped ? ` (stopped: the next session could pass $${maxUsd})` : ""}.`,
+	`Model: ${model}. Variant: ${variant} at ${at(commit)}.${explorerModel === undefined ? "" : ` Explorer model: ${explorerModel}.`} Runs per task: ${runs}. Spent: ${usd(spent)}${stopped ? ` (stopped: the next session could pass $${maxUsd})` : ""}.`,
 	...(compared ? [`Before: ${compared.variant ?? "baseline"} at ${at(compared.commit)}.`] : []),
 	"",
 ];
@@ -295,5 +314,5 @@ process.stdout.write(`${lines.join("\n")}\n`);
 if (values.json)
 	await writeFile(
 		values.json,
-		`${JSON.stringify({ model, variant, commit, runs, spent, stopped, results }, null, 2)}\n`,
+		`${JSON.stringify({ model, variant, explorerModel, commit, runs, spent, stopped, results }, null, 2)}\n`,
 	);

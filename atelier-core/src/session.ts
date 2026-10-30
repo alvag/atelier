@@ -15,6 +15,7 @@ import { type BackgroundNotice, deliveryText } from "./background-notices.ts";
 import { Channel } from "./channel.ts";
 import { COMPACTED_HEADER } from "./compaction/compactor.ts";
 import { nearCompaction } from "./context-gauge.ts";
+import type { DelegationVariant } from "./delegation.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -281,6 +282,11 @@ export interface SessionOptions {
 	createId?: () => string;
 	/** Enables the task tool. Children get no subagents: they do not delegate. */
 	subagents?: SubagentOptions;
+	/**
+	 * Only for `scripts/measure-delegation.ts`, and temporary: which delegation variant of #124 the main agent gets, to
+	 * measure them before one becomes the default. Without it, as `baseline`, nothing changes. Children never get it.
+	 */
+	delegation?: { variant: DelegationVariant };
 	/** Passed to the backend: caps the model requests of one turn. */
 	maxRequestsPerTurn?: number;
 	/** Turns on ODD tracking: the feature and phase tools, phases and the verbatim user log. */
@@ -562,6 +568,7 @@ export class Session {
 						options.wake === undefined
 							? undefined
 							: (agent, prompt, label, context) => this.#startBackground(subagents, agent, prompt, label, context),
+						options.delegation?.variant,
 					),
 				]
 			: options.tools;
@@ -655,7 +662,9 @@ export class Session {
 			});
 		session.#systemPrompt = [
 			options.systemPromptAppend ?? "",
-			options.odd ? oddRules(options.subagents?.agents.map((agent) => agent.name) ?? []) : "",
+			options.odd
+				? oddRules(options.subagents?.agents.map((agent) => agent.name) ?? [], options.delegation?.variant)
+				: "",
 			options.memory ? MEMORY_RULES : "",
 			options.review ? RISK_RULES : "",
 			session.#startedYolo ? YOLO_RULES : "",
