@@ -71,6 +71,8 @@ export {
 } from "./credentials.ts";
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
+export { readImageFile } from "./image-files.ts";
+export { MAX_PROMPT_IMAGE_BYTES, MAX_PROMPT_IMAGES, type PreparedImage } from "./images.ts";
 export {
 	McpManager,
 	type McpServerConfig,

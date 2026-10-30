@@ -88,6 +88,10 @@ Saved sessions can contain normalized image bytes. Treat saved or exported histo
 
 ## Preparation and limits
 
+The CLI's pasted-path preparer resolves raw paths (including spaces), shell-quoted or escaped
+paths, `~/` paths and local `file://` URLs without shell evaluation. A paste must name only
+regular image files; ordinary text, missing paths and non-images stay text. Corrupt image data
+reports a preparation error. Multiple paths are prepared sequentially within the same batch limits.
 - A prompt batch accepts at most **20 images** and **20 MiB of normalized image bytes**, before
   base64 encoding. Preparation checks canonical base64 and source size before decoding, processes
   images sequentially and stops after cancellation before preparing the next image.
