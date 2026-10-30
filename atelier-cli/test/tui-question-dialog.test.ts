@@ -557,6 +557,48 @@ describe("QuestionDialog option previews", () => {
 		const tall = dialog({ ...fetch, options, height: () => 40 });
 		tall.shown.handleInput(DOWN);
 		expect(tall.lines(60).join("\n")).toContain(narrow("line 20"));
-		expect(tall.lines(60).join("\n")).not.toContain("more lines");
+	});
+
+	it("leaves the panel out when not even its borders fit, rather than push the hint or the question off screen", () => {
+		const long = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
+		const crowded = (preview: boolean) => ({
+			question: "Which approach?",
+			height: () => 24,
+			options: [1, 2, 3, 4].map((number) => ({
+				label: `Option ${number}`,
+				description: "description ".repeat(9).trim(),
+				...(number === 1 ? { recommended: true } : {}),
+				...(number === 1 && preview ? { preview: long } : {}),
+			})),
+		});
+		for (const width of [60, 120]) {
+			const without = dialog(crowded(false));
+			const withPreview = dialog(crowded(true));
+			for (const shown of [without, withPreview]) shown.shown.handleInput(DOWN);
+			const plainLines = without.lines(width);
+			const previewed = withPreview.lines(width);
+			expect(previewed.length, `${width}`).toBeLessThanOrEqual(Math.max(24, plainLines.length));
+			expect(previewed[1]).toBe(" Which approach?");
+			expect(previewed.at(-2)).toBe(plainLines.at(-2));
+			expect(previewed.join("\n")).toContain("4. Option 4");
+		}
+		const at60 = dialog(crowded(true));
+		at60.shown.handleInput(DOWN);
+		expect(at60.lines(60).join("\n")).not.toContain("┌");
+	});
+
+	it("keeps a panel that only fits with its rows cut", () => {
+		const long = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
+		const options = [{ ...explicit, preview: long }, empty, { label: "Ask first" }];
+		const short = dialog({ ...fetch, options, height: () => 16 });
+		short.shown.handleInput(DOWN);
+		const shown = short.lines(60);
+		expect(shown).toHaveLength(16);
+		expect(shown.slice(9, 12)).toEqual([
+			" │ line 1                          │",
+			" │ line 2                          │",
+			" │ … 18 more lines                 │",
+		]);
+		expect(shown.at(-2)).toBe(" ↑↓ move · 1-4 pick · enter select · esc cancel");
 	});
 });
