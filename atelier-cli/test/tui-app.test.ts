@@ -175,7 +175,7 @@ const plain = (text: string) =>
 	text.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b[\]_][^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
 
 /** A terminal that keeps what the TUI wrote, without its styles, and types keys into it. */
-function fakeTerminal(columns = 100) {
+function fakeTerminal(columns = 100, rows = 40) {
 	let onInput: ((data: string) => void) | undefined;
 	let onResize: (() => void) | undefined;
 	let written = "";
@@ -197,7 +197,7 @@ function fakeTerminal(columns = 100) {
 		get columns() {
 			return columns;
 		},
-		rows: 40,
+		rows,
 		kittyProtocolActive: false,
 		moveBy: () => {},
 		hideCursor: () => {},
@@ -240,12 +240,18 @@ function fakeTerminal(columns = 100) {
 
 function harness(
 	turns: FakeStep[][],
-	options: { saveSessions?: boolean; children?: FakeBackend[]; backendId?: string; columns?: number } = {},
+	options: {
+		saveSessions?: boolean;
+		children?: FakeBackend[];
+		backendId?: string;
+		columns?: number;
+		rows?: number;
+	} = {},
 ) {
 	const backend = new FakeBackend(turns, options.backendId);
 	let terminate: ((signal: number) => void) | undefined;
 	const core = inProcessCore(backend, options.saveSessions ?? false, options.children ?? [], options.backendId);
-	const screen = fakeTerminal(options.columns);
+	const screen = fakeTerminal(options.columns, options.rows);
 	let stderr = "";
 	const io = {
 		stdin: new PassThrough(),
@@ -1364,8 +1370,20 @@ else if (process.argv.includes('status')) {
 		await until(() => h.screen.screen().includes("── new session ──"));
 		const starts = h.core.commands.filter((command) => command.command === "session.start");
 		expect(starts).toEqual([
-			{ command: "session.start", cwd, mode: "auto", userQuestions: { multiSelect: true }, sessionEvents: true },
-			{ command: "session.start", cwd, mode: "auto", userQuestions: { multiSelect: true }, sessionEvents: true },
+			{
+				command: "session.start",
+				cwd,
+				mode: "auto",
+				userQuestions: { multiSelect: true, preview: true },
+				sessionEvents: true,
+			},
+			{
+				command: "session.start",
+				cwd,
+				mode: "auto",
+				userQuestions: { multiSelect: true, preview: true },
+				sessionEvents: true,
+			},
 		]);
 		await until(() => h.backend.closed);
 
@@ -1380,7 +1398,7 @@ else if (process.argv.includes('status')) {
 		expect(resumed).toMatchObject({
 			command: "session.resume",
 			cwd,
-			userQuestions: { multiSelect: true },
+			userQuestions: { multiSelect: true, preview: true },
 			sessionEvents: true,
 		});
 		// The session /new started is closed once the resumed one runs.
@@ -2016,7 +2034,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			cwd,
 			mode: "normal",
 			noSession: true,
-			userQuestions: { multiSelect: true },
+			userQuestions: { multiSelect: true, preview: true },
 			sessionEvents: true,
 		});
 		stub.held[0]?.reject(new Error("refused"));
@@ -2533,7 +2551,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(h.screen.started);
 			await until(() => h.screen.screen().includes("profile cheap"));
 			expect(stub.log.commands.find((command) => command.command === "session.start")).toMatchObject({
-				userQuestions: { multiSelect: true },
+				userQuestions: { multiSelect: true, preview: true },
 			});
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			askUser(stub.emit);
@@ -2635,6 +2653,68 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => h.screen.screen().includes("Answered 2 questions"));
 			expect(h.screen.screen()).toContain("→ Biome, TypeScript");
 			expect(h.screen.screen()).toContain("→ none");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("shows the preview of the option with the cursor, hidden characters shown, and sends the answer as without one", async () => {
+			const h = harness([], { columns: 120 });
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
+			const fetch = {
+				id: "fetch",
+				question: "How should web_fetch answer a private address?",
+				options: [
+					{ id: "empty", label: "Empty response", preview: 'web_fetch("http://10.0.0.1")\n→ ""' },
+					{ id: "error", label: "Explicit error", recommended: true, preview: "\x1b[31mrefused\tbefore fetching" },
+				],
+			};
+			stub.emit({ type: "user_question_requested", callId: "u6", questions: [fetch] });
+			await until(() => h.screen.screen().includes("↑↓ to see each option's preview"));
+			h.screen.type("\x1b[B");
+			await until(() => h.screen.screen().includes("┌ 1. Explicit error"));
+			expect(h.screen.screen()).toContain("│ ␛[31mrefused  before fetching");
+			expect(h.screen.raw()).not.toContain("\x1b[31mrefused");
+			h.screen.type("\x1b[B");
+			await until(() => h.screen.screen().includes("┌ 2. Empty response"));
+			expect(h.screen.screen()).toContain('│ → ""');
+			h.screen.type("\r");
+			await until(() => answers().length === 1);
+			expect(answers()[0]).toMatchObject({ callId: "u6", answers: [{ questionId: "fetch", optionId: "empty" }] });
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("cuts a long preview on a short terminal, keeping the question, the options and the hint in sight", async () => {
+			const h = harness([], { columns: 60, rows: 24 });
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const long = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
+			const fetch = {
+				id: "fetch",
+				question: "How should web_fetch answer a private address?",
+				options: [
+					{ id: "error", label: "Explicit error", recommended: true, preview: long },
+					{ id: "empty", label: "Empty response" },
+				],
+			};
+			stub.emit({ type: "user_question_requested", callId: "u7", questions: [fetch] });
+			await until(() => h.screen.screen().includes("↑↓ to see each option's preview"));
+			h.screen.type("\x1b[B");
+			await until(() => /… \d+ more lines/.test(h.screen.screen()));
+			const after = h.screen.screen().slice(h.screen.screen().lastIndexOf("How should web_fetch"));
+			expect(after).toContain("1. Explicit error");
+			expect(after).toContain("3. Type something…");
+			expect(after).toContain("esc cancel");
+			expect(after).not.toContain("line 20");
+			// Ctrl+C cancels the question first, then quits.
+			h.screen.type("\x03");
+			await until(() => stub.log.commands.some((command) => command.command === "session.answer_user"));
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});

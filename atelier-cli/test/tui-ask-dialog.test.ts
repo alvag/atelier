@@ -368,3 +368,47 @@ describe("AskDialog, multi-select", () => {
 		expect(sent).toEqual([[{ options: [2] }]]);
 	});
 });
+
+describe("AskDialog option previews", () => {
+	const fetch: AskQuestion = {
+		header: "Fetch",
+		question: "How should web_fetch answer a private address?",
+		options: [
+			{
+				label: "Explicit error",
+				recommended: true,
+				preview: 'web_fetch("http://10.0.0.1")\n→ Error: refused to fetch a private or internal address',
+			},
+			{ label: "Empty response", preview: Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n") },
+		],
+	};
+
+	it("shows the preview of the option with the cursor under the tab bar of a batch", () => {
+		const { dialog, lines } = asked([fetch, checks]);
+		dialog.handleInput("\x1b[B");
+		const shown = lines(120);
+		expect(shown.slice(1, 6)).toEqual([
+			expect.stringContaining("○ Fetch   ○ Checks"),
+			"",
+			" How should web_fetch answer a private address?",
+			"",
+			` ❯ 1. Explicit error  Recommended  ┌ 1. Explicit error ${"─".repeat(38)}┐`,
+		]);
+		expect(shown[6]).toBe(`   2. Empty response               │ ${'web_fetch("http://10.0.0.1")'.padEnd(55)} │`);
+		expect(shown.at(-2)).toBe(" ←→ tabs · ↑↓ move · 1-3 pick · enter select · esc cancel");
+	});
+
+	it("fits the rows it is given, its tab bar included, by cutting the preview", () => {
+		const sent: (AskAnswer[] | null)[] = [];
+		const dialog = new AskDialog({ questions: [fetch, checks], height: () => 24 }, plain, (answers) =>
+			sent.push(answers),
+		);
+		dialog.reveal();
+		for (const key of ["\x1b[B", "\x1b[B"]) dialog.handleInput(key);
+		const shown = dialog.render(60).map((line) => line.trimEnd());
+		expect(shown).toHaveLength(24);
+		expect(shown[1]).toContain("○ Fetch");
+		expect(shown.join("\n")).toMatch(/│ … \d+ more lines +│/);
+		expect(shown.at(-2)).toContain("esc cancel");
+	});
+});
