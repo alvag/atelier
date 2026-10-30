@@ -332,7 +332,7 @@ async function startSession(
 	const started = (await link.request({
 		command: "session.start",
 		cwd: args.cwd,
-		userQuestions: true,
+		userQuestions: { multiSelect: true },
 		// The TUI shows a job's end outside any turn (`session_event`).
 		sessionEvents: true,
 		...(chosen.model === undefined ? {} : { model: chosen.model }),
@@ -366,7 +366,7 @@ async function resumeSession(
 		command: "session.resume",
 		sessionId: savedId,
 		cwd,
-		userQuestions: true,
+		userQuestions: { multiSelect: true },
 		sessionEvents: true,
 	})) as Opened & {
 		name?: string;

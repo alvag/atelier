@@ -1364,8 +1364,8 @@ else if (process.argv.includes('status')) {
 		await until(() => h.screen.screen().includes("── new session ──"));
 		const starts = h.core.commands.filter((command) => command.command === "session.start");
 		expect(starts).toEqual([
-			{ command: "session.start", cwd, mode: "auto", userQuestions: true, sessionEvents: true },
-			{ command: "session.start", cwd, mode: "auto", userQuestions: true, sessionEvents: true },
+			{ command: "session.start", cwd, mode: "auto", userQuestions: { multiSelect: true }, sessionEvents: true },
+			{ command: "session.start", cwd, mode: "auto", userQuestions: { multiSelect: true }, sessionEvents: true },
 		]);
 		await until(() => h.backend.closed);
 
@@ -1377,7 +1377,12 @@ else if (process.argv.includes('status')) {
 		await until(() => h.screen.screen().includes("── resumed session ──"));
 		await until(() => h.screen.screen().includes(": 1 turn"));
 		const resumed = h.core.commands.find((command) => command.command === "session.resume");
-		expect(resumed).toMatchObject({ command: "session.resume", cwd, sessionEvents: true });
+		expect(resumed).toMatchObject({
+			command: "session.resume",
+			cwd,
+			userQuestions: { multiSelect: true },
+			sessionEvents: true,
+		});
 		// The session /new started is closed once the resumed one runs.
 		await until(() => h.core.commands.filter((command) => command.command === "session.close").length === 2);
 		h.screen.type("\x04");
@@ -2011,7 +2016,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			cwd,
 			mode: "normal",
 			noSession: true,
-			userQuestions: true,
+			userQuestions: { multiSelect: true },
 			sessionEvents: true,
 		});
 		stub.held[0]?.reject(new Error("refused"));
@@ -2528,7 +2533,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(h.screen.started);
 			await until(() => h.screen.screen().includes("profile cheap"));
 			expect(stub.log.commands.find((command) => command.command === "session.start")).toMatchObject({
-				userQuestions: true,
+				userQuestions: { multiSelect: true },
 			});
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			askUser(stub.emit);
@@ -2579,6 +2584,57 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => h.screen.screen().includes("Answered 2 questions"));
 			expect(h.screen.screen()).toContain("→ SQLite");
 			expect(h.screen.screen()).toContain("→ Type something: my cache");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("checks boxes of multi-select questions, sends them in the question's order and keeps them in the transcript", async () => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
+			const checks = {
+				id: "checks",
+				header: "Checks",
+				question: "Which checks?",
+				multiSelect: true,
+				options: [
+					{ id: "biome", label: "Biome" },
+					{ id: "tsc", label: "TypeScript", recommended: true },
+					{ id: "vitest", label: "Vitest" },
+				],
+			};
+			const extras = { ...checks, id: "extras", header: "Extras", question: "Which extras?" };
+			stub.emit({ type: "user_question_requested", callId: "u5", questions: [checks, extras] });
+			await until(() => h.screen.screen().includes("○ Checks   ○ Extras"));
+			expect(h.screen.screen()).toMatch(/1\. \[ \] TypeScript +Recommended/);
+			expect(h.screen.screen()).toContain("Next →");
+			// Biome, listed second, and TypeScript, listed first; then the last row goes on.
+			for (const key of ["2", "1", "\x1b[A", "\r"]) h.screen.type(key);
+			await until(() => h.screen.screen().includes("✔ Checks"));
+			h.screen.type("\x1b[C");
+			await until(() => h.screen.screen().includes("Review your answers"));
+			expect(h.screen.screen()).toMatch(/✔ Checks +TypeScript, Biome/);
+			expect(h.screen.screen()).toMatch(/○ Extras +— none/);
+			h.screen.type("1");
+			await until(() => answers().length === 1);
+			expect(answers()[0]).toMatchObject({
+				callId: "u5",
+				answers: [
+					{ questionId: "checks", optionIds: ["biome", "tsc"] },
+					{ questionId: "extras", optionIds: [] },
+				],
+			});
+			stub.emit({
+				type: "user_question_resolved",
+				callId: "u5",
+				result: { status: "answered", answers: answers()[0]?.answers },
+			});
+			await until(() => h.screen.screen().includes("Answered 2 questions"));
+			expect(h.screen.screen()).toContain("→ Biome, TypeScript");
+			expect(h.screen.screen()).toContain("→ none");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
