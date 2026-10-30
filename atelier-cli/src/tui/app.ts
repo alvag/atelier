@@ -18,7 +18,7 @@ import {
 	visibleText,
 	writeDefaultPermissionMode,
 } from "@atelier/core";
-import type { CoreExit } from "@atelier/core/client";
+import { type CoreExit, RpcError } from "@atelier/core/client";
 import type { BackendName, UserAnswer } from "@atelier/core/protocol";
 import {
 	type AutocompleteItem,
@@ -105,6 +105,7 @@ const PASTE_END = "\x1b[201~";
 /** A paste longer than this is text, not the path of a file. */
 const PATH_PASTE_CHARS = 4096;
 const IMAGES_BUSY = "Images cannot be queued. Wait for the current turn to finish.";
+const COMMAND_WAITS = "commands run when the turn ends; it stays in the editor";
 // biome-ignore lint/suspicious/noControlCharactersInRegex: an escape sequence is one key
 const KEYS = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[\s\S]|[\s\S]/gu;
 const NO_CLIPBOARD_IMAGE = "No image on the clipboard. To paste text, use your terminal's text paste.";
@@ -990,15 +991,38 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		farewell = `error: The core exited (${exit.signal ?? `exit code ${exit.code ?? "unknown"}`}).${exit.stderr ? `\n${exit.stderr}` : ""}\n`;
 		quit(EXIT_FAILED);
 	};
-	const startTurn = async (command: ClientCommand) => {
+	/**
+	 * Starts a turn with `command`, typed as `line`. A `busy` refusal means a turn started before the core received it
+	 * (a notice woke one): the TUI goes on running that turn, and `turnRefused` keeps what was sent.
+	 */
+	const startTurn = async (command: ClientCommand, line: string) => {
 		interrupted = false;
 		setBusy(true);
-		const answer = await request(command);
-		if (answer === undefined) {
-			setBusy(false);
-			reportState("idle");
+		try {
+			await link.request(command);
+			return true;
+		} catch (error) {
+			if (error instanceof RpcError && error.code === "busy") turnRefused(command, line);
+			else {
+				conversation.note(`error: ${describeError(error)}`, true);
+				setBusy(false);
+				reportState("idle");
+			}
+			tui.requestRender();
+			return false;
 		}
-		return answer !== undefined;
+	};
+	/** What a turn that started meanwhile refused: a prompt is queued as a steer, images and commands go back. */
+	const turnRefused = (command: ClientCommand, line: string) => {
+		if (command.command === "session.send" && command.images?.length) return conversation.note(IMAGES_BUSY, true);
+		if (command.command === "session.send")
+			return void queueLine(line, "steer").then((taken) => {
+				if (!taken) return;
+				conversation.note("a turn started meanwhile; the prompt was queued as a steer");
+				tui.requestRender();
+			});
+		giveBack([line]);
+		conversation.note(COMMAND_WAITS);
 	};
 	/** Puts queued messages back in the editor, before what it holds, each apart from the next by a blank line. */
 	const giveBack = (messages: readonly (QueuedMessage | string)[]) => {
@@ -1017,16 +1041,21 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if (isStatsCommand(text)) return void submit(line);
 		if (text.startsWith("/")) {
 			editor.setText(line);
-			return conversation.note("commands run when the turn ends; it stays in the editor");
+			return conversation.note(COMMAND_WAITS);
 		}
 		editor.addToHistory(line);
 		editor.setText("");
+		void queueLine(line, kind);
+	};
+	/** Queues `line`; answers whether the core took it. */
+	const queueLine = (line: string, kind: QueueKind) => {
 		const asked = sessionId;
-		void request({ command: "session.queue", sessionId, kind, text: line }).then((answer) => {
+		return request({ command: "session.queue", sessionId, kind, text: line }).then((answer) => {
 			// Not taken, it goes back before whatever was typed meanwhile.
-			if (answer !== undefined || asked !== sessionId) return;
+			if (answer !== undefined || asked !== sessionId) return answer !== undefined;
 			giveBack([line]);
 			tui.requestRender();
+			return false;
 		});
 	};
 	const takeBackQueue = async () => {
@@ -1499,7 +1528,10 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		commanding = true;
 		editor.disableSubmit = true;
 		try {
-			const taken = await startTurn({ command: "session.send", sessionId, prompt: draft.prompt, images: draft.images });
+			const taken = await startTurn(
+				{ command: "session.send", sessionId, prompt: draft.prompt, images: draft.images },
+				line,
+			);
 			// The session it was for is gone, and its images with it.
 			if (quitting || asked !== sessionId) return;
 			if (taken) return pasted.release(draft);
@@ -1576,16 +1608,22 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		} else if (text === "/status") runStatus();
 		else if (command === "/resume" && single) await runResume(argument);
 		else if (command === "/rename") await runRename(text.slice(command.length).trim());
-		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId });
+		else if (text === "/undo-correction") await startTurn({ command: "session.undo_correction", sessionId }, line);
 		else if (/^\/review(?:\s+\S+)?$/.test(text))
-			await startTurn({ command: "session.review", sessionId, ...(words[1] === undefined ? {} : { ref: words[1] }) });
+			await startTurn(
+				{ command: "session.review", sessionId, ...(words[1] === undefined ? {} : { ref: words[1] }) },
+				line,
+			);
 		else if (/^\/compact(?:\s|$)/.test(text)) {
 			const instructions = text.slice("/compact".length).trim();
-			await startTurn({ command: "session.compact", sessionId, ...(instructions === "" ? {} : { instructions }) });
+			await startTurn(
+				{ command: "session.compact", sessionId, ...(instructions === "" ? {} : { instructions }) },
+				line,
+			);
 		} else if (usages.has(command ?? "")) conversation.note(`usage: ${usages.get(command ?? "")}`, true);
 		else {
 			titleWith(line);
-			await startTurn({ command: "session.send", sessionId, prompt: line });
+			await startTurn({ command: "session.send", sessionId, prompt: line }, line);
 		}
 	};
 	editor.onSubmit = (line) => void submit(line);

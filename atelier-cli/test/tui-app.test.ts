@@ -20,7 +20,7 @@ import {
 	Sandbox,
 	type SandboxManagerLike,
 } from "@atelier/core";
-import type { CoreExit } from "@atelier/core/client";
+import { type CoreExit, RpcError } from "@atelier/core/client";
 import { decodeServerMessage, encodeMessage, LineSplitter } from "@atelier/core/protocol";
 import { type ProgramStatus, resetCapabilitiesCache, type Terminal } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -137,13 +137,20 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 	const failing = new Set<string>();
 	/** Commands whose answer waits for a promise: the core did the work, the TUI has not heard yet. */
 	const holds = new Map<string, Promise<void>>();
+	/** Commands that reach the core only once a promise resolves: the TUI sent them, the core has not received them. */
+	const delays = new Map<string, Promise<void>>();
+	/** The commands the core has answered, in order, whether or not a hold keeps the answer from the TUI. */
+	const answered: string[] = [];
 	const envs: Record<string, string>[] = [];
 	const exitListeners = new Set<(exit: CoreExit) => void>();
 	let closed = false;
 	const connect = async (env: Record<string, string>): Promise<CoreLink> => {
 		envs.push(env);
 		const input = new PassThrough();
-		const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+		const pending = new Map<
+			string,
+			{ command: string; resolve: (value: unknown) => void; reject: (error: Error) => void }
+		>();
 		const eventListeners = new Set<(sessionId: string, event: AtelierEvent) => void>();
 		const sessionEventListeners = new Set<(sessionId: string, event: AtelierEventBody) => void>();
 		exitListeners.clear();
@@ -160,8 +167,9 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 					if (message.type !== "response") continue;
 					const waiting = pending.get(message.id);
 					pending.delete(message.id);
+					if (waiting) answered.push(waiting.command);
 					if (message.ok) waiting?.resolve(message.result);
-					else waiting?.reject(new Error(message.error.message));
+					else waiting?.reject(new RpcError(message.error.code, message.error.message));
 				}
 			},
 			// The session's own backend first, then one for each subagent.
@@ -186,8 +194,11 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 					? Promise.reject(new Error(`${command.command} refused`))
 					: new Promise((resolve, reject) => {
 							const id = `r${++nextId}`;
-							pending.set(id, { resolve, reject });
-							input.write(encodeMessage({ ...command, type: "command", id }));
+							pending.set(id, { command: command.command, resolve, reject });
+							const write = () => input.write(encodeMessage({ ...command, type: "command", id }));
+							const delay = delays.get(command.command);
+							if (delay === undefined) write();
+							else void delay.then(write);
 						});
 				return gate === undefined ? answer : answer.finally(() => gate);
 			},
@@ -214,7 +225,7 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 	const exit = (coreExit: CoreExit) => {
 		for (const listener of exitListeners) listener(coreExit);
 	};
-	return { connect, commands, failing, holds, envs, closed: () => closed, exit };
+	return { connect, commands, failing, holds, delays, answered, envs, closed: () => closed, exit };
 }
 
 /** Takes out styles and terminal sequences; OSC and APC ones (hyperlinks, Kitty images) end at BEL or ST. */
@@ -4661,6 +4672,47 @@ describe("TUI and background tasks", { timeout: 20_000 }, () => {
 	});
 });
 
+/** A turn that starts a background job, which ends once the file `go` exists. */
+const jobTurn = (go: string): FakeStep[] => [
+	{ event: started },
+	{
+		toolCall: {
+			tool: "bash_background",
+			input: { command: `while [ ! -f ${go} ]; do sleep 0.1; done; echo done`, label: "ci wait" },
+			callId: "c1",
+		},
+	},
+	{ event: finished },
+];
+/** The turn a job's notice wakes: it runs until `gate.release` is called. */
+const noticeTurn = (gate: { release?: () => void }): FakeStep[] => [
+	{ run: () => new Promise<void>((resolve) => (gate.release = resolve)) },
+	{ event: finished },
+];
+const commandsSent = (h: ReturnType<typeof harness>, name: string) =>
+	h.core.commands.filter((one) => one.command === name);
+/**
+ * Submits what the idle editor holds and keeps `command` from the core until the job's notice has woken a turn, so
+ * the core refuses it as busy; answers the function that lets it reach the core.
+ */
+const submitBeforeNotice = async (
+	h: ReturnType<typeof harness>,
+	go: string,
+	gate: { release?: () => void },
+	command = "session.send",
+) => {
+	const before = commandsSent(h, command).length;
+	let deliver = () => {};
+	h.core.delays.set(command, new Promise<void>((resolve) => (deliver = resolve)));
+	h.screen.type("\r");
+	await until(() => commandsSent(h, command).length === before + 1);
+	h.core.delays.delete(command);
+	await writeFile(go, "");
+	await until(() => gate.release !== undefined);
+	await until(() => h.screen.screen().includes("■ job 1 ended · exit 0"));
+	return deliver;
+};
+
 describe("TUI and background jobs", { timeout: 20_000 }, () => {
 	it.each(["default", "custom"])(
 		"keeps jobs in the fullscreen footer with %s item order and idle notices",
@@ -4753,6 +4805,110 @@ describe("TUI and background jobs", { timeout: 20_000 }, () => {
 		h.screen.type("/exit");
 		h.screen.type("\r");
 		expect(await code).toBe(0);
+	});
+
+	it("queues as a steer a prompt the core refuses because a notice woke a turn after Enter", async () => {
+		const go = join(cwd, "go");
+		const gate: { release?: () => void } = {};
+		const h = harness([jobTurn(go), noticeTurn(gate), [{ event: finished }]]);
+		const code = run(["--no-session", "--no-fullscreen"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("start it");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50 · 1 job"));
+		h.screen.type("then docs");
+		const deliver = await submitBeforeNotice(h, go, gate);
+		deliver();
+		await until(() => h.screen.screen().includes("a turn started meanwhile; the prompt was queued as a steer"));
+		expect(commandsSent(h, "session.queue")).toEqual([
+			{ command: "session.queue", sessionId: expect.any(String), kind: "steer", text: "then docs" },
+		]);
+		expect(h.screen.screen()).not.toContain("A turn is already running");
+		gate.release?.();
+		await until(() => h.backend.prompts.length === 3);
+		expect(h.backend.prompts[2]).toBe("then docs");
+		await until(() => h.screen.screen().endsWith("$1.50"));
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
+	it("keeps the woken turn running after the core refuses a prompt, so what is typed next is queued", async () => {
+		const go = join(cwd, "go");
+		const gate: { release?: () => void } = {};
+		const h = harness([jobTurn(go), noticeTurn(gate), [{ event: finished }], [{ event: finished }]]);
+		const code = run(["--no-session", "--no-fullscreen"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("start it");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50 · 1 job"));
+		h.screen.type("then docs");
+		const deliver = await submitBeforeNotice(h, go, gate);
+		deliver();
+		await until(() => h.core.answered.filter((name) => name === "session.send").length === 2);
+		// Alt+Enter queues a follow-up only while a turn runs; with none it would send.
+		h.screen.type("and tests");
+		h.screen.type("\x1b\r");
+		await until(() => commandsSent(h, "session.queue").some((one) => "kind" in one && one.kind === "follow_up"));
+		expect(commandsSent(h, "session.send")).toHaveLength(2);
+		gate.release?.();
+		await until(() => h.backend.prompts.length === 4);
+		expect(h.backend.prompts.slice(2)).toEqual(["then docs", "and tests"]);
+		await until(() => h.screen.screen().endsWith("$2.00"));
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
+	it("starts the refused prompt's own turn when the woken turn ended before the refusal came, and ends idle", async () => {
+		const go = join(cwd, "go");
+		const gate: { release?: () => void } = {};
+		const h = harness([jobTurn(go), noticeTurn(gate), [{ event: finished }]]);
+		const code = run(["--no-session", "--no-fullscreen"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("start it");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50 · 1 job"));
+		let hear = () => {};
+		h.core.holds.set("session.send", new Promise<void>((resolve) => (hear = resolve)));
+		h.screen.type("then docs");
+		const deliver = await submitBeforeNotice(h, go, gate);
+		deliver();
+		await until(() => h.core.answered.filter((name) => name === "session.send").length === 2);
+		// The core refused it while the woken turn ran; the TUI hears of it once that turn is over.
+		gate.release?.();
+		await until(() => h.screen.screen().endsWith("$1.00"));
+		hear();
+		await until(() => h.backend.prompts.length === 3);
+		expect(h.backend.prompts[2]).toBe("then docs");
+		await until(() => h.screen.screen().endsWith("$1.50"));
+		await until(() => h.screen.statuses.at(-1)?.state === "done");
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
+	it("puts back in the editor a /compact the core refuses because a notice woke a turn, and runs it after", async () => {
+		const go = join(cwd, "go");
+		const gate: { release?: () => void } = {};
+		const h = harness([jobTurn(go), noticeTurn(gate)]);
+		const code = run(["--no-session", "--no-fullscreen"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("start it");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50 · 1 job"));
+		h.screen.type("/compact");
+		const deliver = await submitBeforeNotice(h, go, gate, "session.compact");
+		deliver();
+		await until(() => h.screen.screen().includes("commands run when the turn ends; it stays in the editor"));
+		expect(h.screen.screen()).not.toContain("A turn is already running");
+		gate.release?.();
+		await until(() => h.screen.screen().endsWith("$1.00"));
+		h.screen.type("\r");
+		await until(() => commandsSent(h, "session.compact").length === 2);
+		expect(commandsSent(h, "session.queue")).toEqual([]);
+		h.terminate(15);
+		expect(await code).toBe(143);
 	});
 
 	it("shows the end of a job after an interrupted turn at once, with its notice waiting in the footer", async () => {
@@ -4852,6 +5008,33 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	};
+
+	it("gives back an image draft the core refuses because a notice woke a turn, and does not send it again", async () => {
+		const go = join(cwd, "go");
+		const gate: { release?: () => void } = {};
+		const { h, code } = await open([jobTurn(go), noticeTurn(gate), [{ event: started }, { event: finished }]]);
+		h.screen.type("start it");
+		h.screen.type("\r");
+		await shows(h, "$0.50");
+		await pasteImage(h, await imageFile());
+		h.screen.type(" what is this");
+		const deliver = await submitBeforeNotice(h, go, gate);
+		deliver();
+		await shows(h, BUSY);
+		expect(h.screen.screen()).not.toContain(`error: ${BUSY}`);
+		// The woken turn runs: Enter keeps the draft instead of sending it again.
+		h.screen.type("\r");
+		await until(() => h.screen.screen().split(BUSY).length === 3);
+		expect(sends(h)).toHaveLength(2);
+		expect(commandsSent(h, "session.queue")).toEqual([]);
+		gate.release?.();
+		await shows(h, "$1.00");
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 3);
+		expect(sends(h).at(-1)?.prompt).toBe(" what is this");
+		expect(sends(h).at(-1)?.images).toHaveLength(1);
+		await quit(h, code);
+	});
 
 	it("puts a pasted image path in the editor as a marker and sends the image natively", async () => {
 		const { h, code } = await open();
