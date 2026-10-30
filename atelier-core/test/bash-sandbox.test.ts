@@ -3,10 +3,10 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBashTool } from "../src/tools/bash.ts";
-import { isInsideSandbox, linkedWorktreeGit, Sandbox } from "../src/tools/sandbox.ts";
+import { isInsideSandbox, linkedWorktreeGit, Sandbox, shellQuote } from "../src/tools/sandbox.ts";
 
 const onMac = process.platform === "darwin" && !isInsideSandbox();
 
@@ -197,6 +197,71 @@ describe.skipIf(!onMac)("the agent's bash in the sandbox", () => {
 
 	it("does not ask for approval differently: the main agent's bash still asks", () => {
 		expect(agent().approvalCommand({ command: "ls" })).toBe("ls");
+	});
+});
+
+describe("hard links in the real sandbox", () => {
+	beforeEach(async (context) => {
+		const status = await sandbox.status();
+		if (!status.available) {
+			console.warn(
+				`WARNING: the Seatbelt hard-link tests did not run (${status.reason}); a green result does not cover them.`,
+			);
+			context.skip();
+		}
+	});
+
+	it.each([
+		["home", ".atelier/permissions.json", "{}\n"],
+		["home", ".zshrc", "# fake shell startup\n"],
+		["project", ".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n"],
+		["home", ".gitconfig", "[user]\n\tname = Fake User\n"],
+		["home", "notes.txt", "fake ordinary note\n"],
+		["home", "other-repo/.git/hooks/pre-commit", "#!/bin/sh\nexit 0\n"],
+	])("cannot hard-link %s/%s into the project", async (root, relative, content) => {
+		const source = join(root === "project" ? cwd : home, relative);
+		const destination = join(cwd, "hard-link");
+		await mkdir(dirname(source), { recursive: true });
+		await writeFile(source, content);
+		const before = await stat(source);
+		expect(before.dev).toBe((await stat(cwd)).dev);
+		expect(before.nlink).toBe(1);
+
+		const result = await createBashTool({ sandbox }).execute(
+			{ command: `ln ${shellQuote(source)} ${shellQuote(destination)}` },
+			{ cwd },
+		);
+
+		expect(result.ok).toBe(false);
+		expect(result.output).toMatch(/\[exit code [1-9]\d*\]/);
+		await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+		const after = await stat(source);
+		expect(after.ino).toBe(before.ino);
+		expect(after.nlink).toBe(1);
+		expect(await readFile(source, "utf8")).toBe(content);
+	});
+
+	it("still creates a hard link to an ordinary project file", async () => {
+		const source = join(cwd, "ordinary.txt");
+		const destination = join(cwd, "hard-link");
+		const content = "ordinary project file\n";
+		await writeFile(source, content);
+
+		const result = await createBashTool({ sandbox }).execute(
+			{ command: `ln ${shellQuote(source)} ${shellQuote(destination)}` },
+			{ cwd },
+		);
+
+		expect(result.ok).toBe(true);
+		expect(result.output).toContain("[exit code 0]");
+		const original = await stat(source);
+		const linked = await stat(destination);
+		expect(linked.dev).toBe(original.dev);
+		expect(linked.ino).toBe(original.ino);
+		expect(original.nlink).toBe(2);
+		expect(linked.nlink).toBe(2);
+		expect(await readFile(source, "utf8")).toBe(content);
+		expect(await readFile(destination, "utf8")).toBe(content);
 	});
 });
 
