@@ -1,9 +1,7 @@
 /**
- * What the main agent did itself in a measured turn, from the turn's events: which tools it called, how much it read
- * before and after its first task call, and whether it read past the threshold of the read notice (#124), as the
- * session counts it.
+ * What the main agent did itself in a measured turn, from the turn's events: which tools it called, and how much it
+ * read before and after its first task call.
  */
-import { InlineReads } from "../src/delegation.ts";
 import type { AtelierEvent } from "../src/index.ts";
 import type { ToolDefinition } from "../src/tools/types.ts";
 
@@ -18,8 +16,6 @@ export interface ParentCalls {
 	readsAfterTask: number;
 	/** Characters the parent's successful read and grep calls gave the model before its first task call. */
 	readCharsBeforeTask: number;
-	/** Whether the parent's successful reads passed the read notice's threshold before any task, edit or write. */
-	noticeDue: boolean;
 }
 
 /** Tallies the parent's calls; `chars` holds each call's output length by call id, as `measuredTools` records it. */
@@ -30,11 +26,9 @@ export function tallyParentCalls(events: Iterable<AtelierEvent>, chars: Readonly
 		readsBeforeTask: 0,
 		readsAfterTask: 0,
 		readCharsBeforeTask: 0,
-		noticeDue: false,
 	};
 	const tools = new Map<string, string>();
 	let delegated = false;
-	const reads = new InlineReads();
 	for (const event of events) {
 		if (event.parentCallId !== undefined) continue;
 		if (event.type === "tool_call_started") {
@@ -46,12 +40,13 @@ export function tallyParentCalls(events: Iterable<AtelierEvent>, chars: Readonly
 				else tally.readsBeforeTask++;
 			}
 			if (event.tool === "task") delegated = true;
-		} else if (event.type === "tool_call_finished") {
-			const tool = tools.get(event.callId) ?? "";
-			const read = chars.get(event.callId) ?? 0;
-			if (event.ok && READS.has(tool) && !delegated) tally.readCharsBeforeTask += read;
-			if (reads.after(tool, event.ok, read) !== undefined) tally.noticeDue = true;
-		}
+		} else if (
+			event.type === "tool_call_finished" &&
+			event.ok &&
+			!delegated &&
+			READS.has(tools.get(event.callId) ?? "")
+		)
+			tally.readCharsBeforeTask += chars.get(event.callId) ?? 0;
 	}
 	return tally;
 }

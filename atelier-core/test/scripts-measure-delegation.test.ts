@@ -46,7 +46,7 @@ describe("measure-delegation", () => {
 		30_000,
 	);
 
-	it("records the variant and the explorer model it measured, and refuses a variant it does not know", async () => {
+	it("records the explorer model it measured, and refuses the variants it no longer has", async () => {
 		const script = new URL("../scripts/measure-delegation.ts", import.meta.url).pathname;
 		const json = join(root, "run.json");
 		const measured = (...more: string[]) => {
@@ -56,17 +56,15 @@ describe("measure-delegation", () => {
 			return run;
 		};
 
-		const run = measured("--variant", "rule", "--explorer-model", "claude-haiku-5-5");
+		const run = measured("--explorer-model", "claude-haiku-5-5");
 		await until(() => run.exited !== undefined, 15_000);
 		expect(run.exited).toBe(0);
-		const written = JSON.parse(await readFile(json, "utf8")) as { variant: string; explorerModel?: string };
-		expect([written.variant, written.explorerModel]).toEqual(["rule", "claude-haiku-5-5"]);
+		const written = JSON.parse(await readFile(json, "utf8")) as { variant?: string; explorerModel?: string };
+		expect([written.variant, written.explorerModel]).toEqual([undefined, "claude-haiku-5-5"]);
 
-		const wrong = measured("--variant", "louder");
+		const wrong = measured("--variant", "rule");
 		await until(() => wrong.exited !== undefined, 15_000);
-		expect(wrong.exited).toBe(2);
-		expect(wrong.stderr).toContain(
-			"Unknown variant louder; the variants are baseline, rule, why, notice, rule+notice.",
-		);
+		expect(wrong.exited).not.toBe(0);
+		expect(wrong.stderr).toContain("Unknown option '--variant'");
 	}, 30_000);
 });
