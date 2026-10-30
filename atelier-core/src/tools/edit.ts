@@ -67,6 +67,8 @@ export async function locate(cwd: string, path: string, context: ToolContext, ho
 		const scratch = await realpath(context.scratchDir).catch(() => context.scratchDir as string);
 		if (isInside(scratch, real)) return { real, allowed: true };
 	}
+	// A background worker writes nowhere else: no configuration, rule or earlier approval adds a place.
+	if (context.confined === true) return { real, allowed: false };
 	const { allowWrite } = loadSandboxAdditions({ cwd, home });
 	if (allowWrite.some((directory) => isInside(directory, real))) return { real, allowed: true };
 	if (context.pathRules?.some((folder) => isInside(folder, real))) return { real, allowed: true };

@@ -142,6 +142,7 @@ function failedToStart(status: SandboxStatus): boolean {
 
 /** Not a destructive command, but a request the verifier never gets. */
 const VERIFIER_UNSANDBOXED = "the verifier's bash cannot run outside the sandbox";
+const CONFINED_ONLY = "a background worker's commands run only in its sandbox";
 
 /** The sandbox's status, or "off" when the session turned it off. */
 async function statusFor(sandbox: Sandbox, sandboxOff: boolean | undefined): Promise<SandboxStatus> {
@@ -220,12 +221,14 @@ function coveredByRules(
 		bashRules = [],
 		projectBashRules = [],
 		projectBounds,
-	}: Pick<ToolContext, "cwd" | "bashRules" | "projectBashRules" | "projectBounds">,
+		confined,
+	}: Pick<ToolContext, "cwd" | "bashRules" | "projectBashRules" | "projectBounds" | "confined">,
 	{ withoutApproval, policy, sandbox }: { withoutApproval: boolean; policy: SandboxPolicyName; sandbox: Sandbox },
 ): boolean {
-	// Project rules apply only where the project is known.
+	// Project rules apply only where the project is known; a background worker's commands never leave the sandbox.
 	const project = projectBounds === undefined ? [] : projectBashRules;
-	if (withoutApproval || policy !== "agent" || (bashRules.length === 0 && project.length === 0)) return false;
+	if (withoutApproval || policy !== "agent" || confined === true || (bashRules.length === 0 && project.length === 0))
+		return false;
 	if (findConfirmCommands(command).length > 0) return false;
 	const inProject = projectBounds === undefined ? undefined : insideProject(projectBounds, cwd);
 	if (!coveredBy(command, bashRules, project, inProject)) return false;
@@ -307,6 +310,12 @@ export async function gateCommand(
 	const rule = findDestructiveCommand(command, { cwd, home: homedir() });
 	if (rule !== undefined) return { refusal: refusal(rule, command) };
 	if (coveredByRules(command, context, { withoutApproval, policy, sandbox })) return {};
+	if (context.confined === true) {
+		if (unsandboxed) return { refusal: refusal(CONFINED_ONLY, command) };
+		const status = await statusFor(sandbox, sandboxOff);
+		if (!status.available)
+			return { refusal: refusal(`${CONFINED_ONLY}, which is not available (${status.reason})`, command) };
+	}
 	// The verifier's copy is thrown away, so nothing there is worth asking about.
 	const confirmed = withoutApproval ? {} : confirmation(command);
 	if (unsandboxed) {
@@ -365,6 +374,8 @@ export async function prepareCommand(
 	const { cwd, scratchDir, sandboxOff } = context;
 	if (unsandboxed && policy === "verifier")
 		return { refused: { ok: false, ...refusal(VERIFIER_UNSANDBOXED, command), truncated: false } };
+	if (unsandboxed && context.confined === true)
+		return { refused: { ok: false, ...refusal(CONFINED_ONLY, command), truncated: false } };
 	const notRun = (output: string): { refused: ToolOutcome } => ({
 		refused: { ok: false, output, summary: `${firstLine(command)} (not run)`, truncated: false },
 	});
@@ -374,7 +385,7 @@ export async function prepareCommand(
 		: unsandboxed
 			? { available: false, reason: "the agent asked to run this command outside the sandbox" }
 			: await statusFor(sandbox, sandboxOff);
-	if (!sandboxStatus.available && policy === "verifier")
+	if (!sandboxStatus.available && (policy === "verifier" || context.confined === true))
 		return notRun(`[bash is not available: ${sandboxStatus.reason}]`);
 	let script = command;
 	// Each run gets its own id, so its denials are not mixed with those of another run of the same text.
@@ -382,7 +393,7 @@ export async function prepareCommand(
 	if (sandboxStatus.available) {
 		try {
 			script = await sandbox.wrap(command, {
-				policy,
+				policy: context.confined === true ? "confined" : policy,
 				cwd,
 				runId,
 				...(scratchDir === undefined ? {} : { scratchDir }),
