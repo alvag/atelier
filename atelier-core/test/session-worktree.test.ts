@@ -29,6 +29,8 @@ import { PermissionRules } from "../src/permission-rules.ts";
 import { BUILTIN_AGENTS } from "../src/subagents/definitions.ts";
 import { createTaskWorktree } from "../src/subagents/worktree.ts";
 import { createBackgroundTools } from "../src/tools/background.ts";
+import { createBashTool } from "../src/tools/bash.ts";
+import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 import { createWriteTool } from "../src/tools/write.ts";
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
@@ -82,7 +84,7 @@ async function started(
 	const session = await Session.start({
 		backend: parent,
 		cwd,
-		tools: createBackgroundTools(),
+		tools: [...createBackgroundTools(), sandboxedBash()],
 		subagents: {
 			agents: BUILTIN_AGENTS,
 			createBackend: () => {
@@ -104,6 +106,19 @@ async function started(
 		return events;
 	};
 	return { parent, children, session, play, woke: () => woke };
+}
+
+/** `bash` in a sandbox that is there and wraps nothing: a background worker needs one. */
+function sandboxedBash() {
+	const manager: SandboxManagerLike = {
+		isSupportedPlatform: () => true,
+		checkDependencies: () => ({ errors: [], warnings: [] }),
+		initialize: async () => {},
+		wrapWithSandbox: async (command) => command,
+		cleanupAfterCommand: () => {},
+		reset: async () => {},
+	};
+	return createBashTool({ sandbox: new Sandbox({ platform: "darwin", manager }) });
 }
 
 /** A gate a child's turn waits on until the test opens it. */
@@ -233,44 +248,44 @@ describe("a worker in the background", () => {
 		expect(parent.prompts[3]).toContain("Files it changed that also changed in your working tree since: a.txt.");
 	});
 
-	it.each([
-		["with the sandbox", false],
-		["with the sandbox off", true],
-	])("gets the parent's node_modules folders %s, without being able to change them", async (_how, noSandbox) => {
-		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
-		for (const dir of ["node_modules/pkg", "sub/node_modules/x"]) mkdirSync(join(repo, dir), { recursive: true });
-		writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
-		writeFileSync(join(repo, "sub/node_modules/x/index.js"), "parent x\n");
-		const seen: string[] = [];
-		const { parent, session, play, woke } = await started(
-			[[work("c1"), { event: finished }], [{ event: finished }]],
-			[
-				(cwd) => [
-					{
-						run: () => {
-							const pkg = join(cwd(), "node_modules/pkg/index.js");
-							seen.push(readFileSync(pkg, "utf8"), readFileSync(join(cwd(), "sub/node_modules/x/index.js"), "utf8"));
-							seen.push(String(lstatSync(join(cwd(), "node_modules")).isSymbolicLink()));
-							writeFileSync(pkg, "child\n");
+	it.each([["with the sandbox", false]])(
+		"gets the parent's node_modules folders %s, without being able to change them",
+		async (_how, noSandbox) => {
+			writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
+			for (const dir of ["node_modules/pkg", "sub/node_modules/x"]) mkdirSync(join(repo, dir), { recursive: true });
+			writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
+			writeFileSync(join(repo, "sub/node_modules/x/index.js"), "parent x\n");
+			const seen: string[] = [];
+			const { parent, session, play, woke } = await started(
+				[[work("c1"), { event: finished }], [{ event: finished }]],
+				[
+					(cwd) => [
+						{
+							run: () => {
+								const pkg = join(cwd(), "node_modules/pkg/index.js");
+								seen.push(readFileSync(pkg, "utf8"), readFileSync(join(cwd(), "sub/node_modules/x/index.js"), "utf8"));
+								seen.push(String(lstatSync(join(cwd(), "node_modules")).isSymbolicLink()));
+								writeFileSync(pkg, "child\n");
+							},
 						},
-					},
-					text("done"),
-					{ event: finished },
+						text("done"),
+						{ event: finished },
+					],
 				],
-			],
-			repo,
-			{ noSandbox },
-		);
-		await play(session.send("go"));
-		const started_ = parent.toolResults[0]?.output ?? "";
-		await until(() => woke() === 1);
-		// Its own copies, whatever the file system: never a link to the parent's.
-		expect(seen).toEqual(["parent\n", "parent x\n", "false"]);
-		expect(started_).toMatch(/Its node_modules folders are (copy-on-write )?copies of yours\./);
-		expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
-		await play(session.nextQueued());
-		expect(parent.prompts[1]).toContain("It changed no files.");
-	});
+				repo,
+				{ noSandbox },
+			);
+			await play(session.send("go"));
+			const started_ = parent.toolResults[0]?.output ?? "";
+			await until(() => woke() === 1);
+			// Its own copies, whatever the file system: never a link to the parent's.
+			expect(seen).toEqual(["parent\n", "parent x\n", "false"]);
+			expect(started_).toMatch(/Its node_modules folders are (copy-on-write )?copies of yours\./);
+			expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
+			await play(session.nextQueued());
+			expect(parent.prompts[1]).toContain("It changed no files.");
+		},
+	);
 
 	it("points no link of its worktree at the parent's tree, so nothing written through one reaches the parent's", async () => {
 		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
@@ -452,7 +467,7 @@ describe("a worker in the background", () => {
 		const session = await Session.start({
 			backend: parent,
 			cwd: repo,
-			tools: createBackgroundTools(),
+			tools: [...createBackgroundTools(), sandboxedBash()],
 			subagents: {
 				agents: BUILTIN_AGENTS,
 				createBackend: async () => {
@@ -589,7 +604,7 @@ describe("a worker in the background", () => {
 				],
 			],
 			repo,
-			{ permissionRules: rules, tools: [...createBackgroundTools(), createWriteTool()] },
+			{ permissionRules: rules, tools: [...createBackgroundTools(), sandboxedBash(), createWriteTool()] },
 		);
 		await play(session.send("go"));
 		await until(() => woke() === 1);
@@ -636,7 +651,7 @@ describe("a worker in the background", () => {
 					],
 				],
 				repo,
-				{ tools: [...createBackgroundTools(), createWriteTool()] },
+				{ tools: [...createBackgroundTools(), sandboxedBash(), createWriteTool()] },
 			);
 			const before = readFileSync(join(repo, "a.txt"));
 			await play(session.send("go"));
@@ -648,6 +663,36 @@ describe("a worker in the background", () => {
 		} finally {
 			await rm(outside, { recursive: true, force: true });
 		}
+	});
+
+	it.each([
+		["the sandbox is off", { noSandbox: true }],
+		[
+			"there is no sandbox",
+			{ tools: [...createBackgroundTools(), createBashTool({ sandbox: new Sandbox({ platform: "linux" }) })] },
+		],
+	] as const)("is refused when %s, before anything is made, while an explorer still runs", async (_how, extra) => {
+		const before = { git: gitDirState(), objects: objectFiles() };
+		const explore: FakeStep = {
+			toolCall: {
+				tool: "task",
+				input: { agent: "explorer", prompt: "Look.", background: true } as never,
+				callId: "c2",
+			},
+		};
+		const { parent, children, session, play } = await started(
+			[[work("c1"), explore, { event: finished }]],
+			[() => [text("seen"), { event: finished }]],
+			repo,
+			extra,
+		);
+		await play(session.send("go"));
+		expect(parent.toolResults[0]?.output).toMatch(
+			/^Refused: a worker runs in the background only in the sandbox, which is not available here \(.+\); run it without background\.$/,
+		);
+		expect(parent.toolResults[1]?.output).toMatch(/^Started explorer in the background/);
+		expect(children).toHaveLength(1);
+		expect({ git: gitDirState(), objects: objectFiles() }).toEqual(before);
 	});
 
 	it("is refused outside a git repository, before a subagent starts", async () => {
