@@ -10,6 +10,12 @@ export interface InputText {
 	text: string;
 }
 
+export interface InputImage {
+	type: "input_image";
+	image_url: string;
+	detail: "auto" | "low" | "high";
+}
+
 export interface OutputText {
 	type: "output_text";
 	text: string;
@@ -18,7 +24,12 @@ export interface OutputText {
 
 /** An item of the conversation, as the API takes it in `input` and returns it in `output`. */
 export type ResponsesItem =
-	| { type: "message"; role: "user" | "assistant" | "developer"; content: (InputText | OutputText)[]; id?: string }
+	| {
+			type: "message";
+			role: "user" | "assistant" | "developer";
+			content: (InputText | OutputText | InputImage)[];
+			id?: string;
+	  }
 	| { type: "function_call"; call_id: string; name: string; arguments: string; id?: string }
 	| { type: "function_call_output"; call_id: string; output: string }
 	| {

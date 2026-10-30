@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import sharp from "sharp";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { z } from "zod";
 import { AuthStore, authFile } from "../src/auth-store.ts";
@@ -9,6 +10,7 @@ import type { BackendSession, BackendStartOptions, ToolCall } from "../src/backe
 import { createBackend } from "../src/backend-factory.ts";
 import { CodexAccess, type CodexVariant } from "../src/backends/openai-codex/access.ts";
 import { OpenAiCodexBackend } from "../src/backends/openai-codex/backend.ts";
+import { SUMMARY_HEADINGS } from "../src/compaction/compactor.ts";
 import type { AtelierEventBody } from "../src/events.ts";
 import { ModelData, useModelData } from "../src/model-catalog/index.ts";
 import { defineTool } from "../src/tools/types.ts";
@@ -82,6 +84,78 @@ async function start(options: Partial<BackendStartOptions> = {}, variant?: Codex
 	});
 	return { session, calls };
 }
+
+it.each(["legacy", "chatgpt"] as const)(
+	"carries tool images, resume and explicit model omissions on %s",
+	async (variant) => {
+		await (variant === "legacy" ? signInLegacy() : signInChatGpt());
+		useModelData(new ModelData({ "openai-codex": [{ id: "text-only", images: false }] }));
+		const data = (
+			await sharp({ create: { width: 1, height: 1, channels: 4, background: "transparent" } })
+				.png()
+				.toBuffer()
+		).toString("base64");
+		api.answers.push(
+			{ events: completed([callItem("a", "echo", { text: "one" }), callItem("b", "echo", { text: "two" })]) },
+			...Array.from({ length: 5 }, () => ({ events: completed([textItem("Done.")]) })),
+		);
+		const { session } = await start(
+			{
+				executeTool: async () => ({
+					ok: true,
+					output: "Image: 1×1 (image/png)",
+					images: [{ mimeType: "image/png", data }],
+				}),
+			},
+			variant,
+		);
+		try {
+			await turn(session);
+			const input = api.requests[1]?.body.input as Record<string, unknown>[];
+			const companion = {
+				type: "message",
+				role: "user",
+				content: [
+					{ type: "input_text", text: "Images from tool result a:" },
+					{ type: "input_image", image_url: `data:image/png;base64,${data}`, detail: "auto" },
+					{ type: "input_text", text: "Images from tool result b:" },
+					{ type: "input_image", image_url: `data:image/png;base64,${data}`, detail: "auto" },
+				],
+			};
+			expect(input.slice(-3)).toEqual([
+				{ type: "function_call_output", call_id: "a", output: "Image: 1×1 (image/png)" },
+				{ type: "function_call_output", call_id: "b", output: "Image: 1×1 (image/png)" },
+				companion,
+			]);
+			const resume = session.resumeState?.();
+			if (resume === undefined) throw new Error("Missing image history.");
+			await session.close();
+			const { session: resumed } = await start({ resume }, variant);
+			try {
+				await turn(resumed, "Use the pixels again.");
+				expect(api.requests[2]?.body.input).toContainEqual(companion);
+				await resumed.configure?.({ model: "text-only" });
+				await turn(resumed, "What remains?");
+				const omitted = JSON.stringify(api.requests[3]?.body.input);
+				expect(omitted.split("[image omitted: text-only does not accept images]")).toHaveLength(3);
+				expect(omitted).not.toContain(data);
+				api.answers[0] = { events: completed([textItem(SUMMARY_HEADINGS.join("\n"))]) };
+				await resumed.summarize?.();
+				expect(
+					JSON.stringify(api.requests[4]?.body.input).split("[image omitted: text-only does not accept images]"),
+				).toHaveLength(3);
+				await resumed.configure?.({ model: "gpt-6-sol" });
+				await turn(resumed, "Use the original pixels.");
+				expect(api.requests[5]?.body.input).toContainEqual(companion);
+			} finally {
+				await resumed.close();
+			}
+		} finally {
+			await session.close();
+			useModelData(new ModelData());
+		}
+	},
+);
 
 it("gives the Codex catalog the Codex sign-in's token and id, and never another variant's token", async () => {
 	const access = () => new CodexAccess({ store, authUrl: auth.url });

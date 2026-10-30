@@ -8,8 +8,6 @@ export function imageInputProblem(backend: string, requested?: string): string |
 	const model = requested ?? (id === undefined ? "default" : BACKEND_DEFAULTS[id]);
 	const unsupported = `Image input is not supported by ${backend}/${model}.`;
 	if (id === undefined) return unsupported;
-	// These transports are enabled only once their image conversion is implemented.
-	if (id === "openai-codex") return unsupported;
 	const data = currentModelData();
 	const alias = data
 		.listed(id)
@@ -17,7 +15,7 @@ export function imageInputProblem(backend: string, requested?: string): string |
 		.find((entry) => entry?.aliases?.includes(model));
 	const known = data.model(id, model) ?? alias;
 	const fallback =
-		((id === "anthropic-api" || id === "claude-code") && BACKEND_MODELS[id].includes(model)) ||
+		((id === "anthropic-api" || id === "claude-code" || id === "openai-codex") && BACKEND_MODELS[id].includes(model)) ||
 		(id === "claude-code" && ["opus", "sonnet", "haiku"].includes(model)) ||
 		(id === "opencode-go" && model === "claude-haiku-5-5");
 	const supported = known?.images ?? (fallback ? true : undefined);

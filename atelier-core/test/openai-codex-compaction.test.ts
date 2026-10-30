@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import sharp from "sharp";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { AuthStore, authFile } from "../src/auth-store.ts";
 import type { BackendSession, BackendStartOptions } from "../src/backend.ts";
 import { OpenAiCodexBackend } from "../src/backends/openai-codex/backend.ts";
+import { turnPromptBeforeItem } from "../src/backends/openai-codex/compaction.ts";
 import { SUMMARY_HEADINGS } from "../src/compaction/compactor.ts";
 import type { AtelierEventBody } from "../src/events.ts";
 import { FakeOpenAiAuth, fakeCodexAccess, fakeRefresh } from "./support/fake-openai-auth.ts";
@@ -82,6 +84,30 @@ async function twoTurns(session: BackendSession, lastUsage = small): Promise<voi
 	api.answers.push({ events: completed([textItem("ok")], lastUsage) });
 	await all(session.send("second"));
 }
+
+it("explains each image a text-only carried prompt cannot retain", async () => {
+	const data = (
+		await sharp({ create: { width: 1, height: 1, channels: 3, background: "red" } })
+			.png()
+			.toBuffer()
+	).toString("base64");
+	expect(
+		turnPromptBeforeItem(
+			[
+				{
+					type: "message",
+					role: "user",
+					content: [
+						{ type: "input_text", text: "Inspect" },
+						{ type: "input_image", image_url: `data:image/png;base64,${data}`, detail: "auto" },
+					],
+				},
+			],
+			0,
+			1,
+		),
+	).toBe("Inspect\n\n[image omitted: the carried prompt is text-only; see the summary]");
+});
 
 it("compacts at the threshold: the summary replaces the older history, with the files and the core's state", async () => {
 	const { session, summaries } = await start({}, 200);

@@ -43,7 +43,11 @@ export function withInstruction(items: readonly ResponsesItem[], instruction: st
 
 /** The text of an answer's messages. */
 export function outputText(items: readonly ResponsesItem[]): string {
-	return items.flatMap((item) => (item.type === "message" ? item.content.map((part) => part.text) : [])).join("");
+	return items
+		.flatMap((item) =>
+			item.type === "message" ? item.content.flatMap((part) => (part.type === "input_image" ? [] : [part.text])) : [],
+		)
+		.join("");
 }
 
 export function itemFileActivity(
@@ -76,7 +80,11 @@ export function turnPromptBeforeItem(
 	if (turnStart < 0 || turnStart >= cut) return undefined;
 	const item = items[turnStart];
 	if (item?.type !== "message") return undefined;
-	const text = item.content.map((part) => part.text).join("\n\n");
+	const text = item.content
+		.map((part) =>
+			part.type === "input_image" ? "[image omitted: the carried prompt is text-only; see the summary]" : part.text,
+		)
+		.join("\n\n");
 	return text === "" ? undefined : text;
 }
 
