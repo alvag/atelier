@@ -22,10 +22,18 @@ const shown = (question: UserQuestion) => [
 
 const shownText = (text: string) => visibleText(text).text;
 
+/** `     │ ` before each line of an option's preview; a final newline ends its last line. */
+const previewLines = (preview: string) =>
+	shownText(preview)
+		.replace(/\n$/, "")
+		.split("\n")
+		.map((line) => (line === "" ? "     │\n" : `     │ ${line}\n`));
+
 function render(question: UserQuestion, index: number, total: number): string {
 	const lines = shown(question).flatMap((option, i) => [
 		`  ${i + 1}. ${shownText(option.label)}${option.recommended === true ? " (Recommended)" : ""}\n`,
 		...(option.description ? [`     ${shownText(option.description)}\n`] : []),
+		...(option.preview ? previewLines(option.preview) : []),
 	]);
 	const any = question.multiSelect === true ? " (choose any, or none)" : "";
 	return `Question ${index + 1}/${total}: ${shownText(question.question)}${any}\n${lines.join("")}  ${question.options.length + 1}. Other...\n`;
@@ -49,8 +57,8 @@ function checkedNumbers(text: string, last: number): number[] | undefined {
 }
 
 /**
- * Asks the batch one question at a time. Only an explicit number answers; blank lines and pastes never do. A
- * multi-select question takes numbers separated by commas, `Other...` among them, or `0` for none.
+ * Asks the batch one question at a time, each option's preview below it. Only an explicit number answers; blank lines
+ * and pastes never do. A multi-select question takes numbers separated by commas, `Other...` among them, or `0` for none.
  */
 export async function askUserOnTerminal(questions: UserQuestion[], ports: AskUserPorts): Promise<UserQuestionResult> {
 	const ended = (): UserQuestionResult =>
