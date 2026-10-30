@@ -2,30 +2,12 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { crc32, deflateSync } from "node:zlib";
 import * as core from "@atelier/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { preparePastedImages } from "../src/tui/pasted-images.ts";
+import { png } from "./support/png.ts";
 
-function pngChunk(type: string, data: Buffer): Buffer {
-	const body = Buffer.concat([Buffer.from(type), data]);
-	const length = Buffer.alloc(4);
-	length.writeUInt32BE(data.length);
-	const checksum = Buffer.alloc(4);
-	checksum.writeUInt32BE(crc32(body));
-	return Buffer.concat([length, body, checksum]);
-}
-const header = Buffer.alloc(13);
-header.writeUInt32BE(1, 0);
-header.writeUInt32BE(1, 4);
-header[8] = 8;
-header[9] = 6;
-const PNG = Buffer.concat([
-	Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-	pngChunk("IHDR", header),
-	pngChunk("IDAT", deflateSync(Buffer.from([0, 255, 0, 0, 255]))),
-	pngChunk("IEND", Buffer.alloc(0)),
-]);
+const PNG = png();
 let dir: string;
 
 beforeEach(async () => {

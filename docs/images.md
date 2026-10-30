@@ -95,6 +95,9 @@ The CLI's pasted-path preparer resolves raw paths (including spaces), shell-quot
 paths, `~/` paths and local `file://` URLs without shell evaluation. A paste must name only
 regular image files; ordinary text, missing paths and non-images stay text. Corrupt image data
 reports a preparation error. Multiple paths are prepared sequentially within the same batch limits.
+Draft snapshots check those limits again before sending, including a refused send restored alongside
+newer text or images. Repeated references to one marker count as one image; deleting its marker
+drops the attachment. A snapshot retains its bytes until the send is accepted or restored.
 - A prompt batch accepts at most **20 images** and **20 MiB of normalized image bytes**, before
   base64 encoding. Preparation checks canonical base64 and source size before decoding, processes
   images sequentially and stops after cancellation before preparing the next image.
