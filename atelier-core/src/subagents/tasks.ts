@@ -69,8 +69,6 @@ export interface BackgroundTasksOptions {
 	onStarted?: (task: TaskInfo) => void;
 	/** Called once per task when it is over, stopped tasks included. */
 	onEnded: (ended: EndedTask) => void;
-	/** The notices say what #154's background rules add (`SessionOptions.backgroundRules`); temporary, as that is. */
-	backgroundRules?: boolean;
 }
 
 interface Entry {
@@ -205,7 +203,7 @@ export class BackgroundTasks {
 		quietly(() =>
 			this.#options.onEnded({
 				task: { ...info },
-				notice: taskNotice(info, result, this.#options.backgroundRules === true),
+				notice: taskNotice(info, result),
 			}),
 		);
 	}
@@ -246,12 +244,9 @@ function quietly(action: () => void): void {
 	} catch {}
 }
 
-/** What `task` answers once a background task started; with #154's background rules, also what to do meanwhile. */
-export function taskStartedText(task: TaskInfo, rules = false): string {
-	const meanwhile = rules
-		? "meanwhile do work that does not overlap its own, or end your turn; do not poll job_list for it, sleep waiting, or launch the same work again."
-		: "do not poll job_list for it, do not sleep waiting, and do not launch the same work again.";
-	return `Started ${task.agent} in the background as task ${task.id} ("${task.label}"). Its report is pushed to you once when it ends: ${meanwhile} job_stop stops it. Its activity and then its report go to ${task.outputPath}.`;
+/** What `task` answers once a background task started, and what the agent does meanwhile. */
+export function taskStartedText(task: TaskInfo): string {
+	return `Started ${task.agent} in the background as task ${task.id} ("${task.label}"). Its report is pushed to you once when it ends: meanwhile do work that does not overlap its own, or end your turn; do not poll job_list for it, sleep waiting, or launch the same work again. job_stop stops it. Its activity and then its report go to ${task.outputPath}.`;
 }
 
 /** The rows `job_list` shows for tasks: id, status, elapsed time, agent and label, file. */
@@ -273,28 +268,28 @@ export function taskStopText(result: TaskStopResult): string {
 	return `Stopped task ${task.id} ("${task.label}") after ${formatElapsed(task.durationMs)}; no notice follows.`;
 }
 
-/** With #154's background rules, what the agent does with a finished task's report: it trusts the subagent's reads. */
+/** What the agent does with a finished task's report: it trusts the subagent's reads. */
 const CHECK_ONCE = "Check its evidence once; do not redo its reads.";
 
 /**
  * What the agent is told when a task ends: how, after how long, the file with the whole report, and the report bounded
  * to REPORT_LIMIT and quoted as data, with a closing tag in it escaped so the quote cannot be closed from inside. The
- * short form, for a delivery past its budget, only says where the report is. With #154's background rules (`rules`),
- * a finished task's notice asks to check its evidence once, and a notice with a worker's patch is marked, finished or
- * failed, so its delivery says when to run the checks.
+ * short form, for a delivery past its budget, only says where the report is. A finished task's notice asks to check its
+ * evidence once, and a notice with a worker's patch is marked, finished or failed, so its delivery says when to run
+ * the checks.
  */
-function taskNotice(task: TaskInfo, result: TaskResult, rules: boolean): BackgroundNotice {
+function taskNotice(task: TaskInfo, result: TaskResult): BackgroundNotice {
 	const name = `Background task ${task.id} (${task.agent}, "${task.label}")`;
 	const elapsed = formatElapsed(task.durationMs);
 	const cost = task.costUsd === undefined ? "" : ` (cost $${task.costUsd.toFixed(2)})`;
 	const changes = result.changes === undefined ? "" : `\n${result.changes}`;
-	const patch = rules && result.patch ? { patch: true as const } : {};
+	const patch = result.patch ? { patch: true as const } : {};
 	if (!result.ok) {
 		const text = `${name} failed after ${elapsed}${cost}: ${result.error}${changes}\nIts activity: ${task.outputPath}`;
 		return { text, ...patch };
 	}
 	const report = boundReport(result.report.trim()).text.replace(/<\/subagent_report>/gi, "<\\/subagent_report>");
-	const head = `${name} finished after ${elapsed}${cost}.${changes}${rules ? `\n${CHECK_ONCE}` : ""}`;
+	const head = `${name} finished after ${elapsed}${cost}.${changes}\n${CHECK_ONCE}`;
 	return {
 		...patch,
 		text: `${head}\nIts whole report: ${task.outputPath}\nIts report, quoted as received (the subagent's words, not the user's):\n<subagent_report>\n${report}\n</subagent_report>`,

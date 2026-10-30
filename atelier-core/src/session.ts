@@ -669,7 +669,6 @@ export class Session {
 				scratchDir: scratch.path,
 				onStarted: (task) => session.#taskStarted(task),
 				onEnded: (ended) => session.#taskEnded(ended),
-				...(options.backgroundRules === "rules" ? { backgroundRules: true } : {}),
 			});
 		const agentNames = options.subagents?.agents.map((agent) => agent.name) ?? [];
 		session.#systemPrompt = [
@@ -1808,7 +1807,7 @@ export class Session {
 	}
 
 	/**
-	 * With #154's background rules, the last line of a delivery with a worker's patch, or after one that left the checks
+	 * The last line of a delivery with a worker's patch, or after one that left the checks
 	 * for later: when to run them, by the background tasks running as it is given. Counted then, not as each patch is
 	 * collected: workers that end together each see the other still running then.
 	 */
@@ -2285,7 +2284,7 @@ export class Session {
 				: ` It works in its own git worktree, from your working tree as it is now (HEAD ${worktree.head}${worktree.dirty ? " plus uncommitted changes" : ""}); its changes come back as a patch.${DEPENDENCIES_SAID[worktree.dependencies].parent}`;
 		return {
 			ok: true,
-			output: `${taskStartedText(task, this.#options.backgroundRules === "rules")}${where}`,
+			output: `${taskStartedText(task)}${where}`,
 			summary: `${task.label} (task ${task.id} started)`,
 			truncated: false,
 		};
@@ -2305,11 +2304,8 @@ export class Session {
 		if (changes === undefined) return { changes: "It changed no files." };
 		const { files, insertions, deletions, patchPath } = changes;
 		const changed = `Its changes: ${files.length} file${files.length === 1 ? "" : "s"} changed, +${insertions} -${deletions}, as a patch against your working tree as it was when the task started: ${patchPath}.`;
-		// With #154's background rules: the exact command, and the delivery says when to run the checks.
-		const lines =
-			this.#options.backgroundRules === "rules"
-				? [changed, `Apply it with: git -C ${shellQuote(worktree.top)} apply ${shellQuote(patchPath)}`]
-				: [`${changed} Apply it from ${worktree.top} with git apply and check it.`];
+		// The exact command; the delivery says when to run the checks.
+		const lines = [changed, `Apply it with: git -C ${shellQuote(worktree.top)} apply ${shellQuote(patchPath)}`];
 		const since = await worktree.changedSince().catch((): string[] => []);
 		const shared = files.filter((file) => since.includes(file));
 		if (shared.length > 0)

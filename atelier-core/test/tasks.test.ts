@@ -54,7 +54,7 @@ describe("background tasks", () => {
 		await until(() => ended.length === 1);
 		expect(ended[0]?.task).toMatchObject({ status: "finished", costUsd: 0.25 });
 		expect(ended[0]?.notice?.text).toMatch(
-			/^Background task task-1 \(explorer, "Find the code"\) finished after \d+s \(cost \$0\.25\)\.\nIts whole report: \S+task-1\.md\n[^\n]+\n<subagent_report>\nFound it at a\.ts:3\n<\/subagent_report>$/,
+			/^Background task task-1 \(explorer, "Find the code"\) finished after \d+s \(cost \$0\.25\)\.\nCheck its evidence once; do not redo its reads\.\nIts whole report: \S+task-1\.md\n[^\n]+\n<subagent_report>\nFound it at a\.ts:3\n<\/subagent_report>$/,
 		);
 		expect(ended[0]?.notice?.short).toMatch(/did not fit with the other notices: read it at \S+task-1\.md$/);
 		const file = readFileSync(task.outputPath, "utf8");
@@ -109,19 +109,17 @@ describe("background tasks", () => {
 	});
 });
 
-describe("background tasks, with #154's background rules", () => {
-	it("ask to check a report's evidence once, and mark a worker's patch, also when it failed", async () => {
-		const guided = new BackgroundTasks({ scratchDir: dir, onEnded: (end) => ended.push(end), backgroundRules: true });
-		guided
+describe("the notice of a background task", () => {
+	it("asks to check a report's evidence once, and marks a worker's patch, also when it failed", async () => {
+		tasks
 			.reserve()
 			.start({ agent: "explorer", prompt: "Find", run: async () => ({ ok: true, report: "Found it at a.ts:3" }) });
-		guided.reserve().start({
+		tasks.reserve().start({
 			agent: "worker",
 			prompt: "Fix",
 			run: async () => ({ ok: false, error: "the backend broke", changes: "Its changes: ...", patch: true }),
 		});
 		await until(() => ended.length === 2);
-		await guided.stopAll();
 		const [found, failed] = [...ended].sort((a, b) => a.task.id.localeCompare(b.task.id));
 		expect(found?.notice?.text).toMatch(/\.\nCheck its evidence once; do not redo its reads\.\nIts whole report: /);
 		expect(found?.notice?.short).toMatch(
@@ -130,16 +128,5 @@ describe("background tasks, with #154's background rules", () => {
 		expect(found?.notice?.patch).toBeUndefined();
 		expect(failed?.notice?.text).toMatch(/failed after \d+s: the backend broke\nIts changes: \.\.\.\nIts activity: /);
 		expect(failed?.notice?.patch).toBe(true);
-	});
-
-	it("are not said without them: a patch is not marked", async () => {
-		tasks.reserve().start({
-			agent: "worker",
-			prompt: "Fix",
-			run: async () => ({ ok: true, report: "done", changes: "c", patch: true }),
-		});
-		await until(() => ended.length === 1);
-		expect(ended[0]?.notice?.text).not.toContain("Check its evidence");
-		expect(ended[0]?.notice?.patch).toBeUndefined();
 	});
 });

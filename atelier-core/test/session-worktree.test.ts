@@ -186,7 +186,7 @@ describe("a worker in the background", () => {
 		await play(session.nextQueued());
 		const notice = parent.prompts[1] ?? "";
 		expect(notice).toMatch(
-			/Its changes: 2 files changed, \+2 -0, as a patch against your working tree as it was when the task started: (\S+\.patch)\. Apply it from \S+ with git apply and check it\./,
+			/Its changes: 2 files changed, \+2 -0, as a patch against your working tree as it was when the task started: (\S+\.patch)\.\nApply it with: git -C '\S+' apply '\1'\n/,
 		);
 		const patch = notice.match(/started: (\S+\.patch)\./)?.[1] as string;
 		git(repo, "apply", patch);
@@ -844,8 +844,7 @@ describe("a worker's worktree of a repository with an awkward path", () => {
 	);
 });
 
-describe("a worker in the background, with #154's background rules", () => {
-	const rules: Partial<SessionOptions> = { backgroundRules: "rules" };
+describe("the notices of background workers", () => {
 	/** A worker's turn: it writes `file` (or nothing), waits for its gate, then reports or fails. */
 	const child =
 		(file: string | undefined, wait: FakeStep, end: FakeStep = text("done")) =>
@@ -861,8 +860,6 @@ describe("a worker in the background, with #154's background rules", () => {
 		const { parent, session, play, woke } = await started(
 			[[work("c1"), { event: finished }], [{ event: finished }]],
 			[child("a.txt", g.step)],
-			repo,
-			rules,
 		);
 		await play(session.send("go"));
 		g.open();
@@ -885,8 +882,6 @@ describe("a worker in the background, with #154's background rules", () => {
 		const { parent, session, play, woke } = await started(
 			[[work("c1"), work("c2", "other"), { event: finished }], [{ event: finished }], [{ event: finished }]],
 			[child("a.txt", first.step), child(undefined, second.step)],
-			repo,
-			rules,
 		);
 		await play(session.send("go"));
 		first.open();
@@ -908,8 +903,6 @@ describe("a worker in the background, with #154's background rules", () => {
 		const { parent, session, play } = await started(
 			[[work("c1"), work("c2", "other"), { event: finished }], [{ event: finished }]],
 			[child("a.txt", first.step), child("b.txt", second.step)],
-			repo,
-			rules,
 		);
 		await play(session.send("go"));
 		first.open();
@@ -928,8 +921,6 @@ describe("a worker in the background, with #154's background rules", () => {
 		const { parent, session, play, woke } = await started(
 			[[work("c1"), { event: finished }], [{ event: finished }]],
 			[child("a.txt", g.step, { throw: "the backend broke" })],
-			repo,
-			rules,
 		);
 		await play(session.send("go"));
 		g.open();

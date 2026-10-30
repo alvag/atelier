@@ -2,7 +2,7 @@
 export interface BackgroundNotice {
 	text: string;
 	short?: string;
-	/** With #154's background rules, a worker's notice with a patch to apply: the delivery says when to run the checks. */
+	/** A worker's notice with a patch to apply: the delivery says when to run the checks. */
 	patch?: true;
 }
 
