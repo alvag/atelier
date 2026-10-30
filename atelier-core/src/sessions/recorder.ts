@@ -80,9 +80,9 @@ export class SessionRecorder {
 		this.#append({ type: "config", ...config });
 	}
 
-	prompt(turnId: string, text: string): void {
+	prompt(turnId: string, text: string, imageCount = 0): void {
 		this.#promptTurn = turnId;
-		this.#append({ type: "prompt", turnId, text });
+		this.#append({ type: "prompt", turnId, text, ...(imageCount > 0 ? { imageCount } : {}) });
 	}
 
 	/** Keeps what a client needs to show the turn again: thinking is dropped and the text deltas of a segment become one entry. */

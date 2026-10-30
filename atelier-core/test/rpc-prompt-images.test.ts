@@ -45,6 +45,7 @@ class ImageBackend implements AgentBackend {
 	readonly sends: { prompt: string; images: readonly ImageAttachment[] | undefined }[] = [];
 	readonly configured: unknown[] = [];
 	hold: PromiseWithResolvers<void> | undefined;
+	configuring: PromiseWithResolvers<void> | undefined;
 	async start(): Promise<BackendSession> {
 		const self = this;
 		return {
@@ -54,7 +55,10 @@ class ImageBackend implements AgentBackend {
 				await self.hold?.promise;
 				yield finished;
 			},
-			configure: async (change) => void self.configured.push(change),
+			configure: async (change) => {
+				self.configured.push(change);
+				await self.configuring?.promise;
+			},
 			interrupt: async () => self.hold?.resolve(),
 			close: async () => {},
 		};
@@ -108,7 +112,7 @@ function serve(gate?: PromiseWithResolvers<void>) {
 	};
 	const finishedTurns = (id: string) =>
 		messages.filter((m) => m.type === "event" && m.sessionId === id && m.event.type === "turn_finished");
-	return { ask, turn, send, reply, open, until, finishedTurns, backend, messages, prepared: () => prepared };
+	return { ask, turn, send, reply, open, until, finishedTurns, backend, messages, input, prepared: () => prepared };
 }
 
 describe("session.send with images", () => {
@@ -200,6 +204,47 @@ describe("session.send with images", () => {
 		await h.until(() => h.finishedTurns(sessionId).length >= 1);
 		expect(h.backend.sends).toHaveLength(1);
 		expect(h.backend.sends[0]).toEqual({ prompt: "see", images: await normalizePromptImages(images) });
+	});
+
+	it("refuses images while a configuration already in flight awaits the backend", async () => {
+		const h = serve();
+		const sessionId = await h.open();
+		h.backend.configuring = defer();
+		const change = h.send({ command: "session.set_model", sessionId, model: "claude-haiku-5-5" });
+		await h.until(() => h.backend.configured.length === 1);
+		expect(await h.turn(sessionId, { prompt: "x", images: [image] })).toMatchObject(invalid("busy"));
+		expect(h.prepared()).toBe(0);
+		h.backend.configuring.resolve();
+		expect((await h.reply(change)).ok).toBe(true);
+	});
+
+	it("rechecks catalog support after preparing images", async () => {
+		const gate = defer();
+		const h = serve(gate);
+		const sessionId = await h.open();
+		const original = h.send({ command: "session.send", sessionId, prompt: "x", images: [image] });
+		await h.until(() => h.prepared() === 1);
+		useModelData(new ModelData({ "anthropic-api": [{ id: h.backend.model, images: false }] }));
+		gate.resolve();
+		expect(await h.reply(original)).toMatchObject(invalid("image_input_unsupported"));
+		expect(h.backend.sends).toEqual([]);
+	});
+
+	it.each(["shutdown", "disconnect"])("%s during preparation never sends the late result", async (command) => {
+		const gate = defer();
+		const h = serve(gate);
+		const sessionId = await h.open();
+		const original = h.send({ command: "session.send", sessionId, prompt: "x", images: [image] });
+		await h.until(() => h.prepared() === 1);
+		if (command === "shutdown") expect((await h.ask({ command })).ok).toBe(true);
+		else {
+			const ended = new Promise<void>((resolve) => h.input.once("end", () => setImmediate(resolve)));
+			h.input.end();
+			await ended;
+		}
+		gate.resolve();
+		expect(await h.reply(original)).toMatchObject(invalid("session_closed"));
+		expect(h.backend.sends).toEqual([]);
 	});
 
 	it.each(["session.interrupt", "session.close"])("%s during preparation rejects the send", async (command) => {
