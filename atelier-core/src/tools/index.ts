@@ -15,6 +15,7 @@ export {
 	parseUserAnswers,
 	type UserAnswer,
 	type UserQuestion,
+	type UserQuestionCapabilities,
 	type UserQuestionResult,
 } from "./ask-user.ts";
 export {

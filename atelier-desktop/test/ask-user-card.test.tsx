@@ -115,3 +115,35 @@ it("cancels without partial answers and replaces controls when the batch resolve
 	expect(screen.queryAllByRole("radio")).toHaveLength(0);
 	expect(screen.getByText("Superseded by a new message")).toBeTruthy();
 });
+
+it("lists a multi-select answer's options in a resolved card, or says none", () => {
+	const answer = vi.fn().mockResolvedValue(true);
+	const checks = {
+		id: "q2",
+		question: "Checks?",
+		multiSelect: true,
+		options: [
+			{ id: "biome", label: "Biome" },
+			{ id: "tsc", label: "TypeScript" },
+		],
+	};
+	render(
+		<QuestionCard
+			item={{
+				...item,
+				questions: [checks, { ...checks, id: "q3", question: "Extras?" }],
+				state: "resolved",
+				result: {
+					status: "answered",
+					answers: [
+						{ questionId: "q2", optionIds: ["biome", "tsc"], other: "docs" },
+						{ questionId: "q3", optionIds: [] },
+					],
+				},
+			}}
+			onAnswerUser={answer}
+		/>,
+	);
+	expect(screen.getByText("Checks? → Biome, TypeScript, Other: docs")).toBeTruthy();
+	expect(screen.getByText("Extras? → none")).toBeTruthy();
+});

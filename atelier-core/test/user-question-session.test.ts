@@ -1,4 +1,5 @@
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
 	type AskUser,
 	type AtelierEvent,
@@ -195,6 +196,92 @@ it("refuses a concurrent batch while preserving the first", async () => {
 	});
 	expect(events.filter((e) => e.type === "user_question_requested")).toHaveLength(1);
 	await session.close();
+});
+
+describe("multi-select questions", () => {
+	const checks = {
+		id: "checks",
+		question: "Which checks?",
+		multiSelect: true,
+		options: [
+			{ id: "biome", label: "Biome", recommended: true },
+			{ id: "tsc", label: "TypeScript" },
+		],
+	};
+	const multiCall: FakeStep = { toolCall: { callId: "choice-1", tool: "ask_user", input: { questions: [checks] } } };
+	const schemaOf = (backend: FakeBackend) =>
+		JSON.stringify(
+			z.toJSONSchema(z.object(backend.startOptions?.tools.find((tool) => tool.name === "ask_user")?.inputShape ?? {})),
+		);
+	const codeOf = (reply: () => void) => {
+		try {
+			reply();
+		} catch (error) {
+			return (error as { code?: string }).code;
+		}
+	};
+
+	it("answers with the options checked when the client asked for them, and refuses the wrong forms", async () => {
+		const backend = new FakeBackend([[multiCall, end]]);
+		const { session, events, done } = await start({ backend, userQuestions: { multiSelect: true } });
+		await until(() => events.some((e) => e.type === "user_question_requested"));
+		expect(schemaOf(backend)).toContain("multiSelect");
+		for (const wrong of [
+			{ questionId: "checks", optionId: "biome" },
+			{ questionId: "checks", other: "Mine" },
+			{ questionId: "checks", optionIds: ["tsc", "tsc"] },
+			{ questionId: "checks", optionIds: ["missing"] },
+		])
+			expect(codeOf(() => session.answerUser("choice-1", [wrong]))).toBe("invalid_answer");
+		session.answerUser("choice-1", [{ questionId: "checks", optionIds: ["tsc", "biome"] }]);
+		await done;
+		expect(JSON.parse(backend.toolResults[0]?.output ?? "")).toEqual({
+			status: "answered",
+			answers: [{ questionId: "checks", optionIds: ["tsc", "biome"], labels: ["TypeScript", "Biome"] }],
+		});
+		await session.close();
+	});
+
+	it("keeps userQuestions: true single-choice: no multiSelect for the model, no optionIds from the client", async () => {
+		const backend = new FakeBackend([[multiCall, call, end]]);
+		const { session, events, done } = await start({ backend, userQuestions: true });
+		await until(() => events.some((e) => e.type === "user_question_requested"));
+		expect(schemaOf(backend)).not.toContain("multiSelect");
+		expect(backend.toolResults[0]?.ok).toBe(false);
+		const requested = events.filter((e) => e.type === "user_question_requested");
+		expect(requested).toMatchObject([{ questions: input.questions }]);
+		expect(codeOf(() => session.answerUser("choice-1", [{ questionId: "q1", optionIds: ["a"] }]))).toBe(
+			"invalid_answer",
+		);
+		session.answerUser("choice-1", answered.answers);
+		await done;
+		expect(JSON.parse(backend.toolResults[1]?.output ?? "")).toEqual(answered);
+		await session.close();
+	});
+
+	it("reaches a direct callback that declares them, and only that one", async () => {
+		const ask = vi.fn<AskUser>().mockResolvedValue({
+			status: "answered",
+			answers: [{ questionId: "checks", optionIds: [] }],
+		});
+		const declared = await start({
+			backend: new FakeBackend([[multiCall, end]]),
+			askUser: ask,
+			userQuestions: { multiSelect: true },
+		});
+		await declared.done;
+		expect(ask).toHaveBeenCalledExactlyOnceWith([checks], expect.anything());
+		expect(JSON.parse(declared.backend.toolResults[0]?.output ?? "")).toMatchObject({
+			answers: [{ optionIds: [], labels: [] }],
+		});
+		await declared.session.close();
+		const plain = await start({ backend: new FakeBackend([[multiCall, end]]), askUser: ask });
+		await plain.done;
+		expect(schemaOf(plain.backend)).not.toContain("multiSelect");
+		expect(ask).toHaveBeenCalledOnce();
+		expect(plain.backend.toolResults[0]?.ok).toBe(false);
+		await plain.session.close();
+	});
 });
 
 it("never offers ask_user to a custom subagent requesting it", async () => {

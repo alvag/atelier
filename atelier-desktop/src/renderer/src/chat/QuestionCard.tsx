@@ -20,10 +20,17 @@ function resultLines(item: Item): string[] {
 		case "answered":
 			return result.answers.map((answer) => {
 				const question = item.questions.find((entry) => entry.id === answer.questionId);
+				const label = (optionId: string) =>
+					question?.options.find((option) => option.id === optionId)?.label ?? optionId;
+				// A multi-select answer: the options checked and the user's own text, in a list, or none.
 				const given =
-					"other" in answer
-						? `Other: ${answer.other}`
-						: (question?.options.find((option) => option.id === answer.optionId)?.label ?? answer.optionId);
+					"optionIds" in answer
+						? [...answer.optionIds.map(label), ...(answer.other === undefined ? [] : [`Other: ${answer.other}`])].join(
+								", ",
+							) || "none"
+						: "other" in answer
+							? `Other: ${answer.other}`
+							: label(answer.optionId);
 				return visibleText(`${question?.question ?? answer.questionId} → ${given}`).text;
 			});
 		case "cancelled":

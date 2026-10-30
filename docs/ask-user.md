@@ -24,14 +24,15 @@ One tool handles a single question or a batch:
 
 - 1–4 questions, each with 2–4 model-provided options. Question IDs must be unique in the batch; option IDs must be unique within their question.
 - IDs: 1–64 characters; question text: 1–500; labels: 1–200. None may be blank. An optional `header` (1–16 characters, not blank) is a short title for the question: the TUI uses it as the question's tab in a batch (`Q1`, `Q2`… without it); line mode and the desktop do not show it. Optional descriptions: 1–300 characters and nonblank when present; a blank description rejects the entire batch before the user callback runs.
-- Exactly one option per question must have `recommended: true`; the others may omit the field or set it to `false`. Clients must show it first and mark it recommended (`(Recommended)` in line mode and the desktop, a `Recommended` tag in the TUI), without selecting it automatically or preselecting it. Descriptions go below their labels, or beside them in the TUI when the width allows.
+- Exactly one option per question must have `recommended: true`; the others may omit the field or set it to `false`. A multi-select question (below) may recommend any number of its options, or none. Clients must show it first and mark it recommended (`(Recommended)` in line mode and the desktop, a `Recommended` tag in the TUI), without selecting it automatically or preselecting it. Descriptions go below their labels, or beside them in the TUI when the width allows.
+- A session whose client asked for multi-select questions (`userQuestions: { multiSelect: true }`, see [Session lifecycle](#session-lifecycle)) also takes `multiSelect: true` on a question: the user checks any number of its options, `Other...` among them, or none. Elsewhere the model is not told of `multiSelect`, and a batch that has it, even as `false`, is refused before anyone is asked.
 - Every question also offers `Other...` (`Type something…` in the TUI), independently of the 2–4 model options. The model cannot disable it. The user writes 1–2000 characters, not only whitespace. The answer preserves their text, including leading/trailing spaces and newlines. String limits use JavaScript UTF-16 length.
 
 All three clients neutralize terminal control sequences and the text-direction characters on the [shared sanitizer's explicit list](../atelier-core/src/text.ts), including Arabic Letter Mark (U+061C), by showing visible markers in questions, labels and descriptions (`⟨U+061C⟩`, for example). This does not cover every invisible Unicode character. Command approvals use the same sanitizer.
 
 ## Session lifecycle
 
-Supply `Session.start({ askUser })` for a direct user-only callback, or `userQuestions: true` to answer request events with `session.answerUser(callId, answers)` (`null` cancels). Without either channel the tool immediately returns `unavailable`. `userQuestions: false` omits the tool for internal sessions.
+Supply `Session.start({ askUser })` for a direct user-only callback, or `userQuestions: true` to answer request events with `session.answerUser(callId, answers)` (`null` cancels). Without either channel the tool immediately returns `unavailable`. `userQuestions: false` omits the tool for internal sessions. `userQuestions: { multiSelect: true }` is `true` for a client that can also show multi-select questions; beside `askUser` it declares the same of the callback, which stays the channel (`Session.start({ askUser, userQuestions: { multiSelect: true } })`). `true`, `{}` or `askUser` alone keep every question single-choice.
 
 A session registers the pending batch before emitting `user_question_requested { callId, questions }`, then emits exactly one `user_question_resolved { callId, result }` when it settles. Invalid replies leave the batch pending (`invalid_answer`); stale or duplicate replies fail with `unknown_question`. A second concurrent call returns `unavailable/question_pending`. No timeout or mode, including `yolo`, answers on the user's behalf.
 
@@ -52,6 +53,10 @@ These additions keep protocol version 7:
 
 > Ask the user 1 to 4 questions, each with 2 to 4 options. Mark exactly one option per question recommended: true; clients show it first with (Recommended), never preselected. Each option may include a nonblank description of up to 300 characters. Every question also offers Other..., where the user can write 1 to 2000 characters; you cannot disable it. Only the user can answer, including in yolo mode. Wait for the result; never infer an answer from a cancelled, superseded or unavailable question.
 
+With multi-select questions, the second sentence becomes:
+
+> A question takes one answer unless multiSelect: true lets the user check any number of its options, or none. Mark exactly one option of a single-choice question recommended: true, and any number, or none, of a multi-select one; clients show them first with (Recommended), never preselected.
+
 ## Results and integration boundary
 
 `createAskUserTool(ask)` validates input before calling `ask(questions, context)`. The context includes the call ID and abort signal when supplied. The callback must be a user-only channel, never a model, classifier or automatic approval. It owns waiting and cancellation; the factory itself has no queue, timeout or pending-question state, and does not request permission approval. Without a callback it returns `unavailable` immediately. The factory is not part of `coreTools`; the session restricts it to the main agent.
@@ -59,8 +64,9 @@ These additions keep protocol version 7:
 The tool returns JSON text. Only `answered` has `ok: true`; all other outcomes have `ok: false`:
 - `{"status":"answered","answers":[{"questionId":"q1","optionId":"a","label":"Minimal change"}]}`: each option answer also carries the chosen option's `label`, so the model need not match the ids itself. Only the tool's output has it: `user_question_resolved` and `session.answer_user` keep `{ questionId, optionId }`.
 - `{"status":"answered","answers":[{"questionId":"q1","other":"Use a third approach"}]}`
+- `{"status":"answered","answers":[{"questionId":"checks","optionIds":["biome","tsc"],"other":"Lint the docs","labels":["Biome","TypeScript"]}]}`: a multi-select question's options checked, in the order the client sent them, with their `labels` in the same order; `other` only when the user also wrote their own text. `"optionIds":[]` (and `"labels":[]`) is the user checking none, a valid answer. As with `label`, `labels` is only in the tool's output.
 - `{"status":"cancelled","reason":"user"}` (`reason` may also be `interrupted` or `closed`).
 - `{"status":"superseded"}`
 - `{"status":"unavailable","reason":"no_interactive_client"}` (`reason` may also be `question_pending`).
 
-Batches are atomic: exactly one answer per question, either an offered `optionId` or `other`, never both. `parseUserAnswers(questions, input)` validates a complete batch without consuming pending state, before accepting a reply. Unknown IDs, duplicates, partial batches, oversized text and ambiguous answers are rejected. The tool also validates the callback's result before returning it to the model; non-answer outcomes cannot carry partial answers.
+Batches are atomic: exactly one answer per question. A single-choice question takes either an offered `optionId` or `other`, never both; a multi-select one takes `optionIds` (offered, none repeated, possibly empty) with an optional `other`, and nothing else. `parseUserAnswers(questions, input)` validates a complete batch without consuming pending state, before accepting a reply. Unknown IDs, duplicates, partial batches, oversized text, ambiguous answers and an answer of the other kind of question are rejected. The tool also validates the callback's result before returning it to the model; non-answer outcomes cannot carry partial answers.

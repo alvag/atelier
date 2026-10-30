@@ -88,7 +88,7 @@ import type { SessionRecorder } from "./sessions/recorder.ts";
 import { type LoadedSkills, loadSkills, skillsPrompt } from "./skills.ts";
 import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
 import { boundReport, createTaskTool, type SubagentDefinition, TASK_TOOL } from "./subagents/definitions.ts";
-import { ASK_USER_TOOL, type AskUser, createAskUserTool } from "./tools/ask-user.ts";
+import { ASK_USER_TOOL, type AskUser, createAskUserTool, type UserQuestionCapabilities } from "./tools/ask-user.ts";
 import { BASH_BACKGROUND_TOOL, JOB_LIST_TOOL, JOB_STOP_TOOL } from "./tools/background.ts";
 import { commandRuleScope } from "./tools/command-rules.ts";
 import { type EndedJob, type JobInfo, Jobs } from "./tools/jobs.ts";
@@ -216,8 +216,11 @@ export interface SessionOptions {
 	approve?: (request: ApprovalRequest) => Promise<ApprovalAnswer>;
 	/** User-only question channel for a direct client. Never inherited by subagents. */
 	askUser?: AskUser;
-	/** True: answers arrive through answerUser. False: omit the tool (internal child sessions). */
-	userQuestions?: boolean;
+	/**
+	 * True: answers arrive through answerUser. False: omit the tool (internal child sessions). An object is true with
+	 * what the client can show beyond single-choice questions (`{ multiSelect: true }`), also beside `askUser`.
+	 */
+	userQuestions?: boolean | UserQuestionCapabilities;
 	/**
 	 * The rules the user allowed, which spare the questions they cover: the session's in memory and the saved ones.
 	 * Without it nothing is remembered and questions offer only Allow and Deny. Subagents share the parent's.
@@ -510,13 +513,15 @@ export class Session {
 			...(options.userQuestions === false
 				? []
 				: [
-						createAskUserTool((questions, context) =>
-							this.#userQuestions.ask(
-								questions,
-								context,
-								options.userQuestions === true || options.askUser !== undefined,
-								options.askUser,
-							),
+						createAskUserTool(
+							(questions, context) =>
+								this.#userQuestions.ask(
+									questions,
+									context,
+									options.userQuestions !== undefined || options.askUser !== undefined,
+									options.askUser,
+								),
+							typeof options.userQuestions === "object" ? options.userQuestions : {},
 						),
 					]),
 			...(this.#review ? [this.#review.tool] : []),
