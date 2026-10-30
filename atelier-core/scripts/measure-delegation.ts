@@ -10,7 +10,8 @@
  * session then gets a one-line follow-up whose prompt size shows how much context
  * the parent kept. Starts no session that could take the cost over --max-usd (6
  * by default), judged by the dearest session so far; an unreported cost stops it
- * too.
+ * too. --fake-backend plays every turn with a scripted backend that only
+ * answers, for the script's own test: no API, no cost.
  *
  * Run it at the commit before the prompt change with --json, then at the one
  * after with --compare on that file. The JSON keeps the variant measured and the
@@ -29,11 +30,13 @@ import {
 	BUILTIN_AGENTS,
 	coreTools,
 	DEFAULT_API_MODEL,
+	FakeBackend,
 	resolveApiKey,
 	Session,
 	SYSTEM_PROMPT_APPEND,
 	type Usage,
 } from "../src/index.ts";
+import { sandbox } from "../src/tools/sandbox.ts";
 import { addCost, sumCosts, usd } from "./cost.ts";
 import { measuredTools, tallyParentCalls } from "./delegation-calls.ts";
 import { type Commit, commitAt, firstTools, fmt, mean } from "./delegation-report.ts";
@@ -103,6 +106,7 @@ const { values } = parseArgs({
 		model: { type: "string" },
 		runs: { type: "string" },
 		tasks: { type: "string" },
+		"fake-backend": { type: "boolean" },
 		"max-usd": { type: "string" },
 		json: { type: "string" },
 		compare: { type: "string" },
@@ -125,7 +129,22 @@ const variant = "baseline";
 const here = dirname(fileURLToPath(import.meta.url));
 const commit = commitAt(here);
 const source = join(here, "../src");
-const apiKey = await resolveApiKey();
+const fake = values["fake-backend"] === true;
+const apiKey = fake ? "" : await resolveApiKey();
+
+/** A turn of the scripted backend: an answer, with its cost, so the spend stays known. */
+const answer = () => [
+	{ event: { type: "text_delta" as const, text: "src/session.ts" } },
+	{
+		event: {
+			type: "turn_finished" as const,
+			stopReason: "end_turn",
+			usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 },
+			costUsd: 0,
+			requests: 1,
+		},
+	},
+];
 
 const empty = (): Measure => ({ usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, requests: 0, costUsd: 0 });
 function add(measure: Measure, event: Extract<AtelierEvent, { type: "turn_finished" }>): void {
@@ -150,7 +169,7 @@ async function measure(task: (typeof TASKS)[number]): Promise<Run> {
 	const known = await readSource(cwd);
 	/** Output characters of every call, the subagents' too, by call id. */
 	const chars = new Map<string, number>();
-	const backend = () => new AnthropicApiBackend({ apiKey, model });
+	const backend = () => (fake ? new FakeBackend([answer(), answer()]) : new AnthropicApiBackend({ apiKey, model }));
 	const session = await Session.start({
 		backend: backend(),
 		cwd,
@@ -221,6 +240,9 @@ for (let round = 0; round < runs && !stopped; round++)
 		dearest = Math.max(dearest, total(run) ?? 0);
 		process.stderr.write(`${task.id} #${round + 1}: ${usd(total(run))} (so far ${usd(spent)})\n`);
 	}
+// The sessions share the process's sandbox, which no session's close stops: its log monitor would keep the script
+// alive. The script owns the process, as the CLI does when it exits.
+await sandbox.reset();
 
 const COLUMNS: [string, (run: Run) => number][] = [
 	["parent requests", (r) => r.parent.requests],
