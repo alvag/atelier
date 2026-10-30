@@ -279,3 +279,61 @@ describe("AskDialog", () => {
 		expect(lines(40).join("\n")).toContain("Review your answers");
 	});
 });
+
+describe("AskDialog, multi-select", () => {
+	const tools: AskQuestion = {
+		header: "Tools",
+		question: "Which tools should run?",
+		multiSelect: true,
+		options: [{ label: "Biome", recommended: true }, { label: "TypeScript", recommended: true }, { label: "Vitest" }],
+	};
+	const extras: AskQuestion = { ...tools, header: "Extras", question: "Which extras?" };
+
+	it("says Next → on a question before the last and Submit on the last, and moves on from it", () => {
+		const { dialog, lines } = asked([tools, extras]);
+		expect(lines(120)).toContain("      Next →");
+		dialog.handleInput("2");
+		dialog.handleInput("\x1b[B");
+		dialog.handleInput("\x1b[B");
+		dialog.handleInput("\x1b[B");
+		dialog.handleInput("\r");
+		expect(lines(120)[1]).toBe(" ←  ✔ Tools   ○ Extras   ✔ Submit  →");
+		expect(lines(120)).toContain("      Submit");
+	});
+
+	it("reviews an untouched multi-select question as none, without blocking Submit, and sends none for it", () => {
+		const { dialog, sent, lines } = asked([language, tools, extras]);
+		dialog.handleInput("1");
+		for (const key of ["1", "2", UP, UP, "\r"]) dialog.handleInput(key);
+		dialog.handleInput(RIGHT);
+		expect(lines(120).slice(3, 9)).toEqual([
+			" Review your answers",
+			"",
+			"  ✔ Language   English",
+			"  ✔ Tools      Biome, TypeScript",
+			"  ○ Extras     — none",
+			"",
+		]);
+		dialog.handleInput("1");
+		expect(sent).toEqual([[{ option: 0 }, { options: [0, 1] }, { options: [] }]]);
+	});
+
+	it("reviews a multi-select question left with nothing checked as none, and the user's own text after the labels", () => {
+		const { dialog, sent, lines } = asked([tools, extras]);
+		dialog.handleInput(UP);
+		dialog.handleInput("\r");
+		for (const key of ["3", "4", "m", "e"]) dialog.handleInput(key);
+		dialog.handleInput("\r");
+		dialog.handleInput("\r");
+		expect(lines(120)).toContain("  ✔ Tools    — none");
+		expect(lines(120)).toContain("  ✔ Extras   Vitest, Type something: me");
+		dialog.handleInput("1");
+		expect(sent).toEqual([[{ options: [] }, { options: [2], other: "me" }]]);
+	});
+
+	it("still sends a single multi-select question with its Submit", () => {
+		const { dialog, sent } = asked([tools]);
+		for (const key of ["3", "\x1b[B", "\x1b[B", "\r"]) dialog.handleInput(key);
+		expect(sent).toEqual([[{ options: [2] }]]);
+	});
+});

@@ -729,7 +729,15 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			for (const [index, item] of batch.entries()) {
 				const answer = answers[index];
 				if (answer === undefined) return null;
-				if ("other" in answer) given.push({ questionId: item.id, other: answer.other });
+				if ("options" in answer) {
+					// The options checked, in the order the question lists them.
+					const checked = new Set(answer.options.map((option) => ordered[index]?.[option]?.id));
+					given.push({
+						questionId: item.id,
+						optionIds: item.options.filter((option) => checked.has(option.id)).map((option) => option.id),
+						...(answer.other === undefined ? {} : { other: answer.other }),
+					});
+				} else if ("other" in answer) given.push({ questionId: item.id, other: answer.other });
 				else {
 					const chosen = ordered[index]?.[answer.option];
 					if (chosen === undefined) return null;
@@ -743,6 +751,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				questions: batch.map((item, index) => ({
 					...(item.header === undefined ? {} : { header: shown(item.header).text }),
 					question: shown(item.question).text,
+					...(item.multiSelect ? { multiSelect: true } : {}),
 					options: (ordered[index] ?? []).map((option) => ({
 						label: shown(option.label).text,
 						...(option.description === undefined ? {} : { description: shown(option.description).text }),
