@@ -18,6 +18,8 @@ In the working directory the agent never writes `.env`, `.env.*`, `*.pem`, `*.ke
 
 The tool that owns a hidden credential file cannot read it inside the sandbox either: `codex`, `opencode`, `gh`, `claude`, or git and curl when they take a password from `~/.netrc` or git's `store` helper, fail there and work from a command run outside it (`unsandboxed`, with approval, or a `bash` rule). git with the macOS Keychain helper (`osxkeychain`) is not affected. Only those files are hidden: the rest of `~/.codex`, `~/.local/share/opencode` and `~/.config/git` stays readable. No command in the sandbox writes them either, not even under an `allowWrite` directory, and `edit` and `write` refuse them, approved or not; a command a `bash` rule covers may write them, so the owning tool can sign in and refresh its tokens.
 
+A sandboxed command cannot create a hard link to a file it cannot write. This does not cover hard links that already existed before the sandbox started.
+
 Not covered:
 - The agent's network is not restricted: a command can reach the network and anything it can read.
 - Other platforms: no Linux or Windows code exists.
