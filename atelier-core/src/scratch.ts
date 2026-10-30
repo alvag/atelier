@@ -5,13 +5,14 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, rmdir, writeFile 
 import { syncBuiltinESMExports } from "node:module";
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 
 /**
  * Atelier's temporary directories. Each one is `atelier-<kind>-XXXXXX/` in the
  * system's temporary folder, holding an owner file with the pid and start time
  * of the process that made it, and `work/`, the only part its user sees. A
  * process that dies leaves them behind; the first one a process creates starts
- * a sweep, in the background, of those whose owner is gone.
+ * a sweep, in a thread of its own, of those whose owner is gone.
  */
 export type ScratchKind = "session" | "verify" | "freeze" | "bash" | "mcp";
 
@@ -52,7 +53,10 @@ export function systemTmpdir(): string {
 
 /** The borrowing in progress, and what `tmpdir()` said before it. */
 let borrowed: { original: string; done: Promise<void> } | undefined;
-/** Directories being made and sweeps running in the system's temporary folder; a borrowing waits for them. */
+/**
+ * Directories being made and sweeps running in the system's temporary folder, in this thread; a borrowing waits for
+ * them. The background sweep's thread has its own `tmpdir()`, which no borrowing changes, and is given its folder.
+ */
 let users = 0;
 let idle: (() => void) | undefined;
 
@@ -195,13 +199,22 @@ let swept = false;
 /**
  * Once per process, in the folder the first directory went in, after the
  * caller goes on: the sweep never delays it, and its failures are left for the
- * next process. `ATELIER_SCRATCH_SWEEP=off` stops it.
+ * next process. It runs in a thread that does not keep the process alive, since
+ * its cost grows with the folder: a process that is done exits in the middle of
+ * it, which the sweep allows, as it allows a crash. `ATELIER_SCRATCH_SWEEP=off`
+ * stops it.
  */
 function sweepOnce(tmpRoot: string): void {
 	if (swept || process.env.ATELIER_SCRATCH_SWEEP === "off") return;
 	swept = true;
 	setImmediate(() => {
-		sweepStaleScratch({ tmpRoot }).catch(() => {});
+		try {
+			const sweep = new Worker(new URL("./scratch-sweep.ts", import.meta.url), { workerData: { tmpRoot } });
+			sweep.on("error", () => {});
+			sweep.unref();
+		} catch {
+			// Left for the next process.
+		}
 	}).unref();
 }
 
