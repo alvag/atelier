@@ -28,7 +28,7 @@ import {
 	SYSTEM_PROMPT_APPEND,
 	type Usage,
 } from "../src/index.ts";
-import { usd } from "./cost.ts";
+import { MEASURE_MAX_REQUESTS_PER_TURN, usd } from "./cost.ts";
 
 const BASE_FILES: Record<string, string> = {
 	"package.json":
@@ -199,6 +199,7 @@ async function startSession(cwd: string, consent?: () => Promise<"granted" | "de
 		cwd,
 		tools: coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
+		maxRequestsPerTurn: MEASURE_MAX_REQUESTS_PER_TURN,
 		subagents: { agents: BUILTIN_AGENTS, createBackend: backend },
 		review: { createBackend: backend, ...(consent ? { consent } : {}) },
 		...(values.model === undefined ? {} : { model: values.model }),

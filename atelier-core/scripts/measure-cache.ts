@@ -26,7 +26,7 @@ import {
 	SYSTEM_PROMPT_APPEND,
 	type Usage,
 } from "../src/index.ts";
-import { sumCosts, usd } from "./cost.ts";
+import { MEASURE_MAX_REQUESTS_PER_TURN, sumCosts, usd } from "./cost.ts";
 
 const PROMPTS = [
 	"Read src/slug.js and test/slug.test.js and explain in two sentences why the second test fails. Do not edit anything.",
@@ -97,6 +97,7 @@ try {
 		cwd,
 		tools: coreTools,
 		systemPromptAppend: SYSTEM_PROMPT_APPEND,
+		maxRequestsPerTurn: MEASURE_MAX_REQUESTS_PER_TURN,
 	});
 	try {
 		for (const [index, prompt] of [...PROMPTS, FORCED_MISS_PROMPT].entries()) {
