@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { basename, join, normalize, relative, sep } from "node:path";
+import { constants } from "node:fs";
+import { copyFile, lstat, mkdir, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { basename, join, normalize, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { systemTmpdir } from "../scratch.ts";
 
@@ -70,6 +71,11 @@ export interface TaskWorktree {
 	head: string;
 	dirty: boolean;
 	dependencies: Dependencies;
+	/**
+	 * Puts the snapshot's objects in the repository, so git works in the worktree, once its task started: until then
+	 * they are only in the worktree's own object folder, which goes with it.
+	 */
+	adopt(): Promise<void>;
 	/** Writes the patch of what changed to `patchPath`, the dependency folders left out; undefined when nothing changed. */
 	collect(patchPath: string): Promise<WorktreeChanges | undefined>;
 	/** The files of the parent's tree that differ from the snapshot now: what the parent changed since. */
@@ -119,16 +125,39 @@ const NOT_DEPENDENCIES = ["--", ".", ":(exclude,glob)**/node_modules", ":(exclud
  * index of its own (`index`), so the user's index, branches and stash are never touched. Whatever is under a
  * `node_modules` stays as it is in `base`: the dependencies are never part of a snapshot or a patch.
  */
-async function treeOfWorkingTree(top: string, base: string, index: string): Promise<string> {
-	const options = { env: { GIT_INDEX_FILE: index }, overrides: await filterOverrides(top) };
+async function treeOfWorkingTree(
+	top: string,
+	base: string,
+	index: string,
+	objects: Record<string, string>,
+): Promise<string> {
+	const options = { env: { ...objects, GIT_INDEX_FILE: index }, overrides: await filterOverrides(top) };
 	await git(top, ["read-tree", base], options);
 	await git(top, ["add", "-A", ...NOT_DEPENDENCIES], options);
 	return (await git(top, ["write-tree"], options)).trim();
 }
 
 /** The two trees' difference as `git diff` gives it, with nothing of the repository's own diff programs. */
-async function diffTrees(cwd: string, from: string, to: string, format: readonly string[]): Promise<string> {
-	return git(cwd, ["diff", "--no-textconv", "--no-ext-diff", "--no-renames", ...format, from, to]);
+async function diffTrees(
+	cwd: string,
+	from: string,
+	to: string,
+	format: readonly string[],
+	objects: Record<string, string>,
+): Promise<string> {
+	return git(cwd, ["diff", "--no-textconv", "--no-ext-diff", "--no-renames", ...format, from, to], { env: objects });
+}
+
+/** Copies the loose objects of `from` that `to` lacks; an object is the same file wherever it is. */
+async function copyObjects(from: string, to: string): Promise<void> {
+	for (const folder of await readdir(from).catch((): string[] => [])) {
+		if (!/^[0-9a-f]{2}$/.test(folder)) continue;
+		await mkdir(join(to, folder), { recursive: true });
+		for (const name of await readdir(join(from, folder)))
+			await copyFile(join(from, folder, name), join(to, folder, name), constants.COPYFILE_EXCL).catch((error) => {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			});
+	}
 }
 
 /**
@@ -164,22 +193,31 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 	let snapshotTree: string;
 	let snapshot: string;
 	let place: string;
+	// What git writes for the snapshot and the patches goes to an object folder of its own, the repository's read
+	// through it: a launch refused or stopped before its task starts leaves nothing in the repository (`adopt`).
+	const own = join(dir, "objects");
+	let objects: Record<string, string>;
 	try {
+		const common = resolve(top, (await git(top, ["rev-parse", "--git-common-dir"])).trim());
+		objects = { GIT_OBJECT_DIRECTORY: own, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(common, "objects") };
+		await mkdir(own, { recursive: true });
 		headTree = (await git(top, ["rev-parse", "HEAD^{tree}"])).trim();
-		snapshotTree = await treeOfWorkingTree(top, head, index);
+		snapshotTree = await treeOfWorkingTree(top, head, index, objects);
 		snapshot = (
 			await git(
 				top,
 				["commit-tree", "--no-gpg-sign", snapshotTree, "-p", head, "-m", "atelier: snapshot for a background worker"],
-				{ env: SNAPSHOT_IDENTITY },
+				{ env: { ...objects, ...SNAPSHOT_IDENTITY } },
 			)
 		).trim();
 		await forgetStaleWorktrees(top);
 		// Checked out from inside the worktree, once it exists: its own configuration may name filters (an `includeIf`
 		// on its git directory) that the checkout's would not.
 		// Locked with Atelier's reason: what tells it from the user's own worktrees, and keeps a prune of theirs off it.
-		await git(top, ["worktree", "add", "--no-checkout", "--detach", "--lock", "--reason", OWN_LOCK, tree, snapshot]);
-		await git(tree, ["reset", "-q", "--hard"], { overrides: await filterOverrides(tree) });
+		await git(top, ["worktree", "add", "--no-checkout", "--detach", "--lock", "--reason", OWN_LOCK, tree, snapshot], {
+			env: objects,
+		});
+		await git(tree, ["reset", "-q", "--hard"], { env: objects, overrides: await filterOverrides(tree) });
 		await linkDependencies(top, tree, folders);
 		place = join(tree, relative(top, await realpath(cwd)));
 		await mkdir(place, { recursive: true });
@@ -189,17 +227,22 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 		throw error;
 	}
 	let removed: Promise<void> | undefined;
+	let adopted: Promise<void> | undefined;
 	return {
 		top,
 		cwd: place,
 		head: head.slice(0, 7),
 		dirty: snapshotTree !== headTree,
 		dependencies: folders.length === 0 ? "none" : "linked",
+		adopt() {
+			adopted ??= copyObjects(own, objects.GIT_ALTERNATE_OBJECT_DIRECTORIES as string);
+			return adopted;
+		},
 		async collect(patchPath) {
-			const changed = await treeOfWorkingTree(tree, snapshot, index);
+			const changed = await treeOfWorkingTree(tree, snapshot, index, objects);
 			if (changed === snapshotTree) return undefined;
-			await writeFile(patchPath, await diffTrees(tree, snapshot, changed, ["--binary"]));
-			const counts = await diffTrees(tree, snapshot, changed, ["--numstat"]);
+			await writeFile(patchPath, await diffTrees(tree, snapshot, changed, ["--binary"], objects));
+			const counts = await diffTrees(tree, snapshot, changed, ["--numstat"], objects);
 			let insertions = 0;
 			let deletions = 0;
 			const files: string[] = [];
@@ -213,9 +256,9 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 			return { patchPath, files, insertions, deletions };
 		},
 		async changedSince() {
-			const now = await treeOfWorkingTree(top, snapshot, join(dir, "parent-index"));
+			const now = await treeOfWorkingTree(top, snapshot, join(dir, "parent-index"), objects);
 			if (now === snapshotTree) return [];
-			const names = await diffTrees(top, snapshot, now, ["--name-only"]);
+			const names = await diffTrees(top, snapshot, now, ["--name-only"], objects);
 			return names.split("\n").filter((name) => name !== "");
 		},
 		remove() {
