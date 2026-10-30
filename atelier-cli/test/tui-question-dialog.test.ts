@@ -302,3 +302,114 @@ describe("QuestionDialog's Type something row", () => {
 		expect(answers).toEqual(["cancel"]);
 	});
 });
+
+describe("QuestionDialog, multi-select", () => {
+	const checks = {
+		question: "Which checks should run before each commit?",
+		multiSelect: true,
+		options: [
+			{ label: "Biome", description: "Lint and format", recommended: true },
+			{ label: "TypeScript", description: "Core, CLI and desktop", recommended: true },
+			{ label: "Vitest", description: "The whole suite, about three minutes" },
+		],
+	};
+	const SPACE = " ";
+
+	it("shows a box before each option and Type something…, then Submit, with descriptions beside or under", () => {
+		const { lines } = dialog(checks);
+		expect(lines(120).slice(3, 9)).toEqual([
+			"   1. [ ] Biome       Recommended   Lint and format",
+			"   2. [ ] TypeScript  Recommended   Core, CLI and desktop",
+			"   3. [ ] Vitest                    The whole suite, about three minutes",
+			"   4. [ ] Type something…",
+			"      Submit",
+			"",
+		]);
+		expect(lines(120)[9]).toBe(" ↑↓ move · space/1-4 toggle · enter select · esc cancel");
+		expect(lines(60).slice(3, 11)).toEqual([
+			"   1. [ ] Biome  Recommended",
+			"          Lint and format",
+			"   2. [ ] TypeScript  Recommended",
+			"          Core, CLI and desktop",
+			"   3. [ ] Vitest",
+			"          The whole suite, about three minutes",
+			"   4. [ ] Type something…",
+			"      Submit",
+		]);
+		expect(dialog({ ...checks, last: false }).lines(120)[7]).toBe("      Next →");
+	});
+
+	it("toggles a box with Space, Enter or its number, and sends what is checked from Submit, none included", () => {
+		const none = dialog(checks);
+		none.shown.handleInput(UP);
+		expect(none.lines(120)[7]).toBe(" ❯    Submit");
+		none.shown.handleInput("\r");
+		expect(none.answers).toEqual([{ options: [] }]);
+		const some = dialog(checks);
+		// Vitest by its number, TypeScript by Space, Biome on and off by its number and by Enter.
+		for (const key of ["3", UP, SPACE, "1", "1", "\r", "\r", DOWN]) some.shown.handleInput(key);
+		expect(some.lines(120).slice(3, 6)).toEqual([
+			"   1. [ ] Biome       Recommended   Lint and format",
+			" ❯ 2. [✓] TypeScript  Recommended   Core, CLI and desktop",
+			"   3. [✓] Vitest                    The whole suite, about three minutes",
+		]);
+		expect(some.answers).toEqual([]);
+		for (const key of [DOWN, DOWN, DOWN, "\r"]) some.shown.handleInput(key);
+		expect(some.answers).toEqual([{ options: [1, 2] }]);
+	});
+
+	it("checks Type something… as you type there, sends the text with the options, and leaves it out unchecked", () => {
+		const { shown, answers, lines } = dialog(checks);
+		shown.handleInput("1");
+		shown.handleInput("4");
+		for (const key of ["a", " ", "b"]) shown.handleInput(key);
+		expect(lines(120)[6]).toBe(" ❯ 4. [✓] a b");
+		shown.handleInput("\r");
+		expect(lines(120)[7]).toBe(" ❯    Submit");
+		shown.handleInput("\r");
+		expect(answers).toEqual([{ options: [0], other: "a b" }]);
+		const unchecked = dialog(checks);
+		unchecked.shown.handleInput("4");
+		unchecked.shown.handleInput("x");
+		unchecked.shown.handleInput(DOWN);
+		unchecked.shown.handleInput(DOWN);
+		unchecked.shown.handleInput("4");
+		expect(unchecked.lines(120)[6]).toBe(" ❯ 4. [ ] x");
+		unchecked.shown.handleInput(DOWN);
+		unchecked.shown.handleInput("\r");
+		expect(unchecked.answers).toEqual([{ options: [] }]);
+	});
+
+	it("does not send Type something… checked with nothing typed, and says why", () => {
+		const { shown, answers, lines } = dialog(checks);
+		shown.handleInput("4");
+		shown.handleInput(SPACE);
+		expect(lines(120)[6]).toMatch(/^ ❯ 4\. \[ \] /);
+		shown.handleInput(SPACE);
+		expect(lines(120)[6]).toMatch(/^ ❯ 4\. \[✓\] /);
+		shown.handleInput(DOWN);
+		shown.handleInput("\r");
+		expect(answers).toEqual([]);
+		expect(lines(120).join("\n")).toContain("Type an answer, or uncheck Type something");
+	});
+
+	it("never overflows a very narrow terminal", () => {
+		const { shown, lines } = dialog(checks);
+		shown.handleInput("2");
+		for (const width of [40, 24])
+			for (const line of lines(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+		expect(lines(40).join("\n")).toContain("[✓] TypeScript");
+	});
+
+	it("takes no key during the guard, and checks nothing with pasted text", () => {
+		const answers: QuestionAnswer[] = [];
+		const shown = new QuestionDialog({ ...checks, guardMs: 60_000 }, plain, (answer) => answers.push(answer));
+		shown.reveal();
+		for (const key of ["1", SPACE, UP, "\r"]) shown.handleInput(key);
+		const pasted = dialog(checks);
+		pasted.shown.handleInput("\x1b[200~1 \r\x1b[201~");
+		expect(pasted.lines(120).join("\n")).not.toContain("✓");
+		expect(answers).toEqual([]);
+		expect(pasted.answers).toEqual([]);
+	});
+});

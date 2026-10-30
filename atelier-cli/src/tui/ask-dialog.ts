@@ -18,9 +18,10 @@ export interface AskQuestion {
 	header?: string;
 	question: string;
 	options: readonly QuestionOption[];
+	multiSelect?: boolean;
 }
 
-/** One question's answer: the option at that index, or the user's own text. */
+/** One question's answer: the option at that index, the user's own text, or the options checked (and their text). */
 export type AskAnswer = Exclude<QuestionAnswer, "cancel">;
 
 /** `○ Language`, a tab's cell; the one you are on is highlighted. */
@@ -50,7 +51,8 @@ function cutTitle(title: string, width: number): string {
  * answered ones marked `✔`, and a last `Submit` tab with a review of the answers; ← and → move among them keeping the
  * answers given, and answering a question moves to the next tab. The review's `Submit answers` sends the batch once
  * every question has an answer, or goes to the first one without; `Cancel` and Esc cancel the whole batch. Each
- * screen starts the guard again, so a key typed before it appeared does not answer it.
+ * screen starts the guard again, so a key typed before it appeared does not answer it. A multi-select question needs
+ * no answer: one left untouched is reviewed as `— none` and sent with nothing checked.
  */
 export class AskDialog implements Component, Focusable {
 	focused = false;
@@ -86,6 +88,7 @@ export class AskDialog implements Component, Focusable {
 					{
 						question: question.question,
 						options: question.options,
+						...(question.multiSelect ? { multiSelect: true, last: index === options.questions.length - 1 } : {}),
 						guardMs: options.guardMs ?? 0,
 						paste: this.#paste,
 						tabs,
@@ -140,11 +143,16 @@ export class AskDialog implements Component, Focusable {
 		return this.#tab === this.#dialogs.length;
 	}
 
+	/** Whether question `index` still needs an answer: it has none and is not a multi-select one. */
+	#missing(index: number): boolean {
+		return this.#answers[index] === undefined && this.#questions[index]?.multiSelect !== true;
+	}
+
 	/** `Submit answers`: sends the batch, or goes to the first question without an answer and says why. */
 	#submit(): void {
-		const missing = this.#answers.findIndex((given) => given === undefined);
+		const missing = this.#answers.findIndex((_, index) => this.#missing(index));
 		if (missing === -1) {
-			this.#finish(this.#answers.filter((given) => given !== undefined));
+			this.#finish(this.#answers.map((given) => given ?? { options: [] }));
 			return;
 		}
 		this.#show(missing);
@@ -200,20 +208,31 @@ export class AskDialog implements Component, Focusable {
 		return this.#questions[index]?.header ?? `Q${index + 1}`;
 	}
 
-	/** What question `index` was answered, as the review says it: the option's label or the user's own text. */
-	#answerText(index: number): string | undefined {
+	/**
+	 * What question `index` was answered, as the review says it: the option's label or the user's own text; the labels
+	 * checked and the text, separated by commas, or null for none (an untouched multi-select question's too).
+	 */
+	#answerText(index: number): string | null | undefined {
 		const answer = this.#answers[index];
-		if (answer === undefined) return undefined;
-		if ("other" in answer)
-			return `Type something: ${visibleText(answer.other.replace(/\s*[\r\n]+\s*/g, " ").trim()).text}`;
-		return this.#questions[index]?.options[answer.option]?.label;
+		const options = this.#questions[index]?.options ?? [];
+		const typed = (other: string) => `Type something: ${visibleText(other.replace(/\s*[\r\n]+\s*/g, " ").trim()).text}`;
+		if (answer === undefined) return this.#missing(index) ? undefined : null;
+		if ("options" in answer) {
+			const given = [
+				...answer.options.flatMap((option) => options[option]?.label ?? []),
+				...(answer.other === undefined ? [] : [typed(answer.other)]),
+			];
+			return given.length === 0 ? null : given.join(", ");
+		}
+		if ("other" in answer) return typed(answer.other);
+		return options[answer.option]?.label;
 	}
 
 	/** `Review your answers`, what is missing, each question's title and answer, then `Submit answers` and `Cancel`. */
 	#reviewLines(width: number): string[] {
 		const paint = this.#paint;
 		const room = Math.max(1, width - 1);
-		const missing = this.#answers.filter((given) => given === undefined).length;
+		const missing = this.#answers.filter((_, index) => this.#missing(index)).length;
 		const warning =
 			missing === 0
 				? []
@@ -225,9 +244,10 @@ export class AskDialog implements Component, Focusable {
 		const column = Math.max(...titles.map((title) => visibleWidth(title)));
 		const rows = titles.map((title, index) => {
 			const answer = this.#answerText(index);
-			const cell = `${answer === undefined ? "○" : "✔"} ${title}${" ".repeat(column - visibleWidth(title))}`;
-			const said = answer === undefined ? paint("dim", "— no answer") : answer;
-			const line = `  ${paint(answer === undefined ? "dim" : "green", cell)}   ${said}`;
+			const given = this.#answers[index] !== undefined;
+			const cell = `${given ? "✔" : "○"} ${title}${" ".repeat(column - visibleWidth(title))}`;
+			const said = typeof answer === "string" ? answer : paint("dim", answer === null ? "— none" : "— no answer");
+			const line = `  ${paint(given ? "green" : "dim", cell)}   ${said}`;
 			return truncateToWidth(line, width, "…");
 		});
 		const choices = REVIEW_CHOICES.map((label, index) => {

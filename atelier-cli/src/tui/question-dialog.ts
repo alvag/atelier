@@ -19,8 +19,11 @@ export interface QuestionOption {
 	recommended?: boolean;
 }
 
-/** What the user did: picked the option at that index, sent their own text, or cancelled. */
-export type QuestionAnswer = { option: number } | { other: string } | "cancel";
+/**
+ * What the user did: picked the option at that index, sent their own text, checked the options at those indexes (and
+ * their own text) of a multi-select question, or cancelled.
+ */
+export type QuestionAnswer = { option: number } | { other: string } | { options: number[]; other?: string } | "cancel";
 
 const TYPE_SOMETHING = "Type something…";
 /** The longest text an `ask_user` answer of the user's own words may have. */
@@ -28,6 +31,10 @@ const OTHER_MAX = 2000;
 const RECOMMENDED = "Recommended";
 /** `❯ 1. `, with the space before it: the columns before a label. */
 const LEAD = 6;
+/** `[ ] `, a multi-select question's box: the columns it adds before a label. */
+const BOX = 4;
+const NEXT = "Next →";
+const SUBMIT = "Submit";
 /** The fewest columns a description gets beside its label, unless it fits in fewer. */
 const DESCRIPTION_ROOM = 40;
 
@@ -78,6 +85,11 @@ export function fitHint(parts: readonly string[], width: number): string {
  * while the cursor is elsewhere. With `guardMs`, the keys that arrive that long after `reveal()` are dropped, so a key
  * typed before the question appeared does not answer it; pasted text answers nothing, and a paste goes into the text
  * only when it starts there.
+ *
+ * A multi-select question puts a box before each option and `Type something…`: Space, Enter or a row's number checks it
+ * or unchecks it, and typing there checks it (Space and the numbers are text there, unless it is empty: then Space
+ * toggles it, and Enter goes to the last row). The last row, `Next →` (`Submit` on the last question), sends what is
+ * checked, nothing checked included; checked, `Type something…` needs its text.
  */
 export class QuestionDialog implements Component, Focusable {
 	focused = false;
@@ -85,6 +97,12 @@ export class QuestionDialog implements Component, Focusable {
 	readonly #tabs: boolean;
 	readonly #onTab: ((step: -1 | 1) => void) | undefined;
 	readonly #options: readonly QuestionOption[];
+	readonly #multiSelect: boolean;
+	/** Whether a multi-select question's last row says `Submit`: it is the last question; `Next →` otherwise. */
+	readonly #last: boolean;
+	/** The options checked, by index, and whether `Type something…` is. */
+	readonly #checked = new Set<number>();
+	#otherChecked = false;
 	readonly #paint: Paint;
 	readonly #guardMs: number;
 	readonly #paste: PasteFilter;
@@ -105,6 +123,10 @@ export class QuestionDialog implements Component, Focusable {
 		options: {
 			question: string;
 			options: readonly QuestionOption[];
+			/** The user checks any number of the options, or none. */
+			multiSelect?: boolean;
+			/** A multi-select question's last row: `Submit` when true (the default), `Next →` otherwise. */
+			last?: boolean;
 			/** Whether it is one tab of a batch: the hint line says ←→ moves among them. */
 			tabs?: boolean;
 			/** A batch's move to another tab, by ← (-1) or → (1), when they are not the text's. */
@@ -120,15 +142,27 @@ export class QuestionDialog implements Component, Focusable {
 		this.#tabs = options.tabs ?? false;
 		this.#onTab = options.onTab;
 		this.#options = options.options;
+		this.#multiSelect = options.multiSelect ?? false;
+		this.#last = options.last ?? true;
 		this.#paint = paint;
 		this.#guardMs = options.guardMs ?? 0;
 		this.#paste = options.paste ?? new PasteFilter();
 		this.#answer = answer;
 	}
 
-	/** The options' rows and `Type something…`. */
+	/** The options' rows and `Type something…`: the numbered rows. */
 	get #rows(): number {
 		return this.#options.length + 1;
+	}
+
+	/** The rows the cursor goes to: a multi-select question adds `Next →` after the numbered ones. */
+	get #stops(): number {
+		return this.#rows + (this.#multiSelect ? 1 : 0);
+	}
+
+	/** The columns before a label: a multi-select question's box after the number. */
+	get #indent(): number {
+		return LEAD + (this.#multiSelect ? BOX : 0);
 	}
 
 	/** Starts the guard: called when the question is put on screen; `again` when a batch shows it once more. */
@@ -190,6 +224,31 @@ export class QuestionDialog implements Component, Focusable {
 		const added = characters(text);
 		this.#text = [...chars.slice(0, this.#at), ...added, ...chars.slice(this.#at)].join("");
 		this.#at += added.length;
+		this.#typed();
+	}
+
+	/** The text typed changed: a multi-select question checks `Type something…` while it has text, unchecks it without. */
+	#typed(): void {
+		if (this.#multiSelect) this.#otherChecked = this.#text !== "";
+	}
+
+	/** Checks or unchecks the box of `row`, an option or `Type something…`. */
+	#flip(row: number): void {
+		if (row === this.#options.length) this.#otherChecked = !this.#otherChecked;
+		else if (this.#checked.has(row)) this.#checked.delete(row);
+		else this.#checked.add(row);
+	}
+
+	/** `Next →`: hands on what is checked, unless `Type something…` is checked without a text, or too long a one. */
+	#next(): void {
+		if (this.#otherChecked && this.#text.trim() === "") this.#problem = "Type an answer, or uncheck Type something";
+		else if (this.#otherChecked && this.#text.length > OTHER_MAX)
+			this.#problem = `Too long: ${this.#text.length} of ${OTHER_MAX} characters`;
+		else
+			this.#give({
+				options: [...this.#checked].sort((a, b) => a - b),
+				...(this.#otherChecked ? { other: this.#text } : {}),
+			});
 	}
 
 	/** A key on `Type something…`: it edits the text; true when it was one. */
@@ -203,8 +262,11 @@ export class QuestionDialog implements Component, Focusable {
 			if (this.#at === 0) return true;
 			this.#text = [...chars.slice(0, this.#at - 1), ...chars.slice(this.#at)].join("");
 			this.#at--;
-		} else if (matchesKey(keys, "delete"))
+			this.#typed();
+		} else if (matchesKey(keys, "delete")) {
 			this.#text = [...chars.slice(0, this.#at), ...chars.slice(this.#at + 1)].join("");
+			this.#typed();
+		}
 		// Typed text, a character or a burst of them; any other key is not text.
 		else if (isText(keys)) this.#insert(keys);
 		else return false;
@@ -253,8 +315,12 @@ export class QuestionDialog implements Component, Focusable {
 				this.#cursor === undefined
 					? step === 1
 						? 0
-						: this.#rows - 1
-					: (this.#cursor + step + this.#rows) % this.#rows;
+						: this.#stops - 1
+					: (this.#cursor + step + this.#stops) % this.#stops;
+			return;
+		}
+		if (this.#multiSelect) {
+			this.#check(keys);
 			return;
 		}
 		if (matchesKey(keys, "enter")) {
@@ -274,6 +340,29 @@ export class QuestionDialog implements Component, Focusable {
 		}
 	}
 
+	/** A key of a multi-select question, after Esc and the arrows: it checks, types or goes on. */
+	#check(keys: string): void {
+		const typed = decodePrintableKey(keys) ?? keys;
+		if (matchesKey(keys, "enter")) {
+			if (this.#typing) this.#cursor = this.#rows;
+			else if (this.#cursor === this.#rows) this.#next();
+			else if (this.#cursor !== undefined) this.#flip(this.#cursor);
+			return;
+		}
+		// Space on an empty Type something checks it or unchecks it; there with text, it is a space.
+		if (this.#typing && !(typed === " " && this.#text === "") && this.#edit(typed)) return;
+		if (typed === " ") {
+			if (this.#cursor !== undefined && this.#cursor < this.#rows) this.#flip(this.#cursor);
+			return;
+		}
+		if (/^[1-9]$/.test(typed)) {
+			const row = Number(typed) - 1;
+			if (row >= this.#rows) return;
+			this.#cursor = row;
+			this.#flip(row);
+		}
+	}
+
 	invalidate(): void {}
 
 	render(width: number): string[] {
@@ -290,29 +379,35 @@ export class QuestionDialog implements Component, Focusable {
 		const hint =
 			this.#problem !== ""
 				? paint("yellow", truncateToWidth(this.#problem, room, "…"))
-				: paint(
-						"dim",
-						this.#typing
-							? fitHint(["enter send", "↑↓ move", "esc cancel"], room)
-							: fitHint([...tabs, "↑↓ move", `1-${this.#rows} pick`, "enter select", "esc cancel"], room),
-					);
+				: paint("dim", fitHint(this.#hint(tabs), room));
 		const lines = [...question.map((line) => ` ${line}`), "", ...this.#optionRows(width), "", ` ${hint}`];
 		return lines.map((line) => truncateToWidth(line, width));
 	}
 
-	/** `❯ 1. English  Recommended   description`, one option after another, then `Type something…`. */
+	/** What the hint line says, before it is fitted to the width. */
+	#hint(tabs: string[]): string[] {
+		if (this.#typing) return [this.#multiSelect ? "enter done" : "enter send", "↑↓ move", "esc cancel"];
+		const pick = this.#multiSelect ? `space/1-${this.#rows} toggle` : `1-${this.#rows} pick`;
+		return [...tabs, "↑↓ move", pick, "enter select", "esc cancel"];
+	}
+
+	/**
+	 * `❯ 1. English  Recommended   description`, one option after another, then `Type something…`; a multi-select
+	 * question's rows have their box after the number, and `Next →` or `Submit` comes last.
+	 */
 	#optionRows(width: number): string[] {
 		const paint = this.#paint;
 		const labels = this.#options.map((option) => visibleWidth(option.label));
 		const column = Math.max(0, ...labels);
 		const tagged = this.#options.some((option) => option.recommended);
 		const tagColumn = tagged ? visibleWidth(RECOMMENDED) + 2 : 0;
-		const left = LEAD + column + 2 + tagColumn + 1;
+		const indent = this.#indent;
+		const left = indent + column + 2 + tagColumn + 1;
 		const longest = Math.max(0, ...this.#options.map((option) => visibleWidth(option.description ?? "")));
 		const beside = width - left >= Math.min(DESCRIPTION_ROOM, longest) && longest > 0 && column <= width / 3;
-		const room = Math.max(1, width - LEAD);
+		const room = Math.max(1, width - indent);
 		const rows = this.#options.flatMap((option, index) => {
-			const head = this.#lead(index);
+			const head = `${this.#lead(index)}${this.#box(this.#checked.has(index))}`;
 			const label = index === this.#cursor ? paint(["bold", "cyan"], option.label) : option.label;
 			const tag = option.recommended ? paint(["dim", "cyan"], RECOMMENDED) : "";
 			if (beside) {
@@ -330,15 +425,29 @@ export class QuestionDialog implements Component, Focusable {
 			const description =
 				option.description === undefined ? [] : wrapTextWithAnsi(paint("dim", option.description), room);
 			return [
-				...wrapTextWithAnsi(text, room).map((part, at) => `${at === 0 ? head : " ".repeat(LEAD)}${part}`),
-				...description.map((part) => `${" ".repeat(LEAD)}${part}`),
+				...wrapTextWithAnsi(text, room).map((part, at) => `${at === 0 ? head : " ".repeat(indent)}${part}`),
+				...description.map((part) => `${" ".repeat(indent)}${part}`),
 			];
 		});
-		return [...rows, `${this.#lead(this.#options.length)}${this.#typed(Math.max(1, width - LEAD))}`];
+		const other = `${this.#lead(this.#options.length)}${this.#box(this.#otherChecked)}${this.#shownText(room)}`;
+		return [...rows, other, ...(this.#multiSelect ? [this.#nextRow()] : [])];
+	}
+
+	/** A multi-select question's box, `[✓] ` when checked, `[ ] ` otherwise; nothing for a single-choice question. */
+	#box(checked: boolean): string {
+		if (!this.#multiSelect) return "";
+		return checked ? `[${this.#paint("green", "✓")}] ` : "[ ] ";
+	}
+
+	/** `Next →`, or `Submit`, under the boxes, with the cursor when it is there. */
+	#nextRow(): string {
+		const label = this.#last ? SUBMIT : NEXT;
+		const on = this.#cursor === this.#rows;
+		return ` ${on ? this.#paint("cyan", "❯") : " "}    ${on ? this.#paint(["bold", "cyan"], label) : label}`;
 	}
 
 	/** `Type something…`, or the text typed there with the cursor in it, cut so the cursor stays in sight. */
-	#typed(room: number): string {
+	#shownText(room: number): string {
 		const paint = this.#paint;
 		if (!this.#typing)
 			return this.#text === "" ? TYPE_SOMETHING : truncateToWidth(visibleText(this.#text).text, room, "…");
