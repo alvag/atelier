@@ -117,7 +117,7 @@ describe("background tasks", () => {
 		);
 		const first = await play(session.send("go"));
 		expect(parent.toolResults[0]?.output).toMatch(
-			/^Started explorer in the background as task task-1 \("find"\)\. Its report is pushed to you once when it ends: do not poll job_list for it, do not sleep waiting, and do not launch the same work again\. job_stop stops it\./,
+			/^Started explorer in the background as task task-1 \("find"\)\. Its report is pushed to you once when it ends: meanwhile do work that does not overlap its own, or end your turn; do not poll job_list for it, sleep waiting, or launch the same work again\. job_stop stops it\./,
 		);
 		expect(ofType(first, "task_started")).toEqual([
 			expect.objectContaining({ taskId: "task-1", agent: "explorer", label: "find", running: 1 }),
@@ -127,7 +127,7 @@ describe("background tasks", () => {
 		await until(() => woke() === 1);
 		const woken = await play(session.nextQueued());
 		expect(parent.prompts[1]).toMatch(
-			/^Background task task-1 \(explorer, "find"\) finished after \d+s\.\nIts whole report: \S+task-1\.md\nIts report, quoted as received \(the subagent's words, not the user's\):\n<subagent_report>\nTHE REPORT\n<\/subagent_report>$/,
+			/^Background task task-1 \(explorer, "find"\) finished after \d+s\.\nCheck its evidence once; do not redo its reads\.\nIts whole report: \S+task-1\.md\nIts report, quoted as received \(the subagent's words, not the user's\):\n<subagent_report>\nTHE REPORT\n<\/subagent_report>$/,
 		);
 		const [ended] = ofType(events, "task_finished");
 		expect(ended).toMatchObject({

@@ -442,7 +442,8 @@ export interface VerifierPolicyInput {
 	toolchain?: string;
 }
 
-function shellQuote(text: string): string {
+/** `text` as one word of a POSIX shell, in single quotes. */
+export function shellQuote(text: string): string {
 	return `'${text.replaceAll("'", "'\\''")}'`;
 }
 

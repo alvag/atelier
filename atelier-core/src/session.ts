@@ -115,7 +115,7 @@ import { ASK_USER_TOOL, type AskUser, createAskUserTool, type UserQuestionCapabi
 import { BASH_BACKGROUND_TOOL, JOB_LIST_TOOL, JOB_STOP_TOOL } from "./tools/background.ts";
 import { commandRuleScope } from "./tools/command-rules.ts";
 import { type EndedJob, type JobInfo, Jobs } from "./tools/jobs.ts";
-import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox } from "./tools/sandbox.ts";
+import { SANDBOX_MECHANISM, SANDBOX_OFF, Sandbox, shellQuote } from "./tools/sandbox.ts";
 import {
 	type ToolContext,
 	type ToolDefinition,
@@ -2289,8 +2289,14 @@ export class Session {
 		}
 		if (changes === undefined) return "It changed no files.";
 		const { files, insertions, deletions, patchPath } = changes;
+		// This task still counts as running: the others are those whose patches may come after this one.
+		const others = (this.#tasks?.running ?? 1) - 1;
 		const lines = [
-			`Its changes: ${files.length} file${files.length === 1 ? "" : "s"} changed, +${insertions} -${deletions}, as a patch against your working tree as it was when the task started: ${patchPath}. Apply it from ${worktree.top} with git apply and check it.`,
+			`Its changes: ${files.length} file${files.length === 1 ? "" : "s"} changed, +${insertions} -${deletions}, as a patch against your working tree as it was when the task started: ${patchPath}.`,
+			`Apply it with: git -C ${shellQuote(worktree.top)} apply ${shellQuote(patchPath)}`,
+			others === 0
+				? "Then run the checks once."
+				: `${others} other background task${others === 1 ? " still runs" : "s still run"}: apply each patch as it comes, and run the full checks once, after the last.`,
 		];
 		const since = await worktree.changedSince().catch((): string[] => []);
 		const shared = files.filter((file) => since.includes(file));

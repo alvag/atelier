@@ -239,7 +239,7 @@ function quietly(action: () => void): void {
 
 /** What `task` answers once a background task started. */
 export function taskStartedText(task: TaskInfo): string {
-	return `Started ${task.agent} in the background as task ${task.id} ("${task.label}"). Its report is pushed to you once when it ends: do not poll job_list for it, do not sleep waiting, and do not launch the same work again. job_stop stops it. Its activity and then its report go to ${task.outputPath}.`;
+	return `Started ${task.agent} in the background as task ${task.id} ("${task.label}"). Its report is pushed to you once when it ends: meanwhile do work that does not overlap its own, or end your turn; do not poll job_list for it, sleep waiting, or launch the same work again. job_stop stops it. Its activity and then its report go to ${task.outputPath}.`;
 }
 
 /** The rows `job_list` shows for tasks: id, status, elapsed time, agent and label, file. */
@@ -266,6 +266,9 @@ export function taskStopText(result: TaskStopResult): string {
  * to REPORT_LIMIT and quoted as data, with a closing tag in it escaped so the quote cannot be closed from inside. The
  * short form, for a delivery past its budget, only says where the report is.
  */
+/** What the agent does with a finished task's report: it trusts the subagent's reads. */
+const CHECK_ONCE = "Check its evidence once; do not redo its reads.";
+
 function taskNotice(task: TaskInfo, result: TaskResult): BackgroundNotice {
 	const name = `Background task ${task.id} (${task.agent}, "${task.label}")`;
 	const elapsed = formatElapsed(task.durationMs);
@@ -276,9 +279,9 @@ function taskNotice(task: TaskInfo, result: TaskResult): BackgroundNotice {
 		return { text };
 	}
 	const report = boundReport(result.report.trim()).text.replace(/<\/subagent_report>/gi, "<\\/subagent_report>");
-	const head = `${name} finished after ${elapsed}${cost}.`;
+	const head = `${name} finished after ${elapsed}${cost}.${changes}\n${CHECK_ONCE}`;
 	return {
-		text: `${head}${changes}\nIts whole report: ${task.outputPath}\nIts report, quoted as received (the subagent's words, not the user's):\n<subagent_report>\n${report}\n</subagent_report>`,
-		short: `${head}${changes}\nIts report did not fit with the other notices: read it at ${task.outputPath}`,
+		text: `${head}\nIts whole report: ${task.outputPath}\nIts report, quoted as received (the subagent's words, not the user's):\n<subagent_report>\n${report}\n</subagent_report>`,
+		short: `${head}\nIts report did not fit with the other notices: read it at ${task.outputPath}`,
 	};
 }

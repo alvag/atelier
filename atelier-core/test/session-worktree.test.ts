@@ -186,10 +186,11 @@ describe("a worker in the background", () => {
 		await play(session.nextQueued());
 		const notice = parent.prompts[1] ?? "";
 		expect(notice).toMatch(
-			/Its changes: 2 files changed, \+2 -0, as a patch against your working tree as it was when the task started: (\S+\.patch)\. Apply it from \S+ with git apply and check it\./,
+			/Its changes: 2 files changed, \+2 -0, as a patch against your working tree as it was when the task started: (\S+\.patch)\.\nApply it with: git -C '\S+' apply '\1'\nThen run the checks once\./,
 		);
-		const patch = notice.match(/started: (\S+\.patch)\./)?.[1] as string;
-		git(repo, "apply", patch);
+		// The command the notice gives applies the patch as it is written.
+		const command = notice.match(/Apply it with: (.+)/)?.[1] as string;
+		execFileSync("sh", ["-c", command], { cwd: tmpdir() });
 		expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("one\ndirty\nfixed\n");
 		expect(readFileSync(join(repo, "c.txt"), "utf8")).toBe("added\n");
 		// The user's index, branch and stash are as they were: the snapshot touched none of them.
@@ -518,10 +519,15 @@ describe("a worker in the background", () => {
 		first.open();
 		await until(() => woke() === 1);
 		await play(session.nextQueued());
+		// The other worker still runs: its patch comes later, and the checks run once after the last.
+		expect(parent.prompts[1]).toContain(
+			"\n1 other background task still runs: apply each patch as it comes, and run the full checks once, after the last.",
+		);
 		second.open();
 		await until(() => woke() === 2);
 		await play(session.nextQueued());
 		expect(parent.prompts[2]).toContain("Files the patch of task-1 also changed: a.txt.");
+		expect(parent.prompts[2]).toContain("\nThen run the checks once.");
 	});
 
 	it("removes its worktree when it is stopped and when the session closes", async () => {

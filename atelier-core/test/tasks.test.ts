@@ -54,9 +54,11 @@ describe("background tasks", () => {
 		await until(() => ended.length === 1);
 		expect(ended[0]?.task).toMatchObject({ status: "finished", costUsd: 0.25 });
 		expect(ended[0]?.notice?.text).toMatch(
-			/^Background task task-1 \(explorer, "Find the code"\) finished after \d+s \(cost \$0\.25\)\.\nIts whole report: \S+task-1\.md\n[^\n]+\n<subagent_report>\nFound it at a\.ts:3\n<\/subagent_report>$/,
+			/^Background task task-1 \(explorer, "Find the code"\) finished after \d+s \(cost \$0\.25\)\.\nCheck its evidence once; do not redo its reads\.\nIts whole report: \S+task-1\.md\n[^\n]+\n<subagent_report>\nFound it at a\.ts:3\n<\/subagent_report>$/,
 		);
-		expect(ended[0]?.notice?.short).toMatch(/did not fit with the other notices: read it at \S+task-1\.md$/);
+		expect(ended[0]?.notice?.short).toMatch(
+			/\nCheck its evidence once; do not redo its reads\.\nIts report did not fit with the other notices: read it at \S+task-1\.md$/,
+		);
 		const file = readFileSync(task.outputPath, "utf8");
 		expect(file).toContain("- read src/a.ts");
 		expect(file).toContain("## Report\n\nFound it at a.ts:3");
