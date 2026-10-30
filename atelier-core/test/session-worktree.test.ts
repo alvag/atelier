@@ -618,6 +618,38 @@ describe("a worker in the background", () => {
 		}
 	});
 
+	it("writes nothing outside its worktree, whatever the project's sandbox configuration allows", async () => {
+		const outside = await realpath(await mkdtemp(join(tmpdir(), "atelier-outside-")));
+		try {
+			writeFileSync(join(outside, "index.js"), "outside\n");
+			mkdirSync(join(repo, ".atelier"), { recursive: true });
+			writeFileSync(join(repo, ".atelier", "sandbox.json"), JSON.stringify({ allowWrite: [outside, repo] }));
+			symlinkSync(outside, join(repo, "out"));
+			const { children, session, play, woke } = await started(
+				[[work("c1"), { event: finished }], [{ event: finished }]],
+				[
+					() => [
+						{ toolCall: { tool: "write", input: { path: "out/index.js", content: "child\n" }, callId: "w1" } },
+						{ toolCall: { tool: "write", input: { path: join(repo, "a.txt"), content: "child\n" }, callId: "w2" } },
+						text("done"),
+						{ event: finished },
+					],
+				],
+				repo,
+				{ tools: [...createBackgroundTools(), createWriteTool()] },
+			);
+			const before = readFileSync(join(repo, "a.txt"));
+			await play(session.send("go"));
+			await until(() => woke() === 1);
+			await play(session.nextQueued());
+			for (const result of children[0]?.toolResults ?? []) expect(result.output).toMatch(/^Denied without asking/);
+			expect(readFileSync(join(outside, "index.js"), "utf8")).toBe("outside\n");
+			expect(readFileSync(join(repo, "a.txt")).equals(before)).toBe(true);
+		} finally {
+			await rm(outside, { recursive: true, force: true });
+		}
+	});
+
 	it("is refused outside a git repository, before a subagent starts", async () => {
 		const plain = await realpath(await mkdtemp(join(tmpdir(), "atelier-plain-")));
 		try {

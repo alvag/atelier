@@ -59,7 +59,7 @@ export function sandboxEnabled(env: Record<string, string | undefined>): boolean
 export type SandboxStatus = { available: true } | { available: false; reason: string; failed?: true };
 
 /** The two kinds of caller: the main agent and its workers, or the independent verifier. */
-export type SandboxPolicyName = "agent" | "verifier";
+export type SandboxPolicyName = "agent" | "verifier" | "confined";
 
 /** What the library takes per command: the parts of its configuration that differ from the session-wide one. */
 export type SandboxPolicy = Pick<SandboxRuntimeConfig, "filesystem"> & Partial<Pick<SandboxRuntimeConfig, "network">>;
@@ -386,6 +386,28 @@ export function agentPolicy({
 			],
 		},
 	};
+}
+
+/**
+ * A background worker's commands: they write only its working directory (its worktree) and its scratch directory,
+ * where their TMPDIR is; not the system temporary directory, a package cache, what the configuration files add, nor
+ * the shared git data of the repository. Everything else is as for the agent: what they read, and what stays protected.
+ */
+export function confinedPolicy({
+	cwd,
+	scratchDir,
+	home,
+	gitPaths,
+}: Pick<AgentPolicyInput, "cwd" | "scratchDir" | "home" | "gitPaths">): SandboxPolicy {
+	const { filesystem } = agentPolicy({ cwd, tempDir: cwd, home, ...(gitPaths === undefined ? {} : { gitPaths }) });
+	return { filesystem: { ...filesystem, allowWrite: [cwd, ...(scratchDir === undefined ? [] : [scratchDir])] } };
+}
+
+/** The TMPDIR of a confined command: a folder of its own in the scratch directory, else in the working directory. */
+function confinedTemp(cwd: string, scratchDir: string | undefined): string {
+	const tmp = join(scratchDir ?? cwd, ".tmp");
+	mkdirSync(tmp, { recursive: true });
+	return tmp;
 }
 
 export interface VerifierPolicyInput {
@@ -843,25 +865,37 @@ export class Sandbox {
 		if (!status.available || !this.#manager) throw new Error(status.available ? "sandbox not started" : status.reason);
 		const home = this.#options.home ?? homedir();
 		const config =
-			policy === "agent"
-				? agentPolicy({
+			policy === "confined"
+				? confinedPolicy({
 						cwd,
 						...(scratchDir === undefined ? {} : { scratchDir }),
-						tempDir: this.#options.tempDir ?? tmpdir(),
 						home,
-						// Read at each command, so a file that became invalid stops the command instead of being ignored.
-						additions: loadSandboxAdditions({ cwd, home }),
-						...(this.#options.manager ? {} : optional("worktreeGit", linkedWorktreeGit(cwd))),
 						...(this.#options.manager ? {} : { gitPaths: gitProtectedPaths(cwd, home) }),
 					})
-				: verifierPolicy({
-						dir: cwd,
-						nodePrefix: this.#options.nodePrefix ?? nodeInstallation(),
-						...toolchainOf(this.#options.manager ? undefined : developerGit()),
-					});
+				: policy === "agent"
+					? agentPolicy({
+							cwd,
+							...(scratchDir === undefined ? {} : { scratchDir }),
+							tempDir: this.#options.tempDir ?? tmpdir(),
+							home,
+							// Read at each command, so a file that became invalid stops the command instead of being ignored.
+							additions: loadSandboxAdditions({ cwd, home }),
+							...(this.#options.manager ? {} : optional("worktreeGit", linkedWorktreeGit(cwd))),
+							...(this.#options.manager ? {} : { gitPaths: gitProtectedPaths(cwd, home) }),
+						})
+					: verifierPolicy({
+							dir: cwd,
+							nodePrefix: this.#options.nodePrefix ?? nodeInstallation(),
+							...toolchainOf(this.#options.manager ? undefined : developerGit()),
+						});
 		// The library hands every command TMPDIR=/tmp/claude, which the verifier cannot even look up (it does not read
 		// /tmp): its commands get a temporary directory inside its own, set in the command so it wins.
-		const script = policy === "verifier" ? `export TMPDIR=${shellQuote(join(cwd, ".tmp"))}\n${command}` : command;
+		const script =
+			policy === "verifier"
+				? `export TMPDIR=${shellQuote(join(cwd, ".tmp"))}\n${command}`
+				: policy === "confined"
+					? `export TMPDIR=${shellQuote(confinedTemp(cwd, scratchDir))}\n${command}`
+					: command;
 		return this.#manager.wrapWithSandbox(
 			script,
 			"bash",
