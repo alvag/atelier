@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import sharp from "sharp";
 import { expect, it } from "vitest";
 import { normalizeImage } from "../src/images.ts";
@@ -22,7 +23,7 @@ it("reports an injected codec loader failure only when an image is requested", a
 });
 
 it("loads image helpers and reads text even when the native codec cannot be imported", async () => {
-	const cwd = await mkdtemp(resolve("node_modules/.cache/image-availability-"));
+	const cwd = await mkdtemp(join(tmpdir(), "image-availability-"));
 	try {
 		await writeFile(join(cwd, "note.txt"), "still works\n");
 		const input = await sharp({ create: { width: 1, height: 1, channels: 3, background: "red" } })

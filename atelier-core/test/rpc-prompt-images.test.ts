@@ -1,5 +1,6 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,8 +31,7 @@ const defer = () => {
 	return d;
 };
 beforeEach(async () => {
-	await mkdir(resolve("node_modules/.cache"), { recursive: true });
-	dir = await mkdtemp(resolve("node_modules/.cache/rpc-images-"));
+	dir = await mkdtemp(join(tmpdir(), "rpc-images-"));
 });
 afterEach(async () => {
 	useModelData(new ModelData());

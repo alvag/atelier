@@ -1,5 +1,6 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -34,7 +35,7 @@ let cwd: string;
 
 beforeEach(async () => {
 	provider = await FakeProvider.start();
-	cwd = await mkdtemp(resolve("node_modules/.cache/chat-images-"));
+	cwd = await mkdtemp(join(tmpdir(), "chat-images-"));
 });
 
 afterEach(async () => {
