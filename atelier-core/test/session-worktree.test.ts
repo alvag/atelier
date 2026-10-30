@@ -1,5 +1,17 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -96,6 +108,27 @@ function gate() {
 	let open = () => {};
 	const opened = new Promise<void>((resolve) => (open = resolve));
 	return { open, step: { run: () => opened } as FakeStep };
+}
+
+/** Every file of the repository's .git but its objects, with a digest of each: what Atelier must leave as it was. */
+function gitDirState(): Record<string, string> {
+	const state: Record<string, string> = {};
+	const walk = (dir: string, prefix: string) => {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			const path = join(dir, entry.name);
+			const name = `${prefix}${entry.name}`;
+			if (name === "objects") continue;
+			if (entry.isDirectory()) walk(path, `${name}/`);
+			else state[name] = createHash("sha256").update(readFileSync(path)).digest("hex");
+		}
+	};
+	walk(join(repo, ".git"), "");
+	return state;
+}
+
+/** The repository's loose objects and packs, by name. */
+function objectFiles(): string[] {
+	return readdirSync(join(repo, ".git", "objects"), { recursive: true, encoding: "utf8" }).sort();
 }
 
 const worktrees = () => git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)?.length ?? 0;
@@ -236,6 +269,75 @@ describe("a worker in the background", () => {
 		expect(parent.prompts[1]).toContain("It changed no files.");
 	});
 
+	it("points no link of its worktree at the parent's tree, so nothing written through one reaches the parent's", async () => {
+		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
+		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
+		writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
+		// pnpm-like: an absolute link inside the dependencies, and one in the tree itself.
+		symlinkSync(join(repo, "node_modules/pkg"), join(repo, "node_modules/abs"));
+		symlinkSync(join(repo, "a.txt"), join(repo, "here"));
+		const before = readFileSync(join(repo, "a.txt"));
+		const targets: string[] = [];
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				(cwd) => [
+					{
+						run: () => {
+							targets.push(readlinkSync(join(cwd(), "node_modules/abs")), readlinkSync(join(cwd(), "here")));
+							writeFileSync(join(cwd(), "node_modules/abs/index.js"), "child\n");
+							writeFileSync(join(cwd(), "here"), "through the link\n");
+						},
+					},
+					text("done"),
+					{ event: finished },
+				],
+			],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
+		expect(readFileSync(join(repo, "a.txt")).equals(before)).toBe(true);
+		for (const target of targets) expect(target.startsWith(`${repo}/`)).toBe(false);
+		// The worker changed a.txt through the link; the link itself is as the snapshot has it.
+		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed, \+1 -2/);
+	});
+
+	it("gets every node_modules the parent has: inside an ignored folder, not ignored, or a link", async () => {
+		writeFileSync(join(repo, ".gitignore"), "ignored.log\nvendor/\n.store/\n");
+		for (const dir of ["vendor/node_modules/v", "plain/node_modules/p", ".store/nm/l"])
+			mkdirSync(join(repo, dir), { recursive: true });
+		writeFileSync(join(repo, "vendor/node_modules/v/index.js"), "vendored\n");
+		writeFileSync(join(repo, "plain/node_modules/p/index.js"), "plain\n");
+		writeFileSync(join(repo, ".store/nm/l/index.js"), "linked\n");
+		symlinkSync(join(repo, ".store/nm"), join(repo, "node_modules"));
+		const seen: string[] = [];
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				(cwd) => [
+					{
+						run: () => {
+							for (const file of ["vendor/node_modules/v", "plain/node_modules/p", "node_modules/l"])
+								seen.push(readFileSync(join(cwd(), file, "index.js"), "utf8"));
+							seen.push(String(lstatSync(join(cwd(), "node_modules")).isSymbolicLink()));
+							writeFileSync(join(cwd(), "node_modules/l/index.js"), "child\n");
+						},
+					},
+					text("done"),
+					{ event: finished },
+				],
+			],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(seen).toEqual(["vendored\n", "plain\n", "linked\n", "false"]);
+		expect(readFileSync(join(repo, ".store/nm/l/index.js"), "utf8")).toBe("linked\n");
+		expect(parent.prompts[1]).toContain("It changed no files.");
+	});
+
 	it("leaves the dependency folders out of the patch, whatever the worker made of them", async () => {
 		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
 		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
@@ -262,12 +364,51 @@ describe("a worker in the background", () => {
 		expect(parent.prompts[1]).toContain("It changed no files.");
 	});
 
+	it("leaves out of the patch a node_modules folder the worker made, ignored or not", async () => {
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				(cwd) => [
+					{
+						run: () => {
+							mkdirSync(join(cwd(), "lib/node_modules/x"), { recursive: true });
+							writeFileSync(join(cwd(), "lib/node_modules/x/index.js"), "made\n");
+						},
+					},
+					text("done"),
+					{ event: finished },
+				],
+			],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toContain("It changed no files.");
+	});
+
 	it("runs none of the repository's git filters for its snapshot, worktree or patch", async () => {
 		const marker = join(repo, "RAN_WITHOUT_APPROVAL");
 		for (const what of ["clean", "smudge"]) git(repo, "config", `filter.attack.${what}`, `touch ${marker}; cat`);
 		git(repo, "config", "filter.attack.required", "true");
 		git(repo, "config", "diff.attack.textconv", `touch ${marker}; cat`);
 		writeFileSync(join(repo, ".gitattributes"), "a.txt filter=attack diff=attack\n");
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[(cwd) => [{ run: () => writeFileSync(join(cwd(), "a.txt"), "changed\n") }, text("done"), { event: finished }]],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed/);
+		expect(existsSync(marker)).toBe(false);
+	});
+
+	it("runs no filter that the configuration turns on only for the worker's worktree", async () => {
+		const marker = join(repo, "RAN_IN_THE_WORKTREE");
+		const included = join(repo, ".git", "worktree-only.cfg");
+		writeFileSync(included, `[filter "attack"]\n\tclean = touch ${marker}; cat\n\tsmudge = touch ${marker}; cat\n`);
+		git(repo, "config", "includeIf.gitdir:**/.git/worktrees/**.path", included);
+		writeFileSync(join(repo, ".gitattributes"), "a.txt filter=attack\n");
 		const { parent, session, play, woke } = await started(
 			[[work("c1"), { event: finished }], [{ event: finished }]],
 			[(cwd) => [{ run: () => writeFileSync(join(cwd(), "a.txt"), "changed\n") }, text("done"), { event: finished }]],
@@ -381,6 +522,71 @@ describe("a worker in the background", () => {
 		expect(worktrees()).toBe(1);
 		expect(existsSync(children[0]?.startOptions?.cwd as string)).toBe(false);
 		expect(existsSync(children[1]?.startOptions?.cwd as string)).toBe(false);
+	});
+
+	it("leaves nothing in the repository's .git but the snapshot's objects, even with a split index", async () => {
+		git(repo, "config", "core.splitIndex", "true");
+		git(repo, "update-index", "--split-index");
+		const before = gitDirState();
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[(cwd) => [{ run: () => writeFileSync(join(cwd(), "a.txt"), "changed\n") }, text("done"), { event: finished }]],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed/);
+		expect(gitDirState()).toEqual(before);
+	});
+
+	it("never forgets a worktree of the user's whose folder is gone", async () => {
+		const theirs = await realpath(await mkdtemp(join(tmpdir(), "atelier-their-worktree-")));
+		git(repo, "worktree", "add", "-q", "--detach", join(theirs, "wt"), "HEAD");
+		await rm(theirs, { recursive: true, force: true });
+		const { session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[() => [text("done"), { event: finished }]],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(git(repo, "worktree", "list", "--porcelain")).toContain(join(theirs, "wt"));
+	});
+
+	it("forgets a worktree of Atelier's that a crash left, and only that one", async () => {
+		const crashed = await realpath(await mkdtemp(join(tmpdir(), "atelier-crashed-")));
+		const stale = join(crashed, "atelier-session-old", "work", "worktrees", "1", "tree");
+		git(repo, "worktree", "add", "-q", "--detach", stale, "HEAD");
+		await rm(crashed, { recursive: true, force: true });
+		const { session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[() => [text("done"), { event: finished }]],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(stale);
+		expect(worktrees()).toBe(1);
+	});
+
+	it("leaves the repository as it was when the dependencies cannot be copied, and starts no subagent", async () => {
+		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
+		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
+		const unreadable = join(repo, "node_modules/pkg/secret.js");
+		writeFileSync(unreadable, "x\n");
+		chmodSync(unreadable, 0);
+		const before = { git: gitDirState(), objects: objectFiles(), refs: git(repo, "for-each-ref") };
+		try {
+			const { parent, children, session, play } = await started([[work("c1"), { event: finished }]], []);
+			await play(session.send("go"));
+			expect(parent.toolResults[0]?.output).toMatch(
+				/^The worker's worktree could not be made: could not copy node_modules/,
+			);
+			expect(children).toHaveLength(0);
+			expect({ git: gitDirState(), objects: objectFiles(), refs: git(repo, "for-each-ref") }).toEqual(before);
+		} finally {
+			chmodSync(unreadable, 0o644);
+		}
 	});
 
 	it("is refused outside a git repository, before a subagent starts", async () => {

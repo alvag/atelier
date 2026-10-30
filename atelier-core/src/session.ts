@@ -11,6 +11,7 @@ import type {
 	ToolCall,
 	ToolCallResult,
 } from "./backend.ts";
+import { type BackgroundNotice, deliveryText } from "./background-notices.ts";
 import { Channel } from "./channel.ts";
 import { COMPACTED_HEADER } from "./compaction/compactor.ts";
 import { nearCompaction } from "./context-gauge.ts";
@@ -96,7 +97,6 @@ import {
 	TASK_TOOL,
 } from "./subagents/definitions.ts";
 import {
-	type BackgroundNotice,
 	BackgroundTasks,
 	type EndedTask,
 	type TaskInfo,
@@ -155,22 +155,6 @@ const CLOSING_REFUSAL = "Refused: the session is closing.";
 const MAX_KEPT_PATCHES = 20;
 /** How long a stopped background subagent has to end its turn before its session is closed under it. */
 const STOP_GRACE_MS = 2000;
-/** The characters of notices one delivery gives whole; past them a notice that has a short form gives that instead. */
-const NOTICE_BUDGET = 24_000;
-
-/** The notices of one delivery, oldest first: each whole while they fit NOTICE_BUDGET, else its short form if it has one. */
-function noticesText(notices: readonly BackgroundNotice[]): string {
-	let used = 0;
-	return notices
-		.map((notice) => {
-			const whole = notice.short === undefined || used + notice.text.length <= NOTICE_BUDGET;
-			const text = whole ? notice.text : (notice.short as string);
-			used += text.length;
-			return text;
-		})
-		.join("\n\n");
-}
-
 /** A line of a background subagent's activity for its task's file: its tool calls and errors; nothing else. */
 function activityLine(body: AtelierEventBody): string {
 	if (body.type === "tool_call_started") return `- ${body.tool} ${JSON.stringify(body.input).slice(0, 200)}`;
@@ -904,7 +888,7 @@ export class Session {
 			// The notices of ended background work that waited: the whole prompt of a turn they woke, else before the user's words.
 			let backgroundNotices = this.#takeNotices(turn);
 			if (backgroundNotices !== undefined) {
-				const text = noticesText(backgroundNotices);
+				const text = deliveryText(backgroundNotices);
 				sent = woken ? `${sent}${text}` : `${text}\n\n${sent}`;
 			}
 			const mcpStatus = this.mcpStatus();
@@ -1686,7 +1670,7 @@ export class Session {
 		if (!this.#steerable || this.#abort?.signal.aborted) return result;
 		// The notices of background work that ended go with the result too, after the user's steers.
 		const taken = this.#takeNotices(this.#turn);
-		const notices = taken === undefined ? undefined : noticesText(taken);
+		const notices = taken === undefined ? undefined : deliveryText(taken);
 		const steers = this.#queue.filter((message) => message.kind === "steer");
 		if (steers.length === 0) return notices === undefined ? result : { ...result, steering: notices };
 		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
@@ -1723,7 +1707,9 @@ export class Session {
 	 * turn running, the notice asks for a turn of its own (`wake`).
 	 */
 	#jobEnded({ job, notice }: EndedJob): void {
-		this.#backgroundEnded(notice === undefined ? undefined : { text: notice }, (waiting) => ({
+		// Past a delivery's budget, the notice only says how the job ended and where its output is.
+		const short = `${notice?.split("\n")[0]}\nIts output did not fit with the other notices: read it at ${job.outputPath}`;
+		this.#backgroundEnded(notice === undefined ? undefined : { text: notice, short }, (waiting) => ({
 			type: "job_finished",
 			jobId: job.id,
 			label: job.label,

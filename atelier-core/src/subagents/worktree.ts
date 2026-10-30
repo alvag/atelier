@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { mkdir, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -15,11 +15,27 @@ const SNAPSHOT_IDENTITY = {
 	GIT_COMMITTER_EMAIL: "atelier@localhost",
 };
 /**
- * What git would otherwise run of the repository's own configuration: hooks (`worktree add` runs post-checkout) and
- * the file system monitor. Filters are turned off per driver (`filterOverrides`), and diffs take no textconv or
+ * What git would otherwise run or write of the repository's own configuration: hooks (`worktree add` runs
+ * post-checkout), the file system monitor, submodules, automatic gc and maintenance, and a split index's shared file
+ * in the repository's .git. Filters are turned off per driver (`filterOverrides`), and diffs take no textconv or
  * external diff.
  */
-const NO_PROGRAMS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+const NO_PROGRAMS = [
+	"-c",
+	"core.hooksPath=/dev/null",
+	"-c",
+	"core.fsmonitor=false",
+	"-c",
+	"core.splitIndex=false",
+	"-c",
+	"submodule.recurse=false",
+	"-c",
+	"gc.auto=0",
+	"-c",
+	"maintenance.auto=false",
+];
+/** Where Atelier makes a worker's worktree: `worktrees/<n>/tree` in a session's scratch directory. */
+const OWN_WORKTREE = /\/atelier-session-[^/]+\/[^/]+\/worktrees\/\d+\/tree$/;
 
 /** A worktree refused before anything was made: the folder is not in a git repository with a commit. */
 export class WorktreeRefusedError extends Error {
@@ -98,21 +114,24 @@ async function filterOverrides(cwd: string): Promise<string[]> {
 	);
 }
 
+/** What `git add` leaves as it is in the base: every `node_modules` folder or file, ignored or not, at any depth. */
+const NOT_DEPENDENCIES = ["--", ".", ":(exclude,glob)**/node_modules", ":(exclude,glob)**/node_modules/**"];
+
 /**
- * The tree of `top`'s working tree as it is now, tracked and untracked files but not ignored ones nor the `excluded`
- * folders, written with an index of its own (`index`), so the user's index, branches and stash are never touched.
+ * The tree of `top`'s working tree as it is now, tracked and untracked files but not ignored ones, written with an
+ * index of its own (`index`), so the user's index, branches and stash are never touched. Whatever is under a
+ * `node_modules` stays as it is in `base`: the dependencies are never part of a snapshot or a patch; so do the `kept`
+ * paths.
  */
 async function treeOfWorkingTree(
 	top: string,
 	base: string,
 	index: string,
-	excluded: readonly string[] = [],
+	kept: readonly string[] = [],
 ): Promise<string> {
-	const options = { env: { GIT_INDEX_FILE: index, GIT_LITERAL_PATHSPECS: "1" }, overrides: await filterOverrides(top) };
+	const options = { env: { GIT_INDEX_FILE: index }, overrides: await filterOverrides(top) };
 	await git(top, ["read-tree", base], options);
-	await git(top, ["add", "-A"], options);
-	if (excluded.length > 0)
-		await git(top, ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...excluded], options);
+	await git(top, ["add", "-A", ...NOT_DEPENDENCIES, ...kept.map((path) => `:(exclude,literal)${path}`)], options);
 	return (await git(top, ["write-tree"], options)).trim();
 }
 
@@ -146,12 +165,21 @@ export async function createTaskWorktree(
 	await mkdir(dir, { recursive: true });
 	const index = join(dir, "index");
 	const tree = join(dir, "tree");
+	// The dependencies first, beside the worktree: a copy that fails leaves nothing of the snapshot in the repository.
+	let folders: string[];
+	let copies: CopiedDependencies;
+	try {
+		folders = await dependencyFolders(top);
+		copies = await copyDependencies(top, join(dir, "dependencies"), folders, clone);
+	} catch (error) {
+		await rm(dir, { recursive: true, force: true });
+		throw error;
+	}
 	let headTree: string;
 	let snapshotTree: string;
 	let snapshot: string;
 	let place: string;
-	let folders: string[];
-	let dependencies: Dependencies;
+	let relinked = new Map<string, string>();
 	try {
 		headTree = (await git(top, ["rev-parse", "HEAD^{tree}"])).trim();
 		snapshotTree = await treeOfWorkingTree(top, head, index);
@@ -162,29 +190,36 @@ export async function createTaskWorktree(
 				{ env: SNAPSHOT_IDENTITY },
 			)
 		).trim();
-		// What a crash left of earlier worktrees (their folder gone) is cleared first.
-		await git(top, ["worktree", "prune"]).catch(() => "");
-		await git(top, ["worktree", "add", "--detach", tree, snapshot], { overrides: await filterOverrides(top) });
-		folders = await dependencyFolders(top);
-		dependencies = await shareDependencies(top, tree, folders, clone);
+		await forgetStaleWorktrees(top);
+		// Checked out from inside the worktree, once it exists: its own configuration may name filters (an `includeIf`
+		// on its git directory) that the checkout's would not.
+		await git(top, ["worktree", "add", "--no-checkout", "--detach", tree, snapshot]);
+		await git(tree, ["reset", "-q", "--hard"], { overrides: await filterOverrides(tree) });
+		await placeDependencies(tree, copies.staged);
+		relinked = await relinkIntoWorktree(top, tree);
 		place = join(tree, relative(top, await realpath(cwd)));
 		await mkdir(place, { recursive: true });
 	} catch (error) {
 		await git(top, ["worktree", "remove", "--force", tree]).catch(() => "");
 		await rm(dir, { recursive: true, force: true });
-		await git(top, ["worktree", "prune"]).catch(() => "");
 		throw error;
 	}
 	let removed: Promise<void> | undefined;
+	// A link Atelier made lead into the worktree is as the snapshot has it, unless the worker changed it since.
+	const stillRelinked = async () => {
+		const kept: string[] = [];
+		for (const [path, target] of relinked)
+			if ((await readlink(join(tree, path)).catch(() => undefined)) === target) kept.push(path);
+		return kept;
+	};
 	return {
 		top,
 		cwd: place,
 		head: head.slice(0, 7),
 		dirty: snapshotTree !== headTree,
-		dependencies,
+		dependencies: copies.dependencies,
 		async collect(patchPath) {
-			// The dependencies are never part of the patch, whatever the worker made of them (a link is not ignored as a folder is).
-			const changed = await treeOfWorkingTree(tree, snapshot, index, folders);
+			const changed = await treeOfWorkingTree(tree, snapshot, index, await stillRelinked());
 			if (changed === snapshotTree) return undefined;
 			await writeFile(patchPath, await diffTrees(tree, snapshot, changed, ["--binary"]));
 			const counts = await diffTrees(tree, snapshot, changed, ["--numstat"]);
@@ -207,32 +242,108 @@ export async function createTaskWorktree(
 			return names.split("\n").filter((name) => name !== "");
 		},
 		remove() {
+			// Only this worktree: never a prune, which would forget the user's own worktrees whose folder is gone.
 			removed ??= git(top, ["worktree", "remove", "--force", tree])
-				.catch(() => git(top, ["worktree", "prune"]).catch(() => ""))
-				.then(() => rm(dir, { recursive: true, force: true }))
-				.then(() => git(top, ["worktree", "prune"]).catch(() => ""))
-				.then(() => {});
+				.catch(() => "")
+				.then(() => rm(dir, { recursive: true, force: true }));
 			return removed;
 		},
 	};
 }
 
-/** The folders of the checkout git ignores that are named `node_modules`, from the top; none nested in another. */
+/**
+ * Forgets the worktrees Atelier made that a crash left (their folder gone): those in a session's scratch directory,
+ * one by one. A worktree of the user's is never touched, whatever its state.
+ */
+async function forgetStaleWorktrees(top: string): Promise<void> {
+	const listed = await git(top, ["worktree", "list", "--porcelain"]).catch(() => "");
+	for (const entry of listed.split("\n\n")) {
+		const path = entry.match(/^worktree (.+)$/m)?.[1];
+		if (path === undefined || !OWN_WORKTREE.test(path) || !/^prunable/m.test(entry)) continue;
+		await git(top, ["worktree", "remove", "--force", path]).catch(() => "");
+	}
+}
+
+/**
+ * Every `node_modules` of the checkout that is not tracked, folder or link, ignored or not, also inside a folder that is
+ * not tracked as a whole: what the snapshot leaves out and the worker needs. From the top; none inside another.
+ */
 async function dependencyFolders(top: string): Promise<string[]> {
-	const listed = await git(top, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
-	return listed
-		.split("\0")
-		.filter((entry) => entry.endsWith("/") && basename(entry.slice(0, -1)) === "node_modules")
-		.map((entry) => entry.slice(0, -1));
+	const untracked = ["ls-files", "--others", "--exclude-standard", "--directory", "-z"];
+	const entries = [
+		...(await git(top, [...untracked, "--ignored"])).split("\0"),
+		...(await git(top, untracked)).split("\0"),
+	].filter((entry) => entry !== "");
+	const found = new Set<string>();
+	for (const entry of entries) {
+		const path = entry.endsWith("/") ? entry.slice(0, -1) : entry;
+		if (basename(path) === "node_modules") found.add(path);
+		else if (entry.endsWith("/"))
+			for (const nested of await nestedDependencyFolders(join(top, path))) found.add(join(path, nested));
+	}
+	return [...found].sort();
+}
+
+/** The `node_modules` folders or links inside `dir`, as paths from it, without going into links or into one found. */
+async function nestedDependencyFolders(dir: string): Promise<string[]> {
+	const found: string[] = [];
+	const pending = [""];
+	for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
+		const entries = await readdir(join(dir, at), { withFileTypes: true }).catch(() => []);
+		for (const entry of entries) {
+			const path = at === "" ? entry.name : join(at, entry.name);
+			if (entry.name === "node_modules" && (entry.isDirectory() || entry.isSymbolicLink())) found.push(path);
+			else if (entry.isDirectory() && entry.name !== ".git") pending.push(path);
+		}
+	}
+	return found;
+}
+
+/** Whether `path` is `top` or inside it. */
+function within(top: string, path: string): boolean {
+	return path === top || path.startsWith(`${top}${sep}`);
+}
+
+/**
+ * Makes every link in the worktree that leads into the parent's tree lead to the same place in the worktree instead,
+ * so nothing the worker reads or writes through one is the parent's (pnpm links its packages by absolute paths).
+ * Answers the links it changed outside the dependencies, as paths from the top, with their new target.
+ */
+async function relinkIntoWorktree(top: string, tree: string): Promise<Map<string, string>> {
+	const changed = new Map<string, string>();
+	const pending = [""];
+	for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
+		const entries = await readdir(join(tree, at), { withFileTypes: true });
+		for (const entry of entries) {
+			const path = at === "" ? entry.name : join(at, entry.name);
+			if (at === "" && entry.name === ".git") continue;
+			if (entry.isDirectory()) {
+				pending.push(path);
+				continue;
+			}
+			if (!entry.isSymbolicLink()) continue;
+			const link = join(tree, path);
+			const target = await readlink(link);
+			const resolved = resolve(dirname(link), target);
+			const real = await realpath(resolved).catch(() => resolved);
+			const inParent = within(top, real) ? real : within(top, resolved) ? resolved : undefined;
+			if (inParent === undefined) continue;
+			const local = join(tree, relative(top, inParent));
+			await rm(link, { force: true });
+			await symlink(local, link);
+			if (!/(^|\/)node_modules(\/|$)/.test(path)) changed.set(path, local);
+		}
+	}
+	return changed;
 }
 
 /** Copies `from` to `to` sharing its blocks (APFS clones, reflinks); false where the file system cannot. */
 async function cloneFolder(from: string, to: string): Promise<boolean> {
 	const args =
 		process.platform === "darwin"
-			? ["-c", "-R", from, to]
+			? ["-c", "-R", "-H", from, to]
 			: process.platform === "linux"
-				? ["-R", "--reflink=always", from, to]
+				? ["-R", "-H", "--reflink=always", from, to]
 				: undefined;
 	if (args === undefined) return false;
 	try {
@@ -244,33 +355,51 @@ async function cloneFolder(from: string, to: string): Promise<boolean> {
 	}
 }
 
+/** The parent's dependency folders copied beside the worktree, waiting to be put in it. */
+interface CopiedDependencies {
+	dependencies: Dependencies;
+	staged: { folder: string; path: string }[];
+}
+
 /**
- * Gives the worktree the parent's dependencies as its own, so the worker can run its tests and nothing it writes there
- * reaches the parent's: each folder cloned, or copied where the file system cannot clone (the links inside are copied
- * as links). A folder that cannot be copied fails the whole worktree: the worker would not have what it needs.
+ * Copies the parent's dependencies into `staging`, as the worker's own, so it can run its tests and nothing it writes
+ * there reaches the parent's: each folder cloned, or copied where the file system cannot clone (the links inside are
+ * copied as links). A folder that cannot be copied fails the whole worktree: the worker would not have what it needs.
  */
-async function shareDependencies(
+async function copyDependencies(
 	top: string,
-	tree: string,
+	staging: string,
 	folders: readonly string[],
 	clone: boolean,
-): Promise<Dependencies> {
-	let shared: Dependencies = "none";
-	for (const folder of folders) {
+): Promise<CopiedDependencies> {
+	let dependencies: Dependencies = "none";
+	const staged: CopiedDependencies["staged"] = [];
+	await mkdir(staging, { recursive: true });
+	for (const [index, folder] of folders.entries()) {
 		const from = join(top, folder);
-		const to = join(tree, folder);
-		await rm(to, { recursive: true, force: true });
-		await mkdir(dirname(to), { recursive: true });
-		if (clone && (await cloneFolder(from, to))) {
-			if (shared === "none") shared = "cloned";
+		const path = join(staging, String(index));
+		staged.push({ folder, path });
+		if (clone && (await cloneFolder(from, path))) {
+			if (dependencies === "none") dependencies = "cloned";
 			continue;
 		}
 		try {
-			await execFileAsync("cp", ["-R", from, to]);
+			// -H: a `node_modules` that is a link is copied as what it leads to.
+			await execFileAsync("cp", ["-R", "-H", from, path]);
 		} catch (error) {
 			throw new Error(`could not copy ${folder} into the worker's worktree: ${(error as Error).message}`);
 		}
-		shared = "copied";
+		dependencies = "copied";
 	}
-	return shared;
+	return { dependencies, staged };
+}
+
+/** Moves the copied dependencies to their places in the worktree, in place of whatever the checkout put there. */
+async function placeDependencies(tree: string, staged: CopiedDependencies["staged"]): Promise<void> {
+	for (const { folder, path } of staged) {
+		const to = join(tree, folder);
+		await rm(to, { recursive: true, force: true });
+		await mkdir(dirname(to), { recursive: true });
+		await rename(path, to);
+	}
 }
