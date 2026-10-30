@@ -62,11 +62,19 @@ const userAnswers = z
 		z.union([
 			z.strictObject({ questionId: answerText(64), optionId: answerText(64) }),
 			z.strictObject({ questionId: answerText(64), other: answerText(2000) }),
+			z.strictObject({
+				questionId: answerText(64),
+				optionIds: z.array(answerText(64)).max(4),
+				other: answerText(2000).optional(),
+			}),
 		]),
 	)
 	.min(1)
 	.max(4)
 	.nullable();
+
+/** `true`, or what the client can show beyond single-choice questions; a capability it does not know is refused. */
+const userQuestions = z.union([z.boolean(), z.strictObject({ multiSelect: z.boolean().optional() })]).optional();
 
 const commandSchema = z.discriminatedUnion("command", [
 	z.object({
@@ -80,7 +88,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		noSandbox: z.boolean().optional(),
 		profile: z.string().min(1).optional(),
 		noSession: z.boolean().optional(),
-		userQuestions: z.boolean().optional(),
+		userQuestions,
 		sessionEvents: z.boolean().optional(),
 	}),
 	z.object({ command: z.literal("profiles.list"), cwd: z.string().min(1).optional() }),
@@ -146,7 +154,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		command: z.literal("session.resume"),
 		sessionId: savedId,
 		cwd: z.string().min(1),
-		userQuestions: z.boolean().optional(),
+		userQuestions,
 		sessionEvents: z.boolean().optional(),
 	}),
 	z.object({ command: z.literal("session.rename"), sessionId: savedId, cwd: z.string().min(1), name: savedName }),

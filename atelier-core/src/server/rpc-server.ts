@@ -47,6 +47,7 @@ import {
 import { type LoadedSession, SessionFileError, type SessionRecorder, SessionStore } from "../sessions/index.ts";
 import { BUILTIN_AGENTS, type SubagentDefinition } from "../subagents/definitions.ts";
 import { THINKING_LEVELS } from "../thinking.ts";
+import type { UserQuestionCapabilities } from "../tools/ask-user.ts";
 import { loadSandboxAdditions, SandboxConfigError } from "../tools/sandbox-config.ts";
 import type { ToolDefinition } from "../tools/types.ts";
 import { VERSION } from "../version.ts";
@@ -132,8 +133,8 @@ interface StartRequest {
 	mode?: PermissionMode | undefined;
 	/** The session is not saved. */
 	noSession?: boolean | undefined;
-	/** The client answers `ask_user` questions (`session.answer_user`). */
-	userQuestions?: boolean | undefined;
+	/** The client answers `ask_user` questions (`session.answer_user`); an object also says what more it can show. */
+	userQuestions?: boolean | UserQuestionCapabilities | undefined;
 	/** The client reads `session_event` messages, events outside any turn. */
 	sessionEvents?: boolean | undefined;
 	/** Starts from this saved session and goes on writing its file. */
@@ -272,7 +273,7 @@ export class RpcServer {
 					profile: message.profile,
 					mode: message.mode,
 					noSession: message.noSession === true,
-					userQuestions: message.userQuestions === true,
+					userQuestions: message.userQuestions,
 					sessionEvents: message.sessionEvents === true,
 				});
 				return {
@@ -286,12 +287,7 @@ export class RpcServer {
 					sessions: JSON.parse(JSON.stringify(await store.list(message.cwd))) as JsonValue[],
 				}));
 			case "session.resume":
-				return this.#resume(
-					message.cwd,
-					message.sessionId,
-					message.userQuestions === true,
-					message.sessionEvents === true,
-				);
+				return this.#resume(message.cwd, message.sessionId, message.userQuestions, message.sessionEvents === true);
 			case "session.rename":
 				return this.#saved(async (store) => {
 					await store.rename(message.cwd, message.sessionId, message.name);
@@ -639,7 +635,12 @@ export class RpcServer {
 	}
 
 	/** Starts a session from a saved one and answers what a client needs to show it again. */
-	async #resume(cwd: string, savedId: string, userQuestions: boolean, sessionEvents: boolean): Promise<Result> {
+	async #resume(
+		cwd: string,
+		savedId: string,
+		userQuestions: StartRequest["userQuestions"],
+		sessionEvents: boolean,
+	): Promise<Result> {
 		return this.#saved(async (store) => {
 			const loaded = await store.load(cwd, savedId);
 			const started = await this.#start({
@@ -765,7 +766,7 @@ export class RpcServer {
 				...(saved?.yoloTold === undefined ? {} : { resumedYoloTold: saved.yoloTold }),
 				...(recorder === undefined ? {} : { record: recorder }),
 				tools: this.#options.tools,
-				...(request.userQuestions ? { userQuestions: true } : {}),
+				...(request.userQuestions ? { userQuestions: request.userQuestions } : {}),
 				systemPromptAppend: this.#options.systemPromptAppend,
 				...(noSandbox ? { noSandbox: true } : {}),
 				approve: ({ callId }) => new Promise<ApprovalAnswer>((resolve) => approvals.set(callId, resolve)),
