@@ -3461,6 +3461,31 @@ describe("the automatic review's base", () => {
 		},
 	);
 
+	it("keeps the base where it was after a review approved only after a correction, so a reverted fix is seen again", async () => {
+		let round = 1;
+		const roles = new RoleBackend((role, prompt) => (round === 1 ? defaultReply(role, prompt) : clean(role, prompt)));
+		const fix: FakeStep[] = [change("src/auth.ts", "export const a = 2;\n"), { event: finished }];
+		const revert: FakeStep[] = [
+			DECLARED_NONE,
+			change("src/auth.ts", "export const a = 1;\n"),
+			change("src/auth2.ts", "export const b = 1;\n"),
+			{ event: finished },
+		];
+		const s = await start({ roles, turns: [HIGH_TURN, fix, revert] });
+		const [done] = ofType(await s.send("add auth"), "review_finished");
+		expect(done).toMatchObject({ verdict: "approved", correction: { used: 2 } });
+		round = 2;
+
+		const { events, prompts } = await lensPrompts(s, "more auth");
+		expect(prompts.length).toBeGreaterThan(0);
+		for (const prompt of prompts) {
+			expect(prompt).toContain("diff --git a/src/auth.ts b/src/auth.ts");
+			expect(prompt).toContain("diff --git a/src/auth2.ts b/src/auth2.ts");
+		}
+		expect(ofType(events, "review_assessed")[0]?.sinceReview).toBeUndefined();
+		expect(await receiptOf(events)).toMatchObject({ base: headTree(s.cwd) });
+	});
+
 	it("goes back to the turn's own base when git pruned the approved tree", async () => {
 		const s = await start({ roles: new RoleBackend(clean), turns: [HIGH_TURN, SECOND] });
 		expect(ofType(await s.send("add auth"), "review_finished")[0]).toMatchObject({ verdict: "approved" });
