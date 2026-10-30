@@ -123,6 +123,22 @@ describe("the parent's background work in a measured session", () => {
 		expect(tally).toMatchObject({ applies: 2, checkRuns: 1, checksAfterLastApply: 0, polls: 1 });
 	});
 
+	it("counts nothing quoted or in a heredoc's body, and what runs after the heredoc", () => {
+		const tally = tallyBackground(
+			[
+				bash("a", "echo 'example; sleep 30'"),
+				bash("b", 'echo "run it: && node_modules/.bin/vitest run" | tee note.txt'),
+				bash(
+					"c",
+					"cat <<'EOF' > run.sh\nnode_modules/.bin/vitest run\nsleep 3\ngit apply a.patch\nEOF\nnode_modules/.bin/vitest run",
+				),
+				bash("d", "cat <<-END > x\n\tsleep 1\n\tEND\nsleep 2"),
+			],
+			new Map(),
+		);
+		expect(tally).toMatchObject({ applies: 0, checkRuns: 1, checksAfterLastApply: 1, polls: 1 });
+	});
+
 	it("counts no launch response for a launch whose request is unknown, and nothing in an idle session", () => {
 		expect(tallyBackground([task("a", "p", true)], new Map()).launchResponses).toBe(0);
 		expect(tallyBackground([], new Map())).toEqual({

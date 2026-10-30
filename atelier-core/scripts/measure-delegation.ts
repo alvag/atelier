@@ -55,6 +55,7 @@ import {
 import { BACKGROUND_RULES_VARIANTS, type BackgroundRulesVariant } from "../src/prompt.ts";
 import { sandbox } from "../src/tools/sandbox.ts";
 import { CHECKS, checksPass, makeBackgroundRepo } from "./background-repo.ts";
+import { runWokenTurns } from "./background-turns.ts";
 import { addCost, sumCosts, usd } from "./cost.ts";
 import {
 	type BackgroundCalls,
@@ -302,18 +303,15 @@ async function measure(task: Task): Promise<Run> {
 			run.pastedLines += pastedLines(text, known);
 		};
 		for await (const event of session.send(task.prompt)) take(event);
-		// The turns the notices of background work wake, until none runs or waits.
-		const deadline = Date.now() + BACKGROUND_LIMIT_MS;
-		while (background && (session.jobs.running > 0 || session.jobs.waiting > 0)) {
-			const left = deadline - Date.now();
-			if (left <= 0) {
-				run.errors.push(`background work still ran after ${BACKGROUND_LIMIT_MS / 60_000} minutes`);
-				break;
-			}
-			await Promise.race([woken.promise, new Promise((resolve) => setTimeout(resolve, Math.min(left, 1000)))]);
-			woken = Promise.withResolvers<void>();
-			const next = session.nextQueued();
-			if (next !== undefined) for await (const event of next) take(event);
+		if (background) {
+			const stopped = await runWokenTurns(session, take, {
+				limitMs: BACKGROUND_LIMIT_MS,
+				wait: async (ms) => {
+					await Promise.race([woken.promise, new Promise((resolve) => setTimeout(resolve, ms))]);
+					woken = Promise.withResolvers<void>();
+				},
+			});
+			if (stopped !== undefined) run.errors.push(stopped);
 		}
 		const tally = tallyParentCalls(events, chars);
 		Object.assign(run, tally, { firstTool: tally.firstTool ?? "none" });
@@ -334,7 +332,7 @@ async function measure(task: Task): Promise<Run> {
 			run.background = {
 				...tallyBackground(events, requests),
 				changesMade: made.filter(Boolean).length,
-				checksPass: await checksPass(cwd),
+				checksPass: await checksPass(cwd, sandbox),
 			};
 		}
 	} finally {

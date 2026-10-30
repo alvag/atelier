@@ -134,14 +134,71 @@ export function backgroundTaskCost(events: Iterable<AtelierEvent>): number | und
 
 /**
  * The simple commands of a shell line, each as its words without quotes or leading variable assignments: split at
- * `&&`, `||`, `;`, `|` and line ends. Enough for what a model writes; not a shell parser.
+ * `&&`, `||`, `;`, `|`, `&` and line ends outside quotes, with the bodies of heredocs left out. Enough for what a model
+ * writes; not a shell parser.
  */
 function commandSegments(command: string): string[][] {
-	return command.split(/&&|\|\||;|\||\n/).map((segment) => {
-		const words = (segment.match(/'[^']*'|"[^"]*"|\S+/g) ?? []).map((word) => word.replace(/^(['"])(.*)\1$/, "$2"));
+	const segments: string[][] = [];
+	let words: string[] = [];
+	let word: string | undefined;
+	/** The heredocs opened on the current line: their bodies start at its end. */
+	let heredocs: { delimiter: string; tabs: boolean }[] = [];
+	const endWord = () => {
+		if (word !== undefined) words.push(word);
+		word = undefined;
+	};
+	const endSegment = () => {
+		endWord();
 		while (words.length > 0 && /^\w+=/.test(words[0] as string)) words.shift();
-		return words;
-	});
+		if (words.length > 0) segments.push(words);
+		words = [];
+	};
+	let at = 0;
+	while (at < command.length) {
+		const char = command[at] as string;
+		if (char === "'") {
+			const end = command.indexOf("'", at + 1);
+			word = (word ?? "") + command.slice(at + 1, end === -1 ? undefined : end);
+			at = end === -1 ? command.length : end + 1;
+		} else if (char === '"') {
+			let text = "";
+			for (at++; at < command.length && command[at] !== '"'; at++)
+				text += command[at] === "\\" && at + 1 < command.length ? command[++at] : command[at];
+			word = (word ?? "") + text;
+			at++;
+		} else if (char === "\\" && at + 1 < command.length) {
+			word = (word ?? "") + command[at + 1];
+			at += 2;
+		} else if (command.startsWith("<<", at) && !command.startsWith("<<<", at)) {
+			endWord();
+			const opened = /^<<(-?)[ \t]*(['"]?)([^\s'";&|<>]+)\2/.exec(command.slice(at));
+			if (opened) heredocs.push({ delimiter: opened[3] as string, tabs: opened[1] === "-" });
+			at += opened?.[0].length ?? 2;
+		} else if (char === "\n") {
+			endSegment();
+			at++;
+			for (const { delimiter, tabs } of heredocs) {
+				while (at < command.length) {
+					const end = command.indexOf("\n", at);
+					const line = command.slice(at, end === -1 ? undefined : end);
+					at = end === -1 ? command.length : end + 1;
+					if ((tabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+				}
+			}
+			heredocs = [];
+		} else if (char === ";" || char === "&" || char === "|") {
+			endSegment();
+			at++;
+		} else if (char === " " || char === "\t") {
+			endWord();
+			at++;
+		} else {
+			word = (word ?? "") + char;
+			at++;
+		}
+	}
+	endSegment();
+	return segments;
 }
 
 /** Whether the command runs `program`, by path or through npx, pnpm (exec), yarn or bunx; not one that only names it. */

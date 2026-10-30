@@ -4,9 +4,11 @@
  * already has installed.
  */
 import { execFile } from "node:child_process";
-import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { type Sandbox, shellQuote } from "../src/tools/sandbox.ts";
 
 const run = promisify(execFile);
 
@@ -74,12 +76,33 @@ async function linkModules(target: string, modules: readonly string[]): Promise<
 	}
 }
 
-/** Whether the repository's checks pass now. */
-export async function checksPass(cwd: string): Promise<boolean> {
+/**
+ * Whether the repository's checks pass now. They run tests the agent wrote: through Atelier's sandbox as an agent's
+ * `bash` runs, when `sandbox` is available, and always with an environment of their own, nothing of this process's
+ * but PATH: a home and a temporary folder made for them, so no key or real home reaches them.
+ */
+export async function checksPass(cwd: string, sandbox?: Sandbox): Promise<boolean> {
+	const own = await mkdtemp(join(tmpdir(), "atelier-checks-"));
+	const home = join(own, "home");
+	const temp = join(own, "tmp");
+	await mkdir(home);
+	await mkdir(temp);
+	const env = {
+		PATH: process.env.PATH ?? "/usr/bin:/bin",
+		HOME: home,
+		TMPDIR: temp,
+		XDG_CONFIG_HOME: join(home, ".config"),
+	};
 	try {
-		await run("sh", ["-c", CHECKS], { cwd, timeout: 300_000 });
+		// The sandbox hands its commands a TMPDIR of its own: the command sets theirs, so it wins.
+		const command = `export HOME=${shellQuote(home)} TMPDIR=${shellQuote(temp)}\n${CHECKS}`;
+		const sandboxed = (await sandbox?.status())?.available === true;
+		const script = sandboxed && sandbox ? await sandbox.wrap(command, { policy: "agent", cwd }) : command;
+		await run("bash", ["-c", script], { cwd, env, timeout: 300_000 });
 		return true;
 	} catch {
 		return false;
+	} finally {
+		await rm(own, { recursive: true, force: true });
 	}
 }
