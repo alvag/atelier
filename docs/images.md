@@ -27,6 +27,11 @@ Paste an image file's path into the editor to attach it as `[Image #n]` at the c
 Raw paths with spaces, shell-quoted or escaped paths, `~/` paths and local `file://` URLs work;
 a paste can also contain several quoted paths. Use `./name` for a relative filename without an
 extension. Ordinary text and non-image paths stay text.
+On macOS, Ctrl+V attaches an image from the clipboard instead: PNG or TIFF, normalized like any
+image and counted in the same limits. It reads the image only, never text, so paste text with the
+terminal's own paste (Cmd+V). An empty or unsupported clipboard says so and leaves the draft
+unchanged; a read that fails or takes more than 3 seconds shows an error. Elsewhere Ctrl+V says it
+is macOS only. Ctrl+V does nothing while a question is open.
 Delete a whole marker to remove its attachment. A prompt can contain images without text.
 
 Enter or Alt+Enter sends the text and native images; the transcript keeps the visible markers.
@@ -36,7 +41,7 @@ submitted draft and its bytes alongside any newer typing; an accepted send does 
 Image prompts are not added to editor history, so recalling text never silently reattaches pixels.
 
 If Enter arrives during preparation, wait for it to finish and press Enter again. An edit or
-cursor move cancels an unfinished paste with a note to paste it again. New sessions and quitting
+cursor move cancels an unfinished paste or clipboard read with a note to try again; Ctrl+C aborts the read. New sessions and quitting
 discard pending results rather than inserting them into a different draft.
 
 ## Images with a prompt over RPC
