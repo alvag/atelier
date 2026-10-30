@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Paint } from "./style.ts";
 
 /** The columns a panel's sides take around its content: `│ ` and ` │`. */
@@ -9,9 +9,41 @@ export function previewLines(preview: string): string[] {
 	return preview.replace(/\n$/, "").replaceAll("\t", "  ").split("\n");
 }
 
-/** A preview's rows in `width` columns: each of its lines, wrapped. */
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** What a row never splits: a marker of the sanitizer (`⟨U+061C⟩`) or a terminal sequence; captured, to keep them. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: a terminal sequence starts with the escape character
+const WHOLE = /(⟨U\+[0-9A-F]{4,6}⟩|\x1b\[[0-?]*[ -/]*[@-~])/;
+
+/** The pieces of `line` a row may end between: its characters as the eye sees them, and what `WHOLE` matches. */
+function pieces(line: string): string[] {
+	return line
+		.split(WHOLE)
+		.flatMap((part, index) =>
+			index % 2 === 1 ? [part] : Array.from(graphemes.segment(part), (entry) => entry.segment),
+		);
+}
+
+/** `line` cut into rows of at most `width` columns, by columns rather than words: every space stays where it was. */
+function cutLine(line: string, width: number): string[] {
+	const rows: string[] = [];
+	let row = "";
+	let used = 0;
+	for (const piece of pieces(line)) {
+		const size = visibleWidth(piece);
+		if (used > 0 && used + size > width) {
+			rows.push(row);
+			row = "";
+			used = 0;
+		}
+		row += piece;
+		used += size;
+	}
+	return [...rows, row];
+}
+
+/** A preview's rows in `width` columns: each of its lines, cut by columns. */
 export function previewRows(preview: string, width: number): string[] {
-	return previewLines(preview).flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
+	return previewLines(preview).flatMap((line) => cutLine(line, Math.max(1, width)));
 }
 
 /**
