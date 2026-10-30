@@ -27,9 +27,12 @@ import {
 	type Usage,
 	ZERO_USAGE,
 } from "../../events.ts";
+import { imageInputProblem, imageOmission } from "../../image-support.ts";
 import type { ThinkingLevel } from "../../profiles/index.ts";
 import {
 	buildResponsesBody,
+	type InputImage,
+	type InputText,
 	type ResponsesError,
 	type ResponsesItem,
 	type ResponsesTool,
@@ -139,9 +142,9 @@ function savedHistory(resume: ResumeState | undefined): ResponsesItem[] {
 function forHistory(item: ResponsesItem): ResponsesItem | undefined {
 	switch (item.type) {
 		case "message": {
-			const content = item.content
-				.filter((part) => part.type === "output_text" && part.text !== "")
-				.map((part) => ({ type: "output_text" as const, text: part.text }));
+			const content = item.content.flatMap((part) =>
+				part.type === "output_text" && part.text !== "" ? [{ type: "output_text" as const, text: part.text }] : [],
+			);
 			return content.length === 0 ? undefined : { type: "message", role: item.role, content };
 		}
 		case "function_call":
@@ -374,7 +377,19 @@ class OpenAiCodexSession implements BackendSession {
 		return buildResponsesBody({
 			model,
 			instructions: this.#setup.instructions,
-			input: options.input ?? this.#history,
+			input:
+				imageInputProblem(BACKEND_ID, model) === undefined
+					? (options.input ?? this.#history)
+					: (options.input ?? this.#history).map((item) =>
+							item.type !== "message"
+								? item
+								: {
+										...item,
+										content: item.content.map((part) =>
+											part.type === "input_image" ? { type: "input_text" as const, text: imageOmission(model) } : part,
+										),
+									},
+						),
 			tools: this.#setup.tools,
 			...(options.summary ? { toolChoice: "none" as const } : {}),
 			// Always asked, so each response's reasoning comes back encrypted and the next request can carry it.
@@ -595,6 +610,7 @@ class OpenAiCodexSession implements BackendSession {
 	/** Runs the calls in order; once interrupted, the rest get an error output so every call keeps its answer. */
 	async #runTools(calls: (ResponsesItem & { type: "function_call" })[], signal: AbortSignal): Promise<void> {
 		const steering: string[] = [];
+		const images: (InputText | InputImage)[] = [];
 		for (const call of calls) {
 			if (signal.aborted) {
 				this.#history.push({ type: "function_call_output", call_id: call.call_id, output: INTERRUPTED_TOOL });
@@ -617,8 +633,20 @@ class OpenAiCodexSession implements BackendSession {
 				call_id: call.call_id,
 				output: result.ok ? result.output : `Error: ${result.output}`,
 			});
+			if (result.images?.length)
+				images.push(
+					{ type: "input_text", text: `Images from tool result ${call.call_id}:` },
+					...result.images.map(
+						(image): InputImage => ({
+							type: "input_image",
+							image_url: `data:${image.mimeType};base64,${image.data}`,
+							detail: "auto",
+						}),
+					),
+				);
 			if (result.steering !== undefined) steering.push(result.steering);
 		}
+		if (images.length > 0) this.#history.push({ type: "message", role: "user", content: images });
 		if (steering.length > 0)
 			this.#history.push({
 				type: "message",

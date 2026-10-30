@@ -50,6 +50,8 @@ describe("read images", () => {
 		{ id: "anthropic-api", images: false },
 		{ id: "opencode-go", images: true },
 		{ id: "opencode-go", images: false },
+		{ id: "openai-codex", images: true },
+		{ id: "openai-codex", images: false },
 	])("honors catalog image input $images for $id outside the static list", async ({ id, images }) => {
 		useModelData(new ModelData({ [id]: [{ id: "catalog-model", images }] }));
 		await writeFile(
