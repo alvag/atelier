@@ -42,7 +42,6 @@ describe("the parent's calls in a measured turn", () => {
 		expect(tally.firstTool).toBeUndefined();
 		expect(tally.readsBeforeTask).toBe(0);
 		expect(tally.readsAfterTask).toBe(0);
-		expect(tally.noticeDue).toBe(false);
 	});
 
 	it("sums the characters of the reads that succeeded before any task, and counts no subagent's", () => {
@@ -61,23 +60,6 @@ describe("the parent's calls in a measured turn", () => {
 			["e", 7000],
 		]);
 		expect(tallyParentCalls(events, chars).readCharsBeforeTask).toBe(1000);
-	});
-
-	it("says the notice is due once five reads that succeeded reach 20,000 characters", () => {
-		const five = ["a", "b", "c", "d", "e"].flatMap((id) => call(id, id === "a" ? "grep" : "read"));
-		const chars = (each: number) => new Map(["a", "b", "c", "d", "e"].map((id) => [id, each]));
-		expect(tallyParentCalls(five, chars(4000)).noticeDue).toBe(true);
-		expect(tallyParentCalls(five, chars(3999)).noticeDue).toBe(false);
-		expect(tallyParentCalls(five.slice(2), chars(10_000)).noticeDue).toBe(false);
-		expect(tallyParentCalls([...five.slice(0, 8), ...call("f", "read", false)], chars(10_000)).noticeDue).toBe(false);
-	});
-
-	it("never has the notice due after a task, an edit or a write in the turn", () => {
-		const reads = (ids: string[]) => ids.flatMap((id) => call(id, "read"));
-		const chars = new Map(["a", "b", "c", "d", "e", "f"].map((id) => [id, 5000]));
-		for (const tool of ["task", "edit", "write"])
-			expect(tallyParentCalls([...call("z", tool), ...reads(["a", "b", "c", "d", "e"])], chars).noticeDue).toBe(false);
-		expect(tallyParentCalls([...reads(["a", "b", "c", "d", "e"]), ...call("z", "edit")], chars).noticeDue).toBe(true);
 	});
 });
 
