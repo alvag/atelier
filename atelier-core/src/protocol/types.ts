@@ -49,7 +49,7 @@ export type ClientCommand =
 			/**
 			 * Opts in to `ask_user` questions (`user_question_requested`, answered by `session.answer_user`); without it the
 			 * tool is unavailable at once. `{ multiSelect: true }` also lets the model ask multi-select questions, and
-			 * `{ preview: true }` give options a preview; `true` keeps them all single-choice, without previews.
+			 * `{ preview: true }` gives options a preview; `true` keeps them all single-choice, without previews.
 			 */
 			userQuestions?: boolean | UserQuestionCapabilities;
 			/** Opts in to `session_event` messages, events outside any turn; without it they go first in the next turn. */
