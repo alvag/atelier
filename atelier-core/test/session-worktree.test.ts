@@ -25,6 +25,7 @@ import {
 } from "../src/index.ts";
 import { PermissionRules } from "../src/permission-rules.ts";
 import { BUILTIN_AGENTS } from "../src/subagents/definitions.ts";
+import { createTaskWorktree } from "../src/subagents/worktree.ts";
 import { createBackgroundTools } from "../src/tools/background.ts";
 import { createBashTool } from "../src/tools/bash.ts";
 import { createEditTool } from "../src/tools/edit.ts";
@@ -791,4 +792,31 @@ describe.skipIf(!onMac)("a background worker in the real sandbox", () => {
 			"node_modules",
 		);
 	});
+});
+
+describe("a worker's worktree of a repository with an awkward path", () => {
+	it.each(["colon:repo", 'quote"repo', "back\\slash:and space"])(
+		"is made, takes the uncommitted work and returns the patch in %s",
+		async (name) => {
+			const base = await realpath(await mkdtemp(join(tmpdir(), "atelier-awkward-")));
+			const awkward = join(base, name);
+			mkdirSync(awkward);
+			git(awkward, "init", "-q");
+			writeFileSync(join(awkward, "a.txt"), "one\n");
+			git(awkward, "add", "-A");
+			git(awkward, "commit", "-qm", "init");
+			writeFileSync(join(awkward, "a.txt"), "one\ndirty\n");
+			const worktree = await createTaskWorktree(awkward, join(base, "w"));
+			try {
+				expect(readFileSync(join(worktree.cwd, "a.txt"), "utf8")).toBe("one\ndirty\n");
+				await worktree.adopt();
+				expect(git(worktree.cwd, "status", "--short")).toBe("");
+				writeFileSync(join(worktree.cwd, "a.txt"), "one\ndirty\nfixed\n");
+				const changes = await worktree.collect(join(base, "p.patch"));
+				expect(changes).toMatchObject({ files: ["a.txt"], insertions: 1, deletions: 0 });
+			} finally {
+				await worktree.remove();
+			}
+		},
+	);
 });
