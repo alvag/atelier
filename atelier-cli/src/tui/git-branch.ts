@@ -53,9 +53,16 @@ export async function readGitBranch(cwd: string): Promise<string | undefined> {
 	}
 }
 
-/** A bounded, read-only status query. No pager, fsmonitor, filters, submodule commands, or lazy object fetches. */
-export async function readGitChanges(cwd: string, signal?: AbortSignal): Promise<number | undefined> {
-	const deadline = Date.now() + STATUS_TIMEOUT_MS;
+/**
+ * A bounded, read-only status query. No pager, fsmonitor, filters, submodule commands, or lazy object fetches.
+ * Its subprocesses share one deadline, `timeoutMs` after the call (two seconds by default).
+ */
+export async function readGitChanges(
+	cwd: string,
+	signal?: AbortSignal,
+	options: { timeoutMs?: number } = {},
+): Promise<number | undefined> {
+	const deadline = Date.now() + (options.timeoutMs ?? STATUS_TIMEOUT_MS);
 	let view: string | undefined;
 	try {
 		const repository = await repositoryOf(cwd);

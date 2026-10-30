@@ -6,6 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGitChanges } from "../src/tui/git-branch.ts";
 
 let base: string;
+/**
+ * Far beyond the fake Git's start-up time, so the product's two-second deadline does not decide a result on a loaded
+ * machine; each test's Vitest timeout is still the real bound.
+ */
+const loadTolerant = { timeoutMs: 30_000 };
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd });
 beforeEach(async () => {
 	base = await mkdtemp(join(tmpdir(), "atelier-git-status-"));
@@ -34,11 +39,11 @@ describe("read-only git changes", () => {
 		await writeFile(join(base, "old"), "renamed content\n");
 		git(base, "add", ".");
 		git(base, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base");
-		expect(await readGitChanges(base)).toBe(0);
+		expect(await readGitChanges(base, undefined, loadTolerant)).toBe(0);
 		await writeFile(join(base, ".git", "info", "global-ignore"), "ignored\n");
 		git(base, "config", "core.excludesFile", join(base, ".git", "info", "global-ignore"));
 		await writeFile(join(base, "ignored"), "not counted");
-		expect(await readGitChanges(base)).toBe(0);
+		expect(await readGitChanges(base, undefined, loadTolerant)).toBe(0);
 		git(base, "mv", "old", "new");
 		await writeFile(join(base, "tracked"), "staged\n");
 		git(base, "add", "tracked");
@@ -48,10 +53,10 @@ describe("read-only git changes", () => {
 		await writeFile(join(base, "dir", "two"), "two");
 		git(base, "update-index", "--split-index");
 		const index = await readFile(join(base, ".git", "index"));
-		expect(await readGitChanges(base)).toBe(4);
+		expect(await readGitChanges(base, undefined, loadTolerant)).toBe(4);
 		await rm(join(base, "tracked"));
 		await symlink("new", join(base, "tracked"));
-		expect(await readGitChanges(base)).toBe(4);
+		expect(await readGitChanges(base, undefined, loadTolerant)).toBe(4);
 		expect(await readFile(join(base, ".git", "index"))).toEqual(index);
 	});
 
@@ -76,7 +81,7 @@ describe("read-only git changes", () => {
 		git(base, "add", ".");
 		git(base, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base");
 		await writeFile(join(base, "tracked"), "real change\n");
-		expect(await readGitChanges(base)).toBe(1);
+		expect(await readGitChanges(base, undefined, loadTolerant)).toBe(1);
 	});
 
 	it.each(["worktree", "info", "configured"])("omits changes with filter=lfs from %s attributes", async (source) => {
@@ -157,7 +162,7 @@ process.stdout.write(output);
 		vi.stubEnv("GIT_DIR", join(base, ".git"));
 		vi.stubEnv("GIT_WORK_TREE", base);
 		vi.stubEnv("GIT_INDEX_FILE", join(base, "does-not-exist"));
-		expect(await readGitChanges(worktree)).toBe(1);
+		expect(await readGitChanges(worktree, undefined, loadTolerant)).toBe(1);
 	});
 
 	it("omits the count rather than creating temporary metadata inside the worktree", async () => {
@@ -181,17 +186,25 @@ process.stdout.write(output);
 	it("bounds a stuck command without blocking the event loop", async () => {
 		await fakeGit("setInterval(() => {}, 1000);");
 		let responsive = false;
+		const started = Date.now();
 		const pending = readGitChanges(base);
 		setImmediate(() => {
 			responsive = true;
 		});
 		expect(await pending).toBeUndefined();
+		// The default deadline: two seconds after the call, never earlier.
+		expect(Date.now() - started).toBeGreaterThanOrEqual(2000);
 		expect(responsive).toBe(true);
+	});
+
+	it("waits for a slow command up to the given timeout", { timeout: 15_000 }, async () => {
+		await fakeGit("setTimeout(() => process.stdout.write('?? x\\0'), 2500);");
+		expect(await readGitChanges(base, undefined, loadTolerant)).toBe(1);
 	});
 
 	it("keeps the count when changed paths have only non-filter attributes", async () => {
 		await fakeGit("process.stdout.write('?? x\\0');", "process.stdout.write('x\\0text\\0set\\0');");
-		expect(await readGitChanges(base)).toBe(1);
+		expect(await readGitChanges(base, undefined, loadTolerant)).toBe(1);
 	});
 
 	it("cancels an attribute query and kills its child", async () => {
@@ -201,7 +214,7 @@ process.stdout.write(output);
 			`require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`,
 		);
 		const controller = new AbortController();
-		const pending = readGitChanges(base, controller.signal);
+		const pending = readGitChanges(base, controller.signal, loadTolerant);
 		// A loaded machine starts the fake Git slowly: wait past the default second, but fail at once if the query gives up first.
 		const ended = pending.then(() => {
 			throw new Error("the status query ended before its attribute query started");
