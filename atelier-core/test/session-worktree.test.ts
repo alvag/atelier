@@ -294,6 +294,28 @@ describe("a worker in the background", () => {
 		expect(parent.prompts[1]).toContain("It changed no files.");
 	});
 
+	it("leaves out of the patch a node_modules folder the worker made, ignored or not", async () => {
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				(cwd) => [
+					{
+						run: () => {
+							mkdirSync(join(cwd(), "lib/node_modules/x"), { recursive: true });
+							writeFileSync(join(cwd(), "lib/node_modules/x/index.js"), "made\n");
+						},
+					},
+					text("done"),
+					{ event: finished },
+				],
+			],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toContain("It changed no files.");
+	});
+
 	it("runs none of the repository's git filters for its snapshot, worktree or patch", async () => {
 		const marker = join(repo, "RAN_WITHOUT_APPROVAL");
 		for (const what of ["clean", "smudge"]) git(repo, "config", `filter.attack.${what}`, `touch ${marker}; cat`);

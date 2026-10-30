@@ -114,21 +114,18 @@ async function filterOverrides(cwd: string): Promise<string[]> {
 	);
 }
 
+/** What `git add` leaves as it is in the base: every `node_modules` folder or file, ignored or not, at any depth. */
+const NOT_DEPENDENCIES = ["--", ".", ":(exclude,glob)**/node_modules", ":(exclude,glob)**/node_modules/**"];
+
 /**
- * The tree of `top`'s working tree as it is now, tracked and untracked files but not ignored ones nor the `excluded`
- * folders, written with an index of its own (`index`), so the user's index, branches and stash are never touched.
+ * The tree of `top`'s working tree as it is now, tracked and untracked files but not ignored ones, written with an
+ * index of its own (`index`), so the user's index, branches and stash are never touched. Whatever is under a
+ * `node_modules` stays as it is in `base`: the dependencies are never part of a snapshot or a patch.
  */
-async function treeOfWorkingTree(
-	top: string,
-	base: string,
-	index: string,
-	excluded: readonly string[] = [],
-): Promise<string> {
-	const options = { env: { GIT_INDEX_FILE: index, GIT_LITERAL_PATHSPECS: "1" }, overrides: await filterOverrides(top) };
+async function treeOfWorkingTree(top: string, base: string, index: string): Promise<string> {
+	const options = { env: { GIT_INDEX_FILE: index }, overrides: await filterOverrides(top) };
 	await git(top, ["read-tree", base], options);
-	await git(top, ["add", "-A"], options);
-	if (excluded.length > 0)
-		await git(top, ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...excluded], options);
+	await git(top, ["add", "-A", ...NOT_DEPENDENCIES], options);
 	return (await git(top, ["write-tree"], options)).trim();
 }
 
@@ -207,8 +204,7 @@ export async function createTaskWorktree(
 		dirty: snapshotTree !== headTree,
 		dependencies: copies.dependencies,
 		async collect(patchPath) {
-			// The dependencies are never part of the patch, whatever the worker made of them (a link is not ignored as a folder is).
-			const changed = await treeOfWorkingTree(tree, snapshot, index, folders);
+			const changed = await treeOfWorkingTree(tree, snapshot, index);
 			if (changed === snapshotTree) return undefined;
 			await writeFile(patchPath, await diffTrees(tree, snapshot, changed, ["--binary"]));
 			const counts = await diffTrees(tree, snapshot, changed, ["--numstat"]);
