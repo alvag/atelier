@@ -553,10 +553,12 @@ describe("a worker in the background", () => {
 		expect(git(repo, "worktree", "list", "--porcelain")).toContain(join(theirs, "wt"));
 	});
 
-	it("forgets a worktree of Atelier's that a crash left, and only that one", async () => {
+	it("forgets a worktree of Atelier's that a crash left, and none of the user's, whatever its path", async () => {
 		const crashed = await realpath(await mkdtemp(join(tmpdir(), "atelier-crashed-")));
 		const stale = join(crashed, "atelier-session-old", "work", "worktrees", "1", "tree");
-		git(repo, "worktree", "add", "-q", "--detach", stale, "HEAD");
+		const theirs = join(crashed, "my-directory", "atelier-session-project", "work", "worktrees", "7", "tree");
+		git(repo, "worktree", "add", "-q", "--detach", "--lock", "--reason", "atelier: background worker", stale, "HEAD");
+		git(repo, "worktree", "add", "-q", "--detach", theirs, "HEAD");
 		await rm(crashed, { recursive: true, force: true });
 		const { session, play, woke } = await started(
 			[[work("c1"), { event: finished }], [{ event: finished }]],
@@ -565,8 +567,9 @@ describe("a worker in the background", () => {
 		await play(session.send("go"));
 		await until(() => woke() === 1);
 		await play(session.nextQueued());
-		expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(stale);
-		expect(worktrees()).toBe(1);
+		const listed = git(repo, "worktree", "list", "--porcelain");
+		expect(listed).not.toContain(stale);
+		expect(listed).toContain(theirs);
 	});
 
 	it("leaves the repository as it was when the dependencies cannot be copied, and starts no subagent", async () => {
