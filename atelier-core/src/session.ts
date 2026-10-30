@@ -81,7 +81,7 @@ import {
 	type ThinkingLevel,
 } from "./profiles/index.ts";
 import { loadProjectInstructions, type ProjectInstructions } from "./project-instructions.ts";
-import { LEFT_YOLO, MEMORY_RULES, oddRules, RISK_RULES, YOLO_RULES } from "./prompt.ts";
+import { type BackgroundRulesVariant, LEFT_YOLO, MEMORY_RULES, oddRules, RISK_RULES, YOLO_RULES } from "./prompt.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
 import { createScratchDir, type ScratchDir } from "./scratch.ts";
@@ -175,6 +175,15 @@ const PARENT_ONLY = new Set([
 	JOB_LIST_TOOL,
 	JOB_STOP_TOOL,
 ]);
+
+/**
+ * The agents the ODD rules say when to run in the background: the explorer and the worker, the only ones that run
+ * there, in a session that can receive their result, with the measured variant.
+ */
+function backgroundRulesFor(options: SessionOptions, agents: readonly string[]): string[] {
+	if (options.backgroundRules !== "rules" || options.wake === undefined) return [];
+	return agents.filter((agent) => agent === "explorer" || agent === "worker");
+}
 
 /** Tells the agent which commands run outside the sandbox on their own, so it asks to leave it only when needed. */
 async function rulesPrompt(rules: PermissionRules | undefined): Promise<string> {
@@ -337,6 +346,12 @@ export interface SessionOptions {
 	 * subagent in the background.
 	 */
 	unattended?: boolean;
+	/**
+	 * Only for `scripts/measure-delegation.ts`, and temporary: which variant of #154's background rules the main agent
+	 * gets, to measure them before one becomes the default. Without it, as `baseline`, nothing changes. Only with
+	 * subagents and `wake`; children never get it.
+	 */
+	backgroundRules?: BackgroundRulesVariant;
 	/**
 	 * Its tools write only `cwd` and the session's scratch directory, whatever the configuration or rules add, and its
 	 * commands run only in the sandbox (`ToolContext.confined`). For a worker in the background, in its own worktree.
@@ -653,9 +668,10 @@ export class Session {
 				onStarted: (task) => session.#taskStarted(task),
 				onEnded: (ended) => session.#taskEnded(ended),
 			});
+		const agentNames = options.subagents?.agents.map((agent) => agent.name) ?? [];
 		session.#systemPrompt = [
 			options.systemPromptAppend ?? "",
-			options.odd ? oddRules(options.subagents?.agents.map((agent) => agent.name) ?? []) : "",
+			options.odd ? oddRules(agentNames, backgroundRulesFor(options, agentNames)) : "",
 			options.memory ? MEMORY_RULES : "",
 			options.review ? RISK_RULES : "",
 			session.#startedYolo ? YOLO_RULES : "",

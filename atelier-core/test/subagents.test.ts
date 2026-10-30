@@ -161,6 +161,35 @@ describe("the delegation rules", () => {
 		// Without subagents there is no task tool to follow.
 		expect(await promptWith()).not.toContain("route says");
 	});
+
+	it("say when to run them in the background and when to run workers in parallel, only when the session can wake", async () => {
+		const promptWith = async (agents: SubagentDefinition[], more: Partial<SessionOptions>) => {
+			const backend = new FakeBackend([]);
+			const subagents = { agents, createBackend: () => new FakeBackend([]) };
+			await (await Session.start({ backend, cwd: process.cwd(), tools, odd: true, subagents, ...more })).close();
+			return backend.startOptions?.systemPromptAppend ?? "";
+		};
+		const when = (who: string) =>
+			`- Run ${who} in the background when its work does not decide your next step, so you keep working or answer the user meanwhile; run it without background when you need its answer to go on, or when it may need the user's approval or a decision: a background subagent cannot ask the user.\n`;
+		const parallel =
+			"- Use several background workers only for two or more independent units of behavior, each more than a subagent's start (several files or about 100 changed lines); the code, tests and docs of one behavior are one unit, and dependent work is not parallel. Launch them together, in one response.\n";
+		const measured = { wake: () => {}, backgroundRules: "rules" } as const;
+
+		expect(await promptWith([...BUILTIN_AGENTS], measured)).toContain(
+			`stays inline.\n${when("an explorer or a worker")}${parallel}- Then go task by task`,
+		);
+		const explorerOnly = await promptWith([explorer], measured);
+		expect(explorerOnly).toContain(`stays inline.\n${when("an explorer")}- Then go task by task`);
+		expect(explorerOnly).not.toContain("worker");
+		expect(await promptWith([worker], measured)).toContain(
+			`following the task tool's rules on when to delegate.\n${when("a worker")}${parallel}- Then go task by task`,
+		);
+		// Only the explorer and the worker run in the background, and only in a session that can receive their result.
+		expect(await promptWith([{ ...explorer, name: "scout" }], measured)).not.toContain("in the background");
+		expect(await promptWith([...BUILTIN_AGENTS], { backgroundRules: "rules" })).not.toContain("in the background");
+		// Without the measured variant, the rules are as before.
+		expect(await promptWith([...BUILTIN_AGENTS], { wake: () => {} })).not.toContain("in the background");
+	});
 });
 
 describe("task", () => {
