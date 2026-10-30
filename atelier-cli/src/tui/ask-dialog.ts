@@ -7,9 +7,8 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-// The prompt editor's own decoding of printable keys, which the package's index does not export.
-import { decodePrintableKey } from "@earendil-works/pi-tui/dist/keys.js";
 import { PasteFilter } from "./dialog.ts";
+import { decodePrintableKey } from "./printable-key.ts";
 import { fitHint, type QuestionAnswer, QuestionDialog, type QuestionOption } from "./question-dialog.ts";
 import type { Paint } from "./style.ts";
 

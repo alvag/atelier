@@ -29,6 +29,7 @@ import { requireIsolatedHome } from "../../atelier-core/test/support/login-isola
 import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
 import { HerdrStatusReporter } from "../src/tui/herdr-status.ts";
+import { PRINTABLE_KEYS } from "./support/printable-keys.ts";
 
 /** `/stats` reads as it does, after `held` when a test sets it. */
 const statsRead = vi.hoisted(() => ({ held: undefined as Promise<void> | undefined }));
@@ -2602,6 +2603,35 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => h.screen.screen().includes("Answered 2 questions"));
 			expect(h.screen.screen()).toContain("→ SQLite");
 			expect(h.screen.screen()).toContain("→ Type something: my cache");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("sends printable terminal keys as before, without inserting modified shortcuts or invalid sequences", async () => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
+			for (const [index, [name, input, decoded]] of PRINTABLE_KEYS.entries()) {
+				const question = `Which checks (${name})?`;
+				stub.emit({
+					type: "user_question_requested",
+					callId: name,
+					questions: [{ id: "keys", question, options: [{ id: "biome", label: "Biome", recommended: true }] }],
+				});
+				await until(() => h.screen.screen().includes(question));
+				h.screen.type("2");
+				h.screen.type("x");
+				h.screen.type(input);
+				h.screen.type("y");
+				const text = `x${decoded ?? (input.startsWith("\x1b") ? "" : input)}y`;
+				await until(() => h.screen.screen().includes(`2. ${text}`));
+				h.screen.type("\r");
+				await until(() => answers().length === index + 1);
+				expect(answers()[index], name).toMatchObject({ callId: name, answers: [{ questionId: "keys", other: text }] });
+			}
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
