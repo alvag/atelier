@@ -2473,6 +2473,73 @@ describe("ask_user on the line terminal", () => {
 		expect(t.result().status).toBe("cancelled");
 	});
 
+	describe("a multi-select question", () => {
+		const checks = {
+			id: "checks",
+			question: "Which checks?",
+			multiSelect: true,
+			options: [
+				{ id: "biome", label: "Biome", description: "Lint and format" },
+				{ id: "tsc", label: "TypeScript", recommended: true },
+				{ id: "vitest", label: "Vitest" },
+			],
+		};
+		const CHECKS = "Choose numbers like 1,3, 0 for none, or /cancel: ";
+		const ask = (multi: (typeof checks)[], raw = false) => {
+			const h = harness([[{ toolCall: { tool: "ask_user", input: { questions: multi } } }, { event: finished }]], {
+				isTTY: true,
+				keepStdinOpen: true,
+				input: [],
+				raw,
+			});
+			const pending = run(["--no-review", "ask"], h.io, h.createBackend);
+			const answer = async (count: number, text: string, prompt = CHECKS) => {
+				await until(() => h.out().split(prompt).length - 1 >= count);
+				(h.io.stdin as PassThrough).write(text);
+			};
+			const ended = async () => {
+				await until(() => h.backend.toolResults.length === 1);
+				h.io.stdin.end();
+				await pending;
+				return JSON.parse(h.backend.toolResults[0]?.output ?? "null");
+			};
+			return { h, answer, ended };
+		};
+
+		it("takes numbers separated by commas, Other among them, in the question's order, and 0 for none", async () => {
+			const t = ask([checks, { ...checks, id: "extras", question: "Extras?" }]);
+			await t.answer(1, "2, 1,4\n");
+			await t.answer(1, " also the docs\n", "Your answer: ");
+			await t.answer(2, "0\n");
+			expect(await t.ended()).toEqual({
+				status: "answered",
+				answers: [
+					{
+						questionId: "checks",
+						optionIds: ["biome", "tsc"],
+						other: " also the docs",
+						labels: ["Biome", "TypeScript"],
+					},
+					{ questionId: "extras", optionIds: [], labels: [] },
+				],
+			});
+			expect(t.h.out()).toContain(
+				"Question 1/2: Which checks? (choose any, or none)\n  1. TypeScript (Recommended)\n  2. Biome\n     Lint and format\n  3. Vitest\n  4. Other...\n",
+			);
+		});
+
+		it("asks again on a blank line, a repeated or out-of-range number, 0 with others and a paste", async () => {
+			const t = ask([checks], true);
+			for (const [count, text] of ["\r", "1,1\r", "1,5\r", "0,1\r", "1,\r", `${paste("1")}\r`].entries())
+				await t.answer(count + 1, text);
+			await t.answer(7, "/cancel\r");
+			expect(await t.ended()).toEqual({ status: "cancelled", reason: "user" });
+			const again = "Choose numbers from 1 to 4, each once and separated by commas, or 0 for none.\n";
+			expect(t.h.out().split(again)).toHaveLength(6);
+			expect(t.h.out()).toContain("pasted text does not answer this question\n");
+		});
+	});
+
 	it("shows hidden characters in the question, labels and descriptions, and keeps the Other text raw", async () => {
 		const csi = "\x1b[31mred\x1b[0m";
 		const osc = "\x1b]0;title\x07";
