@@ -282,6 +282,95 @@ describe("multi-select questions", () => {
 	});
 });
 
+describe("option previews", () => {
+	const SNIPPET = 'web_fetch("http://10.0.0.1")\n→ Error: refused to fetch a private or internal address';
+	const previewed = (preview: string) => ({
+		...question(),
+		options: question().options.map((option, index) => (index === 0 ? { ...option, preview } : option)),
+	});
+	const lines = (count: number) => Array.from({ length: count }, (_, index) => `line ${index + 1}`).join("\n");
+	const schemaOf = (capabilities: Parameters<typeof createAskUserTool>[1]) =>
+		JSON.stringify(z.toJSONSchema(z.object(createAskUserTool(undefined, capabilities).inputShape)));
+
+	it("keeps them away from a session that did not ask for them: schema, description and input", async () => {
+		for (const capabilities of [{}, { multiSelect: true }, { preview: false }]) {
+			expect(schemaOf(capabilities)).not.toContain("preview");
+			expect(createAskUserTool(undefined, capabilities).description).not.toContain("preview");
+			const ask = vi.fn<AskUser>();
+			await expect(
+				createAskUserTool(ask, capabilities).execute({ questions: [previewed(SNIPPET)] }, context),
+			).rejects.toThrow(ToolInputError);
+			expect(ask).not.toHaveBeenCalled();
+		}
+		expect(createAskUserTool(undefined, { preview: false }).description).toBe(createAskUserTool().description);
+	});
+
+	it("tells the model about them when the session asked for them, with or without multi-select questions", () => {
+		expect(createAskUserTool(undefined, { preview: true }).description).toContain(
+			"Each option may include a nonblank description of up to 300 characters. " +
+				"It may also include a preview of up to 1500 characters and 20 lines, such as a code snippet, a config fragment or a layout sketch, which the user sees while on that option. " +
+				"Every question also offers Other...",
+		);
+		expect(createAskUserTool(undefined, { multiSelect: true, preview: true }).description).toContain(
+			"Each option may include a nonblank description of up to 300 characters. " +
+				"An option of a single-choice question may also include a preview of up to 1500 characters and 20 lines, such as a code snippet, a config fragment or a layout sketch, which the user sees while on that option; a multi-select question takes none. " +
+				"Every question also offers Other...",
+		);
+		expect(schemaOf({ preview: true })).toContain("preview");
+		expect(schemaOf({ multiSelect: true, preview: true })).toContain("preview");
+	});
+
+	it.each([
+		["1500 characters", "x".repeat(1500)],
+		["20 lines", lines(20)],
+		["20 lines and a final newline", `${lines(20)}\n`],
+		["a code snippet", SNIPPET],
+	])("passes a preview of %s to the user callback as written", async (_name, preview) => {
+		const ask = vi.fn<AskUser>().mockResolvedValue({ status: "cancelled", reason: "user" });
+		const questions = [previewed(preview)];
+		await createAskUserTool(ask, { preview: true }).execute({ questions }, context);
+		expect(ask).toHaveBeenCalledExactlyOnceWith(questions, context);
+	});
+
+	it.each([
+		["1501 characters", "x".repeat(1501), ""],
+		["21 lines", lines(21), "A preview may have at most 20 lines"],
+		["an empty preview", "", ""],
+		["a blank preview", " \n ", ""],
+	])("rejects %s before asking anyone", async (_name, preview, message) => {
+		const ask = vi.fn<AskUser>();
+		await expect(
+			createAskUserTool(ask, { preview: true }).execute({ questions: [previewed(preview)] }, context),
+		).rejects.toThrow(message);
+		expect(ask).not.toHaveBeenCalled();
+	});
+
+	it("refuses a preview in a multi-select question, saying why, and takes it in a single-choice one", async () => {
+		const ask = vi.fn<AskUser>().mockResolvedValue({ status: "cancelled", reason: "user" });
+		const tool = createAskUserTool(ask, { multiSelect: true, preview: true });
+		const multi = { ...previewed(SNIPPET), id: "q2", multiSelect: true };
+		await expect(tool.execute({ questions: [previewed(SNIPPET), multi] }, context)).rejects.toThrow(
+			"preview is only for single-choice questions: remove it from the options of a multiSelect question",
+		);
+		expect(ask).not.toHaveBeenCalled();
+		const questions = [previewed(SNIPPET), { ...multi, options: question().options }];
+		await tool.execute({ questions }, context);
+		expect(ask).toHaveBeenCalledExactlyOnceWith(questions, context);
+	});
+
+	it("tells the model the same answer as without a preview", async () => {
+		const answers = [{ questionId: "q1", optionId: "a" }];
+		const outcome = await createAskUserTool(async () => ({ status: "answered", answers }), { preview: true }).execute(
+			{ questions: [previewed(SNIPPET)] },
+			context,
+		);
+		expect(JSON.parse(outcome.output)).toEqual({
+			status: "answered",
+			answers: [{ questionId: "q1", optionId: "a", label: "Minimal change" }],
+		});
+	});
+});
+
 it.each([
 	{ status: "cancelled", reason: "user" },
 	{ status: "cancelled", reason: "interrupted" },
