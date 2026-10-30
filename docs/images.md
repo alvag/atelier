@@ -71,6 +71,19 @@ for the context size, the retained-tail cut and the compacted-history estimate a
 bytes are untouched: each request builds its own view, so returning to an image-capable model sends
 the original images again.
 
+## Resuming prompt images
+
+Saved prompt entries carry an optional `imageCount`, not image bytes. RPC resume returns that count
+in `entries`; normalized pixels remain in the backend resume state (or Claude Code's own transcript).
+A resumed conversation is already history: changing backend before its next prompt still summarizes
+it rather than starting the new backend empty.
+
+The next turn reports recoverable `image_history_unavailable` if earlier image prompts have no
+backend resume state, including an empty Messages history: reattach those images. Successful
+main-agent compaction reports `image_history_summarized` because older images may have become text;
+a summary-only backend handoff uses the same code and says its images were not carried over.
+Failed compactions and subagent compactions do not issue this warning.
+
 Saved sessions can contain normalized image bytes. Treat saved or exported histories as sensitive.
 
 ## Preparation and limits

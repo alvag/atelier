@@ -843,6 +843,7 @@ export class RpcServer {
 				...(model === undefined ? {} : { model }),
 				...(saved?.config.thinking === undefined ? {} : { thinking: saved.config.thinking }),
 				...(saved?.resume === undefined ? {} : { resume: saved.resume }),
+				promptImages: saved?.entries.some((entry) => entry.type === "prompt" && (entry.imageCount ?? 0) > 0) ?? false,
 				...(saved?.yoloTold === undefined ? {} : { resumedYoloTold: saved.yoloTold }),
 				...(recorder === undefined ? {} : { record: recorder }),
 				tools: this.#options.tools,

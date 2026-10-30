@@ -316,6 +316,8 @@ export interface SessionOptions {
 	record?: SessionRecorder;
 	/** The backend resumes this saved conversation instead of starting an empty one; start rejects when it cannot. */
 	resume?: ResumeState;
+	/** Earlier recorded prompts contained images; pixels remain in the backend's opaque resume state. */
+	promptImages?: boolean;
 	/**
 	 * With `resume`: whether the saved conversation last told the model it runs in yolo, so a session resumed in another
 	 * mode says the change in its first prompt; `null`, unknown, says the mode. Absent (a file saved before it was
@@ -423,6 +425,7 @@ export class Session {
 	#systemPrompt = "";
 	/** A turn ran: there is a conversation for another backend to take over. */
 	#hadTurn = false;
+	#promptImages = false;
 	/** The summary a new backend took over, until a turn of its own: a second change before one passes it on again. */
 	#carried: string | undefined;
 	/** The summary in the form compaction carries it, given to the new backend with its first prompt. */
@@ -542,6 +545,17 @@ export class Session {
 	#gathering: (() => void) | undefined;
 
 	private constructor(options: SessionOptions) {
+		this.#hadTurn =
+			options.resume !== undefined && (!("messages" in options.resume) || options.resume.messages.length > 0);
+		this.#promptImages = options.promptImages === true;
+		if (this.#promptImages && !this.#hadTurn)
+			this.#notices.push(
+				errorEvent(
+					"image_history_unavailable",
+					"Earlier prompt images were not saved by the backend; reattach them.",
+					true,
+				),
+			);
 		const subagents = options.subagents;
 		const orchestrator = roleSettings(options.profile, "orchestrator", undefined);
 		this.#model = options.model ?? orchestrator.model;
@@ -853,7 +867,8 @@ export class Session {
 		woken = false,
 		images: readonly ImageAttachment[] = [],
 	): AsyncGenerator<AtelierEvent> {
-		yield* this.#stream(turnId, woken ? undefined : prompt, entered, async (turn, signal, backendSession) => {
+		const recorded = woken ? undefined : { text: prompt, imageCount: images.length };
+		yield* this.#stream(turnId, recorded, entered, async (turn, signal, backendSession) => {
 			// A woken turn waits a moment for the notices of work ending with the first, then takes all there are.
 			if (woken) await this.#gatherNotices(signal);
 			// Interrupted or closed while it waited: it ends before the backend, and the notices wait for the next prompt.
@@ -1060,7 +1075,7 @@ export class Session {
 	async *#stream(
 		turnId: string,
 		/** The user's prompt when the turn answers one: the saved transcript starts the turn with it. */
-		prompt: string | undefined,
+		prompt: { text: string; imageCount: number } | undefined,
 		/** The queued message the prompt comes from: the turn starts by saying it entered. */
 		entered: QueuedMessage | undefined,
 		work: (
@@ -1086,7 +1101,7 @@ export class Session {
 
 		const turn = new Channel<TurnEvent>();
 		this.#turn = turn;
-		this.#recordStart(prompt, turnId);
+		this.#recordStart(prompt?.text, turnId, prompt?.imageCount);
 		if (entered) {
 			turn.push({ type: "queued_message", ...entered });
 			this.#sayQueue();
@@ -1155,7 +1170,8 @@ export class Session {
 					this.#contextWarned = undefined;
 				// Only the main agent's context: a subagent's turn neither warns, nor rearms, nor uses up the warning.
 				const main = body.type === "turn_finished" && body.parentCallId === undefined;
-				const warning = main ? this.#contextWarning(body.context, turnEpoch) : undefined;
+				const warning =
+					this.#imageHistoryWarning(body) ?? (main ? this.#contextWarning(body.context, turnEpoch) : undefined);
 				if (warning !== undefined) {
 					const said = stamp(warning);
 					this.#options.record?.event(said);
@@ -1198,8 +1214,26 @@ export class Session {
 		return { type: "context_warning", tokens, window, compactAt };
 	}
 
+	#imageHistoryWarning(body: TurnEvent): AtelierEventBody | undefined {
+		if (!this.#promptImages || body.parentCallId !== undefined) return;
+		if (body.type === "compaction_finished" && body.ok)
+			return errorEvent(
+				"image_history_summarized",
+				"Older prompt images may have been replaced by summary text; reattach any you still need.",
+				true,
+			);
+		if (body.type === "session_configured" && body.backendChange?.summarized)
+			return errorEvent(
+				"image_history_summarized",
+				"Prompt images were not carried to the new backend; reattach any you still need.",
+				true,
+			);
+		return undefined;
+	}
+
 	/** The first turn saves the configuration it starts with; every turn saves its prompt. */
-	#recordStart(prompt: string | undefined, turnId: string): void {
+	#recordStart(prompt: string | undefined, turnId: string, imageCount = 0): void {
+		if (imageCount > 0) this.#promptImages = true;
 		const record = this.#options.record;
 		if (!record) return;
 		if (!this.#recordedConfig) {
@@ -1213,7 +1247,7 @@ export class Session {
 				...(profile?.name === undefined ? {} : { profile: profile.name }),
 			});
 		}
-		if (prompt !== undefined) record.prompt(turnId, prompt);
+		if (prompt !== undefined) record.prompt(turnId, prompt, imageCount);
 	}
 
 	/** Waits for the saved entries; a write that failed is said in the next turn. */

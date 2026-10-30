@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type { ResumeState } from "../backend.ts";
 import type { AtelierEvent, JsonValue } from "../events.ts";
+import { MAX_PROMPT_IMAGES } from "../images.ts";
 import { PERMISSION_MODES, type PermissionMode } from "../modes.ts";
 import { BACKEND_NAMES, type BackendName } from "../protocol/types.ts";
 import { THINKING_LEVELS, type ThinkingLevel } from "../thinking.ts";
@@ -38,7 +39,7 @@ export interface SavedConfig {
  */
 export type SavedEntry =
 	| ({ type: "config" } & SavedConfig)
-	| { type: "prompt"; turnId: string; text: string }
+	| { type: "prompt"; turnId: string; text: string; imageCount?: number }
 	| { type: "text"; turnId: string; text: string; agent?: string; parentCallId?: string }
 	| { type: "event"; event: AtelierEvent }
 	| { type: "name"; name: string }
@@ -188,6 +189,14 @@ function entryProblem(value: unknown): string | undefined {
 			if (value.profile !== undefined && !isString(value.profile)) return "config has a profile that is not text";
 			return undefined;
 		case "prompt":
+			if (
+				value.imageCount !== undefined &&
+				(typeof value.imageCount !== "number" ||
+					!Number.isInteger(value.imageCount) ||
+					value.imageCount < 0 ||
+					value.imageCount > MAX_PROMPT_IMAGES)
+			)
+				return "prompt has an invalid image count";
 			return isString(value.turnId) && isString(value.text) ? undefined : "prompt lacks its turn or its text";
 		case "text":
 			return isString(value.turnId) && isString(value.text) ? undefined : "text lacks its turn or its text";
