@@ -144,6 +144,8 @@ class RoleBackend implements AgentBackend {
 	interrupts = 0;
 	/** Each role says `session_started` first, with its model (or `role-default`) and its thinking level as the effort. */
 	announce = false;
+	/** How many model requests a role's answer took, as its `turn_finished` reports; 1 unless set. */
+	spends: (role: string, prompt: string) => number = () => 1;
 	readonly #reply: (role: string, prompt: string) => Reply;
 	readonly #probes: (role: string, prompt: string) => ToolCall[];
 
@@ -207,7 +209,7 @@ class RoleBackend implements AgentBackend {
 					type: "turn_finished",
 					stopReason: "end_turn",
 					usage: { ...usage, input: 2, output: 2 },
-					requests: 1,
+					requests: backend.spends(role, prompt),
 				};
 			},
 			async interrupt() {
@@ -739,6 +741,29 @@ describe("consent and the cycle", () => {
 		expect(said("review:reliability#2")).toContain("Checked part 2.");
 		expect(said("review:reliability#2")).not.toContain("Checked part 1.");
 		expect(said("review:reliability")).toBe("");
+	});
+
+	it("gives a lens's second try only the requests its first try left", async () => {
+		const retried = (prompt: string) => prompt.includes("Your previous reply was rejected");
+		const roles = new RoleBackend((role, prompt) =>
+			role === "reliability" && !retried(prompt) ? "not json" : clean(role, prompt),
+		);
+		roles.spends = (role, prompt) => (role === "reliability" && !retried(prompt) ? 30 : 1);
+		const s = await start({ roles, turns: [HIGH_TURN] });
+		expect(ofType(await s.send("add auth"), "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		expect(roles.roles.filter((role) => role.role === "reliability").map((role) => role.maxRequestsPerTurn)).toEqual([
+			REVIEW_ROLE_MAX_REQUESTS,
+			REVIEW_ROLE_MAX_REQUESTS - 30,
+		]);
+	});
+
+	it("does not try a lens again once its first try spent all its requests", async () => {
+		const roles = new RoleBackend((role, prompt) => (role === "reliability" ? "not json" : clean(role, prompt)));
+		roles.spends = (role) => (role === "reliability" ? REVIEW_ROLE_MAX_REQUESTS : 1);
+		const s = await start({ roles, turns: [HIGH_TURN] });
+		const [done] = ofType(await s.send("add auth"), "review_finished");
+		expect(done).toMatchObject({ verdict: "unavailable", cause: "request_cap" });
+		expect(roles.roles.filter((role) => role.role === "reliability")).toHaveLength(1);
 	});
 
 	it("caps the model requests of every lens, the refuter and the validator", async () => {
@@ -3435,6 +3460,21 @@ describe("the automatic review's base", () => {
 			expect(await receiptOf(second.events)).toMatchObject({ base: headTree(s.cwd) });
 		},
 	);
+
+	it("goes back to the turn's own base when git pruned the approved tree", async () => {
+		const s = await start({ roles: new RoleBackend(clean), turns: [HIGH_TURN, SECOND] });
+		expect(ofType(await s.send("add auth"), "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		gitIn(s.cwd, "prune", "--expire=now");
+
+		const { events, prompts } = await lensPrompts(s, "more auth");
+		expect(ofType(events, "review_status")).toEqual([]);
+		expect(ofType(events, "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		expect(prompts.length).toBeGreaterThan(0);
+		for (const prompt of prompts) expect(prompt).toContain("diff --git a/src/auth2.ts b/src/auth2.ts");
+		const receipt = await receiptOf(events);
+		expect(receipt.base).toBe(headTree(s.cwd));
+		expect(receipt.previousReview).toBeUndefined();
+	});
 
 	it("goes back to the turn's own base when HEAD moved between the turns", async () => {
 		const s = await start({ roles: new RoleBackend(clean), turns: [HIGH_TURN, SECOND] });
