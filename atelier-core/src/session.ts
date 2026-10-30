@@ -139,13 +139,10 @@ const WORKTREE_NOTE =
 	"You work in a git worktree made for this task alone, from the other agent's working tree. Do not commit: your changes are collected from its files as a patch.";
 /** What the parent and the worker are told of the dependencies in the worker's worktree. */
 const DEPENDENCIES_SAID: Record<Dependencies, { parent: string; worker: string }> = {
-	cloned: {
-		parent: " Its node_modules folders are copy-on-write copies of yours.",
-		worker: " Its node_modules folders are copy-on-write copies of the other agent's: use them, and install nothing.",
-	},
-	copied: {
-		parent: " Its node_modules folders are copies of yours.",
-		worker: " Its node_modules folders are copies of the other agent's: use them, and install nothing.",
+	linked: {
+		parent: " Its node_modules folders are links to yours: it reads and runs them, and cannot write them.",
+		worker:
+			" Its node_modules folders are links to the other agent's: read and run them, but you cannot write them, so install nothing.",
 	},
 	none: { parent: "", worker: "" },
 };
