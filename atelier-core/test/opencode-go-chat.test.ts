@@ -1,13 +1,19 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { BackendSession, ToolCall } from "../src/backend.ts";
+import type { BackendSession, BackendStartOptions, ToolCall } from "../src/backend.ts";
 import { createBackend } from "../src/backend-factory.ts";
 import {
 	ChatCompletionsError,
 	chatCompletionsTransport,
 	toChatRequest,
 } from "../src/backends/opencode-go/chat-completions.ts";
+import { SUMMARY_HEADINGS } from "../src/compaction/compactor.ts";
 import type { AtelierEventBody } from "../src/events.ts";
+import { ModelData, useModelData } from "../src/model-catalog/index.ts";
+import { readTool } from "../src/tools/read.ts";
 import { defineTool } from "../src/tools/types.ts";
 import { VERSION } from "../src/version.ts";
 import { FakeProvider, sse } from "./support/fake-provider.ts";
@@ -24,13 +30,17 @@ const echoTool = defineTool({
 });
 
 let provider: FakeProvider;
+let cwd: string;
 
 beforeEach(async () => {
 	provider = await FakeProvider.start();
+	cwd = await mkdtemp(resolve("node_modules/.cache/chat-images-"));
 });
 
 afterEach(async () => {
 	await provider.close();
+	useModelData(new ModelData());
+	await rm(cwd, { recursive: true, force: true });
 });
 
 const chunk = (delta: Record<string, unknown>, finish: string | null = null) => ({
@@ -56,7 +66,12 @@ function textReply(text: string): { sse: string } {
 	};
 }
 
-async function start(calls: ToolCall[] = [], model = MODEL, maxRetries = 0): Promise<BackendSession> {
+async function start(
+	calls: ToolCall[] = [],
+	model = MODEL,
+	maxRetries = 0,
+	options: Partial<BackendStartOptions> = {},
+): Promise<BackendSession> {
 	const backend = await createBackend("opencode-go", {
 		resolveOpenCodeGoKey: async () => KEY,
 		opencodeGo: { baseUrl: provider.url, maxRetries, model },
@@ -72,6 +87,7 @@ async function start(calls: ToolCall[] = [], model = MODEL, maxRetries = 0): Pro
 				? { ok: true, output: `echo: ${input.text}` }
 				: { ok: false, output: "text is required" };
 		},
+		...options,
 	});
 }
 
@@ -81,7 +97,185 @@ async function collect(events: AsyncIterable<AtelierEventBody>): Promise<Atelier
 	return all;
 }
 
+function messagesReply(read = false, text = "Done."): { sse: string } {
+	const blocks = read
+		? ["a", "b"].map((id) => ({ type: "tool_use", id, name: "read", input: { path: "capture.png" } }))
+		: [{ type: "text", text }];
+	return {
+		sse: sse(
+			[
+				{
+					type: "message_start",
+					message: {
+						id: "msg_1",
+						type: "message",
+						role: "assistant",
+						model: "claude-haiku-5-5",
+						content: [],
+						stop_reason: null,
+						stop_sequence: null,
+						usage: { input_tokens: 10, output_tokens: 1 },
+					},
+				},
+				...blocks.flatMap((block, index) => [
+					{ type: "content_block_start", index, content_block: block },
+					{ type: "content_block_stop", index },
+				]),
+				{ type: "message_delta", delta: { stop_reason: read ? "tool_use" : "end_turn" }, usage: { output_tokens: 2 } },
+				{ type: "message_stop" },
+			],
+			{ named: true },
+		),
+	};
+}
+
+async function startWithImage(model: string): Promise<BackendSession> {
+	await writeFile(
+		join(cwd, "capture.png"),
+		await sharp({ create: { width: 1, height: 1, channels: 4, background: "transparent" } })
+			.png()
+			.toBuffer(),
+	);
+	return start([], model, 0, { cwd, tools: [readTool], executeTool: (call) => readTool.execute(call.input, { cwd }) });
+}
+
 describe("opencode-go on Chat Completions", () => {
+	it.each(["glm-5.3", "minimax-m3", "unknown-chat-model"])(
+		"marks each historical image omitted for %s without changing saved pixels",
+		async (model) => {
+			useModelData(
+				new ModelData({
+					"opencode-go": [
+						{ id: "glm-5.3", images: false },
+						{ id: "minimax-m3", images: false },
+					],
+				}),
+			);
+			provider.answer(
+				messagesReply(true),
+				messagesReply(),
+				model === "minimax-m3" ? messagesReply() : textReply("No pixels."),
+				model === "minimax-m3"
+					? messagesReply(false, SUMMARY_HEADINGS.join("\n"))
+					: textReply(SUMMARY_HEADINGS.join("\n")),
+				messagesReply(),
+			);
+			const session = await startWithImage("claude-haiku-5-5");
+			try {
+				await collect(session.send("Read the image twice."));
+				const original = JSON.stringify(provider.received[1]?.body.messages);
+				expect(original.match(/"type":"image"/g)).toHaveLength(2);
+				const pixels = original.match(/"data":"([^"]+)"/)?.[1];
+				if (pixels === undefined) throw new Error("Missing original pixels.");
+				await session.configure?.({ model });
+				await collect(session.send("Inspect it again."));
+				const converted = JSON.stringify(provider.received[2]?.body.messages);
+				expect(converted.split(`[image omitted: ${model} does not accept images]`)).toHaveLength(3);
+				expect(converted).not.toContain('"type":"image"');
+				await session.summarize?.();
+				expect(
+					JSON.stringify(provider.received[3]?.body.messages).split(`[image omitted: ${model} does not accept images]`),
+				).toHaveLength(3);
+				const resume = session.resumeState?.();
+				if (resume === undefined) throw new Error("Missing image history.");
+				await session.close();
+				const resumed = await start([], "claude-haiku-5-5", 0, { resume });
+				try {
+					await collect(resumed.send("Use the original pixels."));
+					const restored = JSON.stringify(provider.received[4]?.body.messages);
+					expect(restored.match(/"type":"image"/g)).toHaveLength(2);
+					expect(restored.split(pixels)).toHaveLength(3);
+					expect(restored).not.toContain("[image omitted:");
+				} finally {
+					await resumed.close();
+				}
+			} finally {
+				await session.close();
+			}
+		},
+	);
+
+	it("sends tool images to a vision Chat model after all tool replies, not between them", async () => {
+		useModelData(new ModelData({ "opencode-go": [{ id: "catalog-vision", images: true }] }));
+		provider.answer(
+			{
+				sse: sse(
+					[
+						chunk({
+							tool_calls: ["a", "b"].map((id, index) => ({
+								index,
+								id,
+								type: "function",
+								function: { name: "read", arguments: JSON.stringify({ path: "capture.png" }) },
+							})),
+						}),
+						chunk({}, "tool_calls"),
+					],
+					{ done: true },
+				),
+			},
+			textReply("I see pixels."),
+		);
+		const session = await startWithImage("catalog-vision");
+		try {
+			await collect(session.send("Inspect."));
+			const messages = provider.received[1]?.body.messages as { role: string; content: unknown }[];
+			expect(messages.map(({ role }) => role)).toEqual(["system", "user", "assistant", "tool", "tool", "user"]);
+			expect(messages.at(-1)?.content).toEqual([
+				{ type: "text", text: "Images from tool result a:" },
+				{ type: "image_url", image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
+				{ type: "text", text: "Images from tool result b:" },
+				{ type: "image_url", image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
+			]);
+		} finally {
+			await session.close();
+		}
+	});
+
+	it.each([true, false])("converts resumed user images with catalog support %s", async (images) => {
+		useModelData(new ModelData({ "opencode-go": [{ id: MODEL, images }] }));
+		const data = (
+			await sharp({ create: { width: 1, height: 1, channels: 3, background: "red" } })
+				.png()
+				.toBuffer()
+		).toString("base64");
+		provider.answer(textReply("Done."));
+		const session = await start([], MODEL, 0, {
+			resume: {
+				messages: [
+					{
+						role: "user",
+						content: [
+							{ type: "text", text: "Before" },
+							{ type: "image", source: { type: "base64", media_type: "image/png", data } },
+							{ type: "image", source: { type: "file", file_id: "saved-image" } },
+							{ type: "text", text: "After" },
+						],
+					},
+				],
+			},
+		});
+		try {
+			await collect(session.send("Inspect again."));
+			const messages = provider.received[0]?.body.messages as { content: unknown }[];
+			expect(messages[1]?.content).toEqual(
+				images
+					? [
+							{ type: "text", text: "Before" },
+							{ type: "image_url", image_url: { url: `data:image/png;base64,${data}` } },
+							{
+								type: "text",
+								text: `[image omitted: ${MODEL} cannot receive this image source through Chat Completions]`,
+							},
+							{ type: "text", text: "After" },
+							{ type: "text", text: "Inspect again." },
+						]
+					: `Before\n[image omitted: ${MODEL} does not accept images]\n[image omitted: ${MODEL} does not accept images]\nAfter\nInspect again.`,
+			);
+		} finally {
+			await session.close();
+		}
+	});
 	it("streams the text and the reasoning, and counts the cached tokens apart", async () => {
 		provider.answer({
 			sse: sse(

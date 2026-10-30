@@ -1,4 +1,3 @@
-import { openCodeGoModel } from "./backends/opencode-go/models.ts";
 import { currentModelData } from "./model-catalog/current.ts";
 import { BACKEND_DEFAULTS, BACKEND_MODELS } from "./options.ts";
 import { BACKEND_NAMES } from "./protocol/types.ts";
@@ -10,8 +9,7 @@ export function imageInputProblem(backend: string, requested?: string): string |
 	const unsupported = `Image input is not supported by ${backend}/${model}.`;
 	if (id === undefined) return unsupported;
 	// These transports are enabled only once their image conversion is implemented.
-	if (id === "openai-codex" || (id === "opencode-go" && openCodeGoModel(model).protocol !== "anthropic-messages"))
-		return unsupported;
+	if (id === "openai-codex") return unsupported;
 	const data = currentModelData();
 	const alias = data
 		.listed(id)
@@ -25,4 +23,8 @@ export function imageInputProblem(backend: string, requested?: string): string |
 	const supported = known?.images ?? (fallback ? true : undefined);
 	if (supported === true) return undefined;
 	return supported === false ? unsupported : `Image input support is unknown for ${backend}/${model}.`;
+}
+
+export function imageOmission(model: string): string {
+	return `[image omitted: ${model} does not accept images]`;
 }

@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { type AtelierEventBody, errorEvent } from "../../events.ts";
+import { imageCompatibleRequest } from "../anthropic-api/image-history.ts";
 import type { ModelDelta, ModelTransport } from "../anthropic-api/transport.ts";
 import { openCodeGoModel } from "./models.ts";
 
@@ -52,8 +53,11 @@ function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
 	});
 }
 
+type ChatContent = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+
 type ChatMessage =
-	| { role: "system" | "user"; content: string }
+	| { role: "system"; content: string }
+	| { role: "user"; content: string | ChatContent[] }
 	| { role: "assistant"; content: string | null; tool_calls?: ChatToolCall[]; reasoning_content?: string }
 	| { role: "tool"; tool_call_id: string; content: string };
 
@@ -72,19 +76,42 @@ const textOf = (content: string | readonly { type: string; text?: string }[]): s
 				.join("\n");
 
 /** A user message: its tool results, each as a `tool` message, and its text as a `user` message, in order. */
-function userMessages(message: Anthropic.MessageParam): ChatMessage[] {
+function userMessages(message: Anthropic.MessageParam, model: string): ChatMessage[] {
 	if (typeof message.content === "string") return [{ role: "user", content: message.content }];
 	const out: ChatMessage[] = [];
-	let text: string[] = [];
+	let content: ChatContent[] = [];
+	const images: ChatContent[] = [];
 	const flush = () => {
-		if (text.length > 0) out.push({ role: "user", content: text.join("\n") });
-		text = [];
+		if (content.length > 0)
+			out.push({
+				role: "user",
+				content: content.some((part) => part.type === "image_url") ? content : textOf(content),
+			});
+		content = [];
+	};
+	const imagePart = (block: Anthropic.ImageBlockParam): ChatContent => {
+		const source = block.source;
+		if (source.type === "file")
+			return {
+				type: "text",
+				text: `[image omitted: ${model} cannot receive this image source through Chat Completions]`,
+			};
+		return {
+			type: "image_url",
+			image_url: { url: source.type === "base64" ? `data:${source.media_type};base64,${source.data}` : source.url },
+		};
 	};
 	for (const block of message.content) {
-		if (block.type === "text") text.push(block.text);
+		if (block.type === "text") content.push({ type: "text", text: block.text });
+		else if (block.type === "image") content.push(imagePart(block));
 		else if (block.type === "tool_result") {
 			flush();
-			const output = block.content === undefined ? "" : textOf(block.content as Anthropic.TextBlockParam[]);
+			const output = block.content === undefined ? "" : textOf(block.content);
+			if (Array.isArray(block.content)) {
+				const pictures = block.content.filter((part) => part.type === "image").map(imagePart);
+				if (pictures.length > 0)
+					images.push({ type: "text", text: `Images from tool result ${block.tool_use_id}:` }, ...pictures);
+			}
 			// Chat Completions has no error flag: the model reads it in the text.
 			out.push({
 				role: "tool",
@@ -93,6 +120,8 @@ function userMessages(message: Anthropic.MessageParam): ChatMessage[] {
 			});
 		}
 	}
+	// A user image between tool replies would leave the assistant's other calls unanswered.
+	content = [...images, ...content];
 	flush();
 	return out;
 }
@@ -123,12 +152,15 @@ function assistantMessage(message: Anthropic.MessageParam, replaysReasoning: boo
 
 /** The Messages API request the session built, as a Chat Completions request. */
 export function toChatRequest(params: Anthropic.MessageCreateParamsNonStreaming): Record<string, unknown> {
+	params = imageCompatibleRequest(params, "opencode-go");
 	const model = openCodeGoModel(params.model);
 	const system = params.system === undefined ? "" : textOf(params.system);
 	const messages: ChatMessage[] = [
 		...(system === "" ? [] : [{ role: "system" as const, content: system }]),
 		...params.messages.flatMap((message) =>
-			message.role === "user" ? userMessages(message) : [assistantMessage(message, model.replaysReasoning === true)],
+			message.role === "user"
+				? userMessages(message, params.model)
+				: [assistantMessage(message, model.replaysReasoning === true)],
 		),
 	];
 	const tools = (params.tools ?? []).flatMap((tool) =>

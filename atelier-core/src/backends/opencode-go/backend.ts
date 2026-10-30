@@ -78,7 +78,7 @@ function withoutUnsigned(message: Anthropic.MessageParam): Anthropic.MessagePara
  * reasoning of Chat Completions models, and with the windows of the model table instead of the models API.
  */
 function messagesTransport(client: Anthropic): ModelTransport {
-	const transport = anthropicTransport(client);
+	const transport = anthropicTransport(client, OPENCODE_GO_BACKEND_ID);
 	return {
 		...transport,
 		request(params, signal) {

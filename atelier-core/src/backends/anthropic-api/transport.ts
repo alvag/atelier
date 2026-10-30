@@ -1,6 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { APIError } from "@anthropic-ai/sdk";
 import { type AtelierEventBody, errorEvent } from "../../events.ts";
+import { imageCompatibleRequest } from "./image-history.ts";
 
 /** Used when the models API does not say the model's window. */
 export const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -36,10 +37,13 @@ export async function finalMessage(stream: AsyncGenerator<ModelDelta, Anthropic.
 }
 
 /** The Messages API through the Anthropic SDK: what `anthropic-api` runs on. */
-export function anthropicTransport(client: Anthropic): ModelTransport {
+export function anthropicTransport(client: Anthropic, backend = "anthropic-api"): ModelTransport {
 	return {
 		async *request(params, signal) {
-			const stream = client.messages.stream(params, signal === undefined ? undefined : { signal });
+			const stream = client.messages.stream(
+				imageCompatibleRequest(params, backend),
+				signal === undefined ? undefined : { signal },
+			);
 			for await (const event of stream) {
 				if (event.type !== "content_block_delta") continue;
 				if (event.delta.type === "text_delta") yield { type: "text_delta", text: event.delta.text };
