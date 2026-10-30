@@ -25,6 +25,8 @@ export const receiptSchema = z.object({
 	id: z.string(),
 	createdAt: z.string(),
 	base: z.string(),
+	/** The receipt of the approved review whose candidate tree is `base`, when the base advanced to it; absent otherwise. */
+	previousReview: z.string().optional(),
 	candidate: z.string(),
 	corrected: z.string().nullable(),
 	risk: z.object({ level: z.enum(["passive", "medium", "high"]), reasons: z.array(z.string()) }),

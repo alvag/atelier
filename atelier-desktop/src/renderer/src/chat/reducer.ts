@@ -92,6 +92,8 @@ export type TurnItem =
 			declaration?: RiskDeclaration;
 			/** Short id of the commit the change is measured from, when it is not the current HEAD. */
 			since?: string;
+			/** The change is measured from the tree the last approved review saw. */
+			sinceReview?: true;
 			/** Why the base is the current HEAD although the turn started earlier. */
 			baseNote?: string;
 			/** The user allowed this session's reviews, so this one runs without asking. */
@@ -756,6 +758,7 @@ function reduceItems(items: TurnItem[], event: AtelierEvent): TurnItem[] {
 					...(event.lensesReason === undefined ? {} : { lensesReason: event.lensesReason }),
 					...(event.declaration === undefined ? {} : { declaration: event.declaration }),
 					...(event.since === undefined ? {} : { since: event.since }),
+					...(event.sinceReview === undefined ? {} : { sinceReview: true as const }),
 					...(event.baseNote === undefined ? {} : { baseNote: event.baseNote }),
 					...(event.consent === "session" ? { allowedForSession: true as const } : {}),
 					roles: [],

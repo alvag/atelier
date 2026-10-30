@@ -65,6 +65,8 @@ export interface Candidate {
 	since?: string;
 	/** Why the base is the current HEAD when it was meant to be an earlier commit. */
 	baseNote?: string;
+	/** The base is the tree an earlier approved review saw, not the base commit's: that review's ids. */
+	reviewedBase?: { reviewId: string; receiptId: string };
 	/** The worktree as a tree: tracked and untracked files, without ignored ones. */
 	tree: string;
 	files: ChangedFile[];
@@ -89,6 +91,20 @@ export interface FreezeOptions {
 	turnStart?: string;
 	/** The turn started without a commit: the base is the empty tree, so the turn's first commit is part of the candidate. */
 	fromEmpty?: boolean;
+	/**
+	 * The tree the session's last approved automatic review saw, and HEAD when it ended: the base instead of
+	 * `turnStart`'s tree when the turn started on that HEAD and HEAD still descends from it, so each round sees only
+	 * what changed since. A change empty against `turnStart` stays empty.
+	 */
+	reviewed?: ReviewedTree;
+}
+
+export interface ReviewedTree {
+	root: string;
+	tree: string;
+	head: string;
+	reviewId: string;
+	receiptId: string;
 }
 
 const EMPTY_BASE_NOTE =
@@ -164,11 +180,15 @@ export async function freezeCandidate(cwd: string, options: FreezeOptions = {}):
 		await gitText([...safe, "read-tree", base], { cwd: root, env });
 		await gitText([...safe, "add", "--all"], { cwd: root, env });
 		const tree = (await gitText([...safe, "write-tree"], { cwd: root, env })).trim();
-		const candidate = await describeCandidate(root, gitDir, chosen.commit, base, tree);
+		const reviewed = tree === base ? undefined : reviewedBase(root, chosen, options);
+		const candidate = await describeCandidate(root, gitDir, chosen.commit, reviewed?.tree ?? base, tree);
 		return {
 			ok: true,
 			candidate: {
 				...candidate,
+				...(reviewed === undefined
+					? {}
+					: { reviewedBase: { reviewId: reviewed.reviewId, receiptId: reviewed.receiptId } }),
 				...(chosen.commit === undefined || chosen.commit === head ? {} : { since: chosen.commit.slice(0, SHORT_ID) }),
 				...(chosen.note === undefined ? {} : { baseNote: chosen.note }),
 			},
@@ -235,6 +255,16 @@ async function chooseBase(root: string, head: string, options: FreezeOptions): P
 		commit: head,
 		note: `HEAD no longer descends from ${start.slice(0, SHORT_ID)}, where the turn started: the base is the current HEAD`,
 	};
+}
+
+/**
+ * The reviewed tree, when it can be the base: the same repository, a turn that started on the HEAD the review
+ * ended at, and a base that is still that commit (no reset, rebase or checkout since, which would leave a note).
+ */
+function reviewedBase(root: string, chosen: Base & { ok: true }, options: FreezeOptions): ReviewedTree | undefined {
+	const { reviewed, turnStart } = options;
+	if (reviewed === undefined || reviewed.root !== root || chosen.note !== undefined) return undefined;
+	return turnStart === reviewed.head && chosen.commit === turnStart ? reviewed : undefined;
 }
 
 /** git ends a printed path with one newline; a path may itself end in spaces or newlines. */

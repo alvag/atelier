@@ -3366,3 +3366,97 @@ describe("independent review follow-up contract", () => {
 		await s.session.close();
 	});
 });
+
+describe("the automatic review's base", () => {
+	const SECOND: FakeStep[] = [
+		DECLARED_NONE,
+		change("src/auth2.ts", "export const b = 1;\n"),
+		text("done"),
+		{ event: finished },
+	];
+	const isLens = (role: string) => role in LENS_INSTRUCTIONS;
+	/** The lens prompts of the review that runs on `send`, after those already recorded. */
+	async function lensPrompts(s: Awaited<ReturnType<typeof start>>, prompt: string) {
+		const seen = s.roles.roles.length;
+		const events = await s.send(prompt);
+		const prompts = s.roles.roles
+			.slice(seen)
+			.filter((role) => isLens(role.role))
+			.map((role) => role.prompt);
+		return { events, prompts };
+	}
+	const receiptOf = async (events: AtelierEvent[]) =>
+		JSON.parse(await readFile(ofType(events, "review_finished")[0]?.receiptPath as string, "utf8"));
+	const headTree = (cwd: string) => gitIn(cwd, "rev-parse", "HEAD^{tree}").trim();
+
+	it("compares the next round without a commit against the tree an approved review saw", async () => {
+		const s = await start({ roles: new RoleBackend(clean), turns: [HIGH_TURN, SECOND] });
+		const first = await s.send("add auth");
+		const [done] = ofType(first, "review_finished");
+		expect(done).toMatchObject({ verdict: "approved" });
+		const firstReceipt = await receiptOf(first);
+
+		const { events, prompts } = await lensPrompts(s, "more auth");
+		expect(prompts.length).toBeGreaterThan(0);
+		for (const prompt of prompts) {
+			expect(prompt).toContain("diff --git a/src/auth2.ts b/src/auth2.ts");
+			expect(prompt).not.toContain("diff --git a/src/auth.ts");
+		}
+		const [assessed] = ofType(events, "review_assessed");
+		expect(assessed?.sinceReview).toBe(done?.reviewId);
+		expect(assessed?.since).toBeUndefined();
+		expect(await receiptOf(events)).toMatchObject({ base: firstReceipt.candidate, previousReview: firstReceipt.id });
+	});
+
+	it.each(["declined", "unavailable", "escalated"] as const)(
+		"keeps the base where it was after a %s review, so the next round sees both changes",
+		async (verdict) => {
+			let round = 1;
+			const roles = new RoleBackend((role, prompt) => {
+				if (round > 1) return clean(role, prompt);
+				if (verdict === "unavailable" && isLens(role)) return "not json";
+				return verdict === "escalated" ? defaultReply(role, prompt) : clean(role, prompt);
+			});
+			const first: FakeStep[] = [DECLARED_NONE, change("src/auth.ts", "export const a = 1;\n"), { event: finished }];
+			const turns = verdict === "escalated" ? [first, OVER_BUDGET_FIX, SECOND] : [first, SECOND];
+			const answers: ReviewConsentAnswer[] = verdict === "declined" ? ["declined", "granted"] : ["granted", "granted"];
+			const s = await start({ roles, turns, consent: async () => answers.shift() ?? "granted" });
+			const events = await s.send("add auth");
+			expect(ofType(events, "review_finished")[0]).toMatchObject({ verdict });
+			round = 2;
+
+			const second = await lensPrompts(s, "more auth");
+			expect(second.prompts.length).toBeGreaterThan(0);
+			for (const prompt of second.prompts) {
+				expect(prompt).toContain("diff --git a/src/auth.ts b/src/auth.ts");
+				expect(prompt).toContain("diff --git a/src/auth2.ts b/src/auth2.ts");
+			}
+			expect(ofType(second.events, "review_assessed")[0]?.sinceReview).toBeUndefined();
+			expect(await receiptOf(second.events)).toMatchObject({ base: headTree(s.cwd) });
+		},
+	);
+
+	it("goes back to the turn's own base when HEAD moved between the turns", async () => {
+		const s = await start({ roles: new RoleBackend(clean), turns: [HIGH_TURN, SECOND] });
+		expect(ofType(await s.send("add auth"), "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		gitIn(s.cwd, "add", "-A");
+		gitIn(s.cwd, "commit", "-qm", "the user commits");
+
+		const { events } = await lensPrompts(s, "more auth");
+		expect(ofType(events, "review_assessed")[0]?.sinceReview).toBeUndefined();
+		const receipt = await receiptOf(events);
+		expect(receipt.base).toBe(headTree(s.cwd));
+		expect(receipt.previousReview).toBeUndefined();
+	});
+
+	it("leaves /review as it was: against HEAD, whatever the last round saw", async () => {
+		const s = await start({ roles: new RoleBackend(clean), turns: [HIGH_TURN, SECOND] });
+		expect(ofType(await s.send("add auth"), "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		await s.send("more auth");
+		const events = await collect(s.session.review());
+		expect(ofType(events, "review_assessed")[0]?.sinceReview).toBeUndefined();
+		const receipt = await receiptOf(events);
+		expect(receipt.base).toBe(headTree(s.cwd));
+		expect(receipt.previousReview).toBeUndefined();
+	});
+});

@@ -741,9 +741,10 @@ describe("Renderer", () => {
 					...base,
 					baseNote: "HEAD no longer descends from 1a2b3c4, where the turn started: the base is the current HEAD",
 				},
+				{ ...base, sinceReview: "r0" },
 			]);
 			expect(stdout).toBe(
-				"◇ review medium · 1 lens · since 1a2b3c4\n◇ review medium · 1 lens · HEAD no longer descends from 1a2b3c4, where the turn started: the base is the current HEAD\n",
+				"◇ review medium · 1 lens · since 1a2b3c4\n◇ review medium · 1 lens · HEAD no longer descends from 1a2b3c4, where the turn started: the base is the current HEAD\n◇ review medium · 1 lens · since the last review\n",
 			);
 		});
 

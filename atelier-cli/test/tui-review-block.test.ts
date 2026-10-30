@@ -103,6 +103,12 @@ describe("review block", () => {
 		);
 	});
 
+	it("says a change measured from the last approved round is since the last review", () => {
+		expect(text(lines(after([{ ...bare, reasons: [], sinceReview: "r0" }])))).toBe(
+			[" ◇ review high · 12 lines in 2 files · lenses risk, reliability", "   since the last review"].join("\n"),
+		);
+	});
+
 	it("says the review runs without asking when the user allowed the session's reviews", () => {
 		const state = after([{ ...bare, reasons: [], consent: "session" }]);
 		expect(text(lines(state))).toBe(

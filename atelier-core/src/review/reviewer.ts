@@ -103,6 +103,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		id: deps.createId(),
 		createdAt: deps.now().toISOString(),
 		base: candidate.base,
+		...(candidate.reviewedBase === undefined ? {} : { previousReview: candidate.reviewedBase.receiptId }),
 		candidate: candidate.tree,
 		corrected,
 		risk: { level: assessment.level, reasons: assessment.reasons },
