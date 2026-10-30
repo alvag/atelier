@@ -148,6 +148,20 @@ async function diffTrees(
 	return git(cwd, ["diff", "--no-textconv", "--no-ext-diff", "--no-renames", ...format, from, to], { env: objects });
 }
 
+/**
+ * `path` as one entry of GIT_ALTERNATE_OBJECT_DIRECTORIES: C-quoted, as git reads an entry that starts with a quote,
+ * so a colon (the list's separator) or any other character is part of the path.
+ */
+function alternateEntry(path: string): string {
+	const escaped = path
+		.replaceAll("\\", "\\\\")
+		.replaceAll('"', '\\"')
+		.replaceAll("\n", "\\n")
+		.replaceAll("\r", "\\r")
+		.replaceAll("\t", "\\t");
+	return `"${escaped}"`;
+}
+
 /** Copies the loose objects of `from` that `to` lacks; an object is the same file wherever it is. */
 async function copyObjects(from: string, to: string): Promise<void> {
 	for (const folder of await readdir(from).catch((): string[] => [])) {
@@ -197,9 +211,11 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 	// through it: a launch refused or stopped before its task starts leaves nothing in the repository (`adopt`).
 	const own = join(dir, "objects");
 	let objects: Record<string, string>;
+	let shared: string;
 	try {
 		const common = resolve(top, (await git(top, ["rev-parse", "--git-common-dir"])).trim());
-		objects = { GIT_OBJECT_DIRECTORY: own, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(common, "objects") };
+		shared = join(common, "objects");
+		objects = { GIT_OBJECT_DIRECTORY: own, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(shared) };
 		await mkdir(own, { recursive: true });
 		headTree = (await git(top, ["rev-parse", "HEAD^{tree}"])).trim();
 		snapshotTree = await treeOfWorkingTree(top, head, index, objects);
@@ -235,7 +251,7 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 		dirty: snapshotTree !== headTree,
 		dependencies: folders.length === 0 ? "none" : "linked",
 		adopt() {
-			adopted ??= copyObjects(own, objects.GIT_ALTERNATE_OBJECT_DIRECTORIES as string);
+			adopted ??= copyObjects(own, shared);
 			return adopted;
 		},
 		async collect(patchPath) {
