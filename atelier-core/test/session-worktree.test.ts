@@ -707,6 +707,33 @@ describe("the links of a worker's worktree", () => {
 		}
 	});
 
+	it("keeps the relative links of a linked package outside the tree leading where they led from there", async () => {
+		const outside = await realpath(await mkdtemp(join(tmpdir(), "atelier-outside-")));
+		try {
+			writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
+			mkdirSync(join(repo, "node_modules"), { recursive: true });
+			for (const dir of ["pkg/lib", "shared"]) mkdirSync(join(outside, dir), { recursive: true });
+			writeFileSync(join(outside, "shared/index.js"), "shared\n");
+			writeFileSync(join(outside, "pkg/lib/index.js"), "lib\n");
+			symlinkSync("../shared", join(outside, "pkg/shared"));
+			symlinkSync("lib", join(outside, "pkg/main"));
+			symlinkSync(join(outside, "pkg"), join(repo, "node_modules/pkg"));
+			const worktree = await createTaskWorktree(repo, join(dir, "w"));
+			try {
+				const pkg = join(worktree.cwd, "node_modules/pkg");
+				expect(readFileSync(join(pkg, "shared/index.js"), "utf8")).toBe("shared\n");
+				expect(readFileSync(join(pkg, "main/index.js"), "utf8")).toBe("lib\n");
+				expect(readlinkSync(join(pkg, "main"))).toBe("lib");
+				for (const file of ["shared/index.js", "main/index.js"])
+					expect(realpathSync(join(pkg, file)).startsWith(`${dir}/`)).toBe(true);
+			} finally {
+				await worktree.remove();
+			}
+		} finally {
+			await rm(outside, { recursive: true, force: true });
+		}
+	});
+
 	it("refuses a dependency's link to a folder that holds the parent's tree, leaving the repository as it was", async () => {
 		writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
 		mkdirSync(join(repo, "node_modules"), { recursive: true });

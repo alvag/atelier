@@ -424,7 +424,9 @@ async function settleLinks(
 			() => true,
 			() => false,
 		);
-	const pending = [...roots];
+	// Each copy with the real folder it came from: its links are resolved where they were, not where the copy is.
+	const copied = async (path: string, from: string) => ({ path, origin: await realpath(from).catch(() => from) });
+	const pending = await Promise.all(roots.map((root) => copied(root, join(top, root))));
 	// What the worktree needs at `path` (from its top): already staged, in the snapshot, else copied from the parent's.
 	const need = async (path: string) => {
 		if (await staged(path)) return;
@@ -444,13 +446,13 @@ async function settleLinks(
 			));
 		if (inSnapshot) return;
 		await copy(from, path);
-		pending.push(path);
+		pending.push(await copied(path, from));
 	};
 	const seen = new Set<string>();
 	for (let root = pending.pop(); root !== undefined; root = pending.pop()) {
-		if (seen.has(root)) continue;
-		seen.add(root);
-		const walk = [root];
+		if (seen.has(root.path)) continue;
+		seen.add(root.path);
+		const walk = [root.path];
 		for (let path = walk.pop(); path !== undefined; path = walk.pop()) {
 			const at = join(stage, path);
 			const stat = await lstat(at);
@@ -460,24 +462,28 @@ async function settleLinks(
 			}
 			if (!stat.isSymbolicLink()) continue;
 			const target = await readlink(at);
-			const lexical = resolve(dirname(join(tree, path)), target);
-			if (within(tree, lexical)) {
-				await need(relative(tree, lexical));
-				continue;
-			}
+			const lexical = resolve(dirname(join(root.origin, relative(root.path, path))), target);
 			const real = await realpath(lexical).catch(() => lexical);
 			if (gitDirs.some((gitDir) => within(gitDir, real)))
 				throw new Error(`${path} leads to ${real}, inside the repository's git directory`);
 			if (within(real, top) || within(real, tree))
 				throw new Error(`${path} leads to ${real}, which holds the repository or the worker's worktree`);
-			await rm(at, { force: true });
+			// Where what it leads to is in the worktree: the parent's tree there, or this same copy; else its own copy.
+			let local: string;
 			if (within(top, real)) {
-				await symlink(join(tree, relative(top, real)), at);
-				await need(relative(top, real));
+				local = relative(top, real);
+				await need(local);
+			} else if (within(root.origin, real)) local = join(root.path, relative(root.origin, real));
+			else {
+				await rm(at, { force: true });
+				await copy(real, path);
+				pending.push(await copied(path, real));
 				continue;
 			}
-			await copy(real, path);
-			pending.push(path);
+			// A link that already leads there from its new place (most of pnpm's relative links) is left as it is.
+			if (resolve(dirname(join(tree, path)), target) === join(tree, local)) continue;
+			await rm(at, { force: true });
+			await symlink(join(tree, local), at);
 		}
 	}
 }
