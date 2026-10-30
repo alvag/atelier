@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ImageAttachment } from "../images.ts";
 import type { BackgroundTasks } from "../subagents/tasks.ts";
 import type { Jobs } from "./jobs.ts";
 import type { SandboxStatus } from "./sandbox.ts";
@@ -82,6 +83,8 @@ export interface ToolGate {
 
 export interface ToolOutcome {
 	ok: boolean;
+	/** Validated image bytes, separate from the text shown by clients. */
+	images?: ImageAttachment[];
 	/** Text returned to the model. */
 	output: string;
 	/** One line for the user interface. */

@@ -756,7 +756,15 @@ class AnthropicApiSession implements BackendSession {
 			results.push({
 				type: "tool_result",
 				tool_use_id: block.id,
-				content: result.output,
+				content: result.images?.length
+					? [
+							{ type: "text", text: result.output },
+							...result.images.map((image) => ({
+								type: "image" as const,
+								source: { type: "base64" as const, media_type: image.mimeType, data: image.data },
+							})),
+						]
+					: result.output,
 				...(result.ok ? {} : { is_error: true }),
 			});
 			if (result.steering !== undefined) steering.push({ type: "text", text: result.steering });

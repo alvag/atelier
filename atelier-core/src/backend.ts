@@ -1,4 +1,5 @@
 import type { AtelierEventBody, Effort, JsonValue, Usage } from "./events.ts";
+import type { ImageAttachment } from "./images.ts";
 import type { ThinkingSend } from "./pricing.ts";
 import type { ThinkingLevel } from "./profiles/index.ts";
 import type { ToolDefinition } from "./tools/types.ts";
@@ -13,6 +14,7 @@ export interface ToolCall {
 
 export interface ToolCallResult {
 	ok: boolean;
+	images?: ImageAttachment[];
 	/** Text returned to the model. */
 	output: string;
 	/** What the user said while the turn ran, for the model with this result, apart from the tool's output. */

@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { BackendSession, BackendStartOptions, SessionChange, ToolCall, ToolCallResult } from "../src/backend.ts";
@@ -228,6 +229,48 @@ const withoutBreakpoints = (value: unknown) =>
 	JSON.parse(JSON.stringify(value, (key, v) => (key === "cache_control" ? undefined : v)));
 
 describe("AnthropicApiBackend", () => {
+	it("sends tool images as image blocks rather than text", async () => {
+		const bytes = await sharp({ create: { width: 2, height: 1, channels: 3, background: "red" } })
+			.png()
+			.toBuffer();
+		const data = bytes.toString("base64");
+		const { session, api } = await start(
+			[
+				{ blocks: [{ type: "tool_use", id: "capture", name: "echo", input: {} }], stopReason: "tool_use" },
+				{ blocks: [{ type: "text", text: "I see the picture." }] },
+			],
+			async () => ({ ok: true, output: "Image: 2×1 (image/png)", images: [{ mimeType: "image/png", data }] }),
+		);
+		await collect(session.send("Look at the screenshot."));
+		expect(withoutBreakpoints(messagesOf(api.bodies[1]).at(-1))).toMatchObject({
+			role: "user",
+			content: [
+				{
+					type: "tool_result",
+					tool_use_id: "capture",
+					content: [
+						{ type: "text", text: "Image: 2×1 (image/png)" },
+						{ type: "image", source: { type: "base64", media_type: "image/png", data } },
+					],
+				},
+			],
+		});
+		const resume = session.resumeState?.();
+		if (resume === undefined) throw new Error("No resume state after the image turn.");
+		await session.close();
+		const resumed = await start(
+			[{ blocks: [{ type: "text", text: "The picture is still here." }] }],
+			undefined,
+			{},
+			undefined,
+			{ resume },
+		);
+		await collect(resumed.session.send("Look at that image again."));
+		expect(withoutBreakpoints(messagesOf(resumed.api.bodies[0])[2])).toEqual(
+			withoutBreakpoints(messagesOf(api.bodies[1]).at(-1)),
+		);
+		await resumed.session.close();
+	});
 	it("streams a text turn and reports the session, usage and cost", async () => {
 		const { session, api } = await start([
 			{
