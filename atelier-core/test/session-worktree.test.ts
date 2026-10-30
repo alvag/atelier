@@ -149,6 +149,8 @@ function objectFiles(): string[] {
 	return readdirSync(join(repo, ".git", "objects"), { recursive: true, encoding: "utf8" }).sort();
 }
 
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const worktrees = () => git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)?.length ?? 0;
 
 describe("a worker in the background", () => {
@@ -907,6 +909,10 @@ describe("the notices of background workers", () => {
 
 	it("quotes the paths of the command that applies a patch, spaces and single quotes included", async () => {
 		const top = await realpath(await mkdtemp(join(tmpdir(), "atelier it's a repo-")));
+		// The session's scratch directory, where the patch goes, under a folder with a space and a single quote too.
+		const temp = await realpath(await mkdtemp(join(tmpdir(), "atelier it's a tmp-")));
+		const realTemp = process.env.TMPDIR;
+		process.env.TMPDIR = temp;
 		try {
 			git(top, "init", "-q");
 			writeFileSync(join(top, "a.txt"), "one\n");
@@ -923,11 +929,19 @@ describe("the notices of background workers", () => {
 			await until(() => woke() === 1);
 			await play(session.nextQueued());
 			const command = (parent.prompts[1] ?? "").match(/Apply it with: (.+)/)?.[1] as string;
-			expect(command).toContain(`git -C '${top.replaceAll("'", "'\\''")}' apply '`);
-			execFileSync("sh", ["-c", command], { cwd: tmpdir() });
+			const inQuotes = (path: string) => path.replaceAll("'", "'\\''");
+			expect(command).toMatch(
+				new RegExp(
+					`^git -C '${escapeRegExp(inQuotes(top))}' apply '${escapeRegExp(inQuotes(temp))}/atelier-session-\\w+/work/task-1\\.patch'$`,
+				),
+			);
+			execFileSync("sh", ["-c", command], { cwd: "/" });
 			expect(readFileSync(join(top, "a.txt"), "utf8")).toBe("a.txt\n");
 		} finally {
+			if (realTemp === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = realTemp;
 			await rm(top, { recursive: true, force: true });
+			await rm(temp, { recursive: true, force: true });
 		}
 	});
 
