@@ -10,6 +10,7 @@ import {
 // The prompt editor's own decoding of printable keys, which the package's index does not export.
 import { decodePrintableKey } from "@earendil-works/pi-tui/dist/keys.js";
 import { PasteFilter } from "./dialog.ts";
+import { PANEL_FRAME, previewLines, previewPanel, previewRows } from "./preview-panel.ts";
 import type { Paint } from "./style.ts";
 
 /** An option as the dialog shows it: text already made safe to show. */
@@ -17,6 +18,8 @@ export interface QuestionOption {
 	label: string;
 	description?: string;
 	recommended?: boolean;
+	/** What choosing it looks like, shown in a panel while the cursor is on it. */
+	preview?: string;
 }
 
 /**
@@ -37,6 +40,12 @@ const NEXT = "Next →";
 const SUBMIT = "Submit";
 /** The fewest columns a description gets beside its label, unless it fits in fewer. */
 const DESCRIPTION_ROOM = 40;
+/** The fewest columns a preview gets beside the options, unless it fits in fewer: under them otherwise. */
+const PREVIEW_ROOM = 32;
+/** The columns between the options and a preview beside them. */
+const PREVIEW_GAP = 2;
+const PREVIEW_HINT = "↑↓ to see each option's preview";
+const NO_PREVIEW = "No preview";
 
 /** The hint's parts in the order they are dropped when it does not fit: the first goes first. */
 const dropOrder = ["enter select", "↑↓ move", "←→ tabs"];
@@ -90,6 +99,12 @@ export function fitHint(parts: readonly string[], width: number): string {
  * or unchecks it, and typing there checks it (Space and the numbers are text there, unless it is empty: then Space
  * toggles it, and Enter goes to the last row). The last row, `Next →` (`Submit` on the last question), sends what is
  * checked, nothing checked included; checked, `Type something…` needs its text.
+ *
+ * When options of a single-choice question have a preview, a panel beside the options (under them when the width
+ * leaves no room) shows the preview of the one the cursor is on, titled with its number and label; before the cursor is
+ * on one it says how to see them. The panel is as tall as the tallest preview, so the rows do not move with the cursor,
+ * and with `height` it is cut to the rows left, saying how many more there are: the question, the options and the hint
+ * line always stay in sight.
  */
 export class QuestionDialog implements Component, Focusable {
 	focused = false;
@@ -109,6 +124,7 @@ export class QuestionDialog implements Component, Focusable {
 	readonly #guardMs: number;
 	readonly #paste: PasteFilter;
 	readonly #answer: (answer: QuestionAnswer) => void;
+	readonly #height: (() => number) | undefined;
 	#revealedAt: number | undefined;
 	/** The row of the cursor, none until a key puts it on one; the last row is `Type something…`. */
 	#cursor: number | undefined;
@@ -136,6 +152,8 @@ export class QuestionDialog implements Component, Focusable {
 			guardMs?: number;
 			/** The filter that followed the input before this question appeared; one of its own by default. */
 			paste?: PasteFilter;
+			/** The most rows it may take on screen, its rules included; as many as it needs without it. */
+			height?: () => number;
 		},
 		paint: Paint,
 		answer: (answer: QuestionAnswer) => void,
@@ -150,6 +168,7 @@ export class QuestionDialog implements Component, Focusable {
 		this.#guardMs = options.guardMs ?? 0;
 		this.#paste = options.paste ?? new PasteFilter();
 		this.#answer = answer;
+		this.#height = options.height;
 	}
 
 	/** The options' rows and `Type something…`: the numbered rows. */
@@ -383,11 +402,11 @@ export class QuestionDialog implements Component, Focusable {
 
 	render(width: number): string[] {
 		const rule = this.#paint("cyan", "─".repeat(Math.max(1, width)));
-		return [rule, ...this.body(width), rule];
+		return [rule, ...this.body(width, (this.#height?.() ?? Number.POSITIVE_INFINITY) - 2), rule];
 	}
 
-	/** What goes between the rules: the question, its options and the hint line. */
-	body(width: number): string[] {
+	/** What goes between the rules, in `rows` rows when it can: the question, its options and the hint line. */
+	body(width: number, rows = Number.POSITIVE_INFINITY): string[] {
 		const paint = this.#paint;
 		const room = Math.max(1, width - 1);
 		const question = wrapTextWithAnsi(paint("bold", this.#question), room);
@@ -396,7 +415,9 @@ export class QuestionDialog implements Component, Focusable {
 			this.#problem !== ""
 				? paint("yellow", truncateToWidth(this.#problem, room, "…"))
 				: paint("dim", fitHint(this.#hint(tabs), room));
-		const lines = [...question.map((line) => ` ${line}`), "", ...this.#optionRows(width), "", ` ${hint}`];
+		// The blank row after the question, the one before the hint, and the hint.
+		const middle = rows - question.length - 3;
+		const lines = [...question.map((line) => ` ${line}`), "", ...this.#middle(width, middle), "", ` ${hint}`];
 		return lines.map((line) => truncateToWidth(line, width));
 	}
 
@@ -405,6 +426,60 @@ export class QuestionDialog implements Component, Focusable {
 		if (this.#typing) return [this.#multiSelect ? "enter done" : "enter send", "↑↓ move", "esc cancel"];
 		const pick = this.#multiSelect ? `space/1-${this.#rows} toggle` : `1-${this.#rows} pick`;
 		return [...tabs, "↑↓ move", pick, "enter select", "esc cancel"];
+	}
+
+	/** The options, and the preview of the one with the cursor beside or under them, in `rows` rows when it can. */
+	#middle(width: number, rows: number): string[] {
+		const previews = this.#options.flatMap((option) => (option.preview === undefined ? [] : [option.preview]));
+		if (this.#multiSelect || previews.length === 0) return this.#optionRows(width);
+		const longest = Math.max(
+			visibleWidth(PREVIEW_HINT),
+			...previews.flatMap((preview) => previewLines(preview).map((line) => visibleWidth(line))),
+		);
+		const listWidth = this.#listWidth();
+		const beside = width - listWidth - PREVIEW_GAP - PANEL_FRAME;
+		if (beside >= Math.min(longest, PREVIEW_ROOM)) {
+			const list = this.#optionRows(listWidth);
+			const panel = this.#panel(Math.min(longest, beside), Math.max(list.length, rows));
+			return Array.from({ length: Math.max(list.length, panel.length) }, (_, row) => {
+				const left = list[row] ?? "";
+				const right = panel[row];
+				if (right === undefined) return left;
+				return `${left}${" ".repeat(Math.max(0, listWidth - visibleWidth(left)) + PREVIEW_GAP)}${right}`;
+			});
+		}
+		const list = this.#optionRows(width);
+		const panel = this.#panel(Math.min(longest, Math.max(1, width - 1 - PANEL_FRAME)), rows - list.length - 1);
+		return [...list, "", ...panel.map((line) => ` ${line}`)];
+	}
+
+	/** The columns of the options' rows with their descriptions under them: up to the `Recommended` tag. */
+	#listWidth(): number {
+		const column = Math.max(0, ...this.#options.map((option) => visibleWidth(option.label)));
+		const tagged = this.#options.some((option) => option.recommended);
+		return this.#indent + column + (tagged ? visibleWidth(RECOMMENDED) + 2 : 0);
+	}
+
+	/**
+	 * The panel of the preview of the row with the cursor, `content` columns inside, in `rows` rows its borders included:
+	 * as tall as the tallest preview when they leave room for it.
+	 */
+	#panel(content: number, rows: number): string[] {
+		const tallest = Math.max(
+			1,
+			...this.#options.map((option) =>
+				option.preview === undefined ? 1 : previewRows(option.preview, content).length,
+			),
+		);
+		const height = Math.min(tallest, rows - 2);
+		const width = content + PANEL_FRAME;
+		if (this.#cursor === undefined)
+			return previewPanel({ rows: [this.#paint("dim", PREVIEW_HINT)], width, height }, this.#paint);
+		const option = this.#options[this.#cursor];
+		const title = `${this.#cursor + 1}. ${option?.label ?? TYPE_SOMETHING}`;
+		const shown =
+			option?.preview === undefined ? [this.#paint("dim", NO_PREVIEW)] : previewRows(option.preview, content);
+		return previewPanel({ title, rows: shown, width, height }, this.#paint);
 	}
 
 	/**
