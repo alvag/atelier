@@ -45,8 +45,13 @@ import {
 } from "./verifier.ts";
 import { createWorkspace } from "./workspace.ts";
 
-/** Model requests one lens, the refuter or the validator may make, on every backend. */
+/** Model requests one lens, the refuter or the validator may make, on every backend; a lens split into parts shares them. */
 export const REVIEW_ROLE_MAX_REQUESTS = 50;
+
+/** A part of a lens gets an equal share of the lens's requests, so all its parts together stay within the cap. */
+function requestsOf(part: { count: number } | undefined): number {
+	return part === undefined ? REVIEW_ROLE_MAX_REQUESTS : Math.max(1, Math.floor(REVIEW_ROLE_MAX_REQUESTS / part.count));
+}
 
 export interface ReviewConsentRequest {
 	reviewId: string;
@@ -633,7 +638,7 @@ export class SessionReview {
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
 				tools: createTreeTools(candidate.root, call.tree),
 				systemPromptAppend: call.instruction,
-				maxRequestsPerTurn: REVIEW_ROLE_MAX_REQUESTS,
+				maxRequestsPerTurn: requestsOf(call.part),
 				createId: host.createId,
 			};
 		} catch (error) {
@@ -641,7 +646,8 @@ export class SessionReview {
 		}
 		return this.#runChild(
 			host,
-			{ parentCallId: reviewId, agent: `review:${call.role}` },
+			// Parts of one lens run at once: each has its own tag, so their streams never mix.
+			{ parentCallId: reviewId, agent: `review:${call.role}${call.part === undefined ? "" : `#${call.part.index}`}` },
 			options,
 			call.role,
 			call.prompt,
