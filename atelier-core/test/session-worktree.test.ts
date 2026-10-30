@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	chmodSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -122,6 +123,11 @@ function gitDirState(): Record<string, string> {
 	};
 	walk(join(repo, ".git"), "");
 	return state;
+}
+
+/** The repository's loose objects and packs, by name. */
+function objectFiles(): string[] {
+	return readdirSync(join(repo, ".git", "objects"), { recursive: true, encoding: "utf8" }).sort();
 }
 
 const worktrees = () => git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)?.length ?? 0;
@@ -469,6 +475,26 @@ describe("a worker in the background", () => {
 		await play(session.nextQueued());
 		expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(stale);
 		expect(worktrees()).toBe(1);
+	});
+
+	it("leaves the repository as it was when the dependencies cannot be copied, and starts no subagent", async () => {
+		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
+		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
+		const unreadable = join(repo, "node_modules/pkg/secret.js");
+		writeFileSync(unreadable, "x\n");
+		chmodSync(unreadable, 0);
+		const before = { git: gitDirState(), objects: objectFiles(), refs: git(repo, "for-each-ref") };
+		try {
+			const { parent, children, session, play } = await started([[work("c1"), { event: finished }]], []);
+			await play(session.send("go"));
+			expect(parent.toolResults[0]?.output).toMatch(
+				/^The worker's worktree could not be made: could not copy node_modules/,
+			);
+			expect(children).toHaveLength(0);
+			expect({ git: gitDirState(), objects: objectFiles(), refs: git(repo, "for-each-ref") }).toEqual(before);
+		} finally {
+			chmodSync(unreadable, 0o644);
+		}
 	});
 
 	it("is refused outside a git repository, before a subagent starts", async () => {
