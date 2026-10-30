@@ -1,17 +1,13 @@
 /**
  * What the main agent did itself in a measured turn, from the turn's events: which tools it called, how much it read
- * before and after its first task call, and whether it read past the threshold of the planned in-turn notice (#124).
+ * before and after its first task call, and whether it read past the threshold of the read notice (#124), as the
+ * session counts it.
  */
+import { InlineReads } from "../src/delegation.ts";
 import type { AtelierEvent } from "../src/index.ts";
 import type { ToolDefinition } from "../src/tools/types.ts";
 
-/** The in-turn notice's threshold: both must be reached by the reads that succeeded. */
-export const NOTICE_CALLS = 5;
-export const NOTICE_CHARS = 20_000;
-
 const READS = new Set(["read", "grep"]);
-/** After one of these in the turn the notice is never due: the agent delegated or is making a change. */
-const ENDS_NOTICE = new Set(["task", "edit", "write"]);
 
 export interface ParentCalls {
 	/** The parent's own tool calls, by tool. */
@@ -22,7 +18,7 @@ export interface ParentCalls {
 	readsAfterTask: number;
 	/** Characters the parent's successful read and grep calls gave the model before its first task call. */
 	readCharsBeforeTask: number;
-	/** Whether the parent's successful reads reached NOTICE_CALLS and NOTICE_CHARS before any task, edit or write. */
+	/** Whether the parent's successful reads passed the read notice's threshold before any task, edit or write. */
 	noticeDue: boolean;
 }
 
@@ -38,9 +34,7 @@ export function tallyParentCalls(events: Iterable<AtelierEvent>, chars: Readonly
 	};
 	const tools = new Map<string, string>();
 	let delegated = false;
-	let noticeOpen = true;
-	let noticeReads = 0;
-	let noticeChars = 0;
+	const reads = new InlineReads();
 	for (const event of events) {
 		if (event.parentCallId !== undefined) continue;
 		if (event.type === "tool_call_started") {
@@ -52,14 +46,11 @@ export function tallyParentCalls(events: Iterable<AtelierEvent>, chars: Readonly
 				else tally.readsBeforeTask++;
 			}
 			if (event.tool === "task") delegated = true;
-			if (ENDS_NOTICE.has(event.tool)) noticeOpen = false;
-		} else if (event.type === "tool_call_finished" && event.ok && READS.has(tools.get(event.callId) ?? "")) {
+		} else if (event.type === "tool_call_finished") {
+			const tool = tools.get(event.callId) ?? "";
 			const read = chars.get(event.callId) ?? 0;
-			if (!delegated) tally.readCharsBeforeTask += read;
-			if (!noticeOpen) continue;
-			noticeReads++;
-			noticeChars += read;
-			if (noticeReads >= NOTICE_CALLS && noticeChars >= NOTICE_CHARS) tally.noticeDue = true;
+			if (event.ok && READS.has(tool) && !delegated) tally.readCharsBeforeTask += read;
+			if (reads.after(tool, event.ok, read) !== undefined) tally.noticeDue = true;
 		}
 	}
 	return tally;
