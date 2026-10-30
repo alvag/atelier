@@ -129,6 +129,15 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
+## sharp
+
+- Package: `sharp` 0.34.5, a dependency of `atelier-core` (bounded image decoding and resizing).
+- License: Apache-2.0; its npm package includes the license and copyright notices.
+- Its platform-specific `@img/sharp-*` bindings are Apache-2.0. The prebuilt libvips bundles
+  (`@img/sharp-libvips-*`) are LGPL-3.0-or-later, using the libraries' LGPL "any later version"
+  clauses. Their README lists the bundled libraries and their individual licenses. Atelier uses
+  these prebuilt packages without running install scripts.
+
 ## Ideas without code
 
 The folded tool cards of the TUI follow the shape of [pi-pretty](https://www.npmjs.com/package/@heyhuynhgiabuu/pi-pretty)
