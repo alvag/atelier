@@ -737,7 +737,9 @@ describe.skipIf(!onMac)("a background worker in the real sandbox", () => {
 	beforeEach(async () => {
 		home = await realpath(await mkdtemp(join(tmpdir(), "atelier-worker-home-")));
 		vi.stubEnv("HOME", home);
-		sandbox = new Sandbox({ home, tempDir: join(home, "tmp") });
+		// Its own root for the library's socket folder, as the other sandbox tests: never the shared /tmp one.
+		mkdirSync(join(home, "s"));
+		sandbox = new Sandbox({ home, tempDir: join(home, "tmp"), socketRoot: join(home, "s") });
 	});
 	afterEach(async () => {
 		await sandbox.reset();
