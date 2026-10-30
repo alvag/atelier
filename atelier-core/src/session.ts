@@ -2341,7 +2341,11 @@ export class Session {
 				// Nobody answers a background child: what would ask is denied instead.
 				...(unattended ? { unattended: true } : {}),
 				...(unattended || this.#options.approve === undefined ? {} : { approve: this.#options.approve }),
-				...(this.#options.permissionRules === undefined ? {} : { permissionRules: this.#options.permissionRules }),
+				// A worker in its own worktree gets none of the user's allowances: what it would do outside it, through a rule
+				// that covers the parent's folder or a command run outside the sandbox, asks, so it is denied.
+				...(this.#options.permissionRules === undefined || worktree !== undefined
+					? {}
+					: { permissionRules: this.#options.permissionRules }),
 				createId: this.#createId,
 			});
 		} catch (error) {

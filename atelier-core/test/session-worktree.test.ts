@@ -8,13 +8,14 @@ import {
 	readdirSync,
 	readFileSync,
 	readlinkSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type AtelierEvent,
@@ -24,9 +25,11 @@ import {
 	Session,
 	type SessionOptions,
 } from "../src/index.ts";
+import { PermissionRules } from "../src/permission-rules.ts";
 import { BUILTIN_AGENTS } from "../src/subagents/definitions.ts";
 import { createTaskWorktree } from "../src/subagents/worktree.ts";
 import { createBackgroundTools } from "../src/tools/background.ts";
+import { createWriteTool } from "../src/tools/write.ts";
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
 const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage };
@@ -553,10 +556,12 @@ describe("a worker in the background", () => {
 		expect(git(repo, "worktree", "list", "--porcelain")).toContain(join(theirs, "wt"));
 	});
 
-	it("forgets a worktree of Atelier's that a crash left, and only that one", async () => {
+	it("forgets a worktree of Atelier's that a crash left, and none of the user's, whatever its path", async () => {
 		const crashed = await realpath(await mkdtemp(join(tmpdir(), "atelier-crashed-")));
 		const stale = join(crashed, "atelier-session-old", "work", "worktrees", "1", "tree");
-		git(repo, "worktree", "add", "-q", "--detach", stale, "HEAD");
+		const theirs = join(crashed, "my-directory", "atelier-session-project", "work", "worktrees", "7", "tree");
+		git(repo, "worktree", "add", "-q", "--detach", "--lock", "--reason", "atelier: background worker", stale, "HEAD");
+		git(repo, "worktree", "add", "-q", "--detach", theirs, "HEAD");
 		await rm(crashed, { recursive: true, force: true });
 		const { session, play, woke } = await started(
 			[[work("c1"), { event: finished }], [{ event: finished }]],
@@ -565,8 +570,32 @@ describe("a worker in the background", () => {
 		await play(session.send("go"));
 		await until(() => woke() === 1);
 		await play(session.nextQueued());
-		expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(stale);
-		expect(worktrees()).toBe(1);
+		const listed = git(repo, "worktree", "list", "--porcelain");
+		expect(listed).not.toContain(stale);
+		expect(listed).toContain(theirs);
+	});
+
+	it("denies a write into the parent's tree, without asking, even in a folder the user's rules allow", async () => {
+		const rules = new PermissionRules();
+		await rules.allow([{ kind: "path", value: repo }], "session");
+		const before = readFileSync(join(repo, "a.txt"));
+		const { children, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				() => [
+					{ toolCall: { tool: "write", input: { path: join(repo, "a.txt"), content: "child\n" }, callId: "w1" } },
+					text("done"),
+					{ event: finished },
+				],
+			],
+			repo,
+			{ permissionRules: rules, tools: [...createBackgroundTools(), createWriteTool()] },
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(children[0]?.toolResults[0]?.output).toMatch(/^Denied without asking/);
+		expect(readFileSync(join(repo, "a.txt")).equals(before)).toBe(true);
 	});
 
 	it("leaves the repository as it was when the dependencies cannot be copied, and starts no subagent", async () => {
@@ -622,5 +651,71 @@ describe("a worker's worktree where the file system cannot clone", () => {
 			await worktree.remove();
 			await rm(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("the links of a worker's worktree", () => {
+	let dir: string;
+	beforeEach(async () => {
+		dir = await realpath(await mkdtemp(join(tmpdir(), "atelier-links-")));
+	});
+	afterEach(async () => {
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	it.each(["absolute", "relative"])(
+		"copies the ignored store a dependency's %s link leads to, and writes there stay the worker's",
+		async (kind) => {
+			writeFileSync(join(repo, ".gitignore"), "node_modules/\n.store/\n");
+			mkdirSync(join(repo, ".store/pkg"), { recursive: true });
+			mkdirSync(join(repo, "node_modules"), { recursive: true });
+			writeFileSync(join(repo, ".store/pkg/index.js"), "store\n");
+			symlinkSync(kind === "absolute" ? join(repo, ".store/pkg") : "../.store/pkg", join(repo, "node_modules/pkg"));
+			const worktree = await createTaskWorktree(repo, join(dir, "w"));
+			try {
+				const file = join(worktree.cwd, "node_modules/pkg/index.js");
+				expect(readFileSync(file, "utf8")).toBe("store\n");
+				expect(realpathSync(file).startsWith(`${repo}/`)).toBe(false);
+				writeFileSync(file, "child\n");
+				expect(readFileSync(join(repo, ".store/pkg/index.js"), "utf8")).toBe("store\n");
+			} finally {
+				await worktree.remove();
+			}
+		},
+	);
+
+	it("copies a dependency's link out of the tree, so a link back from there leads into the worktree", async () => {
+		const outside = await realpath(await mkdtemp(join(tmpdir(), "atelier-outside-")));
+		try {
+			writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
+			mkdirSync(join(repo, "node_modules/real"), { recursive: true });
+			writeFileSync(join(repo, "node_modules/real/index.js"), "parent\n");
+			symlinkSync(join(repo, "node_modules/real"), join(outside, "back"));
+			symlinkSync(outside, join(repo, "node_modules/x"));
+			const worktree = await createTaskWorktree(repo, join(dir, "w"));
+			try {
+				const file = join(worktree.cwd, "node_modules/x/back/index.js");
+				expect(readFileSync(file, "utf8")).toBe("parent\n");
+				expect(realpathSync(file).startsWith(`${repo}/`)).toBe(false);
+				writeFileSync(file, "child\n");
+				expect(readFileSync(join(repo, "node_modules/real/index.js"), "utf8")).toBe("parent\n");
+			} finally {
+				await worktree.remove();
+			}
+		} finally {
+			await rm(outside, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses a dependency's link to a folder that holds the parent's tree, leaving the repository as it was", async () => {
+		writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
+		mkdirSync(join(repo, "node_modules"), { recursive: true });
+		symlinkSync(dirname(repo), join(repo, "node_modules/up"));
+		const before = { git: gitDirState(), objects: objectFiles() };
+		await expect(createTaskWorktree(repo, join(dir, "w"))).rejects.toThrow(
+			/node_modules\/up leads to .+, which holds the repository/,
+		);
+		expect({ git: gitDirState(), objects: objectFiles() }).toEqual(before);
+		expect(existsSync(join(dir, "w"))).toBe(false);
 	});
 });
