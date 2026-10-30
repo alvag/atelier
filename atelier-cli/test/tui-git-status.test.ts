@@ -202,11 +202,19 @@ process.stdout.write(output);
 		);
 		const controller = new AbortController();
 		const pending = readGitChanges(base, controller.signal);
-		await vi.waitFor(async () => expect(await readFile(pidFile, "utf8")).toMatch(/^\d+$/));
+		// A loaded machine starts the fake Git slowly: wait past the default second, but fail at once if the query gives up first.
+		const ended = pending.then(() => {
+			throw new Error("the status query ended before its attribute query started");
+		});
+		ended.catch(() => undefined);
+		await Promise.race([
+			vi.waitFor(async () => expect(await readFile(pidFile, "utf8")).toMatch(/^\d+$/), { timeout: 5000 }),
+			ended,
+		]);
 		const pid = Number(await readFile(pidFile, "utf8"));
 		controller.abort();
 		expect(await pending).toBeUndefined();
-		await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+		await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 5000 });
 	});
 
 	it.each([
