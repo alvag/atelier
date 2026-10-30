@@ -45,4 +45,28 @@ describe("measure-delegation", () => {
 		},
 		30_000,
 	);
+
+	it("records the variant and the explorer model it measured, and refuses a variant it does not know", async () => {
+		const script = new URL("../scripts/measure-delegation.ts", import.meta.url).pathname;
+		const json = join(root, "run.json");
+		const measured = (...more: string[]) => {
+			const args = [script, "--fake-backend", "--runs", "1", "--tasks", "narrow2", "--json", json, ...more];
+			const run = spawnTracked(process.execPath, args, { ATELIER_SCRATCH_SWEEP: "off", TMPDIR: root });
+			child = run;
+			return run;
+		};
+
+		const run = measured("--variant", "rule", "--explorer-model", "claude-haiku-5-5");
+		await until(() => run.exited !== undefined, 15_000);
+		expect(run.exited).toBe(0);
+		const written = JSON.parse(await readFile(json, "utf8")) as { variant: string; explorerModel?: string };
+		expect([written.variant, written.explorerModel]).toEqual(["rule", "claude-haiku-5-5"]);
+
+		const wrong = measured("--variant", "louder");
+		await until(() => wrong.exited !== undefined, 15_000);
+		expect(wrong.exited).toBe(2);
+		expect(wrong.stderr).toContain(
+			"Unknown variant louder; the variants are baseline, rule, why, notice, rule+notice.",
+		);
+	}, 30_000);
 });

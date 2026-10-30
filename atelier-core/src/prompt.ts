@@ -1,12 +1,15 @@
+import { BREADTH_RULE, type DelegationVariant, withBreadthRule } from "./delegation.ts";
+
 /** Byte-stable: Claude Code caches the prompt prefix across turns. Shared by every client. */
 export const SYSTEM_PROMPT_APPEND =
 	"You are running inside Atelier. Use only the Atelier tools. Paths are relative to the working directory; read and grep also take absolute and ../ paths outside it (except the user's secrets), and edit and write outside it ask for approval. Use edit to change a file that exists and write to create one or replace it whole. bash commands may need the user's approval; if one is denied, do not retry it. Use web_fetch to read a web page and web_search to look something up, not curl or wget in bash; never put secrets or private code in a URL or a search query.\n\nWrite everything you tell the user in the language the user writes in: your messages between tool calls, your questions, your final answer and the reasons you give when you ask for approval. Code, comments, commit messages, docs and pull request descriptions follow the project's instructions; without them, the language the user asks for, else the one the project already uses. What you write to subagents may stay in English.";
 
 /**
  * Added when ODD tracking is on. Byte-stable for a session, and kept short: the code enforces the rules that matter.
- * With subagents, a line ties a task's route to the task tool's rules, naming only the agents the session has.
+ * With subagents, a line ties a task's route to the task tool's rules, naming only the agents the session has; the
+ * `rule` variant of #124 adds the breadth rule after it when one of them is the explorer.
  */
-export function oddRules(agents: readonly string[]): string {
+export function oddRules(agents: readonly string[], variant?: DelegationVariant): string {
 	return [
 		"Work in ODD (Organic Driven Development):",
 		"- A small task (understood, low risk, finishable from the diff alone): just do it. Read only what you change and its helpers, in one batch, and run the focused test and the suite in one command.",
@@ -16,6 +19,7 @@ export function oddRules(agents: readonly string[]): string {
 			: [
 					`- A task's route says who does it: ${orList(["inline (you)", ...agents])}, following the task tool's rules on when to delegate.`,
 				]),
+		...(withBreadthRule(variant) && agents.includes("explorer") ? [BREADTH_RULE] : []),
 		"- Then go task by task: update_task to in_progress before starting one, to done (with its commit, if any) once its checks pass, to blocked with a note when it waits on something.",
 		"- To resume earlier work, open its feature by name.",
 		"- Reading, editing and running tests show your phase by themselves; use the phase tool only for authorizing, deciding and closing.",
