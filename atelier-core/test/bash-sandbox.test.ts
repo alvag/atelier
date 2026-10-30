@@ -200,17 +200,7 @@ describe.skipIf(!onMac)("the agent's bash in the sandbox", () => {
 	});
 });
 
-describe("hard links in the real sandbox", () => {
-	beforeEach(async (context) => {
-		const status = await sandbox.status();
-		if (!status.available) {
-			console.warn(
-				`WARNING: the Seatbelt hard-link tests did not run (${status.reason}); a green result does not cover them.`,
-			);
-			context.skip();
-		}
-	});
-
+describe.skipIf(!onMac)("hard links in the real sandbox", () => {
 	it.each([
 		["home", ".atelier/permissions.json", "{}\n"],
 		["home", ".zshrc", "# fake shell startup\n"],
@@ -219,6 +209,7 @@ describe("hard links in the real sandbox", () => {
 		["home", "notes.txt", "fake ordinary note\n"],
 		["home", "other-repo/.git/hooks/pre-commit", "#!/bin/sh\nexit 0\n"],
 	])("cannot hard-link %s/%s into the project", async (root, relative, content) => {
+		expect(await sandbox.status()).toEqual({ available: true });
 		const source = join(root === "project" ? cwd : home, relative);
 		const destination = join(cwd, "hard-link");
 		await mkdir(dirname(source), { recursive: true });
@@ -242,6 +233,7 @@ describe("hard links in the real sandbox", () => {
 	});
 
 	it("still creates a hard link to an ordinary project file", async () => {
+		expect(await sandbox.status()).toEqual({ available: true });
 		const source = join(cwd, "ordinary.txt");
 		const destination = join(cwd, "hard-link");
 		const content = "ordinary project file\n";
