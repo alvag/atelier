@@ -7,7 +7,7 @@ import type { ToolDefinition } from "../src/tools/types.ts";
 
 /** The in-turn notice's threshold: both must be reached by the reads that succeeded. */
 export const NOTICE_CALLS = 5;
-export const NOTICE_CHARS = 40_000;
+export const NOTICE_CHARS = 20_000;
 
 const READS = new Set(["read", "grep"]);
 /** After one of these in the turn the notice is never due: the agent delegated or is making a change. */
