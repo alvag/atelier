@@ -1,22 +1,19 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-	chmodSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
-	readlinkSync,
-	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -27,12 +24,13 @@ import {
 } from "../src/index.ts";
 import { PermissionRules } from "../src/permission-rules.ts";
 import { BUILTIN_AGENTS } from "../src/subagents/definitions.ts";
-import { createTaskWorktree } from "../src/subagents/worktree.ts";
 import { createBackgroundTools } from "../src/tools/background.ts";
 import { createBashTool } from "../src/tools/bash.ts";
-import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
+import { createEditTool } from "../src/tools/edit.ts";
+import { isInsideSandbox, Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
 import { createWriteTool } from "../src/tools/write.ts";
 
+const onMac = process.platform === "darwin" && !isInsideSandbox();
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
 const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage };
 const text = (t: string): FakeStep => ({ event: { type: "text_delta", text: t } });
@@ -248,81 +246,7 @@ describe("a worker in the background", () => {
 		expect(parent.prompts[3]).toContain("Files it changed that also changed in your working tree since: a.txt.");
 	});
 
-	it.each([["with the sandbox", false]])(
-		"gets the parent's node_modules folders %s, without being able to change them",
-		async (_how, noSandbox) => {
-			writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
-			for (const dir of ["node_modules/pkg", "sub/node_modules/x"]) mkdirSync(join(repo, dir), { recursive: true });
-			writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
-			writeFileSync(join(repo, "sub/node_modules/x/index.js"), "parent x\n");
-			const seen: string[] = [];
-			const { parent, session, play, woke } = await started(
-				[[work("c1"), { event: finished }], [{ event: finished }]],
-				[
-					(cwd) => [
-						{
-							run: () => {
-								const pkg = join(cwd(), "node_modules/pkg/index.js");
-								seen.push(readFileSync(pkg, "utf8"), readFileSync(join(cwd(), "sub/node_modules/x/index.js"), "utf8"));
-								seen.push(String(lstatSync(join(cwd(), "node_modules")).isSymbolicLink()));
-								writeFileSync(pkg, "child\n");
-							},
-						},
-						text("done"),
-						{ event: finished },
-					],
-				],
-				repo,
-				{ noSandbox },
-			);
-			await play(session.send("go"));
-			const started_ = parent.toolResults[0]?.output ?? "";
-			await until(() => woke() === 1);
-			// Its own copies, whatever the file system: never a link to the parent's.
-			expect(seen).toEqual(["parent\n", "parent x\n", "false"]);
-			expect(started_).toMatch(/Its node_modules folders are (copy-on-write )?copies of yours\./);
-			expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
-			await play(session.nextQueued());
-			expect(parent.prompts[1]).toContain("It changed no files.");
-		},
-	);
-
-	it("points no link of its worktree at the parent's tree, so nothing written through one reaches the parent's", async () => {
-		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
-		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
-		writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
-		// pnpm-like: an absolute link inside the dependencies, and one in the tree itself.
-		symlinkSync(join(repo, "node_modules/pkg"), join(repo, "node_modules/abs"));
-		symlinkSync(join(repo, "a.txt"), join(repo, "here"));
-		const before = readFileSync(join(repo, "a.txt"));
-		const targets: string[] = [];
-		const { parent, session, play, woke } = await started(
-			[[work("c1"), { event: finished }], [{ event: finished }]],
-			[
-				(cwd) => [
-					{
-						run: () => {
-							targets.push(readlinkSync(join(cwd(), "node_modules/abs")), readlinkSync(join(cwd(), "here")));
-							writeFileSync(join(cwd(), "node_modules/abs/index.js"), "child\n");
-							writeFileSync(join(cwd(), "here"), "through the link\n");
-						},
-					},
-					text("done"),
-					{ event: finished },
-				],
-			],
-		);
-		await play(session.send("go"));
-		await until(() => woke() === 1);
-		await play(session.nextQueued());
-		expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
-		expect(readFileSync(join(repo, "a.txt")).equals(before)).toBe(true);
-		for (const target of targets) expect(target.startsWith(`${repo}/`)).toBe(false);
-		// The worker changed a.txt through the link; the link itself is as the snapshot has it.
-		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed, \+1 -2/);
-	});
-
-	it("gets every node_modules the parent has: inside an ignored folder, not ignored, or a link", async () => {
+	it("links every node_modules the parent has: ignored, not ignored, a link, or inside an ignored folder", async () => {
 		writeFileSync(join(repo, ".gitignore"), "ignored.log\nvendor/\n.store/\n");
 		for (const dir of ["vendor/node_modules/v", "plain/node_modules/p", ".store/nm/l"])
 			mkdirSync(join(repo, dir), { recursive: true });
@@ -337,10 +261,10 @@ describe("a worker in the background", () => {
 				(cwd) => [
 					{
 						run: () => {
+							for (const folder of ["vendor/node_modules", "plain/node_modules", "node_modules"])
+								seen.push(String(lstatSync(join(cwd(), folder)).isSymbolicLink()));
 							for (const file of ["vendor/node_modules/v", "plain/node_modules/p", "node_modules/l"])
 								seen.push(readFileSync(join(cwd(), file, "index.js"), "utf8"));
-							seen.push(String(lstatSync(join(cwd(), "node_modules")).isSymbolicLink()));
-							writeFileSync(join(cwd(), "node_modules/l/index.js"), "child\n");
 						},
 					},
 					text("done"),
@@ -349,10 +273,12 @@ describe("a worker in the background", () => {
 			],
 		);
 		await play(session.send("go"));
+		expect(parent.toolResults[0]?.output).toContain(
+			"Its node_modules folders are links to yours: it reads and runs them, and cannot write them.",
+		);
 		await until(() => woke() === 1);
 		await play(session.nextQueued());
-		expect(seen).toEqual(["vendored\n", "plain\n", "linked\n", "false"]);
-		expect(readFileSync(join(repo, ".store/nm/l/index.js"), "utf8")).toBe("linked\n");
+		expect(seen).toEqual(["true", "true", "true", "vendored\n", "plain\n", "linked\n"]);
 		expect(parent.prompts[1]).toContain("It changed no files.");
 	});
 
@@ -613,26 +539,6 @@ describe("a worker in the background", () => {
 		expect(readFileSync(join(repo, "a.txt")).equals(before)).toBe(true);
 	});
 
-	it("leaves the repository as it was when the dependencies cannot be copied, and starts no subagent", async () => {
-		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
-		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
-		const unreadable = join(repo, "node_modules/pkg/secret.js");
-		writeFileSync(unreadable, "x\n");
-		chmodSync(unreadable, 0);
-		const before = { git: gitDirState(), objects: objectFiles(), refs: git(repo, "for-each-ref") };
-		try {
-			const { parent, children, session, play } = await started([[work("c1"), { event: finished }]], []);
-			await play(session.send("go"));
-			expect(parent.toolResults[0]?.output).toMatch(
-				/^The worker's worktree could not be made: could not copy node_modules/,
-			);
-			expect(children).toHaveLength(0);
-			expect({ git: gitDirState(), objects: objectFiles(), refs: git(repo, "for-each-ref") }).toEqual(before);
-		} finally {
-			chmodSync(unreadable, 0o644);
-		}
-	});
-
 	it("writes nothing outside its worktree, whatever the project's sandbox configuration allows", async () => {
 		const outside = await realpath(await mkdtemp(join(tmpdir(), "atelier-outside-")));
 		try {
@@ -710,116 +616,62 @@ describe("a worker in the background", () => {
 	});
 });
 
-describe("a worker's worktree where the file system cannot clone", () => {
-	it("copies the parent's node_modules folders, which the worker then cannot change", async () => {
-		writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
-		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
-		writeFileSync(join(repo, "node_modules/pkg/index.js"), "parent\n");
-		const dir = await realpath(await mkdtemp(join(tmpdir(), "atelier-copy-")));
-		const worktree = await createTaskWorktree(repo, join(dir, "w"), { clone: false });
-		try {
-			expect(worktree.dependencies).toBe("copied");
-			const pkg = join(worktree.cwd, "node_modules/pkg/index.js");
-			expect(lstatSync(join(worktree.cwd, "node_modules")).isSymbolicLink()).toBe(false);
-			writeFileSync(pkg, "child\n");
-			expect(readFileSync(join(repo, "node_modules/pkg/index.js"), "utf8")).toBe("parent\n");
-			expect(await worktree.collect(join(dir, "p.patch"))).toBeUndefined();
-		} finally {
-			await worktree.remove();
-			await rm(dir, { recursive: true, force: true });
-		}
-	});
-});
-
-describe("the links of a worker's worktree", () => {
-	let dir: string;
+describe.skipIf(!onMac)("a background worker in the real sandbox", () => {
+	let home: string;
+	let sandbox: Sandbox;
 	beforeEach(async () => {
-		dir = await realpath(await mkdtemp(join(tmpdir(), "atelier-links-")));
+		home = await realpath(await mkdtemp(join(tmpdir(), "atelier-worker-home-")));
+		vi.stubEnv("HOME", home);
+		sandbox = new Sandbox({ home, tempDir: join(home, "tmp") });
 	});
 	afterEach(async () => {
-		await rm(dir, { recursive: true, force: true });
+		await sandbox.reset();
+		vi.unstubAllEnvs();
+		await rm(home, { recursive: true, force: true });
 	});
 
-	it.each(["absolute", "relative"])(
-		"copies the ignored store a dependency's %s link leads to, and writes there stay the worker's",
-		async (kind) => {
-			writeFileSync(join(repo, ".gitignore"), "node_modules/\n.store/\n");
-			mkdirSync(join(repo, ".store/pkg"), { recursive: true });
-			mkdirSync(join(repo, "node_modules"), { recursive: true });
-			writeFileSync(join(repo, ".store/pkg/index.js"), "store\n");
-			symlinkSync(kind === "absolute" ? join(repo, ".store/pkg") : "../.store/pkg", join(repo, "node_modules/pkg"));
-			const worktree = await createTaskWorktree(repo, join(dir, "w"));
-			try {
-				const file = join(worktree.cwd, "node_modules/pkg/index.js");
-				expect(readFileSync(file, "utf8")).toBe("store\n");
-				expect(realpathSync(file).startsWith(`${repo}/`)).toBe(false);
-				writeFileSync(file, "child\n");
-				expect(readFileSync(join(repo, ".store/pkg/index.js"), "utf8")).toBe("store\n");
-			} finally {
-				await worktree.remove();
-			}
-		},
-	);
-
-	it("copies a dependency's link out of the tree, so a link back from there leads into the worktree", async () => {
-		const outside = await realpath(await mkdtemp(join(tmpdir(), "atelier-outside-")));
-		try {
-			writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
-			mkdirSync(join(repo, "node_modules/real"), { recursive: true });
-			writeFileSync(join(repo, "node_modules/real/index.js"), "parent\n");
-			symlinkSync(join(repo, "node_modules/real"), join(outside, "back"));
-			symlinkSync(outside, join(repo, "node_modules/x"));
-			const worktree = await createTaskWorktree(repo, join(dir, "w"));
-			try {
-				const file = join(worktree.cwd, "node_modules/x/back/index.js");
-				expect(readFileSync(file, "utf8")).toBe("parent\n");
-				expect(realpathSync(file).startsWith(`${repo}/`)).toBe(false);
-				writeFileSync(file, "child\n");
-				expect(readFileSync(join(repo, "node_modules/real/index.js"), "utf8")).toBe("parent\n");
-			} finally {
-				await worktree.remove();
-			}
-		} finally {
-			await rm(outside, { recursive: true, force: true });
-		}
-	});
-
-	it("keeps the relative links of a linked package outside the tree leading where they led from there", async () => {
-		const outside = await realpath(await mkdtemp(join(tmpdir(), "atelier-outside-")));
-		try {
-			writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
-			mkdirSync(join(repo, "node_modules"), { recursive: true });
-			for (const dir of ["pkg/lib", "shared"]) mkdirSync(join(outside, dir), { recursive: true });
-			writeFileSync(join(outside, "shared/index.js"), "shared\n");
-			writeFileSync(join(outside, "pkg/lib/index.js"), "lib\n");
-			symlinkSync("../shared", join(outside, "pkg/shared"));
-			symlinkSync("lib", join(outside, "pkg/main"));
-			symlinkSync(join(outside, "pkg"), join(repo, "node_modules/pkg"));
-			const worktree = await createTaskWorktree(repo, join(dir, "w"));
-			try {
-				const pkg = join(worktree.cwd, "node_modules/pkg");
-				expect(readFileSync(join(pkg, "shared/index.js"), "utf8")).toBe("shared\n");
-				expect(readFileSync(join(pkg, "main/index.js"), "utf8")).toBe("lib\n");
-				expect(readlinkSync(join(pkg, "main"))).toBe("lib");
-				for (const file of ["shared/index.js", "main/index.js"])
-					expect(realpathSync(join(pkg, file)).startsWith(`${dir}/`)).toBe(true);
-			} finally {
-				await worktree.remove();
-			}
-		} finally {
-			await rm(outside, { recursive: true, force: true });
-		}
-	});
-
-	it("refuses a dependency's link to a folder that holds the parent's tree, leaving the repository as it was", async () => {
-		writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
-		mkdirSync(join(repo, "node_modules"), { recursive: true });
-		symlinkSync(dirname(repo), join(repo, "node_modules/up"));
-		const before = { git: gitDirState(), objects: objectFiles() };
-		await expect(createTaskWorktree(repo, join(dir, "w"))).rejects.toThrow(
-			/node_modules\/up leads to .+, which holds the repository/,
+	it("reads and runs the parent's dependencies through their link, and writes them neither with write, edit nor bash", async () => {
+		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
+		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
+		const index = join(repo, "node_modules/pkg/index.js");
+		writeFileSync(index, 'module.exports = "parent";\n');
+		// The project's own configuration lets commands write the whole parent's tree.
+		mkdirSync(join(repo, ".atelier"), { recursive: true });
+		writeFileSync(join(repo, ".atelier", "sandbox.json"), JSON.stringify({ allowWrite: [repo] }));
+		const before = readFileSync(index);
+		const test = 'require("node:test")("pkg", () => require("node:assert").equal(require("pkg"), "parent"));\n';
+		const call = (tool: string, input: Record<string, unknown>, callId: string): FakeStep => ({
+			toolCall: { tool, input: input as never, callId },
+		});
+		const { parent, children, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				() => [
+					call("write", { path: "node_modules/pkg/index.js", content: "child\n" }, "k1"),
+					call("edit", { path: "node_modules/pkg/index.js", edits: [{ oldText: "parent", newText: "child" }] }, "k2"),
+					call("bash", { command: "echo child > node_modules/pkg/index.js" }, "k3"),
+					call("write", { path: "pkg.test.cjs", content: test }, "k4"),
+					call("bash", { command: "node --test pkg.test.cjs" }, "k5"),
+					text("done"),
+					{ event: finished },
+				],
+			],
+			repo,
+			{ tools: [createBashTool({ sandbox }), createWriteTool(), createEditTool()] },
 		);
-		expect({ git: gitDirState(), objects: objectFiles() }).toEqual(before);
-		expect(existsSync(join(dir, "w"))).toBe(false);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		const results = children[0]?.toolResults ?? [];
+		expect(results[0]?.output).toMatch(/^Denied without asking/);
+		expect(results[1]?.output).toMatch(/^Denied without asking/);
+		expect(results[2]?.ok).toBe(false);
+		expect(results[4]).toMatchObject({ ok: true });
+		expect(readFileSync(index).equals(before)).toBe(true);
+		// The test it wrote is its change; the dependencies are never part of the patch.
+		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed, \+1 -0/);
+		expect(readFileSync(parent.prompts[1]?.match(/started: (\S+\.patch)\./)?.[1] as string, "utf8")).not.toContain(
+			"node_modules",
+		);
 	});
 });
