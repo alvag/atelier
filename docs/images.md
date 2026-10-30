@@ -33,7 +33,9 @@ terminal's own paste (Cmd+V). An empty or unsupported clipboard says so and leav
 unchanged; a read that fails or takes more than 3 seconds shows an error. Elsewhere Ctrl+V says it
 is macOS only. Ctrl+V does nothing while a question is open. Opening any question cancels active
 and queued clipboard reads; their results leave the question and hidden editor draft untouched,
-even if the question closes before the read finishes.
+even if the question closes before the read finishes. When a question discards clipboard reads,
+the conversation says `clipboard image dropped: a question opened; paste it again` once for that
+question, even when several reads were pending.
 Delete a whole marker to remove its attachment. A prompt can contain images without text.
 
 Enter or Alt+Enter sends the text and native images; the transcript keeps the visible markers.
