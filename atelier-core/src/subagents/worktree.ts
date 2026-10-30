@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 
@@ -162,12 +162,20 @@ export async function createTaskWorktree(
 	await mkdir(dir, { recursive: true });
 	const index = join(dir, "index");
 	const tree = join(dir, "tree");
+	// The dependencies first, beside the worktree: a copy that fails leaves nothing of the snapshot in the repository.
+	let folders: string[];
+	let copies: CopiedDependencies;
+	try {
+		folders = await dependencyFolders(top);
+		copies = await copyDependencies(top, join(dir, "dependencies"), folders, clone);
+	} catch (error) {
+		await rm(dir, { recursive: true, force: true });
+		throw error;
+	}
 	let headTree: string;
 	let snapshotTree: string;
 	let snapshot: string;
 	let place: string;
-	let folders: string[];
-	let dependencies: Dependencies;
 	try {
 		headTree = (await git(top, ["rev-parse", "HEAD^{tree}"])).trim();
 		snapshotTree = await treeOfWorkingTree(top, head, index);
@@ -183,8 +191,7 @@ export async function createTaskWorktree(
 		// on its git directory) that the checkout's would not.
 		await git(top, ["worktree", "add", "--no-checkout", "--detach", tree, snapshot]);
 		await git(tree, ["reset", "-q", "--hard"], { overrides: await filterOverrides(tree) });
-		folders = await dependencyFolders(top);
-		dependencies = await shareDependencies(top, tree, folders, clone);
+		await placeDependencies(tree, copies.staged);
 		place = join(tree, relative(top, await realpath(cwd)));
 		await mkdir(place, { recursive: true });
 	} catch (error) {
@@ -198,7 +205,7 @@ export async function createTaskWorktree(
 		cwd: place,
 		head: head.slice(0, 7),
 		dirty: snapshotTree !== headTree,
-		dependencies,
+		dependencies: copies.dependencies,
 		async collect(patchPath) {
 			// The dependencies are never part of the patch, whatever the worker made of them (a link is not ignored as a folder is).
 			const changed = await treeOfWorkingTree(tree, snapshot, index, folders);
@@ -273,33 +280,50 @@ async function cloneFolder(from: string, to: string): Promise<boolean> {
 	}
 }
 
+/** The parent's dependency folders copied beside the worktree, waiting to be put in it. */
+interface CopiedDependencies {
+	dependencies: Dependencies;
+	staged: { folder: string; path: string }[];
+}
+
 /**
- * Gives the worktree the parent's dependencies as its own, so the worker can run its tests and nothing it writes there
- * reaches the parent's: each folder cloned, or copied where the file system cannot clone (the links inside are copied
- * as links). A folder that cannot be copied fails the whole worktree: the worker would not have what it needs.
+ * Copies the parent's dependencies into `staging`, as the worker's own, so it can run its tests and nothing it writes
+ * there reaches the parent's: each folder cloned, or copied where the file system cannot clone (the links inside are
+ * copied as links). A folder that cannot be copied fails the whole worktree: the worker would not have what it needs.
  */
-async function shareDependencies(
+async function copyDependencies(
 	top: string,
-	tree: string,
+	staging: string,
 	folders: readonly string[],
 	clone: boolean,
-): Promise<Dependencies> {
-	let shared: Dependencies = "none";
-	for (const folder of folders) {
+): Promise<CopiedDependencies> {
+	let dependencies: Dependencies = "none";
+	const staged: CopiedDependencies["staged"] = [];
+	await mkdir(staging, { recursive: true });
+	for (const [index, folder] of folders.entries()) {
 		const from = join(top, folder);
-		const to = join(tree, folder);
-		await rm(to, { recursive: true, force: true });
-		await mkdir(dirname(to), { recursive: true });
-		if (clone && (await cloneFolder(from, to))) {
-			if (shared === "none") shared = "cloned";
+		const path = join(staging, String(index));
+		staged.push({ folder, path });
+		if (clone && (await cloneFolder(from, path))) {
+			if (dependencies === "none") dependencies = "cloned";
 			continue;
 		}
 		try {
-			await execFileAsync("cp", ["-R", from, to]);
+			await execFileAsync("cp", ["-R", from, path]);
 		} catch (error) {
 			throw new Error(`could not copy ${folder} into the worker's worktree: ${(error as Error).message}`);
 		}
-		shared = "copied";
+		dependencies = "copied";
 	}
-	return shared;
+	return { dependencies, staged };
+}
+
+/** Moves the copied dependencies to their places in the worktree, in place of whatever the checkout put there. */
+async function placeDependencies(tree: string, staged: CopiedDependencies["staged"]): Promise<void> {
+	for (const { folder, path } of staged) {
+		const to = join(tree, folder);
+		await rm(to, { recursive: true, force: true });
+		await mkdir(dirname(to), { recursive: true });
+		await rename(path, to);
+	}
 }
