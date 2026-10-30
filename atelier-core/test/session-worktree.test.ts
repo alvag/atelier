@@ -497,13 +497,23 @@ describe("a worker in the background", () => {
 		expect(git(repo, "worktree", "list", "--porcelain")).toContain(join(theirs, "wt"));
 	});
 
-	it("forgets a worktree of Atelier's that a crash left, and none of the user's, whatever its path", async () => {
-		const crashed = await realpath(await mkdtemp(join(tmpdir(), "atelier-crashed-")));
-		const stale = join(crashed, "atelier-session-old", "work", "worktrees", "1", "tree");
-		const theirs = join(crashed, "my-directory", "atelier-session-project", "work", "worktrees", "7", "tree");
-		git(repo, "worktree", "add", "-q", "--detach", "--lock", "--reason", "atelier: background worker", stale, "HEAD");
-		git(repo, "worktree", "add", "-q", "--detach", theirs, "HEAD");
-		await rm(crashed, { recursive: true, force: true });
+	it("forgets a worktree of Atelier's that a crash left, and none of the user's, whatever its path or lock", async () => {
+		const reason = "atelier: background worker";
+		// Atelier's own: in a session's scratch directory, locked with its reason.
+		const session_ = await realpath(await mkdtemp(join(tmpdir(), "atelier-session-")));
+		const stale = join(session_, "work", "worktrees", "1", "tree");
+		git(repo, "worktree", "add", "-q", "--detach", "--lock", "--reason", reason, stale, "HEAD");
+		// The user's: one locked with the same reason, one where Atelier's would be but unlocked, and one whose name
+		// would forge a lock line in git's plain listing.
+		const theirs = await realpath(await mkdtemp(join(tmpdir(), "atelier-theirs-")));
+		const mimic = join(theirs, "mimic");
+		const shaped = join(theirs, "atelier-session-project", "work", "worktrees", "7", "tree");
+		const forged = join(theirs, `evil\nlocked ${reason}\nworktree x`);
+		git(repo, "worktree", "add", "-q", "--detach", "--lock", "--reason", reason, mimic, "HEAD");
+		git(repo, "worktree", "add", "-q", "--detach", shaped, "HEAD");
+		git(repo, "worktree", "add", "-q", "--detach", forged, "HEAD");
+		await rm(session_, { recursive: true, force: true });
+		await rm(theirs, { recursive: true, force: true });
 		const { session, play, woke } = await started(
 			[[work("c1"), { event: finished }], [{ event: finished }]],
 			[() => [text("done"), { event: finished }]],
@@ -511,9 +521,9 @@ describe("a worker in the background", () => {
 		await play(session.send("go"));
 		await until(() => woke() === 1);
 		await play(session.nextQueued());
-		const listed = git(repo, "worktree", "list", "--porcelain");
-		expect(listed).not.toContain(stale);
-		expect(listed).toContain(theirs);
+		const listed = git(repo, "worktree", "list", "--porcelain", "-z").split("\0");
+		expect(listed).not.toContain(`worktree ${stale}`);
+		for (const path of [mimic, shaped, forged]) expect(listed).toContain(`worktree ${path}`);
 	});
 
 	it("denies a write into the parent's tree, without asking, even in a folder the user's rules allow", async () => {

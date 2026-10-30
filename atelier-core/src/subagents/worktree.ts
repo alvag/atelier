@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { lstat, mkdir, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
+import { systemTmpdir } from "../scratch.ts";
+import { realpathAllowMissing } from "../tools/paths.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -36,6 +38,8 @@ const NO_PROGRAMS = [
 ];
 /** The reason Atelier's worktrees are locked with: only a worktree locked with it is Atelier's to remove. */
 const OWN_LOCK = "atelier: background worker";
+/** Where Atelier makes a worker's worktree, from the scratch directories' folder: `<session>/work/worktrees/<n>/tree`. */
+const OWN_WORKTREE = /^atelier-session-[^/]+\/work\/worktrees\/\d+\/tree$/;
 
 /** A worktree refused before anything was made: the folder is not in a git repository with a commit. */
 export class WorktreeRefusedError extends Error {
@@ -226,14 +230,20 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 }
 
 /**
- * Forgets the worktrees Atelier made that a crash left: locked with its reason, their folder gone; one by one. A
- * worktree of the user's is never touched, whatever its path or state.
+ * Forgets the worktrees Atelier made that a crash left, one by one. One is Atelier's only when all of these hold: its
+ * real path is `worktrees/<n>/tree` in a session's scratch directory, it is locked with exactly Atelier's reason, and
+ * its folder is gone. The listing is read with NUL separators, and a path with a line break is never taken, so no name
+ * can pass for a field. A worktree of the user's is never touched, whatever its path, lock or state.
  */
 async function forgetStaleWorktrees(top: string): Promise<void> {
-	const listed = await git(top, ["worktree", "list", "--porcelain"]).catch(() => "");
-	for (const entry of listed.split("\n\n")) {
-		const path = entry.match(/^worktree (.+)$/m)?.[1];
-		if (path === undefined || entry.match(/^locked (.*)$/m)?.[1] !== OWN_LOCK) continue;
+	const listed = await git(top, ["worktree", "list", "--porcelain", "-z"]).catch(() => "");
+	const scratchRoot = await realpath(systemTmpdir()).catch(() => systemTmpdir());
+	for (const record of listed.split("\0\0")) {
+		const fields = record.split("\0");
+		const path = fields.find((field) => field.startsWith("worktree "))?.slice("worktree ".length);
+		if (path === undefined || /[\n\r]/.test(path) || !fields.includes(`locked ${OWN_LOCK}`)) continue;
+		const real = await realpathAllowMissing(path);
+		if (!OWN_WORKTREE.test(relative(scratchRoot, real))) continue;
 		if (
 			await lstat(path).then(
 				() => true,
