@@ -45,15 +45,20 @@ describe("read images", () => {
 			await session.close();
 		}
 	});
-	it.each([true, false])("honors catalog image input %s for a model outside the static list", async (images) => {
-		useModelData(new ModelData({ "anthropic-api": [{ id: "catalog-model", images }] }));
+	it.each([
+		{ id: "anthropic-api", images: true },
+		{ id: "anthropic-api", images: false },
+		{ id: "opencode-go", images: true },
+		{ id: "opencode-go", images: false },
+	])("honors catalog image input $images for $id outside the static list", async ({ id, images }) => {
+		useModelData(new ModelData({ [id]: [{ id: "catalog-model", images }] }));
 		await writeFile(
 			join(cwd, "capture"),
 			await sharp({ create: { width: 1, height: 1, channels: 3, background: "red" } })
 				.png()
 				.toBuffer(),
 		);
-		const backend = new FakeBackend([[{ toolCall: { tool: "read", input: { path: "capture" } } }]], "anthropic-api");
+		const backend = new FakeBackend([[{ toolCall: { tool: "read", input: { path: "capture" } } }]], id);
 		const session = await Session.start({ cwd, backend, model: "catalog-model", tools: [readTool] });
 		try {
 			const events = [];
@@ -62,7 +67,7 @@ describe("read images", () => {
 			if (!images) {
 				expect(backend.toolResults[0]).toEqual({
 					ok: false,
-					output: "Image input is not supported by anthropic-api/catalog-model.",
+					output: `Image input is not supported by ${id}/catalog-model.`,
 				});
 				expect(events).toContainEqual(expect.objectContaining({ type: "tool_call_finished", ok: false }));
 			} else expect(backend.toolResults[0]?.images).toHaveLength(1);
