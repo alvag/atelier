@@ -10,6 +10,7 @@ import { OpenAiCodexBackend } from "../src/backends/openai-codex/backend.ts";
 import { turnPromptBeforeItem } from "../src/backends/openai-codex/compaction.ts";
 import { SUMMARY_HEADINGS } from "../src/compaction/compactor.ts";
 import type { AtelierEventBody } from "../src/events.ts";
+import { currentModelData, ModelData, useModelData } from "../src/model-catalog/index.ts";
 import { FakeOpenAiAuth, fakeCodexAccess, fakeRefresh } from "./support/fake-openai-auth.ts";
 import { callItem, completed, FakeResponses, textItem } from "./support/fake-responses.ts";
 import { requireIsolatedHome } from "./support/login-isolation.ts";
@@ -351,5 +352,140 @@ it("refreshes a refused token once and retries the summary of /compact and of a 
 		expect(auth.requests.filter((request) => request.path === "/oauth/token")).toHaveLength(2);
 	} finally {
 		await auth.stop();
+	}
+});
+
+/** A saved conversation holding `count` distinct tiny PNGs, whose allowances alone pass the default threshold. */
+async function manyImages(count: number): Promise<{ resume: ResumeState; pngs: string[] }> {
+	const pngs = await Promise.all(
+		Array.from({ length: count }, async (_, index) =>
+			(
+				await sharp({ create: { width: 1, height: 1, channels: 3, background: { r: index, g: 0, b: 0 } } })
+					.png()
+					.toBuffer()
+			).toString("base64"),
+		),
+	);
+	const resume: ResumeState = {
+		messages: [
+			{ type: "message", role: "user", content: [{ type: "input_text", text: "compare these" }] },
+			{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Ready." }] },
+			...pngs.flatMap((data) => [
+				{
+					type: "message",
+					role: "user",
+					content: [{ type: "input_image", image_url: `data:image/png;base64,${data}`, detail: "auto" }],
+				},
+				{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Compared." }] },
+			]),
+		],
+	};
+	return { resume, pngs };
+}
+
+async function resumed(resume: ResumeState, model?: string, keepRecentTokens?: number): Promise<BackendSession> {
+	return new OpenAiCodexBackend({
+		store,
+		codexUrl: api.url,
+		baseDelayMs: 0,
+		...(keepRecentTokens === undefined ? {} : { keepRecentTokens }),
+	}).start({
+		cwd: "/work",
+		systemPromptAppend: "",
+		tools: [],
+		executeTool: async () => ({ ok: true, output: "" }),
+		resume,
+		...(model === undefined ? {} : { model }),
+	});
+}
+
+const started = (events: AtelierEventBody[]) => events.filter((event) => event.type === "compaction_started");
+
+it("sends a resumed conversation whose unmeasured images alone pass the threshold, and lets the API measure it", async () => {
+	const { resume, pngs } = await manyImages(30);
+	const session = await resumed(resume);
+	api.answers.push({ events: completed([textItem("Seen.")], { input_tokens: 2_000, output_tokens: 5 }) });
+	api.answers.push({ events: completed([textItem("Again.")], { input_tokens: 2_100, output_tokens: 5 }) });
+	try {
+		const events = await all(session.send("which is red?"));
+		expect(started(events)).toEqual([]);
+		expect(api.requests).toHaveLength(1);
+		const sent = JSON.stringify(inputOf(api.requests[0]));
+		for (const data of pngs) expect(sent).toContain(`data:image/png;base64,${data}`);
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", context: { tokens: 2_005 } });
+		// The measured baseline is authoritative: a low measure keeps the next turn uncompacted too.
+		expect(started(await all(session.send("and now?")))).toEqual([]);
+		expect(api.requests).toHaveLength(2);
+	} finally {
+		await session.close();
+	}
+});
+
+it("compacts the turn after the API measures a resumed image history above the threshold", async () => {
+	const { resume } = await manyImages(30);
+	const session = await resumed(resume);
+	api.answers.push({ events: completed([textItem("Seen.")], { input_tokens: 240_000, output_tokens: 5 }) });
+	api.answers.push({ events: completed([textItem(SUMMARY)]) }, { events: completed([textItem("Next.")]) });
+	try {
+		expect(started(await all(session.send("which is red?")))).toEqual([]);
+		const events = await all(session.send("and now?"));
+		expect(started(events)).toMatchObject([{ reason: "threshold" }]);
+		expect(api.requests).toHaveLength(3);
+	} finally {
+		await session.close();
+	}
+});
+
+it("still compacts and retries a resumed image request that the API says exceeds the window", async () => {
+	const { resume, pngs } = await manyImages(30);
+	const session = await resumed(resume);
+	api.answers.push({ status: 400, json: { error: { code: "context_length_exceeded", message: "too long" } } });
+	api.answers.push({ events: completed([textItem(SUMMARY)]) }, { events: completed([textItem("After.")]) });
+	try {
+		const events = await all(session.send("which is red?"));
+		expect(started(events)).toMatchObject([{ reason: "overflow" }]);
+		expect(api.requests).toHaveLength(3);
+		expect(JSON.stringify(inputOf(api.requests[0]))).toContain(pngs[0]);
+		expect(userText(inputOf(api.requests[2])[0])).toContain("<summary>");
+		expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn" });
+	} finally {
+		await session.close();
+	}
+});
+
+it("counts omitted images as text for context and tail cuts, preserving pixels when vision returns", async () => {
+	const catalog = currentModelData();
+	const { resume, pngs } = await manyImages(30);
+	useModelData(new ModelData({ "openai-codex": [{ id: "text-only", images: false }] }));
+	const session = await resumed(resume, "text-only", 5_000);
+	const omission = "[image omitted: text-only does not accept images]";
+	api.answers.push({ events: completed([textItem("Text.")], { input_tokens: 500, output_tokens: 5 }) });
+	api.answers.push({ events: completed([textItem("Vision.")], { input_tokens: 500, output_tokens: 5 }) });
+	try {
+		// The short omission notices cannot fill a 5,000-token tail; image allowances would wrongly select a cut.
+		const manual = await all(session.compact?.() ?? []);
+		const [begin] = started(manual);
+		expect(begin?.type === "compaction_started" ? begin.tokens : Infinity).toBeLessThan(5_000);
+		expect(manual).toContainEqual(
+			expect.objectContaining({
+				type: "compaction_finished",
+				ok: false,
+				error: "There is not enough history to compact.",
+			}),
+		);
+		expect(api.requests).toHaveLength(0);
+		const events = await all(session.send("which is red?"));
+		expect(started(events)).toEqual([]);
+		const sent = JSON.stringify(inputOf(api.requests[0]));
+		expect(sent.split(omission)).toHaveLength(31);
+		for (const data of pngs) expect(sent).not.toContain(data);
+		await session.configure?.({ model: "gpt-6-sol" });
+		await all(session.send("again"));
+		expect(api.requests).toHaveLength(2);
+		const vision = JSON.stringify(inputOf(api.requests[1]));
+		for (const data of pngs) expect(vision).toContain(`data:image/png;base64,${data}`);
+	} finally {
+		useModelData(catalog);
+		await session.close();
 	}
 });

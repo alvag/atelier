@@ -35,11 +35,22 @@ resuming with one sends the original normalized pixels again. Compaction can sti
 older history with a summary. A text-only carried prompt marks images it cannot retain with
 `[image omitted: the carried prompt is text-only; see the summary]`.
 
-Responses uses an **8,192-token allowance per unmeasured image** for context and compaction-tail
-estimates, rather than treating base64 as text. Text keeps its character-based estimate. This is a
-compaction heuristic, not a billing estimate: API-reported usage replaces it after a response,
-including the first response after resuming. Large encoded images alone therefore do not count
-as hundreds of thousands of text tokens or force a summary request.
+Responses uses an **8,192-token allowance per unmeasured image that is actually sent to the current
+model** for context and compaction-tail estimates, rather than treating base64 as text. Text keeps its
+character-based estimate. This is a compaction heuristic, not a billing estimate: API-reported usage
+replaces it after a response, including the first response after resuming.
+
+Automatic threshold compaction is deferred for these allowances: when the tokens excluding the
+allowances for images the API has not yet measured do not exceed the threshold, the request is sent
+and Atelier waits for actual usage, even if the allowances would pass it. This includes the first
+request after resuming a history with many images. The allowances still count in the reported
+context size and in choosing the retained tail. A request that really exceeds the context window
+still triggers the existing overflow compaction and one retry.
+
+An image the current model does not accept counts as its omission notice text, not as an allowance,
+for the context size, the retained-tail cut and the compacted-history estimate alike. The saved
+bytes are untouched: each request builds its own view, so returning to an image-capable model sends
+the original images again.
 
 Saved sessions can contain normalized image bytes. Treat saved or exported histories as sensitive.
 
