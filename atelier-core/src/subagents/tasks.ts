@@ -1,5 +1,6 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { BackgroundNotice } from "../background-notices.ts";
 import { formatElapsed } from "../tools/jobs.ts";
 import { boundReport, MAX_BACKGROUND_TASKS, type SubagentResult } from "./definitions.ts";
 
@@ -44,12 +45,6 @@ export interface TaskRequest {
 export interface EndedTask {
 	task: TaskInfo;
 	notice?: BackgroundNotice;
-}
-
-/** A notice in two sizes: `short` is given instead of `text` once the notices of one delivery pass their budget. */
-export interface BackgroundNotice {
-	text: string;
-	short?: string;
 }
 
 export type TaskStopResult =
