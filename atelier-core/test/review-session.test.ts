@@ -144,8 +144,8 @@ class RoleBackend implements AgentBackend {
 	interrupts = 0;
 	/** Each role says `session_started` first, with its model (or `role-default`) and its thinking level as the effort. */
 	announce = false;
-	/** How many model requests a role's answer took, as its `turn_finished` reports; 1 unless set. */
-	spends: (role: string, prompt: string) => number = () => 1;
+	/** How many model requests a role's answer took, as its `turn_finished` reports (undefined: not reported); 1 unless set. */
+	spends: (role: string, prompt: string) => number | undefined = () => 1;
 	readonly #reply: (role: string, prompt: string) => Reply;
 	readonly #probes: (role: string, prompt: string) => ToolCall[];
 
@@ -209,7 +209,7 @@ class RoleBackend implements AgentBackend {
 					type: "turn_finished",
 					stopReason: "end_turn",
 					usage: { ...usage, input: 2, output: 2 },
-					requests: backend.spends(role, prompt),
+					...requestsOf(backend.spends(role, prompt)),
 				};
 			},
 			async interrupt() {
@@ -240,6 +240,9 @@ function applying(inner: FakeBackend, efforts: Effort[]): AgentBackend {
 		},
 	};
 }
+
+/** A `turn_finished`'s `requests`, left out when the backend does not report them. */
+const requestsOf = (requests: number | undefined) => (requests === undefined ? {} : { requests });
 
 function roleOf(instruction: string): string {
 	if (instruction === REFUTER_INSTRUCTION) return "refuter";
@@ -754,6 +757,20 @@ describe("consent and the cycle", () => {
 		expect(roles.roles.filter((role) => role.role === "reliability").map((role) => role.maxRequestsPerTurn)).toEqual([
 			REVIEW_ROLE_MAX_REQUESTS,
 			REVIEW_ROLE_MAX_REQUESTS - 30,
+		]);
+	});
+
+	it("counts a try whose backend reports no requests as one, so the second try never gets the whole cap again", async () => {
+		const retried = (prompt: string) => prompt.includes("Your previous reply was rejected");
+		const roles = new RoleBackend((role, prompt) =>
+			role === "reliability" && !retried(prompt) ? "not json" : clean(role, prompt),
+		);
+		roles.spends = (role, prompt) => (role === "reliability" && !retried(prompt) ? undefined : 1);
+		const s = await start({ roles, turns: [HIGH_TURN] });
+		expect(ofType(await s.send("add auth"), "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		expect(roles.roles.filter((role) => role.role === "reliability").map((role) => role.maxRequestsPerTurn)).toEqual([
+			REVIEW_ROLE_MAX_REQUESTS,
+			REVIEW_ROLE_MAX_REQUESTS - 1,
 		]);
 	});
 
@@ -3484,6 +3501,24 @@ describe("the automatic review's base", () => {
 		}
 		expect(ofType(events, "review_assessed")[0]?.sinceReview).toBeUndefined();
 		expect(await receiptOf(events)).toMatchObject({ base: headTree(s.cwd) });
+	});
+
+	it("goes back to the turn's own base when git lost a blob only the approved tree held", async () => {
+		const edit: FakeStep[] = [DECLARED_NONE, change("src/auth.ts", "export const a = 3;\n"), { event: finished }];
+		const s = await start({ roles: new RoleBackend(clean), turns: [HIGH_TURN, edit] });
+		const first = await s.send("add auth");
+		expect(ofType(first, "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		const blob = gitIn(s.cwd, "rev-parse", `${(await receiptOf(first)).candidate}:src/auth.ts`).trim();
+		await rm(join(s.cwd, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+
+		const { events, prompts } = await lensPrompts(s, "change auth");
+		expect(ofType(events, "review_status")).toEqual([]);
+		expect(ofType(events, "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		expect(prompts.length).toBeGreaterThan(0);
+		for (const prompt of prompts) expect(prompt).toContain("+export const a = 3;");
+		const receipt = await receiptOf(events);
+		expect(receipt.base).toBe(headTree(s.cwd));
+		expect(receipt.previousReview).toBeUndefined();
 	});
 
 	it("goes back to the turn's own base when git pruned the approved tree", async () => {

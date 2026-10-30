@@ -180,8 +180,16 @@ export async function freezeCandidate(cwd: string, options: FreezeOptions = {}):
 		await gitText([...safe, "read-tree", base], { cwd: root, env });
 		await gitText([...safe, "add", "--all"], { cwd: root, env });
 		const tree = (await gitText([...safe, "write-tree"], { cwd: root, env })).trim();
-		const reviewed = tree === base ? undefined : await reviewedBase(root, chosen, options);
-		const candidate = await describeCandidate(root, gitDir, chosen.commit, reviewed?.tree ?? base, tree);
+		let reviewed = tree === base ? undefined : await reviewedBase(root, chosen, options);
+		let candidate: Candidate | undefined;
+		if (reviewed !== undefined)
+			try {
+				candidate = await describeCandidate(root, gitDir, chosen.commit, reviewed.tree, tree);
+			} catch {
+				// A blob only the reviewed tree held can be gone too (`git gc`): the turn's base is then the base.
+				reviewed = undefined;
+			}
+		candidate ??= await describeCandidate(root, gitDir, chosen.commit, base, tree);
 		return {
 			ok: true,
 			candidate: {
