@@ -24,9 +24,11 @@ import {
 	Session,
 	type SessionOptions,
 } from "../src/index.ts";
+import { PermissionRules } from "../src/permission-rules.ts";
 import { BUILTIN_AGENTS } from "../src/subagents/definitions.ts";
 import { createTaskWorktree } from "../src/subagents/worktree.ts";
 import { createBackgroundTools } from "../src/tools/background.ts";
+import { createWriteTool } from "../src/tools/write.ts";
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
 const finished: AtelierEventBody = { type: "turn_finished", stopReason: "end_turn", usage };
@@ -590,6 +592,29 @@ describe("a worker in the background", () => {
 		} finally {
 			chmodSync(unreadable, 0o644);
 		}
+	});
+
+	it("denies a write into the parent's tree, without asking, even in a folder the user's rules allow", async () => {
+		const rules = new PermissionRules();
+		await rules.allow([{ kind: "path", value: repo }], "session");
+		const before = readFileSync(join(repo, "a.txt"));
+		const { children, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				() => [
+					{ toolCall: { tool: "write", input: { path: join(repo, "a.txt"), content: "child\n" }, callId: "w1" } },
+					text("done"),
+					{ event: finished },
+				],
+			],
+			repo,
+			{ permissionRules: rules, tools: [...createBackgroundTools(), createWriteTool()] },
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(children[0]?.toolResults[0]?.output).toMatch(/^Denied without asking/);
+		expect(readFileSync(join(repo, "a.txt")).equals(before)).toBe(true);
 	});
 
 	it("is refused outside a git repository, before a subagent starts", async () => {
