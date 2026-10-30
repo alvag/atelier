@@ -166,6 +166,17 @@ describe("review block", () => {
 		);
 	});
 
+	it("names the next action of a review refused for its size", () => {
+		const refused = finished({
+			verdict: "unavailable",
+			cause: "context_too_large",
+			observed: "900000 bytes, limit 204800",
+		});
+		expect(text(lines(after([refused]), 200))).toContain(
+			"◇ review unavailable: context_too_large (900000 bytes, limit 204800) · review smaller candidates: commit in steps, or /review <ref> from a nearer commit",
+		);
+	});
+
 	it("wraps every line to a narrow terminal", () => {
 		const state = after([
 			assessed,

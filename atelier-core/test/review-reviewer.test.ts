@@ -479,7 +479,7 @@ describe("runReview", () => {
 		expect(receipt.usage.input).toBe(3);
 	});
 
-	it("is unavailable with lens_context_budget_exceeded and makes no model call when the patch is too big", async () => {
+	it("is unavailable for its size, names the next action and makes no model call when the patch is too big", async () => {
 		const env = await setup(4);
 		await writeFile(join(env.root, "big.txt"), "x".repeat(210 * 1024));
 		const frozen = await freezeCandidate(env.root);
@@ -489,7 +489,9 @@ describe("runReview", () => {
 		const { deps, calls } = harness(env, {});
 		const { receipt } = await drive(env, deps);
 		expect(receipt.verdict).toBe("unavailable");
-		expect(receipt.unavailableReason).toBe("lens_context_budget_exceeded");
+		expect(receipt.unavailableReason).toMatch(
+			/^The change is too large to review: \d+ bytes, over 204800 in one part or more than 4 parts\. Review smaller candidates: commit in steps, or \/review <ref> from a nearer commit\.$/,
+		);
 		expect(calls).toHaveLength(0);
 	});
 
