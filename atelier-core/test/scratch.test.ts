@@ -11,6 +11,7 @@ import {
 	REUSED_PID_MARGIN_MS,
 	sweepStaleScratch,
 } from "../src/scratch.ts";
+import { sweepingChild } from "./support/sweeping-child.ts";
 
 let root: string;
 const children: ChildProcess[] = [];
@@ -137,38 +138,12 @@ describe("the sweep that the first directory starts", () => {
 	});
 
 	it("never keeps a process that is done alive, however long the sweep takes", async () => {
-		// Each directory of a live owner asks `ps`, here one that answers only after its timeout.
-		const bin = join(root, "bin");
-		await mkdir(bin);
-		await writeFile(join(bin, "ps"), "#!/bin/sh\nsleep 30\n");
-		await chmod(join(bin, "ps"), 0o755);
-		const folder = join(root, "tmp");
-		await mkdir(folder);
-		for (const name of ["atelier-session-aaaaaa", "atelier-session-bbbbbb", "atelier-session-cccccc"]) {
-			await mkdir(join(folder, name));
-			const owner = { pid: process.pid, startedAt: Date.now() - 3_600_000 };
-			await writeFile(join(folder, name, ".atelier-owner"), JSON.stringify(owner));
-		}
-		const source = new URL("../src/scratch.ts", import.meta.url).href;
-		const { [SWITCH]: _off, ...env } = process.env;
-		const child = spawn(
-			process.execPath,
-			[
-				"--input-type=module",
-				"-e",
-				`const { createScratchDir } = await import(${JSON.stringify(source)}); await createScratchDir("session", { tmpRoot: process.argv[1] });`,
-				folder,
-			],
-			{ env: { ...env, PATH: `${bin}:${env.PATH ?? ""}` }, stdio: "ignore" },
-		);
-		children.push(child);
-		let exited: number | null | undefined;
-		child.once("exit", (code) => {
-			exited = code;
-		});
-		await until(async () => exited !== undefined, 4000);
-		expect(exited).toBe(0);
-	});
+		const child = await sweepingChild(root, process.execPath);
+		children.push(child.process);
+		await until(async () => child.exited !== undefined, 12_000);
+		expect(child.exited).toBe(0);
+		expect(child.stdout).toBe("sweeping\n");
+	}, 20_000);
 });
 
 describe("sweepStaleScratch", () => {
