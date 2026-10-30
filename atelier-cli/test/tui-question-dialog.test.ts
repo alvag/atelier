@@ -422,3 +422,141 @@ describe("QuestionDialog, multi-select", () => {
 		expect(pasted.answers).toEqual([]);
 	});
 });
+
+describe("QuestionDialog option previews", () => {
+	const CALL = 'web_fetch("http://10.0.0.1")';
+	const ERROR = "→ Error: refused to fetch a private or internal address";
+	const explicit = {
+		label: "Explicit error",
+		description: "Says why it failed.",
+		recommended: true,
+		preview: `${CALL}\n${ERROR}`,
+	};
+	const empty = { label: "Empty response", preview: `${CALL}\n→ "" (no error, no content)\n` };
+	const fetch = {
+		question: "How should web_fetch answer a private address?",
+		options: [explicit, empty, { label: "Ask first" }],
+	};
+	/** A row of the panel, 55 columns of content between its sides. */
+	const row = (text: string) => `│ ${text.padEnd(55)} │`;
+	const top = (title?: string) =>
+		title === undefined ? `┌${"─".repeat(57)}┐` : `┌ ${title} ${"─".repeat(55 - title.length)}┐`;
+	const bottom = `└${"─".repeat(57)}┘`;
+
+	it("shows the focused option's preview in a panel beside the options when the width allows", () => {
+		const { shown, lines } = dialog(fetch);
+		shown.handleInput(DOWN);
+		expect(lines(120)).toEqual([
+			"─".repeat(120),
+			" How should web_fetch answer a private address?",
+			"",
+			` ❯ 1. Explicit error  Recommended  ${top("1. Explicit error")}`,
+			`${"      Says why it failed.".padEnd(35)}${row(CALL)}`,
+			`${"   2. Empty response".padEnd(35)}${row(ERROR)}`,
+			`${"   3. Ask first".padEnd(35)}${bottom}`,
+			"   4. Type something…",
+			"",
+			" ↑↓ move · 1-4 pick · enter select · esc cancel",
+			"─".repeat(120),
+		]);
+	});
+
+	it("says how to see the previews before the cursor is on an option, and when one has none", () => {
+		const { shown, lines } = dialog(fetch);
+		expect(lines(120).slice(3, 7)).toEqual([
+			`   1. Explicit error  Recommended  ${top()}`,
+			`${"      Says why it failed.".padEnd(35)}${row("↑↓ to see each option's preview")}`,
+			`${"   2. Empty response".padEnd(35)}${row("")}`,
+			`${"   3. Ask first".padEnd(35)}${bottom}`,
+		]);
+		for (const key of [DOWN, DOWN, DOWN]) shown.handleInput(key);
+		expect(lines(120).slice(3, 5)).toEqual([
+			`   1. Explicit error  Recommended  ${top("3. Ask first")}`,
+			`${"      Says why it failed.".padEnd(35)}${row("No preview")}`,
+		]);
+		shown.handleInput(DOWN);
+		expect(lines(120)[3]).toContain(top("4. Type something…"));
+	});
+
+	it("puts the panel under the options when the width leaves no room beside them", () => {
+		const { shown, lines } = dialog(fetch);
+		shown.handleInput(DOWN);
+		shown.handleInput(DOWN);
+		expect(lines(60)).toEqual([
+			"─".repeat(60),
+			" How should web_fetch answer a private address?",
+			"",
+			"   1. Explicit error  Recommended   Says why it failed.",
+			" ❯ 2. Empty response",
+			"   3. Ask first",
+			"   4. Type something…",
+			"",
+			` ${top("2. Empty response")}`,
+			` ${row(CALL)}`,
+			` ${row('→ "" (no error, no content)')}`,
+			` ${bottom}`,
+			"",
+			" ↑↓ move · 1-4 pick · enter select · esc cancel",
+			"─".repeat(60),
+		]);
+	});
+
+	it("keeps its height as the cursor moves, as tall as the tallest preview", () => {
+		const tall = { ...fetch, options: [explicit, empty, { label: "Ask first", preview: "a\nb\nc\nd" }] };
+		for (const width of [120, 60]) {
+			const { shown, lines } = dialog(tall);
+			const heights = [lines(width).length];
+			for (const _ of [0, 1, 2, 3]) {
+				shown.handleInput(DOWN);
+				heights.push(lines(width).length);
+			}
+			expect(new Set(heights).size, `${width}: ${heights}`).toBe(1);
+		}
+	});
+
+	it("wraps a long line inside the panel and shows a tab as two spaces", () => {
+		const config = '{\n\t"linter": { "rules": { "recommended": true, "suspicious": { "noExplicitAny": "error" } } }\n}';
+		const { shown, lines } = dialog({ ...fetch, options: [{ ...explicit, preview: config }, empty] });
+		shown.handleInput(DOWN);
+		const panel = lines(60).filter((line) => line.startsWith(" │"));
+		expect(panel[0]).toBe(` ${row("{")}`);
+		expect(panel[1]).toMatch(/^ │ {3}"linter": \{/);
+		expect(panel.length).toBeGreaterThan(3);
+		for (const line of lines(60)) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+		expect(panel.join("")).toContain("error");
+	});
+
+	it("cuts the panel to the rows a short terminal leaves, never the question, the options or the hint", () => {
+		const long = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
+		const options = [{ ...explicit, preview: long }, empty, { label: "Ask first" }];
+		// The panel is as wide as its longest line: the hint before the cursor is on an option.
+		const narrow = (text: string) => `│ ${text.padEnd(31)} │`;
+		const short = dialog({ ...fetch, options, height: () => 24 });
+		short.shown.handleInput(DOWN);
+		const below = short.lines(60);
+		expect(below).toHaveLength(24);
+		expect(below.slice(0, 7)).toEqual([
+			"─".repeat(60),
+			" How should web_fetch answer a private address?",
+			"",
+			" ❯ 1. Explicit error  Recommended   Says why it failed.",
+			"   2. Empty response",
+			"   3. Ask first",
+			"   4. Type something…",
+		]);
+		expect(below.slice(-3)).toEqual(["", " ↑↓ move · 1-4 pick · enter select · esc cancel", "─".repeat(60)]);
+		expect(below.slice(9, 21)).toEqual([
+			...Array.from({ length: 10 }, (_, index) => ` ${narrow(`line ${index + 1}`)}`),
+			` ${narrow("… 10 more lines")}`,
+			` └${"─".repeat(33)}┘`,
+		]);
+		const beside = short.lines(120);
+		expect(beside).toHaveLength(24);
+		expect(beside.join("\n")).toContain(narrow("… 5 more lines"));
+		expect(beside.at(-2)).toBe(" ↑↓ move · 1-4 pick · enter select · esc cancel");
+		const tall = dialog({ ...fetch, options, height: () => 40 });
+		tall.shown.handleInput(DOWN);
+		expect(tall.lines(60).join("\n")).toContain(narrow("line 20"));
+		expect(tall.lines(60).join("\n")).not.toContain("more lines");
+	});
+});
