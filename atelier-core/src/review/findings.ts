@@ -71,14 +71,21 @@ export function parseFindings(text: string, lens?: Lens): ParsedFindings {
 	const parsed = reportSchema.safeParse(value);
 	if (!parsed.success) return { ok: false, error: z.prettifyError(parsed.error) };
 
+	return { ok: true, findings: numberFindings(parsed.data.findings, lens) };
+}
+
+/**
+ * Gives each finding the id `<lens prefix>-<n>`, numbered per lens in order; `lens`, when given, overrides
+ * the lens each one names. A lens that ran over several parts of a change is numbered again once joined.
+ */
+export function numberFindings(findings: readonly Finding[], lens?: Lens): Finding[] {
 	const counts = new Map<Lens, number>();
-	const findings = parsed.data.findings.map((found) => {
+	return findings.map((found) => {
 		const owner = lens ?? found.lens;
 		const next = (counts.get(owner) ?? 0) + 1;
 		counts.set(owner, next);
 		return { ...found, lens: owner, id: `${ID_PREFIX[owner]}-${String(next).padStart(3, "0")}` };
 	});
-	return { ok: true, findings };
 }
 
 function extractJson(text: string): string | undefined {

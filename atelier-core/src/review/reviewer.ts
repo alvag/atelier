@@ -1,8 +1,8 @@
 import { describeError, excerpt, type PhaseAgent, type Refusal, type Usage, ZERO_USAGE } from "../events.ts";
 import { type Candidate, type FreezeResult, holdsCommits } from "./candidate.ts";
-import { type Finding, isBlocking, parseFindings } from "./findings.ts";
+import { type Finding, isBlocking, numberFindings, parseFindings } from "./findings.ts";
 import { runGit } from "./git.ts";
-import { type BudgetExceeded, buildLensPrompt, LENS_INSTRUCTIONS, readPatch } from "./lenses.ts";
+import { type BudgetExceeded, buildLensPrompts, LENS_INSTRUCTIONS, readPatch } from "./lenses.ts";
 import type { Receipt } from "./receipts.ts";
 import type { Assessment, Lens } from "./risk.ts";
 import { commitInstruction, parseResults, parseVerdicts, REFUTER_INSTRUCTION, VALIDATOR_INSTRUCTION } from "./roles.ts";
@@ -82,6 +82,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	let followUps: Finding[] = [];
 	let corrected: string | null = null;
 	let correction: Receipt["correction"] = null;
+	let parts = 1;
 
 	const charge = (result: { usage: Usage; costUsd?: number }) => {
 		total.input += result.usage.input;
@@ -103,6 +104,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		refuted,
 		followUps,
 		correction,
+		...(parts > 1 ? { parts } : {}),
 		verdict,
 		...(verdict === "unavailable" && reason !== undefined ? { unavailableReason: reason } : {}),
 		...(verdict === "escalated" && reason !== undefined ? { escalatedReason: reason } : {}),
@@ -149,15 +151,15 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 			observed: excerpt(describeError(error)),
 		});
 	}
-	const prompts = new Map<Lens, string>();
-	for (const lens of assessment.lenses) {
-		const built = buildLensPrompt({ candidate, lens, patch, reasons: assessment.reasons });
-		if (!built.ok) return finish("unavailable", built.code, tooLarge(built));
-		prompts.set(lens, built.prompt);
-	}
+	const built = buildLensPrompts({ candidate, patch, reasons: assessment.reasons }, assessment.lenses);
+	if (!built.ok) return finish("unavailable", built.code, tooLarge(built));
+	const prompts = built.prompts;
+	parts = prompts.get(assessment.lenses[0] as Lens)?.length ?? 1;
 
-	const runLens = async (lens: Lens): Promise<{ findings: Finding[] } | { error: string; refusal: Refusal }> => {
-		const prompt = prompts.get(lens) as string;
+	const runPart = async (
+		lens: Lens,
+		prompt: string,
+	): Promise<{ findings: Finding[] } | { error: string; refusal: Refusal }> => {
 		let attempt = prompt;
 		for (let tries = 0; tries < 2; tries++) {
 			const reply = await callRole(lens, LENS_INSTRUCTIONS[lens], attempt, candidate.tree);
@@ -173,20 +175,29 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		}
 		return { error: `Lens ${lens} returned no reply.`, refusal: { cause: "role_failed" } };
 	};
+	/** Every part of a lens, at once; a failed part fails the lens, and what its other parts found is kept. */
+	const runLens = async (
+		lens: Lens,
+	): Promise<{ findings: Finding[]; failure?: { error: string; refusal: Refusal } }> => {
+		const outcomes = await Promise.all((prompts.get(lens) as string[]).map((prompt) => runPart(lens, prompt)));
+		const found = outcomes.flatMap((outcome) => ("findings" in outcome ? outcome.findings : []));
+		const failure = outcomes.find((outcome) => "error" in outcome);
+		// Each part numbered its findings from 1; joined, they are numbered again so ids stay unique.
+		const findings = outcomes.length > 1 ? numberFindings(found, lens) : found;
+		return failure !== undefined && "error" in failure ? { findings, failure } : { findings };
+	};
 
 	for (const lens of assessment.lenses) yield { type: "lens_started", lens };
 	const outcomes = await Promise.all(assessment.lenses.map(runLens));
 	const reported: Finding[] = [];
 	let failure: { error: string; refusal: Refusal } | undefined;
 	for (const outcome of outcomes) {
-		if ("error" in outcome) failure ??= outcome;
-		else reported.push(...outcome.findings);
+		if (outcome.failure !== undefined) failure ??= outcome.failure;
+		reported.push(...outcome.findings);
 	}
 	for (const [index, outcome] of outcomes.entries()) {
 		const lens = assessment.lenses[index] as Lens;
-		yield "error" in outcome
-			? { type: "lens_finished", lens, ok: false, findings: 0 }
-			: { type: "lens_finished", lens, ok: true, findings: outcome.findings.length };
+		yield { type: "lens_finished", lens, ok: outcome.failure === undefined, findings: outcome.findings.length };
 	}
 	if (interrupted()) return stopped();
 	if (failure !== undefined) {
