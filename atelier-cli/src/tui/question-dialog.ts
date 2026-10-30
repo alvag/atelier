@@ -7,6 +7,8 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+// The prompt editor's own decoding of printable keys, which the package's index does not export.
+import { decodePrintableKey } from "@earendil-works/pi-tui/dist/keys.js";
 import { PasteFilter } from "./dialog.ts";
 import type { Paint } from "./style.ts";
 
@@ -245,9 +247,11 @@ export class QuestionDialog implements Component, Focusable {
 			else if (this.#cursor !== undefined) this.#choose(this.#cursor);
 			return;
 		}
-		if (this.#typing && this.#edit(keys)) return;
-		if (/^[1-9]$/.test(keys)) {
-			const row = Number(keys) - 1;
+		// A printable key the terminal encodes (Kitty CSI-u, modifyOtherKeys) counts as the character, as in the prompt.
+		const typed = decodePrintableKey(keys) ?? keys;
+		if (this.#typing && this.#edit(typed)) return;
+		if (/^[1-9]$/.test(typed)) {
+			const row = Number(typed) - 1;
 			if (row >= this.#rows) return;
 			this.#cursor = row;
 			// A number on Type something puts the cursor there, to type.

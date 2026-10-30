@@ -222,6 +222,14 @@ describe("AskDialog", () => {
 		expect(sent).toEqual([[{ option: 1 }, { option: 1 }]]);
 	});
 
+	it("takes the review's numbers sent as Kitty CSI-u", () => {
+		const { dialog, sent } = asked([language, checks]);
+		dialog.handleInput("1");
+		dialog.handleInput("1");
+		dialog.handleInput("\x1b[50u");
+		expect(sent).toEqual([null]);
+	});
+
 	it("cancels the whole batch with Cancel", () => {
 		const { dialog, sent } = asked([language, checks]);
 		dialog.handleInput("1");
