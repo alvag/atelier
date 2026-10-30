@@ -2,7 +2,7 @@
 export interface BackgroundNotice {
 	text: string;
 	short?: string;
-	/** A finished worker's notice with a patch to apply: the delivery says when to run the checks. */
+	/** With #154's background rules, a worker's notice with a patch to apply: the delivery says when to run the checks. */
 	patch?: true;
 }
 
@@ -19,20 +19,18 @@ function leftOutLine(count: number): string {
 const LEFT_OUT_ROOM = SEPARATOR.length + leftOutLine(1000).length;
 
 /** When the agent runs the checks after applying patches, by the background tasks that still run. */
-function checksLine(running: number): string {
+export function checksLine(running: number): string {
 	if (running === 0) return "Then run the checks once.";
 	return `${running} other background task${running === 1 ? " still runs" : "s still run"}: apply each patch as it comes, and run the full checks once, after the last.`;
 }
 
 /**
  * The notices of one delivery, oldest first, within NOTICE_BUDGET: each whole while it fits, else its short form when
- * that fits; from the first that fits in neither, a line says how many were left out. With a worker's patch among
- * them, a last line says when to run the checks, by the `running` background tasks, counted as the delivery is made:
- * workers that end together each see the other still running while their patches are collected.
+ * that fits; from the first that fits in neither, a line says how many were left out. `trailer`, when given, is the
+ * delivery's last line, its room kept within the budget.
  */
-export function deliveryText(notices: readonly BackgroundNotice[], running = 0): string {
+export function deliveryText(notices: readonly BackgroundNotice[], trailer?: string): string {
 	const parts: string[] = [];
-	const trailer = notices.some((notice) => notice.patch) ? checksLine(running) : undefined;
 	let used = trailer === undefined ? 0 : SEPARATOR.length + trailer.length;
 	for (const [index, notice] of notices.entries()) {
 		const separator = parts.length === 0 ? 0 : SEPARATOR.length;

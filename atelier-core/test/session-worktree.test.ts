@@ -186,13 +186,10 @@ describe("a worker in the background", () => {
 		await play(session.nextQueued());
 		const notice = parent.prompts[1] ?? "";
 		expect(notice).toMatch(
-			/Its changes: 2 files changed, \+2 -0, as a patch against your working tree as it was when the task started: (\S+\.patch)\.\nApply it with: git -C '\S+' apply '\1'\n/,
+			/Its changes: 2 files changed, \+2 -0, as a patch against your working tree as it was when the task started: (\S+\.patch)\. Apply it from \S+ with git apply and check it\./,
 		);
-		// No other task runs: the checks run once, now.
-		expect(notice).toMatch(/\n\nThen run the checks once\.$/);
-		// The command the notice gives applies the patch as it is written.
-		const command = notice.match(/Apply it with: (.+)/)?.[1] as string;
-		execFileSync("sh", ["-c", command], { cwd: tmpdir() });
+		const patch = notice.match(/started: (\S+\.patch)\./)?.[1] as string;
+		git(repo, "apply", patch);
 		expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("one\ndirty\nfixed\n");
 		expect(readFileSync(join(repo, "c.txt"), "utf8")).toBe("added\n");
 		// The user's index, branch and stash are as they were: the snapshot touched none of them.
@@ -521,47 +518,10 @@ describe("a worker in the background", () => {
 		first.open();
 		await until(() => woke() === 1);
 		await play(session.nextQueued());
-		// The other worker still runs: its patch comes later, and the checks run once after the last.
-		expect(parent.prompts[1]).toContain(
-			"\n1 other background task still runs: apply each patch as it comes, and run the full checks once, after the last.",
-		);
 		second.open();
 		await until(() => woke() === 2);
 		await play(session.nextQueued());
 		expect(parent.prompts[2]).toContain("Files the patch of task-1 also changed: a.txt.");
-		expect(parent.prompts[2]).toContain("\nThen run the checks once.");
-	});
-
-	it("says once to run the checks when workers that ran together end before their notices are read", async () => {
-		const first = gate();
-		const second = gate();
-		const { parent, session, play } = await started(
-			[[work("c1"), work("c2", "other"), { event: finished }], [{ event: finished }]],
-			[
-				(cwd) => [
-					{ run: () => writeFileSync(join(cwd(), "a.txt"), "first\n") },
-					first.step,
-					text("one"),
-					{ event: finished },
-				],
-				(cwd) => [
-					{ run: () => writeFileSync(join(cwd(), "b.txt"), "second\n") },
-					second.step,
-					text("two"),
-					{ event: finished },
-				],
-			],
-		);
-		await play(session.send("go"));
-		first.open();
-		second.open();
-		await until(() => session.jobs.running === 0 && session.jobs.waiting === 2);
-		await play(session.nextQueued());
-		const delivered = parent.prompts[1] ?? "";
-		expect(delivered.match(/Apply it with: /g)).toHaveLength(2);
-		expect(delivered).not.toContain("still run");
-		expect(delivered.match(/Then run the checks once\./g)).toHaveLength(1);
-		expect(delivered).toMatch(/\n\nThen run the checks once\.$/);
 	});
 
 	it("removes its worktree when it is stopped and when the session closes", async () => {
@@ -882,4 +842,102 @@ describe("a worker's worktree of a repository with an awkward path", () => {
 			}
 		},
 	);
+});
+
+describe("a worker in the background, with #154's background rules", () => {
+	const rules: Partial<SessionOptions> = { backgroundRules: "rules" };
+	/** A worker's turn: it writes `file` (or nothing), waits for its gate, then reports or fails. */
+	const child =
+		(file: string | undefined, wait: FakeStep, end: FakeStep = text("done")) =>
+		(cwd: () => string): FakeStep[] => [
+			{ run: () => (file === undefined ? undefined : writeFileSync(join(cwd(), file), `${file}\n`)) },
+			wait,
+			end,
+			{ event: finished },
+		];
+
+	it("gives the exact command that applies the patch, and says to run the checks once", async () => {
+		const g = gate();
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[child("a.txt", g.step)],
+			repo,
+			rules,
+		);
+		await play(session.send("go"));
+		g.open();
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		const notice = parent.prompts[1] ?? "";
+		expect(notice).toMatch(
+			/as a patch against your working tree as it was when the task started: (\S+\.patch)\.\nApply it with: git -C '\S+' apply '\1'\n/,
+		);
+		expect(notice).toContain("\nCheck its evidence once; do not redo its reads.\n");
+		expect(notice).toMatch(/\n\nThen run the checks once\.$/);
+		// The command the notice gives applies the patch as it is written.
+		execFileSync("sh", ["-c", notice.match(/Apply it with: (.+)/)?.[1] as string], { cwd: tmpdir() });
+		expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("a.txt\n");
+	});
+
+	it("defers the checks while another task runs, and closes the wait when it ends without a patch", async () => {
+		const first = gate();
+		const second = gate();
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), work("c2", "other"), { event: finished }], [{ event: finished }], [{ event: finished }]],
+			[child("a.txt", first.step), child(undefined, second.step)],
+			repo,
+			rules,
+		);
+		await play(session.send("go"));
+		first.open();
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toMatch(
+			/\n\n1 other background task still runs: apply each patch as it comes, and run the full checks once, after the last\.$/,
+		);
+		second.open();
+		await until(() => woke() === 2);
+		await play(session.nextQueued());
+		expect(parent.prompts[2]).toContain("It changed no files.");
+		expect(parent.prompts[2]).toMatch(/\n\nThen run the checks once\.$/);
+	});
+
+	it("says once to run the checks when workers that ran together end before their notices are read", async () => {
+		const first = gate();
+		const second = gate();
+		const { parent, session, play } = await started(
+			[[work("c1"), work("c2", "other"), { event: finished }], [{ event: finished }]],
+			[child("a.txt", first.step), child("b.txt", second.step)],
+			repo,
+			rules,
+		);
+		await play(session.send("go"));
+		first.open();
+		second.open();
+		await until(() => session.jobs.running === 0 && session.jobs.waiting === 2);
+		await play(session.nextQueued());
+		const delivered = parent.prompts[1] ?? "";
+		expect(delivered.match(/Apply it with: /g)).toHaveLength(2);
+		expect(delivered).not.toContain("still run");
+		expect(delivered.match(/Then run the checks once\./g)).toHaveLength(1);
+		expect(delivered).toMatch(/\n\nThen run the checks once\.$/);
+	});
+
+	it("says how to apply and check the patch of a worker that failed after changing files", async () => {
+		const g = gate();
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[child("a.txt", g.step, { throw: "the backend broke" })],
+			repo,
+			rules,
+		);
+		await play(session.send("go"));
+		g.open();
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		const notice = parent.prompts[1] ?? "";
+		expect(notice).toMatch(/^Background task task-1 \(worker, "fix"\) failed after /);
+		expect(notice).toMatch(/\nApply it with: git -C '\S+' apply '\S+\.patch'\n/);
+		expect(notice).toMatch(/\n\nThen run the checks once\.$/);
+	});
 });

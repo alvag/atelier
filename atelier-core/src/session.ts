@@ -11,7 +11,7 @@ import type {
 	ToolCall,
 	ToolCallResult,
 } from "./backend.ts";
-import { type BackgroundNotice, deliveryText } from "./background-notices.ts";
+import { type BackgroundNotice, checksLine, deliveryText } from "./background-notices.ts";
 import { Channel } from "./channel.ts";
 import { COMPACTED_HEADER } from "./compaction/compactor.ts";
 import { nearCompaction } from "./context-gauge.ts";
@@ -540,6 +540,8 @@ export class Session {
 	#worktrees = 0;
 	/** The files of the latest patches of background workers, by task id, oldest first. */
 	readonly #patches = new Map<string, string[]>();
+	/** A delivery left the checks until the background tasks then running end: the next one says when to run them. */
+	#checksDeferred = false;
 	/** Notices of ended background work the agent has not read yet, oldest first. */
 	#backgroundNotices: BackgroundNotice[] = [];
 	/** The waiting notices may start a turn of their own: not after a turn that ended interrupted or failed left them. */
@@ -667,6 +669,7 @@ export class Session {
 				scratchDir: scratch.path,
 				onStarted: (task) => session.#taskStarted(task),
 				onEnded: (ended) => session.#taskEnded(ended),
+				...(options.backgroundRules === "rules" ? { backgroundRules: true } : {}),
 			});
 		const agentNames = options.subagents?.agents.map((agent) => agent.name) ?? [];
 		session.#systemPrompt = [
@@ -911,7 +914,7 @@ export class Session {
 			// The notices of ended background work that waited: the whole prompt of a turn they woke, else before the user's words.
 			let backgroundNotices = this.#takeNotices(turn);
 			if (backgroundNotices !== undefined) {
-				const text = deliveryText(backgroundNotices, this.#tasks?.running);
+				const text = deliveryText(backgroundNotices, this.#checksTrailer(backgroundNotices));
 				sent = woken ? `${sent}${text}` : `${text}\n\n${sent}`;
 			}
 			const mcpStatus = this.mcpStatus();
@@ -1693,7 +1696,7 @@ export class Session {
 		if (!this.#steerable || this.#abort?.signal.aborted) return result;
 		// The notices of background work that ended go with the result too, after the user's steers.
 		const taken = this.#takeNotices(this.#turn);
-		const notices = taken === undefined ? undefined : deliveryText(taken, this.#tasks?.running);
+		const notices = taken === undefined ? undefined : deliveryText(taken, this.#checksTrailer(taken));
 		const steers = this.#queue.filter((message) => message.kind === "steer");
 		if (steers.length === 0) return notices === undefined ? result : { ...result, steering: notices };
 		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
@@ -1802,6 +1805,18 @@ export class Session {
 		this.#noticesWake = false;
 		turn?.push({ type: "jobs_status", running: this.#runningBackground(), waiting: 0 });
 		return notices;
+	}
+
+	/**
+	 * With #154's background rules, the last line of a delivery with a worker's patch, or after one that left the checks
+	 * for later: when to run them, by the background tasks running as it is given. Counted then, not as each patch is
+	 * collected: workers that end together each see the other still running then.
+	 */
+	#checksTrailer(notices: readonly BackgroundNotice[]): string | undefined {
+		if (!notices.some((notice) => notice.patch) && !this.#checksDeferred) return undefined;
+		const running = this.#tasks?.running ?? 0;
+		this.#checksDeferred = running > 0;
+		return checksLine(running);
 	}
 
 	/** Notices a prompt took that the backend failed on before answering: they wait again, oldest first. */
@@ -2270,7 +2285,7 @@ export class Session {
 				: ` It works in its own git worktree, from your working tree as it is now (HEAD ${worktree.head}${worktree.dirty ? " plus uncommitted changes" : ""}); its changes come back as a patch.${DEPENDENCIES_SAID[worktree.dependencies].parent}`;
 		return {
 			ok: true,
-			output: `${taskStartedText(task)}${where}`,
+			output: `${taskStartedText(task, this.#options.backgroundRules === "rules")}${where}`,
 			summary: `${task.label} (task ${task.id} started)`,
 			truncated: false,
 		};
@@ -2289,10 +2304,12 @@ export class Session {
 		}
 		if (changes === undefined) return { changes: "It changed no files." };
 		const { files, insertions, deletions, patchPath } = changes;
-		const lines = [
-			`Its changes: ${files.length} file${files.length === 1 ? "" : "s"} changed, +${insertions} -${deletions}, as a patch against your working tree as it was when the task started: ${patchPath}.`,
-			`Apply it with: git -C ${shellQuote(worktree.top)} apply ${shellQuote(patchPath)}`,
-		];
+		const changed = `Its changes: ${files.length} file${files.length === 1 ? "" : "s"} changed, +${insertions} -${deletions}, as a patch against your working tree as it was when the task started: ${patchPath}.`;
+		// With #154's background rules: the exact command, and the delivery says when to run the checks.
+		const lines =
+			this.#options.backgroundRules === "rules"
+				? [changed, `Apply it with: git -C ${shellQuote(worktree.top)} apply ${shellQuote(patchPath)}`]
+				: [`${changed} Apply it from ${worktree.top} with git apply and check it.`];
 		const since = await worktree.changedSince().catch((): string[] => []);
 		const shared = files.filter((file) => since.includes(file));
 		if (shared.length > 0)
