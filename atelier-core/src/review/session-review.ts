@@ -130,7 +130,7 @@ export class SessionReview {
 	readonly #undone = new Set<string>();
 	/** The user allowed every high-risk review of this session: no more questions until it closes. */
 	#allowedForSession = false;
-	/** What the last approved automatic review saw: the next round's base when HEAD has not moved since. */
+	/** What the last automatic review approved without a correction saw: the next round's base when HEAD has not moved since. */
 	#reviewed: ReviewedTree | undefined;
 	/** What the agent is told before its next prompt about the latest review; the newest replaces an older one. */
 	#notice: { verification?: NoticePart | undefined; review?: NoticePart | undefined } = {};
@@ -448,8 +448,10 @@ export class SessionReview {
 		}
 		const interrupted = receipt.verdict === "unavailable" && receipt.unavailableReason === "interrupted";
 		await this.#finish(host, reviewId, candidate, receipt, !interrupted);
-		// Only an approved round moves the base: what the others saw has to be seen again, whole.
-		if (!manual && receipt.verdict === "approved") await this.#advance(candidate, reviewId, receipt.id);
+		// Only a round approved as it was moves the base: what the others saw has to be seen again, whole. After a
+		// correction the lenses saw the defective tree, so a later revert of the fix would hide the defect from the diff.
+		if (!manual && receipt.verdict === "approved" && receipt.corrected === null)
+			await this.#advance(candidate, reviewId, receipt.id);
 		return {
 			usage: receipt.usage,
 			...(receipt.costUsd === undefined ? {} : { costUsd: receipt.costUsd }),

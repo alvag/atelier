@@ -92,7 +92,7 @@ export interface FreezeOptions {
 	/** The turn started without a commit: the base is the empty tree, so the turn's first commit is part of the candidate. */
 	fromEmpty?: boolean;
 	/**
-	 * The tree the session's last approved automatic review saw, and HEAD when it ended: the base instead of
+	 * The tree the session's last automatic review approved without a correction saw, and HEAD when it ended: the base instead of
 	 * `turnStart`'s tree when the turn started on that HEAD and HEAD still descends from it, so each round sees only
 	 * what changed since. A change empty against `turnStart` stays empty.
 	 */
