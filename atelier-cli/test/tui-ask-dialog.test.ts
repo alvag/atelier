@@ -115,6 +115,58 @@ describe("AskDialog", () => {
 		expect(sent).toEqual([[{ option: 0 }, { other: "abc" }]]);
 	});
 
+	it("keeps a paste after ← on the first tab in the same chunk", () => {
+		const { dialog, sent, lines } = asked([language, checks]);
+		dialog.handleInput("3");
+		dialog.handleInput(`${LEFT}\x1b[200~boundary paste\x1b[201~`);
+		expect(lines(120)).toContain(" ❯ 3. boundary paste");
+		dialog.handleInput("\r");
+		dialog.handleInput("1");
+		dialog.handleInput("\r");
+		expect(sent).toEqual([[{ other: "boundary paste" }, { option: 0 }]]);
+	});
+
+	it("keeps Enter after → on Submit, but drops input after submitting", () => {
+		const { dialog, sent } = asked([language, checks]);
+		dialog.handleInput("1");
+		dialog.handleInput("1");
+		dialog.handleInput(`${RIGHT}\r\x1b[200~ignored\x1b[201~2`);
+		expect(sent).toEqual([[{ option: 0 }, { option: 0 }]]);
+	});
+
+	it("keeps Enter after → and a dropped paste on Submit", () => {
+		const { dialog, sent } = asked([language, checks]);
+		dialog.handleInput("1");
+		dialog.handleInput("1");
+		dialog.handleInput(`${RIGHT}\x1b[200~2\r\x1b[201~\r`);
+		expect(sent).toEqual([[{ option: 0 }, { option: 0 }]]);
+	});
+
+	it("drops the rest of a review chunk after moving to another tab", () => {
+		const { dialog, sent, lines } = asked([language, checks]);
+		dialog.handleInput("1");
+		dialog.handleInput("1");
+		dialog.handleInput(`${LEFT}\x1b[200~ignored\x1b[201~2`);
+		expect(lines(120)[3]).toBe(" Which checks should run before each commit?");
+		dialog.handleInput(RIGHT);
+		dialog.handleInput("1");
+		expect(sent).toEqual([[{ option: 0 }, { option: 0 }]]);
+	});
+
+	it("guards Enter after → on Submit just like Enter alone", () => {
+		vi.useFakeTimers();
+		const { dialog, sent } = asked([language, checks], { guardMs: 400 });
+		vi.advanceTimersByTime(400);
+		dialog.handleInput("1");
+		vi.advanceTimersByTime(400);
+		dialog.handleInput("1");
+		dialog.handleInput(`${RIGHT}\r`);
+		expect(sent).toEqual([]);
+		vi.advanceTimersByTime(400);
+		dialog.handleInput(`${RIGHT}\r`);
+		expect(sent).toEqual([[{ option: 0 }, { option: 0 }]]);
+	});
+
 	it("drops the rest of a chunk once a question of the batch is answered, so it cannot change that answer", () => {
 		const { dialog, sent, lines } = asked([language, checks]);
 		dialog.handleInput("3");
