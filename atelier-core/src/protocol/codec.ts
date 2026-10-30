@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_PROMPT_IMAGES } from "../images.ts";
 import { PERMISSION_MODES } from "../modes.ts";
 import { THINKING_LEVELS } from "../thinking.ts";
 import {
@@ -94,7 +95,24 @@ const commandSchema = z.discriminatedUnion("command", [
 		sessionEvents: z.boolean().optional(),
 	}),
 	z.object({ command: z.literal("profiles.list"), cwd: z.string().min(1).optional() }),
-	z.object({ command: z.literal("session.send"), sessionId, prompt: z.string().min(1) }),
+	z
+		.object({
+			command: z.literal("session.send"),
+			sessionId,
+			prompt: z.string(),
+			images: z
+				.array(
+					z.object({
+						mimeType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+						data: z.string().min(1),
+					}),
+				)
+				.max(MAX_PROMPT_IMAGES)
+				.optional(),
+		})
+		.refine((message) => message.prompt.length > 0 || (message.images?.length ?? 0) > 0, {
+			message: "A prompt or at least one image is required.",
+		}),
 	z.object({ command: z.literal("session.interrupt"), sessionId }),
 	z.object({
 		command: z.literal("session.queue"),

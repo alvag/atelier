@@ -6,6 +6,7 @@ import type { AgentBackend } from "../backend.ts";
 import { claudeCodeAliases, claudeCodeIdOf } from "../backends/claude-code/models.ts";
 import { KeychainError, MissingApiKeyError } from "../credentials.ts";
 import { type AtelierEvent, type AtelierEventBody, describeError, type JsonValue } from "../events.ts";
+import type { ImageAttachment } from "../images.ts";
 import type { McpManager } from "../mcp/index.ts";
 import type { MemoryPort } from "../memory/index.ts";
 import { PERMISSION_MODES } from "../modes.ts";
@@ -26,6 +27,7 @@ import {
 	roleStartMessage,
 	sessionBackend,
 } from "../profiles/index.ts";
+import { normalizePromptImages } from "../prompt-images.ts";
 import { decodeClientMessage, encodeMessage, LineSplitter } from "../protocol/codec.ts";
 import {
 	BACKEND_NAMES,
@@ -88,6 +90,8 @@ export interface RpcServerOptions {
 	pinPlaces?: (cwd: string) => Promise<PinPlaces>;
 	onShutdown?: () => void;
 	createId?: () => string;
+	/** Injected preparation for tests; production uses the bounded shared image normalizer. */
+	normalizeImages?: typeof normalizePromptImages;
 }
 
 /** RDD is on unless `ATELIER_REVIEW=off`. */
@@ -106,6 +110,8 @@ class CommandError extends Error {
 
 interface ServerSession {
 	session: Session;
+	preparing?: AbortController;
+	configuring: number;
 	/** The folder the session works in: where its profile pins are. */
 	cwd: string;
 	/** The recorder of the saved session; its file is not resumed or deleted while this session runs. */
@@ -142,6 +148,22 @@ interface StartRequest {
 }
 
 const MAX_REMEMBERED_IDS = 10_000;
+const CONFIGURATION_COMMANDS = new Set([
+	"session.set_model",
+	"session.set_effort",
+	"session.set_profile",
+	"session.set_backend",
+	"session.set_mode",
+]);
+const PREPARATION_BLOCKED_COMMANDS = new Set([
+	...CONFIGURATION_COMMANDS,
+	"session.send",
+	"session.queue",
+	"session.review",
+	"session.undo_correction",
+	"session.compact",
+]);
+const IMAGES_BUSY = "Images cannot be queued. Wait for the current turn to finish.";
 
 /**
  * A backend's `default` for `options.list`. claude-code's is the alias opus, said as the model it stands for now so
@@ -262,6 +284,24 @@ export class RpcServer {
 	}
 
 	async #execute(message: ClientMessage): Promise<Result> {
+		const entry = "sessionId" in message ? this.#sessions.get(message.sessionId) : undefined;
+		if (entry?.preparing && PREPARATION_BLOCKED_COMMANDS.has(message.command))
+			throw new CommandError(
+				"busy",
+				message.command === "session.send" && message.images?.length
+					? IMAGES_BUSY
+					: "Images are being prepared in this session.",
+			);
+		const configuring = entry !== undefined && CONFIGURATION_COMMANDS.has(message.command);
+		if (configuring) entry.configuring++;
+		try {
+			return await this.#executeCommand(message);
+		} finally {
+			if (configuring) entry.configuring--;
+		}
+	}
+
+	async #executeCommand(message: ClientMessage): Promise<Result> {
 		switch (message.command) {
 			case "session.start": {
 				const started = await this.#start({
@@ -307,13 +347,9 @@ export class RpcServer {
 				return this.#profiles(message.cwd);
 			case "session.send": {
 				const entry = this.#session(message.sessionId);
+				if (message.images?.length) return this.#sendImages(message, entry);
 				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
-				const turnId = this.#createId();
-				const prompt = message.prompt;
-				this.#runTurn(message.sessionId, entry, () => entry.session.send(prompt, turnId)).catch((error: unknown) =>
-					process.stderr.write(`atelier-core: turn ${turnId} stopped: ${describeError(error)}\n`),
-				);
-				return { turnId };
+				return this.#sendPrompt(message.sessionId, entry, message.prompt);
 			}
 			case "session.queue": {
 				const entry = this.#session(message.sessionId);
@@ -399,6 +435,7 @@ export class RpcServer {
 			}
 			case "session.interrupt": {
 				const entry = this.#session(message.sessionId);
+				entry.preparing?.abort();
 				denyAll(entry);
 				await entry.session.interrupt();
 				// An interrupted question is not a refusal: the session drops it and offers the review again.
@@ -450,6 +487,7 @@ export class RpcServer {
 			case "session.close": {
 				const entry = this.#session(message.sessionId);
 				this.#sessions.delete(message.sessionId);
+				entry.preparing?.abort();
 				denyAll(entry);
 				declineAll(entry);
 				try {
@@ -463,6 +501,48 @@ export class RpcServer {
 				this.#stopping = true;
 				await this.#closeAll();
 				return {};
+		}
+	}
+
+	#sendPrompt(sessionId: string, entry: ServerSession, prompt: string, images?: readonly ImageAttachment[]): Result {
+		const turnId = this.#createId();
+		this.#runTurn(sessionId, entry, () => entry.session.send(prompt, turnId, images)).catch((error: unknown) =>
+			process.stderr.write(`atelier-core: turn ${turnId} stopped: ${describeError(error)}\n`),
+		);
+		return { turnId };
+	}
+
+	/** Reserve before the first await; failed preparation never accepts or records a prompt. */
+	async #sendImages(
+		message: Extract<ClientMessage, { command: "session.send" }>,
+		entry: ServerSession,
+	): Promise<Result> {
+		if (entry.session.busy || entry.preparing || entry.configuring > 0) throw new CommandError("busy", IMAGES_BUSY);
+		const checkModel = () => {
+			const problem = entry.session.imageInputProblem();
+			if (problem) throw new CommandError("image_input_unsupported", problem);
+		};
+		checkModel();
+		const abort = new AbortController();
+		entry.preparing = abort;
+		try {
+			const images = await (this.#options.normalizeImages ?? normalizePromptImages)(message.images ?? [], {
+				signal: abort.signal,
+			});
+			if (abort.signal.aborted || this.#stopping || this.#sessions.get(message.sessionId) !== entry)
+				throw new Error("Image preparation was canceled.");
+			checkModel();
+			return this.#sendPrompt(message.sessionId, entry, message.prompt, images);
+		} catch (error) {
+			if (this.#stopping || this.#sessions.get(message.sessionId) !== entry)
+				throw new CommandError("session_closed", "The session is closed.");
+			if (abort.signal.aborted) throw new CommandError("interrupted", "Image preparation was interrupted.");
+			if (error instanceof CommandError) throw error;
+			throw new CommandError("invalid_image", describeError(error));
+		} finally {
+			delete entry.preparing;
+			if (this.#sessions.get(message.sessionId) === entry && !entry.session.busy)
+				this.#runQueued(message.sessionId, entry);
 		}
 	}
 
@@ -824,6 +904,7 @@ export class RpcServer {
 		const sessionId = this.#createId();
 		this.#sessions.set(sessionId, {
 			session,
+			configuring: 0,
 			cwd,
 			approvals,
 			consents,
@@ -853,6 +934,7 @@ export class RpcServer {
 
 	/** Runs the next queued message of the session as a turn, when there is one. */
 	#runQueued(sessionId: string, entry: ServerSession, turnId: string = this.#createId()): void {
+		if (this.#stopping || entry.preparing || entry.session.busy) return;
 		const next = entry.session.nextQueued(turnId);
 		if (!next) return;
 		this.#runTurn(sessionId, entry, () => next).catch((error: unknown) =>
@@ -864,6 +946,7 @@ export class RpcServer {
 		const entries = [...this.#sessions.values()];
 		this.#sessions.clear();
 		for (const entry of entries) {
+			entry.preparing?.abort();
 			denyAll(entry);
 			declineAll(entry);
 		}

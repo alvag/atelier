@@ -34,6 +34,7 @@ import {
 	ZERO_USAGE,
 } from "./events.ts";
 import { imageInputProblem } from "./image-support.ts";
+import type { ImageAttachment } from "./images.ts";
 import type { McpManager } from "./mcp/manager.ts";
 import { createMcpTools, MCP_CALL_TOOL, MCP_SEARCH_TOOL, mcpInstructionsNote, mcpPromptBlock } from "./mcp/tools.ts";
 import {
@@ -827,16 +828,31 @@ export class Session {
 		});
 	}
 
-	/** Runs one turn. `turnId` lets a caller know the id before the first event (the RPC server answers with it). */
-	async *send(prompt: string, turnId: string = this.#createId()): AsyncGenerator<AtelierEvent> {
-		yield* this.#send(prompt, turnId);
+	/** The effective model's refusal, checked before RPC accepts fresh prompt images. */
+	imageInputProblem(): string | undefined {
+		return imageInputProblem(this.#backendSessionId, this.#backendSession?.currentModel?.() ?? this.#model);
+	}
+
+	/** Runs one turn with normalized attachments; `turnId` lets RPC answer with the id before the first event. */
+	async *send(
+		prompt: string,
+		turnId: string = this.#createId(),
+		images: readonly ImageAttachment[] = [],
+	): AsyncGenerator<AtelierEvent> {
+		yield* this.#send(prompt, turnId, undefined, false, images);
 	}
 
 	/**
 	 * `woken`: the turn of background notices with no prompt of the user's (`prompt` is empty): nothing is logged or kept as the
 	 * user's words, the classifier has no request, and the review takes the user's last request.
 	 */
-	async *#send(prompt: string, turnId: string, entered?: QueuedMessage, woken = false): AsyncGenerator<AtelierEvent> {
+	async *#send(
+		prompt: string,
+		turnId: string,
+		entered?: QueuedMessage,
+		woken = false,
+		images: readonly ImageAttachment[] = [],
+	): AsyncGenerator<AtelierEvent> {
 		yield* this.#stream(turnId, woken ? undefined : prompt, entered, async (turn, signal, backendSession) => {
 			// A woken turn waits a moment for the notices of work ending with the first, then takes all there are.
 			if (woken) await this.#gatherNotices(signal);
@@ -936,7 +952,8 @@ export class Session {
 			this.#lastMessage = "";
 			this.#steerable = true;
 			try {
-				for await (const event of backendSession.send(sent)) {
+				const sending = images.length > 0 ? backendSession.send(sent, images) : backendSession.send(sent);
+				for await (const event of sending) {
 					if (!refusal(event)) this.#recoveryInFlight = undefined;
 					if (answered(event)) this.#promptTaken?.();
 					if (event.type === "turn_finished") finish ??= event;
