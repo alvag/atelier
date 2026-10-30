@@ -49,6 +49,14 @@ The tests never touch your credentials. `atelier-core/test/support/setup.ts` giv
 
 `ATELIER_RECORD_SDK=<file.jsonl>` appends every raw SDK message during a real run; that is how `atelier-core/test/fixtures/claude-code/` is recorded.
 
+## Image codecs
+
+Image preparation loads `sharp` on demand, not while the core or its text tools start. A missing
+platform binary fails only the image operation with `image support unavailable: <cause>`.
+`normalizeImage` accepts an injected loader for tests; tests never need to remove an installed binary.
+Images with an alpha channel stay PNG to preserve transparency. For images without alpha, preparation
+encodes both PNG and JPEG and keeps the smaller result that fits the output limit.
+
 ## Versioning
 
 Atelier has one version, [semantic](https://semver.org) and still `0.x`: the root `package.json`, every package's `package.json` and `VERSION` in `atelier-core/src/version.ts` carry the same one, and a test fails when they differ. `atelier --version` prints it, and the core sends it in the protocol's `hello`.
