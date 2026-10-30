@@ -273,6 +273,38 @@ describe("multi-select questions", () => {
 		await h.close();
 	});
 
+	it("refuses every wrong answer form before resolving, then takes nothing checked", async () => {
+		const h = serve([multiTurn]);
+		const sessionId = await h.open({ userQuestions: { multiSelect: true } });
+		await h.send(sessionId);
+		await h.eventOf(sessionId, "user_question_requested");
+		const reply = (form: Record<string, unknown>) => h.ask(answer(sessionId, [{ questionId: "checks", ...form }]));
+		expect(await reply({ optionId: "biome", optionIds: ["biome"] })).toMatchObject({
+			ok: false,
+			error: { code: "invalid_command" },
+		});
+		expect(h.events(sessionId).some((e) => e.type === "user_question_resolved")).toBe(false);
+		for (const form of [
+			{ optionId: "biome" },
+			{ other: "custom" },
+			{ optionIds: ["biome", "biome"] },
+			{ optionIds: ["missing"] },
+		]) {
+			expect(await reply(form), JSON.stringify(form)).toMatchObject({ ok: false, error: { code: "invalid_answer" } });
+			expect(h.events(sessionId).some((e) => e.type === "user_question_resolved")).toBe(false);
+		}
+		expect(await reply({ optionIds: [] })).toMatchObject({ ok: true, result: {} });
+		expect(await h.eventOf(sessionId, "user_question_resolved")).toMatchObject({
+			result: { status: "answered", answers: [{ questionId: "checks", optionIds: [] }] },
+		});
+		await h.eventOf(sessionId, "turn_finished");
+		expect(JSON.parse(h.made.at(-1)?.toolResults[0]?.output ?? "")).toEqual({
+			status: "answered",
+			answers: [{ questionId: "checks", optionIds: [], labels: [] }],
+		});
+		await h.close();
+	});
+
 	it("never sends one to a client of today's userQuestions: true, and refuses its optionIds", async () => {
 		const h = serve([[...multiTurn.slice(0, 1), call, { event: end }]]);
 		const sessionId = await h.open({ userQuestions: true });

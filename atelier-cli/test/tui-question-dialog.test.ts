@@ -393,6 +393,15 @@ describe("QuestionDialog, multi-select", () => {
 		expect(lines(120).join("\n")).toContain("Type an answer, or uncheck Type something");
 	});
 
+	it("goes from an empty Type something… to Submit with Enter without checking it, and the next Enter sends none", () => {
+		const { shown, answers, lines } = dialog({ ...checks, options: checks.options.slice(0, 2) });
+		for (const key of [DOWN, DOWN, DOWN, "\r"]) shown.handleInput(key);
+		expect(lines(120).slice(5, 7)).toEqual(["   3. [ ] Type something…", " ❯    Submit"]);
+		expect(answers).toEqual([]);
+		shown.handleInput("\r");
+		expect(answers).toEqual([{ options: [] }]);
+	});
+
 	it("never overflows a very narrow terminal", () => {
 		const { shown, lines } = dialog(checks);
 		shown.handleInput("2");
