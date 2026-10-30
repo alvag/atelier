@@ -74,7 +74,9 @@ const userAnswers = z
 	.nullable();
 
 /** `true`, or what the client can show beyond single-choice questions; a capability it does not know is refused. */
-const userQuestions = z.union([z.boolean(), z.strictObject({ multiSelect: z.boolean().optional() })]).optional();
+const userQuestions = z
+	.union([z.boolean(), z.strictObject({ multiSelect: z.boolean().optional(), preview: z.boolean().optional() })])
+	.optional();
 
 const commandSchema = z.discriminatedUnion("command", [
 	z.object({

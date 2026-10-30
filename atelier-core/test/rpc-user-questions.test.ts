@@ -345,6 +345,56 @@ describe("multi-select questions", () => {
 	});
 });
 
+describe("option previews", () => {
+	const previewed = {
+		...input.questions[0],
+		options: [
+			{ id: "a", label: "A", recommended: true, preview: 'fetch("http://10.0.0.1")\n→ refused' },
+			{ id: "b", label: "B" },
+		],
+	};
+	const previewTurn: FakeStep[] = [
+		{ toolCall: { callId: "choice-1", tool: "ask_user", input: { questions: [previewed] } } },
+		{ event: end },
+	];
+	const schemaOf = (h: ReturnType<typeof serve>) =>
+		JSON.stringify(
+			z.toJSONSchema(
+				z.object(h.made.at(-1)?.startOptions?.tools.find((tool) => tool.name === "ask_user")?.inputShape ?? {}),
+			),
+		);
+
+	it("sends them to a client that opted in with { preview: true }, which answers as without them", async () => {
+		const h = serve([previewTurn]);
+		const sessionId = await h.open({ userQuestions: { multiSelect: true, preview: true } });
+		await h.send(sessionId);
+		expect(await h.eventOf(sessionId, "user_question_requested")).toMatchObject({ questions: [previewed] });
+		expect(schemaOf(h)).toContain("preview");
+		expect(await h.ask(answer(sessionId, pick))).toMatchObject({ ok: true, result: {} });
+		await h.eventOf(sessionId, "turn_finished");
+		expect(JSON.parse(h.made.at(-1)?.toolResults[0]?.output ?? "")).toEqual({
+			status: "answered",
+			answers: [{ ...pick[0], label: "B" }],
+		});
+		await h.close();
+	});
+
+	it("never sends one to a client that did not ask for them", async () => {
+		for (const userQuestions of [true, { multiSelect: true }]) {
+			const h = serve([[...previewTurn.slice(0, 1), call, { event: end }]]);
+			const sessionId = await h.open({ userQuestions });
+			await h.send(sessionId);
+			expect(await h.eventOf(sessionId, "user_question_requested")).toMatchObject({ questions: input.questions });
+			expect(h.events(sessionId).filter((e) => e.type === "user_question_requested")).toHaveLength(1);
+			expect(schemaOf(h)).not.toContain("preview");
+			expect(h.made.at(-1)?.toolResults[0]?.ok).toBe(false);
+			expect((await h.ask(answer(sessionId, pick))).ok).toBe(true);
+			await h.eventOf(sessionId, "turn_finished");
+			await h.close();
+		}
+	});
+});
+
 describe("session.answer_user codec", () => {
 	const decode = (value: Record<string, unknown>) =>
 		decodeClientMessage(JSON.stringify({ type: "command", id: "1", command: "session.answer_user", ...value })).ok;
@@ -393,9 +443,17 @@ describe("session.answer_user codec", () => {
 				decodeClientMessage(
 					JSON.stringify({ type: "command", id: "1", command, sessionId: "saved", cwd: "/", userQuestions }),
 				).ok;
-			for (const accepted of [true, false, {}, { multiSelect: true }, { multiSelect: false }])
+			for (const accepted of [
+				true,
+				false,
+				{},
+				{ multiSelect: true },
+				{ multiSelect: false },
+				{ preview: true },
+				{ multiSelect: true, preview: true },
+			])
 				expect(open(accepted), JSON.stringify(accepted)).toBe(true);
-			for (const refused of ["yes", null, { multiSelect: "yes" }, { preview: true }])
+			for (const refused of ["yes", null, { multiSelect: "yes" }, { preview: "yes" }, { notes: true }])
 				expect(open(refused), JSON.stringify(refused)).toBe(false);
 		},
 	);
