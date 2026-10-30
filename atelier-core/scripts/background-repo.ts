@@ -77,11 +77,21 @@ async function linkModules(target: string, modules: readonly string[]): Promise<
 }
 
 /**
- * Whether the repository's checks pass now. They run tests the agent wrote: through Atelier's sandbox as an agent's
- * `bash` runs, when `sandbox` is available, and always with an environment of their own, nothing of this process's
- * but PATH: a home and a temporary folder made for them, so no key or real home reaches them.
+ * Whether the repository's checks pass now. They run tests the agent wrote: only through Atelier's sandbox, as an
+ * agent's `bash` runs, and with an environment of their own, nothing of this process's but PATH: a home and a
+ * temporary folder made for them, so no key or real home reaches them. Without the sandbox nothing runs: false, and
+ * `refused` hears why.
  */
-export async function checksPass(cwd: string, sandbox?: Sandbox): Promise<boolean> {
+export async function checksPass(
+	cwd: string,
+	sandbox: Sandbox,
+	refused: (reason: string) => void = () => {},
+): Promise<boolean> {
+	const status = await sandbox.status();
+	if (!status.available) {
+		refused(`the checks did not run: the sandbox is not available (${status.reason})`);
+		return false;
+	}
 	const own = await mkdtemp(join(tmpdir(), "atelier-checks-"));
 	const home = join(own, "home");
 	const temp = join(own, "tmp");
@@ -96,8 +106,7 @@ export async function checksPass(cwd: string, sandbox?: Sandbox): Promise<boolea
 	try {
 		// The sandbox hands its commands a TMPDIR of its own: the command sets theirs, so it wins.
 		const command = `export HOME=${shellQuote(home)} TMPDIR=${shellQuote(temp)}\n${CHECKS}`;
-		const sandboxed = (await sandbox?.status())?.available === true;
-		const script = sandboxed && sandbox ? await sandbox.wrap(command, { policy: "agent", cwd }) : command;
+		const script = await sandbox.wrap(command, { policy: "agent", cwd });
 		await run("bash", ["-c", script], { cwd, env, timeout: 300_000 });
 		return true;
 	} catch {

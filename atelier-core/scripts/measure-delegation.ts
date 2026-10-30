@@ -320,7 +320,7 @@ async function measure(task: Task): Promise<Run> {
 			run.background = {
 				...tallyBackground(events, requests),
 				changesMade: made.filter(Boolean).length,
-				checksPass: await checksPass(cwd, sandbox),
+				checksPass: await checksPass(cwd, sandbox, (reason) => run.errors.push(reason)),
 			};
 		}
 	} finally {

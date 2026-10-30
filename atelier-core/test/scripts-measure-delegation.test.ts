@@ -2,7 +2,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { isInsideSandbox } from "../src/tools/sandbox.ts";
 import { canFakePs, slowSweep, spawnTracked, type TrackedChild } from "./support/sweeping-child.ts";
+
+/** Where the measured repository's checks can run: in the macOS sandbox, which cannot be nested. */
+const withSandbox = process.platform === "darwin" && !isInsideSandbox();
 
 let root: string;
 let child: TrackedChild | undefined;
@@ -46,7 +50,7 @@ describe("measure-delegation", () => {
 		30_000,
 	);
 
-	it("measures a background task in a git repository whose checks pass, with the counts of its background work", async () => {
+	it("measures a background task in a git repository, with the counts of its background work", async () => {
 		const script = new URL("../scripts/measure-delegation.ts", import.meta.url).pathname;
 		const json = join(root, "run.json");
 		const args = [script, "--fake-backend", "--background", "--runs", "1", "--tasks", "parallel", "--json", json];
@@ -61,7 +65,10 @@ describe("measure-delegation", () => {
 			results: { task: string; errors: string[]; background?: Record<string, number | boolean> }[];
 		};
 		expect(written.background).toBe(true);
-		expect(written.results.map((result) => [result.task, result.errors])).toEqual([["parallel", []]]);
+		// The checks run only in the sandbox: where there is none (inside another), they do not run, and the run says so.
+		expect(written.results.map((result) => [result.task, result.errors])).toEqual([
+			["parallel", withSandbox ? [] : [expect.stringMatching(/^the checks did not run: the sandbox is not available/)]],
+		]);
 		// The scripted backend only answers: nothing launched or applied, and the repository's own checks pass.
 		expect(written.results[0]?.background).toEqual({
 			backgroundLaunches: 0,
@@ -73,7 +80,7 @@ describe("measure-delegation", () => {
 			checkRuns: 0,
 			checksAfterLastApply: 0,
 			changesMade: 0,
-			checksPass: true,
+			checksPass: withSandbox,
 		});
 		expect(run.stdout).toContain("| background launches | 0 |");
 	}, 90_000);
