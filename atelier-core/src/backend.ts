@@ -78,8 +78,11 @@ export interface BackendSummary {
 export interface BackendSession {
 	/** The resolved model used for requests, including constructor defaults and the last successful configure. */
 	currentModel?(): string;
-	/** Runs one turn. The core stamps `seq` and `turnId` on every yielded event. */
-	send(prompt: string): AsyncIterable<AtelierEventBody>;
+	/**
+	 * Runs one turn. The core stamps `seq` and `turnId` on each event. `images` are normalized attachments sent with the
+	 * prompt, which may then be empty; a backend refuses them before changing anything when its model cannot take images.
+	 */
+	send(prompt: string, images?: readonly ImageAttachment[]): AsyncIterable<AtelierEventBody>;
 	/** Summarizes the older history now, like a turn ending in `turn_finished`; absent when the backend cannot. */
 	compact?(instructions?: string): AsyncIterable<AtelierEventBody>;
 	/**

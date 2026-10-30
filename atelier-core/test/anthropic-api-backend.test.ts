@@ -319,6 +319,52 @@ describe("AnthropicApiBackend", () => {
 		);
 		await resumed.session.close();
 	});
+	it("sends prompt images as image blocks, also without text, and keeps them through resume", async () => {
+		const data = (
+			await sharp({ create: { width: 1, height: 1, channels: 3, background: "red" } })
+				.png()
+				.toBuffer()
+		).toString("base64");
+		const images = [{ mimeType: "image/png" as const, data }];
+		const block = { type: "image", source: { type: "base64", media_type: "image/png", data } };
+		const { session, api } = await start([
+			{ blocks: [{ type: "text", text: "A red pixel." }] },
+			{ blocks: [{ type: "text", text: "Still red." }] },
+			{ blocks: [{ type: "text", text: "Again." }] },
+		]);
+		await collect(session.send("What is this?", images));
+		await collect(session.send("", images));
+		expect(withoutBreakpoints(messagesOf(api.bodies[0]).at(-1)?.content)).toEqual([
+			{ type: "text", text: "What is this?" },
+			block,
+		]);
+		expect(withoutBreakpoints(messagesOf(api.bodies[1]).at(-1)?.content)).toEqual([block]);
+		const resume = session.resumeState?.();
+		if (resume === undefined) throw new Error("No resume state after the image turn.");
+		await session.close();
+		const resumed = await start([{ blocks: [{ type: "text", text: "Again." }] }], undefined, {}, undefined, { resume });
+		await collect(resumed.session.send("And now?"));
+		const sent = withoutBreakpoints(messagesOf(resumed.api.bodies[0]));
+		expect(sent[0].content).toEqual([{ type: "text", text: "What is this?" }, block]);
+		expect(sent[2].content).toEqual([block]);
+		await resumed.session.close();
+	});
+	it("refuses fresh images for a model that does not take them before touching the history", async () => {
+		const data = (
+			await sharp({ create: { width: 1, height: 1, channels: 3, background: "red" } })
+				.png()
+				.toBuffer()
+		).toString("base64");
+		const { session, api } = await start([{ blocks: [{ type: "text", text: "ok" }] }], undefined, {
+			model: "mystery-model",
+		});
+		await expect(collect(session.send("Look", [{ mimeType: "image/png", data }]))).rejects.toThrow(
+			"Image input support is unknown for anthropic-api/mystery-model.",
+		);
+		expect(api.bodies).toHaveLength(0);
+		expect(session.resumeState?.()).toBeUndefined();
+		await session.close();
+	});
 	it("streams a text turn and reports the session, usage and cost", async () => {
 		const { session, api } = await start([
 			{

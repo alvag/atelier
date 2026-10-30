@@ -34,6 +34,8 @@ import {
 	type Usage,
 	ZERO_USAGE,
 } from "../../events.ts";
+import { imageInputProblem } from "../../image-support.ts";
+import type { ImageAttachment } from "../../images.ts";
 import { BACKEND_DEFAULTS } from "../../options.ts";
 import {
 	costOfRequest,
@@ -424,8 +426,10 @@ class AnthropicApiSession implements BackendSession {
 		return this.#effort;
 	}
 
-	async *send(prompt: string): AsyncIterable<AtelierEventBody> {
+	async *send(prompt: string, images: readonly ImageAttachment[] = []): AsyncIterable<AtelierEventBody> {
 		if (this.#closed) throw new Error(`The ${this.#id} session is closed.`);
+		const problem = images.length === 0 ? undefined : imageInputProblem(this.#id, this.#state.model);
+		if (problem !== undefined) throw new Error(problem);
 		if (!this.#announced) {
 			this.#announced = true;
 			yield {
@@ -440,7 +444,13 @@ class AnthropicApiSession implements BackendSession {
 		this.#abort = abort;
 		const meter = new TurnMeter(this.#state.model, this.#summary?.model);
 		let stopReason = "error";
-		this.#appendUser([{ type: "text", text: prompt }]);
+		this.#appendUser([
+			...(prompt === "" && images.length > 0 ? [] : [{ type: "text" as const, text: prompt }]),
+			...images.map((image) => ({
+				type: "image" as const,
+				source: { type: "base64" as const, media_type: image.mimeType, data: image.data },
+			})),
+		]);
 		this.#turnStart = this.#state.messages.length - 1;
 		this.#turnPrompt = undefined;
 		if (!(await this.#ready(abort.signal))) {

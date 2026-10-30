@@ -276,6 +276,41 @@ describe("opencode-go on Chat Completions", () => {
 			await session.close();
 		}
 	});
+	it("sends prompt images through Chat Completions, also without text", async () => {
+		useModelData(new ModelData({ "opencode-go": [{ id: MODEL, images: true }] }));
+		const data = (
+			await sharp({ create: { width: 1, height: 1, channels: 3, background: "red" } })
+				.png()
+				.toBuffer()
+		).toString("base64");
+		const images = [{ mimeType: "image/png" as const, data }];
+		const url = { type: "image_url", image_url: { url: `data:image/png;base64,${data}` } };
+		provider.answer(textReply("One."));
+		provider.answer(textReply("Two."));
+		const session = await start();
+		try {
+			await collect(session.send("What is this?", images));
+			await collect(session.send("", images));
+			const second = provider.received[1]?.body.messages as { role: string; content: unknown }[];
+			expect(second[1]?.content).toEqual([{ type: "text", text: "What is this?" }, url]);
+			expect(second[3]?.content).toEqual([url]);
+		} finally {
+			await session.close();
+		}
+	});
+	it("refuses fresh images for a Chat model without image input", async () => {
+		useModelData(new ModelData({ "opencode-go": [{ id: MODEL, images: false }] }));
+		const session = await start();
+		try {
+			await expect(collect(session.send("Look", [{ mimeType: "image/png", data: "AA==" }]))).rejects.toThrow(
+				`Image input is not supported by opencode-go/${MODEL}.`,
+			);
+			expect(provider.received).toHaveLength(0);
+			expect(session.resumeState?.()).toBeUndefined();
+		} finally {
+			await session.close();
+		}
+	});
 	it("streams the text and the reasoning, and counts the cached tokens apart", async () => {
 		provider.answer({
 			sse: sse(
