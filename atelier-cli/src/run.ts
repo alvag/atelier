@@ -535,6 +535,8 @@ export async function run(
 		...(saved?.problem === undefined ? {} : { permissionModeProblem: saved.problem }),
 		odd: true,
 		askUser,
+		// Line mode asks multi-select questions as numbers separated by commas.
+		userQuestions: { multiSelect: true },
 		...(io.home === undefined ? {} : { projectInstructions: { home: io.home }, skills: { home: io.home } }),
 		cwd: args.cwd,
 		...(model === undefined ? {} : { model }),
