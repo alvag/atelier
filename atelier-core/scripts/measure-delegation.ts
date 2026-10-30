@@ -18,7 +18,6 @@
  *
  *   node atelier-core/scripts/measure-delegation.ts [--model <id>] [--runs <n>] [--tasks <id,...>] [--max-usd <n>] [--json <file>] [--compare <file>]
  */
-import { execFileSync } from "node:child_process";
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -37,6 +36,7 @@ import {
 } from "../src/index.ts";
 import { addCost, sumCosts, usd } from "./cost.ts";
 import { measuredTools, tallyParentCalls } from "./delegation-calls.ts";
+import { type Commit, commitAt, firstTools, fmt, mean } from "./delegation-report.ts";
 import { pastedLines, sourceLines } from "./pasted.ts";
 
 const TASKS = [
@@ -123,8 +123,7 @@ const tasks = picked === undefined ? TASKS : TASKS.filter((task) => picked.inclu
 /** Only main's rules for now: the variants of #124 come with the session option that picks them. */
 const variant = "baseline";
 const here = dirname(fileURLToPath(import.meta.url));
-const git = (...args: string[]) => execFileSync("git", args, { cwd: here, encoding: "utf8" }).trim();
-const commit = { sha: git("rev-parse", "HEAD"), dirty: git("status", "--porcelain") !== "" };
+const commit = commitAt(here);
 const source = join(here, "../src");
 const apiKey = await resolveApiKey();
 
@@ -223,9 +222,6 @@ for (let round = 0; round < runs && !stopped; round++)
 		process.stderr.write(`${task.id} #${round + 1}: ${usd(total(run))} (so far ${usd(spent)})\n`);
 	}
 
-/** The mean of one number over the runs of a task. */
-const mean = (of: readonly Run[], pick: (run: Run) => number) =>
-	of.length === 0 ? 0 : of.reduce((sum, run) => sum + pick(run), 0) / of.length;
 const COLUMNS: [string, (run: Run) => number][] = [
 	["parent requests", (r) => r.parent.requests],
 	["parent prompt tokens", (r) => prompt(r.parent.usage)],
@@ -242,25 +238,16 @@ const COLUMNS: [string, (run: Run) => number][] = [
 	["follow-up prompt tokens", (r) => r.followUpPrompt],
 	["cost USD", (r) => total(r) ?? Number.NaN],
 ];
-/** A column a JSON from before it lacks is shown as n/a. */
-const fmt = (n: number) =>
-	Number.isNaN(n) ? "n/a" : Number.isInteger(n) ? String(n) : n.toFixed(Math.abs(n) < 10 ? 3 : 0);
-/** `read ×2, grep ×1`: which tool each run called first. */
-function firstTools(of: readonly Run[]): string {
-	const counts = new Map<string, number>();
-	for (const run of of) counts.set(run.firstTool ?? "n/a", (counts.get(run.firstTool ?? "n/a") ?? 0) + 1);
-	return [...counts].map(([tool, n]) => `${tool} ×${n}`).join(", ");
-}
 
 const compared = values.compare
 	? (JSON.parse(await readFile(values.compare, "utf8")) as {
 			variant?: string;
-			commit?: { sha: string; dirty: boolean };
+			commit?: Commit;
 			results: Run[];
 		})
 	: undefined;
 const before = compared?.results;
-const at = (c: { sha: string; dirty: boolean } | undefined) =>
+const at = (c: Commit | undefined) =>
 	c === undefined ? "unknown commit" : `${c.sha.slice(0, 7)}${c.dirty ? " (uncommitted changes)" : ""}`;
 const lines = [
 	`Model: ${model}. Variant: ${variant} at ${at(commit)}. Runs per task: ${runs}. Spent: ${usd(spent)}${stopped ? ` (stopped: the next session could pass $${maxUsd})` : ""}.`,
