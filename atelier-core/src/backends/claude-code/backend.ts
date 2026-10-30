@@ -551,6 +551,10 @@ class ClaudeCodeSession implements BackendSession {
 		return this.#sessionId === undefined ? undefined : { sessionId: this.#sessionId };
 	}
 
+	currentModel(): string {
+		return claudeCodeIdOf(this.#model);
+	}
+
 	effectiveEffort(): Effort | undefined {
 		return this.#applied.level;
 	}

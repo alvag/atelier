@@ -411,6 +411,10 @@ class AnthropicApiSession implements BackendSession {
 		this.#summary = summary;
 	}
 
+	currentModel(): string {
+		return this.#state.model;
+	}
+
 	resumeState(): ResumeState | undefined {
 		return this.#state.messages.length === 0 ? undefined : { messages: this.#state.messages as unknown as JsonValue[] };
 	}

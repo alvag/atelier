@@ -1918,7 +1918,10 @@ export class Session {
 			}
 			const outcome = await tool.execute(call.input, context);
 			if (outcome.images?.length) {
-				const problem = imageInputProblem(this.#backendSessionId, this.#model);
+				const problem = imageInputProblem(
+					this.#backendSessionId,
+					this.#backendSession?.currentModel?.() ?? this.#model,
+				);
 				if (problem !== undefined) return fail(problem);
 			}
 			emit({
