@@ -2221,6 +2221,10 @@ export class Session {
 					};
 					signal.addEventListener("abort", stop, { once: true });
 					try {
+						// The task started: git in its worktree needs the snapshot's objects in the repository.
+						await tree?.adopt();
+						// Stopped meanwhile: the interrupt came before the subagent had a turn to stop.
+						if (signal.aborted) return { ok: false, error: "stopped before it started" };
 						const result = await this.#childReport(running, agent, settings, prompt, (body) => {
 							const line = activityLine(body);
 							if (line !== "") log(line);

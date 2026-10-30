@@ -153,6 +153,7 @@ const worktrees = () => git(repo, "worktree", "list", "--porcelain").match(/^wor
 describe("a worker in the background", () => {
 	it("works in its own worktree of the parent's tree as it is, and returns its change as a patch", async () => {
 		let inside = "";
+		let status: string | undefined;
 		const { parent, session, play, woke } = await started(
 			[[work("c1"), { event: finished }], [{ event: finished }]],
 			[
@@ -160,6 +161,8 @@ describe("a worker in the background", () => {
 					{
 						run: () => {
 							inside = cwd();
+							// Its task started, so git in its worktree finds the snapshot it is checked out at.
+							status = git(inside, "status", "--short");
 							writeFileSync(join(inside, "a.txt"), "one\ndirty\nfixed\n");
 							writeFileSync(join(inside, "c.txt"), "added\n");
 						},
@@ -176,6 +179,7 @@ describe("a worker in the background", () => {
 		);
 		await until(() => woke() === 1);
 		expect(inside).not.toBe(repo);
+		expect(status).toBe("");
 		expect(existsSync(inside)).toBe(false);
 		expect(worktrees()).toBe(1);
 		await play(session.nextQueued());
@@ -454,7 +458,8 @@ describe("a worker in the background", () => {
 		expect(existsSync(children[0]?.startOptions?.cwd as string)).toBe(false);
 	});
 
-	it("starts no subagent and leaves no worktree when the session closes while it is being made", async () => {
+	it("starts no subagent and leaves no worktree nor object when the session closes while it is being made", async () => {
+		const objects = objectFiles();
 		let release = () => {};
 		const held = new Promise<void>((resolve) => (release = resolve));
 		const child = new FakeBackend([[text("late"), { event: finished }]]);
@@ -484,6 +489,8 @@ describe("a worker in the background", () => {
 		expect(parent.toolResults[0]?.output).toBe("Refused: the session is closing.");
 		expect(child.prompts).toEqual([]);
 		expect(worktrees()).toBe(1);
+		// The snapshot was taken and its worktree made, but nothing of it stays in the repository's objects.
+		expect(objectFiles()).toEqual(objects);
 	});
 
 	it("names the files another task's patch also changed", async () => {
