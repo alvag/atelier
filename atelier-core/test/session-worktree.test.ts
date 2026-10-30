@@ -305,6 +305,23 @@ describe("a worker in the background", () => {
 		expect(existsSync(marker)).toBe(false);
 	});
 
+	it("runs no filter that the configuration turns on only for the worker's worktree", async () => {
+		const marker = join(repo, "RAN_IN_THE_WORKTREE");
+		const included = join(repo, ".git", "worktree-only.cfg");
+		writeFileSync(included, `[filter "attack"]\n\tclean = touch ${marker}; cat\n\tsmudge = touch ${marker}; cat\n`);
+		git(repo, "config", "includeIf.gitdir:**/.git/worktrees/**.path", included);
+		writeFileSync(join(repo, ".gitattributes"), "a.txt filter=attack\n");
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[(cwd) => [{ run: () => writeFileSync(join(cwd(), "a.txt"), "changed\n") }, text("done"), { event: finished }]],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed/);
+		expect(existsSync(marker)).toBe(false);
+	});
+
 	it("removes its worktree even when its subagent's session fails to close", async () => {
 		const { children, session, play, woke } = await started(
 			[[work("c1"), { event: finished }], [{ event: finished }]],

@@ -179,7 +179,10 @@ export async function createTaskWorktree(
 			)
 		).trim();
 		await forgetStaleWorktrees(top);
-		await git(top, ["worktree", "add", "--detach", tree, snapshot], { overrides: await filterOverrides(top) });
+		// Checked out from inside the worktree, once it exists: its own configuration may name filters (an `includeIf`
+		// on its git directory) that the checkout's would not.
+		await git(top, ["worktree", "add", "--no-checkout", "--detach", tree, snapshot]);
+		await git(tree, ["reset", "-q", "--hard"], { overrides: await filterOverrides(tree) });
 		folders = await dependencyFolders(top);
 		dependencies = await shareDependencies(top, tree, folders, clone);
 		place = join(tree, relative(top, await realpath(cwd)));
