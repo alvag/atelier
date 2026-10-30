@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
 	type AtelierEventBody,
 	decodeClientMessage,
@@ -43,12 +44,17 @@ afterEach(async () => {
 
 function serve(...backends: FakeStep[][][]) {
 	let created = 0;
+	const made: FakeBackend[] = [];
 	const stream = new PassThrough();
 	const messages: ServerMessage[] = [];
 	const server = new RpcServer({
 		input: stream,
 		write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
-		createBackend: (name) => new FakeBackend(backends[Math.min(created++, backends.length - 1)] ?? [turn], name),
+		createBackend: (name) => {
+			const backend = new FakeBackend(backends[Math.min(created++, backends.length - 1)] ?? [turn], name);
+			made.push(backend);
+			return backend;
+		},
 		tools: [],
 		systemPromptAppend: "",
 		home,
@@ -83,7 +89,7 @@ function serve(...backends: FakeStep[][][]) {
 		stream.end();
 		return done;
 	};
-	return { ask, open, send, events, eventOf, close };
+	return { ask, open, send, events, eventOf, close, made };
 }
 
 const answer = (sessionId: string, answers: unknown, callId = "choice-1") => ({
@@ -224,6 +230,89 @@ describe("session.answer_user", () => {
 	});
 });
 
+describe("multi-select questions", () => {
+	const checks = {
+		id: "checks",
+		question: "Which checks?",
+		multiSelect: true,
+		options: [
+			{ id: "biome", label: "Biome" },
+			{ id: "tsc", label: "TypeScript" },
+		],
+	};
+	const multiTurn: FakeStep[] = [
+		{ toolCall: { callId: "choice-1", tool: "ask_user", input: { questions: [checks] } } },
+		{ event: end },
+	];
+	/** The `ask_user` tool's schema as the model gets it, from the session's last backend. */
+	const schemaOf = (h: ReturnType<typeof serve>) =>
+		JSON.stringify(
+			z.toJSONSchema(
+				z.object(h.made.at(-1)?.startOptions?.tools.find((tool) => tool.name === "ask_user")?.inputShape ?? {}),
+			),
+		);
+
+	it("asks them of a client that opted in with { multiSelect: true } and takes optionIds", async () => {
+		const h = serve([multiTurn]);
+		const sessionId = await h.open({ userQuestions: { multiSelect: true } });
+		await h.send(sessionId);
+		expect(await h.eventOf(sessionId, "user_question_requested")).toMatchObject({ questions: [checks] });
+		expect(schemaOf(h)).toContain("multiSelect");
+		const wrong = await h.ask(answer(sessionId, [{ questionId: "checks", optionIds: ["biome", "biome"] }]));
+		expect(wrong).toMatchObject({ ok: false, error: { code: "invalid_answer" } });
+		const checked = [{ questionId: "checks", optionIds: ["tsc"], other: "docs" }];
+		expect(await h.ask(answer(sessionId, checked))).toMatchObject({ ok: true, result: {} });
+		expect(await h.eventOf(sessionId, "user_question_resolved")).toMatchObject({
+			result: { status: "answered", answers: checked },
+		});
+		await h.eventOf(sessionId, "turn_finished");
+		expect(JSON.parse(h.made.at(-1)?.toolResults[0]?.output ?? "")).toEqual({
+			status: "answered",
+			answers: [{ ...checked[0], labels: ["TypeScript"] }],
+		});
+		await h.close();
+	});
+
+	it("never sends one to a client of today's userQuestions: true, and refuses its optionIds", async () => {
+		const h = serve([[...multiTurn.slice(0, 1), call, { event: end }]]);
+		const sessionId = await h.open({ userQuestions: true });
+		await h.send(sessionId);
+		expect(await h.eventOf(sessionId, "user_question_requested")).toMatchObject({ questions: input.questions });
+		expect(h.events(sessionId).filter((e) => e.type === "user_question_requested")).toHaveLength(1);
+		expect(schemaOf(h)).not.toContain("multiSelect");
+		expect(await h.ask(answer(sessionId, [{ questionId: "q1", optionIds: ["b"] }]))).toMatchObject({
+			ok: false,
+			error: { code: "invalid_answer" },
+		});
+		expect(h.events(sessionId).some((e) => e.type === "user_question_resolved")).toBe(false);
+		expect((await h.ask(answer(sessionId, pick))).ok).toBe(true);
+		await h.eventOf(sessionId, "turn_finished");
+		await h.close();
+	});
+
+	it("session.resume asks for them again on its own", async () => {
+		const h = serve([[{ event: end }]], [multiTurn]);
+		const started = (await h.ask({ command: "session.start", cwd: home, userQuestions: true })) as unknown as {
+			result: { sessionId: string; savedId: string };
+		};
+		await h.send(started.result.sessionId);
+		await h.eventOf(started.result.sessionId, "turn_finished");
+		await h.ask({ command: "session.close", sessionId: started.result.sessionId });
+		const resumed = (await h.ask({
+			command: "session.resume",
+			sessionId: started.result.savedId,
+			cwd: home,
+			userQuestions: { multiSelect: true },
+		})) as unknown as { ok: boolean; result: { sessionId: string } };
+		expect(resumed.ok, JSON.stringify(resumed)).toBe(true);
+		await h.send(resumed.result.sessionId);
+		expect(await h.eventOf(resumed.result.sessionId, "user_question_requested")).toMatchObject({
+			questions: [checks],
+		});
+		await h.close();
+	});
+});
+
 describe("session.answer_user codec", () => {
 	const decode = (value: Record<string, unknown>) =>
 		decodeClientMessage(JSON.stringify({ type: "command", id: "1", command: "session.answer_user", ...value })).ok;
@@ -250,12 +339,32 @@ describe("session.answer_user codec", () => {
 		expect(decode({ ...base, ...extra })).toBe(false);
 	});
 
-	it("accepts userQuestions on start and resume only as a boolean", () => {
-		const start = (userQuestions: unknown) =>
-			decodeClientMessage(
-				JSON.stringify({ type: "command", id: "1", command: "session.start", cwd: "/", userQuestions }),
-			).ok;
-		expect(start(true)).toBe(true);
-		expect(start("yes")).toBe(false);
+	it("takes a multi-select answer, none checked included", () => {
+		expect(decode({ ...base, answers: [{ questionId: "q", optionIds: [] }] })).toBe(true);
+		expect(decode({ ...base, answers: [{ questionId: "q", optionIds: ["a", "b"], other: "x" }] })).toBe(true);
 	});
+
+	it.each([
+		["optionId with optionIds", { questionId: "q", optionId: "a", optionIds: ["a"] }],
+		["five optionIds", { questionId: "q", optionIds: ["a", "b", "c", "d", "e"] }],
+		["a blank optionId among them", { questionId: "q", optionIds: [" "] }],
+		["optionIds that are not a list", { questionId: "q", optionIds: "a" }],
+		["blank other with them", { questionId: "q", optionIds: [], other: " " }],
+	])("rejects %s", (_name, entry) => {
+		expect(decode({ ...base, answers: [entry] })).toBe(false);
+	});
+
+	it.each(["session.start", "session.resume"])(
+		"accepts userQuestions on %s as a boolean or the capabilities, and nothing it does not know",
+		(command) => {
+			const open = (userQuestions: unknown) =>
+				decodeClientMessage(
+					JSON.stringify({ type: "command", id: "1", command, sessionId: "saved", cwd: "/", userQuestions }),
+				).ok;
+			for (const accepted of [true, false, {}, { multiSelect: true }, { multiSelect: false }])
+				expect(open(accepted), JSON.stringify(accepted)).toBe(true);
+			for (const refused of ["yes", null, { multiSelect: "yes" }, { preview: true }])
+				expect(open(refused), JSON.stringify(refused)).toBe(false);
+		},
+	);
 });
