@@ -1,5 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -96,6 +106,22 @@ function gate() {
 	let open = () => {};
 	const opened = new Promise<void>((resolve) => (open = resolve));
 	return { open, step: { run: () => opened } as FakeStep };
+}
+
+/** Every file of the repository's .git but its objects, with a digest of each: what Atelier must leave as it was. */
+function gitDirState(): Record<string, string> {
+	const state: Record<string, string> = {};
+	const walk = (dir: string, prefix: string) => {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			const path = join(dir, entry.name);
+			const name = `${prefix}${entry.name}`;
+			if (name === "objects") continue;
+			if (entry.isDirectory()) walk(path, `${name}/`);
+			else state[name] = createHash("sha256").update(readFileSync(path)).digest("hex");
+		}
+	};
+	walk(join(repo, ".git"), "");
+	return state;
 }
 
 const worktrees = () => git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)?.length ?? 0;
@@ -381,6 +407,51 @@ describe("a worker in the background", () => {
 		expect(worktrees()).toBe(1);
 		expect(existsSync(children[0]?.startOptions?.cwd as string)).toBe(false);
 		expect(existsSync(children[1]?.startOptions?.cwd as string)).toBe(false);
+	});
+
+	it("leaves nothing in the repository's .git but the snapshot's objects, even with a split index", async () => {
+		git(repo, "config", "core.splitIndex", "true");
+		git(repo, "update-index", "--split-index");
+		const before = gitDirState();
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[(cwd) => [{ run: () => writeFileSync(join(cwd(), "a.txt"), "changed\n") }, text("done"), { event: finished }]],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed/);
+		expect(gitDirState()).toEqual(before);
+	});
+
+	it("never forgets a worktree of the user's whose folder is gone", async () => {
+		const theirs = await realpath(await mkdtemp(join(tmpdir(), "atelier-their-worktree-")));
+		git(repo, "worktree", "add", "-q", "--detach", join(theirs, "wt"), "HEAD");
+		await rm(theirs, { recursive: true, force: true });
+		const { session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[() => [text("done"), { event: finished }]],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(git(repo, "worktree", "list", "--porcelain")).toContain(join(theirs, "wt"));
+	});
+
+	it("forgets a worktree of Atelier's that a crash left, and only that one", async () => {
+		const crashed = await realpath(await mkdtemp(join(tmpdir(), "atelier-crashed-")));
+		const stale = join(crashed, "atelier-session-old", "work", "worktrees", "1", "tree");
+		git(repo, "worktree", "add", "-q", "--detach", stale, "HEAD");
+		await rm(crashed, { recursive: true, force: true });
+		const { session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[() => [text("done"), { event: finished }]],
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(stale);
+		expect(worktrees()).toBe(1);
 	});
 
 	it("is refused outside a git repository, before a subagent starts", async () => {
