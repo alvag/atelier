@@ -21,6 +21,24 @@ An explicit catalog `images: false` overrides a fallback. A refusal says
 `Image input is not supported by <backend>/<model>.` or
 `Image input support is unknown for <backend>/<model>.` Text tools remain usable.
 
+## Attaching images in the TUI
+
+Paste an image file's path into the editor to attach it as `[Image #n]` at the cursor.
+Raw paths with spaces, shell-quoted or escaped paths, `~/` paths and local `file://` URLs work;
+a paste can also contain several quoted paths. Use `./name` for a relative filename without an
+extension. Ordinary text and non-image paths stay text.
+Delete a whole marker to remove its attachment. A prompt can contain images without text.
+
+Enter or Alt+Enter sends the text and native images; the transcript keeps the visible markers.
+Images cannot be queued: while a turn runs, the draft stays in the editor with
+`Images cannot be queued. Wait for the current turn to finish.` A refused send restores the
+submitted draft and its bytes alongside any newer typing; an accepted send does not erase newer typing.
+Image prompts are not added to editor history, so recalling text never silently reattaches pixels.
+
+If Enter arrives during preparation, wait for it to finish and press Enter again. An edit or
+cursor move cancels an unfinished paste with a note to paste it again. New sessions and quitting
+discard pending results rather than inserting them into a different draft.
+
 ## Images with a prompt over RPC
 
 `session.send` accepts optional `images: [{ mimeType, data }]` alongside `prompt`. MIME types are

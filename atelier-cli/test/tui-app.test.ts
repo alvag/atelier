@@ -29,6 +29,7 @@ import { requireIsolatedHome } from "../../atelier-core/test/support/login-isola
 import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
 import { HerdrStatusReporter } from "../src/tui/herdr-status.ts";
+import { png } from "./support/png.ts";
 import { PRINTABLE_KEYS } from "./support/printable-keys.ts";
 
 /** `/stats` reads as it does, after `held` when a test sets it. */
@@ -40,6 +41,46 @@ vi.mock("../src/tui/stats-command.ts", async (original) => {
 		statsNote: async (...args: Parameters<typeof command.statsNote>) => {
 			await statsRead.held;
 			return command.statsNote(...args);
+		},
+	};
+});
+
+/** What a test changes in pasted images: when a path is prepared, what it yields, and whether a draft can attach. */
+const fake = vi.hoisted(() => ({
+	held: undefined as Promise<void> | undefined,
+	calls: [] as string[],
+	finished: 0,
+	animated: false,
+	huge: false,
+	attachFails: false,
+}));
+vi.mock("../src/tui/pasted-images.ts", async (original) => {
+	const real = await original<typeof import("../src/tui/pasted-images.ts")>();
+	return {
+		...real,
+		preparePastedImages: async (...args: Parameters<typeof real.preparePastedImages>) => {
+			fake.calls.push(args[0]);
+			await fake.held;
+			const prepared = await real.preparePastedImages(...args);
+			fake.finished++;
+			return prepared?.map((one) => ({
+				...one,
+				animated: fake.animated,
+				image: fake.huge ? { ...one.image, data: "A".repeat(14_700_000) } : one.image,
+			}));
+		},
+	};
+});
+vi.mock("../src/tui/prompt-images.ts", async (original) => {
+	const real = await original<typeof import("../src/tui/prompt-images.ts")>();
+	return {
+		...real,
+		PromptImages: class extends real.PromptImages {
+			override attach(text: string) {
+				if (!fake.attachFails) return super.attach(text);
+				fake.attachFails = false;
+				throw new Error("A prompt accepts at most 20 images.");
+			}
 		},
 	};
 });
@@ -93,6 +134,8 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 	const commands: ClientCommand[] = [];
 	/** Commands the core answers with an error instead of running them. */
 	const failing = new Set<string>();
+	/** Commands whose answer waits for a promise: the core did the work, the TUI has not heard yet. */
+	const holds = new Map<string, Promise<void>>();
 	const envs: Record<string, string>[] = [];
 	const exitListeners = new Set<(exit: CoreExit) => void>();
 	let closed = false;
@@ -137,12 +180,15 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 		return {
 			request(command) {
 				commands.push(command);
-				if (failing.has(command.command)) return Promise.reject(new Error(`${command.command} refused`));
-				const id = `r${++nextId}`;
-				return new Promise((resolve, reject) => {
-					pending.set(id, { resolve, reject });
-					input.write(encodeMessage({ ...command, type: "command", id }));
-				});
+				const gate = holds.get(command.command);
+				const answer = failing.has(command.command)
+					? Promise.reject(new Error(`${command.command} refused`))
+					: new Promise((resolve, reject) => {
+							const id = `r${++nextId}`;
+							pending.set(id, { resolve, reject });
+							input.write(encodeMessage({ ...command, type: "command", id }));
+						});
+				return gate === undefined ? answer : answer.finally(() => gate);
 			},
 			onEvent(listener) {
 				eventListeners.add(listener);
@@ -167,7 +213,7 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 	const exit = (coreExit: CoreExit) => {
 		for (const listener of exitListeners) listener(coreExit);
 	};
-	return { connect, commands, failing, envs, closed: () => closed, exit };
+	return { connect, commands, failing, holds, envs, closed: () => closed, exit };
 }
 
 /** Takes out styles and terminal sequences; OSC and APC ones (hyperlinks, Kitty images) end at BEL or ST. */
@@ -4738,5 +4784,177 @@ describe("TUI and background jobs", { timeout: 20_000 }, () => {
 		h.screen.type("/exit");
 		h.screen.type("\r");
 		expect(await code).toBe(0);
+	});
+});
+
+describe("TUI pasted images", { timeout: 20_000 }, () => {
+	const START = "\x1b[200~";
+	const END = "\x1b[201~";
+	const BUSY = "Images cannot be queued. Wait for the current turn to finish.";
+	type Harness = ReturnType<typeof harness>;
+	let images: string;
+	beforeEach(async () => {
+		// Inside the worktree, not the temp dir: the files are real images the TUI reads.
+		images = await mkdtemp(join(import.meta.dirname, ".pasted-images-"));
+		Object.assign(fake, { held: undefined, calls: [], finished: 0, animated: false, huge: false, attachFails: false });
+	});
+	afterEach(async () => {
+		await rm(images, { recursive: true, force: true });
+	});
+
+	const imageFile = async (name = "shot.png") => {
+		const path = join(images, name);
+		await writeFile(path, png());
+		return path;
+	};
+	const sends = (h: Harness) =>
+		h.core.commands.filter((command) => command.command === "session.send") as Extract<
+			ClientCommand,
+			{ command: "session.send" }
+		>[];
+	const open = async (turns: FakeStep[][] = [[{ event: started }, { event: finished }]]) => {
+		// A backend whose model takes images.
+		const h = harness(turns, { backendId: "anthropic-api" });
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		return { h, code };
+	};
+	const paste = (h: Harness, text: string, after = "") => h.screen.type(`${START}${text}${END}${after}`);
+	const shows = (h: Harness, text: string) => until(() => h.screen.screen().includes(text));
+	const pasteImage = async (h: Harness, path: string, shown = "[Image #1]") => {
+		paste(h, path);
+		await shows(h, shown);
+	};
+	/** Makes the next paths wait, until the function returned is called. */
+	const holdReads = () => {
+		let release!: () => void;
+		fake.held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		return release;
+	};
+	/** The core takes `session.send` but the TUI hears of it only when the function returned is called. */
+	const holdAck = (h: Harness) => {
+		let release!: () => void;
+		h.core.holds.set(
+			"session.send",
+			new Promise<void>((resolve) => {
+				release = resolve;
+			}),
+		);
+		return release;
+	};
+	const quit = async (h: Harness, code: Promise<number>) => {
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	};
+
+	it("puts a pasted image path in the editor as a marker and sends the image natively", async () => {
+		const { h, code } = await open();
+		const path = await imageFile();
+		await pasteImage(h, path);
+		h.screen.type(" what is this");
+		h.screen.type("\r");
+		await until(() => sends(h).length === 1);
+		const [send] = sends(h);
+		expect(send?.prompt).toBe(" what is this");
+		expect(send?.images).toHaveLength(1);
+		expect(send?.images?.[0]?.mimeType).toMatch(/^image\//);
+		expect(JSON.stringify(send)).not.toContain(images);
+		await shows(h, "$0.50");
+		expect(h.screen.screen()).toContain("❯ [Image #1] what is this");
+		await quit(h, code);
+	});
+
+	it("never queues an image draft while a turn runs, and sends it after, with Enter or Alt+Enter", async () => {
+		const { h, code } = await open([
+			[{ event: started }, { waitForInterrupt: true }],
+			[{ event: started }, { event: finished }],
+		]);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("esc to interrupt") || sends(h).length === 1);
+		await pasteImage(h, await imageFile());
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes(BUSY));
+		h.screen.type("\x1b\r");
+		await until(() => h.screen.screen().split(BUSY).length === 3);
+		expect(h.screen.frame().join("\n").split("[Image #1]")).toHaveLength(2);
+		expect(h.core.commands.some((command) => command.command === "session.queue")).toBe(false);
+		h.screen.type("\x1b");
+		await shows(h, "interrupting");
+		await until(() => !h.screen.frame().join("\n").includes("esc to interrupt"));
+		h.screen.type("\r");
+		await until(() => sends(h).length === 2);
+		expect(sends(h)[1]?.images).toHaveLength(1);
+		await shows(h, "$0.50");
+		// Sent, the draft is gone: Enter sends only what is typed next.
+		h.screen.type("z");
+		h.screen.type("\x1b\r");
+		await until(() => sends(h).length === 3);
+		expect(sends(h)[2]).toMatchObject({ prompt: "z" });
+		expect(sends(h)[2]?.images).toBeUndefined();
+		await quit(h, code);
+	});
+
+	it("keeps what was typed after a send, and clears only the images the core accepted", async () => {
+		const { h, code } = await open();
+		await pasteImage(h, await imageFile());
+		const release = holdAck(h);
+		h.screen.type("\r");
+		await until(() => sends(h).length === 1);
+		h.screen.type("next");
+		await shows(h, "$0.50");
+		h.screen.type("\r");
+		h.screen.type("\x1b\r");
+		expect(sends(h)).toHaveLength(1);
+		release();
+		h.screen.type(" after");
+		await shows(h, "next after");
+		h.screen.type("\r");
+		await until(() => sends(h).length === 2);
+		expect(sends(h)[1]?.prompt).toBe("next after");
+		expect(sends(h)[1]?.images).toBeUndefined();
+		await quit(h, code);
+	});
+
+	it("keeps image drafts instead of consuming them as a stats command", async () => {
+		const { h, code } = await open();
+		h.screen.type("/stats ");
+		await pasteImage(h, await imageFile());
+		h.screen.type("\r");
+		await shows(h, "images can only be sent with a prompt");
+		expect(h.screen.frame().join("\n")).toContain("/stats [Image #1]");
+		expect(sends(h)).toEqual([]);
+		await quit(h, code);
+	});
+
+	it("restores the draft when the draft cannot attach its images", async () => {
+		const { h, code } = await open();
+		await pasteImage(h, await imageFile());
+		fake.attachFails = true;
+		h.screen.type("\r");
+		await shows(h, "at most 20 images");
+		expect(sends(h)).toEqual([]);
+		h.screen.type("\r");
+		await until(() => sends(h).length === 1);
+		expect(sends(h)[0]?.images).toHaveLength(1);
+		await quit(h, code);
+	});
+
+	it("holds Enter beside a paste while its path is read, and never sends the raw path", async () => {
+		const { h, code } = await open();
+		const release = holdReads();
+		paste(h, await imageFile(), "\r");
+		await shows(h, "still reading");
+		expect(sends(h)).toEqual([]);
+		release();
+		await shows(h, "[Image #1]");
+		h.screen.type("\r");
+		await until(() => sends(h).length === 1);
+		expect(sends(h)[0]?.images).toHaveLength(1);
+		expect(JSON.stringify(sends(h)[0])).not.toContain(images);
+		await quit(h, code);
 	});
 });

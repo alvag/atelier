@@ -7,6 +7,7 @@ import {
 	type JsonValue,
 	type McpServerStatus,
 	type PermissionMode,
+	type PreparedImage,
 	type QueuedMessage,
 	type QueueKind,
 	type SavedEntry,
@@ -77,8 +78,10 @@ import { readGitBranch, readGitChanges } from "./git-branch.ts";
 import { Header, type HeaderState, StatusBar } from "./header.ts";
 import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
+import { preparePastedImages } from "./pasted-images.ts";
 import { ProgramStatusReporter } from "./program-status.ts";
 import { PromptEditor } from "./prompt.ts";
+import { type ImageDraft, PromptImages } from "./prompt-images.ts";
 import { QueuePanel } from "./queue-panel.ts";
 import {
 	choicesOf,
@@ -94,6 +97,15 @@ import { readTuiSettings } from "./settings.ts";
 import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
 import { StatusLine, terminalTitle } from "./status-line.ts";
 import { editorTheme, type Paint, painter, Shade, Tones } from "./style.ts";
+
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
+/** A paste longer than this is text, not the path of a file. */
+const PATH_PASTE_CHARS = 4096;
+const IMAGES_BUSY = "Images cannot be queued. Wait for the current turn to finish.";
+// biome-ignore lint/suspicious/noControlCharactersInRegex: an escape sequence is one key
+const KEYS = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[\s\S]|[\s\S]/gu;
+const ANIMATED = "Animated image: only the first frame was attached.";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
 export interface CoreLink {
@@ -617,6 +629,16 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	});
 	/** Follows every chunk of input, the editor's and the questions', so a paste stays one across them. */
 	const input = new PasteFilter();
+	/** The images pasted into the editor. */
+	const pasted = new PromptImages();
+	/** Pastes waiting behind a read, in the order they were made. */
+	let reading = 0;
+	let pastes = Promise.resolve();
+	/** Changes when a session starts or Ctrl+C is pressed: a paste made before it is never inserted. */
+	let pasteEpoch = 0;
+	/** Where the editor's text and cursor stand for the pastes waiting: they insert only where they were made. */
+	let pasteSpot = "";
+	const spot = () => JSON.stringify([editor.getText(), editor.getCursor()]);
 	const programStatus = new ProgramStatusReporter(options.terminal, options.statusIntervalMs);
 	/** What the main agent is doing, the terminal's line for it. */
 	let line = new StatusLine();
@@ -951,6 +973,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			setBusy(false);
 			reportState("idle");
 		}
+		return answer !== undefined;
 	};
 	/** Puts queued messages back in the editor, before what it holds, each apart from the next by a blank line. */
 	const giveBack = (messages: readonly (QueuedMessage | string)[]) => {
@@ -962,6 +985,10 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const enqueue = (line: string, kind: QueueKind) => {
 		const text = line.trim();
 		if (text === "") return;
+		if (pasted.has(line)) {
+			editor.setText(line);
+			return conversation.note(IMAGES_BUSY, true);
+		}
 		if (isStatsCommand(text)) return void submit(line);
 		if (text.startsWith("/")) {
 			editor.setText(line);
@@ -1136,6 +1163,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const previous = sessionId;
 		sessionId = next.sessionId;
 		savedId = next.savedId;
+		pasted.reset();
+		pasteEpoch++;
 		titleName = next.name;
 		showTitle();
 		conversation = shownIn;
@@ -1423,8 +1452,49 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		conversation.note(`session renamed to ${shown(name).text}`);
 	};
 
+	/**
+	 * Sends a draft with images as a prompt. The editor is emptied here, as Enter has done and Alt+Enter has not, so
+	 * whatever is typed meanwhile stays, and a draft the core does not take comes back before it.
+	 */
+	const sendImages = async (line: string) => {
+		editor.setText("");
+		if (line.trim().startsWith("/")) {
+			editor.setText(line);
+			return conversation.note("error: images can only be sent with a prompt, not a command", true);
+		}
+		let draft: ImageDraft | undefined;
+		try {
+			draft = pasted.attach(line);
+		} catch (error) {
+			editor.setText(line);
+			return conversation.note(`error: ${describeError(error)}`, true);
+		}
+		if (draft === undefined) return giveBack([line]);
+		const asked = sessionId;
+		conversation.prompt(line);
+		if (draft.prompt.trim() !== "") titleWith(draft.prompt.trim());
+		commanding = true;
+		editor.disableSubmit = true;
+		try {
+			const taken = await startTurn({ command: "session.send", sessionId, prompt: draft.prompt, images: draft.images });
+			// The session it was for is gone, and its images with it.
+			if (quitting || asked !== sessionId) return;
+			if (taken) return pasted.release(draft);
+			pasted.keep(draft);
+			giveBack([line]);
+			tui.requestRender();
+		} finally {
+			commanding = false;
+			editor.disableSubmit = false;
+		}
+	};
 	const submit = async (line: string) => {
 		const text = line.trim();
+		if (pasted.has(line)) {
+			if (commanding) return;
+			if (busy) return enqueue(line, "steer");
+			return sendImages(line);
+		}
 		// It only reads the saved sessions, so it runs at any time, a turn or a command running or not.
 		if (isStatsCommand(text)) {
 			editor.addToHistory(line);
@@ -1496,12 +1566,60 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 	};
 	editor.onSubmit = (line) => void submit(line);
+	/** Reads a paste that may name image files; one made before an edit, a move or a new session is dropped, never merged. */
+	const readPaste = (text: string) => {
+		const plain = () => editor.handleInput(`${PASTE_START}${text}${PASTE_END}`);
+		const mayBeFile = text.length <= PATH_PASTE_CHARS && /[\\/]|\.\w+['"]?(\s|$)/.test(text.trim());
+		// Text that cannot name a file goes in at once, unless a read is ahead of it.
+		if (reading === 0 && !mayBeFile) return plain();
+		if (reading === 0) pasteSpot = spot();
+		const epoch = pasteEpoch;
+		const stale = () => quitting || epoch !== pasteEpoch || spot() !== pasteSpot;
+		reading++;
+		pastes = pastes.then(async () => {
+			let prepared: PreparedImage[] | undefined;
+			let failure: unknown;
+			if (mayBeFile && !stale()) {
+				try {
+					prepared = await preparePastedImages(text, {
+						cwd: args.cwd,
+						...(options.home === undefined ? {} : { home: options.home }),
+					});
+				} catch (error) {
+					failure = error;
+				}
+			}
+			reading--;
+			if (quitting) return;
+			if (stale()) conversation.note("pasted text dropped: the draft changed while it was read; paste it again", true);
+			else if (failure !== undefined) conversation.note(`error: ${describeError(failure)}`, true);
+			else if (prepared === undefined) {
+				plain();
+				pasteSpot = spot();
+			} else {
+				try {
+					const marker = pasted.add(editor.getText(), prepared);
+					editor.insertTextAtCursor(marker);
+					pasteSpot = spot();
+					if (prepared.some((one) => one.animated)) conversation.note(ANIMATED);
+				} catch (error) {
+					conversation.note(`error: ${describeError(error)}`, true);
+				}
+			}
+			tui.requestRender();
+		});
+	};
+	const waitForPaste = () => {
+		conversation.note("still reading the pasted file; press Enter again in a moment");
+		tui.requestRender();
+		return { consume: true as const };
+	};
 
 	// An open question takes every key, and Ctrl+C or Ctrl+D closes it. Otherwise Ctrl+C interrupts a turn, then quits;
 	// with no turn it clears the editor, then quits. Esc interrupts a turn, and Ctrl+D quits from an empty editor.
-	const removeKeys = tui.addInputListener((data) => {
-		// While a question is open, it reads the input through the same filter: a paste begun before it stays a paste.
-		if (questions.length === 0) input.feed(data);
+	const handleKey = (data: string) => {
+		if (questions.length === 0 && reading > 0 && (matchesKey(data, "enter") || matchesKey(data, "alt+enter")))
+			return waitForPaste();
 		// Nothing but the open question takes the keys, even after a click elsewhere.
 		const asked = questions[0];
 		if (asked !== undefined && !asked.dialog.focused) tui.setFocus(asked.dialog);
@@ -1513,6 +1631,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			return { consume: true };
 		}
 		if (matchesKey(data, "ctrl+c")) {
+			pasteEpoch++;
 			if (busy && !interrupted) interrupt();
 			else if (!busy && editor.getText() !== "") editor.setText("");
 			else quit(EXIT_INTERRUPTED);
@@ -1570,6 +1689,24 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			return { consume: true };
 		}
 		return undefined;
+	};
+	const removeKeys = tui.addInputListener((data) => {
+		// While a question is open, it reads the input through the same filter: a paste begun before it stays a paste.
+		if (questions.length !== 0) return handleKey(data);
+		const wasPasting = input.pasting;
+		const parts: (string | { paste: string })[] = [];
+		input.read(data, { keys: (keys) => parts.push(keys), keep: () => true, pasted: (paste) => parts.push({ paste }) });
+		const keys = parts.filter((part) => typeof part === "string");
+		// Whole keys, or the end of a marker cut by the chunk, go the way they always did.
+		if (!wasPasting && !input.pasting && keys.length === parts.length && keys.join("") === data) return handleKey(data);
+		// A paste is the editor's alone: its keys answer nothing, and a path in it may be an image. The keys beside it
+		// take the shortcuts, one by one, in the order they came.
+		for (const part of parts) {
+			if (typeof part !== "string") readPaste(part.paste);
+			else for (const key of part.match(KEYS) ?? []) if (handleKey(key) === undefined) editor.handleInput(key);
+		}
+		tui.requestRender();
+		return { consume: true };
 	});
 
 	const removeEvents = link.onEvent(onEvent);
