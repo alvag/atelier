@@ -15,54 +15,88 @@ const uniqueIds = (items: { id: string }[]) => new Set(items.map((item) => item.
 export interface UserQuestionCapabilities {
 	/** The client can check any number of a question's options, or none (`multiSelect: true`). */
 	multiSelect?: boolean;
+	/** The client shows an option's `preview` while the user is on it, in single-choice questions. */
+	preview?: boolean;
 }
 
 const RECOMMENDED_ONE = "Exactly one option per question must have recommended: true";
 const RECOMMENDED_ANY =
 	"Exactly one option of a single-choice question must have recommended: true; any number, or none, of a multi-select one";
-const option = (recommended: string) =>
+const PREVIEW_LINES = 20;
+const PREVIEW_ONE =
+	"What choosing this option looks like (a code snippet, a config fragment, a layout sketch), shown while the user is on it; up to 1500 characters and 20 lines";
+const PREVIEW_ANY = `${PREVIEW_ONE}; single-choice questions only`;
+const NO_PREVIEW_IN_MULTI_SELECT =
+	"preview is only for single-choice questions: remove it from the options of a multiSelect question";
+/** The lines of a preview: a final newline ends the last one rather than starting another. */
+const lineCount = (value: string) => value.replace(/\n$/, "").split("\n").length;
+const optionShape = (recommended: string) => ({
+	id,
+	label: text(200),
+	description: text(300).optional(),
+	recommended: z.boolean().optional().describe(recommended),
+});
+const option = (recommended: string) => z.strictObject(optionShape(recommended));
+/** An option of a session whose client shows previews. */
+const previewedOption = (recommended: string, preview: string) =>
 	z.strictObject({
-		id,
-		label: text(200),
-		description: text(300).optional(),
-		recommended: z.boolean().optional().describe(recommended),
+		...optionShape(recommended),
+		preview: text(1500)
+			.refine((value) => lineCount(value) <= PREVIEW_LINES, `A preview may have at most ${PREVIEW_LINES} lines`)
+			.optional()
+			.describe(preview),
 	});
+/** What the rules of a question read of its options. */
+type OptionSchema = z.ZodType<{ id: string; recommended?: boolean | undefined; preview?: string | undefined }>;
 const recommendedCount = (options: { recommended?: boolean | undefined }[]) =>
 	options.filter((entry) => entry.recommended === true).length;
 const header = text(16).optional().describe("A short title for the question, such as its tab in a batch");
-const singleChoice = z.strictObject({
-	id,
-	header,
-	question: text(500),
-	options: z
-		.array(option(RECOMMENDED_ONE))
-		.min(2)
-		.max(4)
-		.refine(uniqueIds, "Option IDs must be unique within a question")
-		.refine((options) => recommendedCount(options) === 1, "Exactly one option must be recommended"),
-});
-/** A question of a session whose client can check several options: `multiSelect: true` lifts the one-recommended rule. */
-const anyChoice = z
-	.strictObject({
+const singleChoice = <Option extends OptionSchema>(entry: Option) =>
+	z.strictObject({
 		id,
 		header,
 		question: text(500),
-		multiSelect: z
-			.boolean()
-			.optional()
-			.describe("true lets the user check any number of the options, or none; one answer otherwise"),
 		options: z
-			.array(option(RECOMMENDED_ANY))
+			.array(entry)
 			.min(2)
 			.max(4)
-			.refine(uniqueIds, "Option IDs must be unique within a question"),
-	})
-	.refine((entry) => entry.multiSelect === true || recommendedCount(entry.options) === 1, {
-		message: "Exactly one option of a single-choice question must be recommended",
-		path: ["options"],
+			.refine(uniqueIds, "Option IDs must be unique within a question")
+			.refine((options) => recommendedCount(options) === 1, "Exactly one option must be recommended"),
 	});
+/**
+ * A question of a session whose client can check several options: `multiSelect: true` lifts the one-recommended rule,
+ * and takes no preview.
+ */
+const anyChoice = <Option extends OptionSchema>(entry: Option) =>
+	z
+		.strictObject({
+			id,
+			header,
+			question: text(500),
+			multiSelect: z
+				.boolean()
+				.optional()
+				.describe("true lets the user check any number of the options, or none; one answer otherwise"),
+			options: z.array(entry).min(2).max(4).refine(uniqueIds, "Option IDs must be unique within a question"),
+		})
+		.refine((question) => question.multiSelect === true || recommendedCount(question.options) === 1, {
+			message: "Exactly one option of a single-choice question must be recommended",
+			path: ["options"],
+		})
+		.refine(
+			(question) => question.multiSelect !== true || question.options.every((entry) => entry.preview === undefined),
+			{ message: NO_PREVIEW_IN_MULTI_SELECT, path: ["options"] },
+		);
 const batch = <Question extends z.ZodType<{ id: string }>>(question: Question) =>
 	z.array(question).min(1).max(4).refine(uniqueIds, "Question IDs must be unique");
+/** The questions a session takes, by what its client can show. */
+function questionsFor(multiSelect: boolean, preview: boolean) {
+	if (multiSelect)
+		return batch(anyChoice(preview ? previewedOption(RECOMMENDED_ANY, PREVIEW_ANY) : option(RECOMMENDED_ANY)));
+	return batch(singleChoice(preview ? previewedOption(RECOMMENDED_ONE, PREVIEW_ONE) : option(RECOMMENDED_ONE)));
+}
+/** Every question any client can be asked: its type. */
+const widest = anyChoice(previewedOption(RECOMMENDED_ANY, PREVIEW_ANY));
 const answer = z.union([
 	z.strictObject({ questionId: id, optionId: id }),
 	z.strictObject({ questionId: id, other: text(2000) }),
@@ -75,7 +109,7 @@ const result = z.discriminatedUnion("status", [
 	z.strictObject({ status: z.literal("unavailable"), reason: z.enum(["no_interactive_client", "question_pending"]) }),
 ]);
 
-export type UserQuestion = z.infer<typeof anyChoice>;
+export type UserQuestion = z.infer<typeof widest>;
 export type UserAnswer = z.infer<typeof answer>;
 export type UserQuestionResult = z.infer<typeof result>;
 /** The session supplies a user-only channel; permissions and classifiers never provide answers. */
@@ -142,25 +176,33 @@ const RECOMMENDS_ANY =
 	"A question takes one answer unless multiSelect: true lets the user check any number of its options, or none. " +
 	"Mark exactly one option of a single-choice question recommended: true, and any number, or none, of a multi-select one; " +
 	"clients show them first with (Recommended), never preselected. ";
+const DESCRIBES = "Each option may include a nonblank description of up to 300 characters. ";
+const PREVIEWS_ONE =
+	"It may also include a preview of up to 1500 characters and 20 lines, such as a code snippet, a config fragment or a layout sketch, which the user sees while on that option. ";
+const PREVIEWS_ANY =
+	"An option of a single-choice question may also include a preview of up to 1500 characters and 20 lines, such as a code snippet, a config fragment or a layout sketch, which the user sees while on that option; a multi-select question takes none. ";
 const REST =
-	"Each option may include a nonblank description of up to 300 characters. " +
 	"Every question also offers Other..., where the user can write 1 to 2000 characters; you cannot disable it. " +
 	"Only the user can answer, including in yolo mode. " +
 	"Wait for the result; never infer an answer from a cancelled, superseded or unavailable question.";
 
+/** What the model is told of previews: nothing when the client does not show them. */
+const previews = (multiSelect: boolean, preview: boolean) =>
+	preview ? (multiSelect ? PREVIEWS_ANY : PREVIEWS_ONE) : "";
+
 /**
- * Created by the main session, not included in coreTools or inherited by subagents. Without `multiSelect` among the
- * client's capabilities the model never hears of it, and a question that has it is refused before anyone is asked.
+ * Created by the main session, not included in coreTools or inherited by subagents. Without `multiSelect` or `preview`
+ * among the client's capabilities the model never hears of it, and a question that has it is refused before anyone is
+ * asked.
  */
 export function createAskUserTool(ask?: AskUser, capabilities: UserQuestionCapabilities = {}): ToolDefinition {
 	const multiSelect = capabilities.multiSelect === true;
+	const preview = capabilities.preview === true;
 	return defineTool({
 		name: ASK_USER_TOOL,
-		description: `${ASKS}${multiSelect ? RECOMMENDS_ANY : RECOMMENDS_ONE}${REST}`,
+		description: `${ASKS}${multiSelect ? RECOMMENDS_ANY : RECOMMENDS_ONE}${DESCRIBES}${previews(multiSelect, preview)}${REST}`,
 		inputShape: {
-			questions: (multiSelect ? batch(anyChoice) : batch(singleChoice)).describe(
-				"One complete batch of questions for the user",
-			),
+			questions: questionsFor(multiSelect, preview).describe("One complete batch of questions for the user"),
 		},
 		execute: async ({ questions }, context) => {
 			const response = parseUserQuestionResult(

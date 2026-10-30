@@ -284,6 +284,54 @@ describe("multi-select questions", () => {
 	});
 });
 
+describe("option previews", () => {
+	const previewed = {
+		questions: [
+			{
+				...input.questions[0],
+				options: [
+					{ id: "a", label: "A", recommended: true, preview: "const a = 1;\nexport { a };" },
+					{ id: "b", label: "B" },
+				],
+			},
+		],
+	};
+	const previewCall: FakeStep = { toolCall: { callId: "choice-1", tool: "ask_user", input: previewed } };
+	const schemaOf = (backend: FakeBackend) =>
+		JSON.stringify(
+			z.toJSONSchema(z.object(backend.startOptions?.tools.find((tool) => tool.name === "ask_user")?.inputShape ?? {})),
+		);
+
+	it("asks them of a client that asked for them, and answers as without one", async () => {
+		const backend = new FakeBackend([[previewCall, end]]);
+		const { session, events, done } = await start({ backend, userQuestions: { multiSelect: true, preview: true } });
+		await until(() => events.some((e) => e.type === "user_question_requested"));
+		expect(schemaOf(backend)).toContain("preview");
+		expect(events.find((e) => e.type === "user_question_requested")).toMatchObject({
+			questions: previewed.questions,
+		});
+		session.answerUser("choice-1", [{ questionId: "q1", optionId: "a" }]);
+		await done;
+		expect(JSON.parse(backend.toolResults[0]?.output ?? "")).toEqual({
+			status: "answered",
+			answers: [{ questionId: "q1", optionId: "a", label: "A" }],
+		});
+		await session.close();
+	});
+
+	it("never shows one to a client that did not ask for them", async () => {
+		for (const userQuestions of [true, { multiSelect: true }] as const) {
+			const backend = new FakeBackend([[previewCall, end]]);
+			const { session, events, done } = await start({ backend, userQuestions });
+			await done;
+			expect(schemaOf(backend)).not.toContain("preview");
+			expect(backend.toolResults[0]?.ok).toBe(false);
+			expect(events.some((e) => e.type === "user_question_requested")).toBe(false);
+			await session.close();
+		}
+	});
+});
+
 it("never offers ask_user to a custom subagent requesting it", async () => {
 	const child = new FakeBackend([[call, end]]);
 	const backend = new FakeBackend([[{ toolCall: { tool: "task", input: { agent: "custom", prompt: "go" } } }, end]]);
