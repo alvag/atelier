@@ -139,13 +139,10 @@ const WORKTREE_NOTE =
 	"You work in a git worktree made for this task alone, from the other agent's working tree. Do not commit: your changes are collected from its files as a patch.";
 /** What the parent and the worker are told of the dependencies in the worker's worktree. */
 const DEPENDENCIES_SAID: Record<Dependencies, { parent: string; worker: string }> = {
-	cloned: {
-		parent: " Its node_modules folders are copy-on-write copies of yours.",
-		worker: " Its node_modules folders are copy-on-write copies of the other agent's: use them, and install nothing.",
-	},
-	copied: {
-		parent: " Its node_modules folders are copies of yours.",
-		worker: " Its node_modules folders are copies of the other agent's: use them, and install nothing.",
+	linked: {
+		parent: " Its node_modules folders are links to yours: it reads and runs them, and cannot write them.",
+		worker:
+			" Its node_modules folders are links to the other agent's: read and run them, but you cannot write them, so install nothing.",
 	},
 	none: { parent: "", worker: "" },
 };
@@ -2164,7 +2161,7 @@ export class Session {
 		const tasks = this.#tasks;
 		if (tasks === undefined)
 			return fail("Refused: this session cannot receive a background result; run the task without background.");
-		const refusal = this.#backgroundRefusal(agent);
+		const refusal = this.#backgroundRefusal(agent) ?? (agent.name === "worker" ? await this.#noSandbox() : undefined);
 		if (refusal !== undefined) return fail(refusal);
 		let place: ReturnType<BackgroundTasks["reserve"]>;
 		try {
@@ -2297,6 +2294,22 @@ export class Session {
 		if (problem !== undefined)
 			return `Refused: the session's profile had problems when it was read (${problem.path}: ${problem.message}), so the subagent's backend and model cannot be confirmed; fix the profile and start a new session, or run the task without background.`;
 		return undefined;
+	}
+
+	/**
+	 * Why a worker cannot run in the background here: it writes only inside the sandbox, so with it off or not available
+	 * (or no tool that runs in it) it is refused. Undefined when the sandbox is there.
+	 */
+	async #noSandbox(): Promise<string | undefined> {
+		const tool = this.#options.tools.find((candidate) => candidate.sandboxStatus !== undefined);
+		const status = this.#options.noSandbox
+			? { available: false as const, reason: SANDBOX_OFF }
+			: ((await tool?.sandboxStatus?.({ cwd: this.#options.cwd })) ?? {
+					available: false as const,
+					reason: "no tool runs in it",
+				});
+		if (status.available) return undefined;
+		return `Refused: a worker runs in the background only in the sandbox, which is not available here (${status.reason}); run it without background.`;
 	}
 
 	/** What a subagent runs with: its entry in the profile (only the worker and the explorer have one), else the parent's. */
