@@ -6,6 +6,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -261,8 +262,11 @@ describe("a worker in the background", () => {
 				(cwd) => [
 					{
 						run: () => {
+							// Folders of their own, whose entries are links to the parent's.
 							for (const folder of ["vendor/node_modules", "plain/node_modules", "node_modules"])
 								seen.push(String(lstatSync(join(cwd(), folder)).isSymbolicLink()));
+							for (const entry of ["vendor/node_modules/v", "plain/node_modules/p", "node_modules/l"])
+								seen.push(String(lstatSync(join(cwd(), entry)).isSymbolicLink()));
 							for (const file of ["vendor/node_modules/v", "plain/node_modules/p", "node_modules/l"])
 								seen.push(readFileSync(join(cwd(), file, "index.js"), "utf8"));
 						},
@@ -278,8 +282,59 @@ describe("a worker in the background", () => {
 		);
 		await until(() => woke() === 1);
 		await play(session.nextQueued());
-		expect(seen).toEqual(["true", "true", "true", "vendored\n", "plain\n", "linked\n"]);
+		expect(seen).toEqual(["false", "false", "false", "true", "true", "true", "vendored\n", "plain\n", "linked\n"]);
 		expect(parent.prompts[1]).toContain("It changed no files.");
+	});
+
+	it("runs its own change of a package of the repository from another one that imports it", async () => {
+		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
+		for (const dir of ["packages/a", "packages/b/node_modules/@org", "packages/b/node_modules/.bin"])
+			mkdirSync(join(repo, dir), { recursive: true });
+		writeFileSync(join(repo, "packages/a/index.js"), 'module.exports = "parent A";\n');
+		writeFileSync(join(repo, "packages/a/cli.js"), '#!/usr/bin/env node\nconsole.log(require("./index.js"));\n', {
+			mode: 0o755,
+		});
+		writeFileSync(
+			join(repo, "packages/b/b.test.cjs"),
+			'require("node:test")("b", () => require("node:assert").equal(require("@org/a"), "worker A"));\n',
+		);
+		git(repo, "add", "-A");
+		git(repo, "commit", "-qm", "packages");
+		// As pnpm and npm lay them out: the workspace package by a relative link under its scope, its command in .bin,
+		// and a dependency of the store's.
+		symlinkSync("../../../a", join(repo, "packages/b/node_modules/@org/a"));
+		symlinkSync("../@org/a/cli.js", join(repo, "packages/b/node_modules/.bin/a-cli"));
+		mkdirSync(join(repo, "packages/b/node_modules/plain"));
+		writeFileSync(join(repo, "packages/b/node_modules/plain/index.js"), 'module.exports = "plain";\n');
+		const before = readFileSync(join(repo, "packages/a/index.js"));
+		const call = (tool: string, input: Record<string, unknown>, callId: string): FakeStep => ({
+			toolCall: { tool, input: input as never, callId },
+		});
+		const { parent, children, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[
+				() => [
+					call("write", { path: "packages/a/index.js", content: 'module.exports = "worker A";\n' }, "k1"),
+					call("bash", { command: "cd packages/b && node --test b.test.cjs" }, "k2"),
+					call("bash", { command: "packages/b/node_modules/.bin/a-cli" }, "k3"),
+					call("bash", { command: "cd packages/b && node -p 'require(\"plain\")'" }, "k4"),
+					text("done"),
+					{ event: finished },
+				],
+			],
+			repo,
+			{ tools: [...createBackgroundTools(), sandboxedBash(), createWriteTool()] },
+		);
+		await play(session.send("go"));
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		const results = children[0]?.toolResults ?? [];
+		expect(results[1], results[1]?.output).toMatchObject({ ok: true });
+		expect(results[2]?.output).toContain("worker A");
+		expect(results[3]?.output).toContain("plain");
+		expect(readFileSync(join(repo, "packages/a/index.js")).equals(before)).toBe(true);
+		expect(readlinkSync(join(repo, "packages/b/node_modules/@org/a"))).toBe("../../../a");
+		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed, \+1 -1/);
 	});
 
 	it("leaves the dependency folders out of the patch, whatever the worker made of them", async () => {
