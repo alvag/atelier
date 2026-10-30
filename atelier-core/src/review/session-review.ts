@@ -666,6 +666,14 @@ export class SessionReview {
 	): Promise<RoleResult> {
 		let options: SessionOptions;
 		const profileRole: Role = `review-${call.role}`;
+		// A second try of a lens gets what its first one left, so a rejected reply does not start the cap over.
+		const cap = requestsOf(call.part);
+		const left = cap - (call.used ?? 0);
+		if (left < 1)
+			return failedRole(`The ${call.role} role spent its ${cap} model requests.`, {
+				cause: "request_cap",
+				observed: `${cap} requests`,
+			});
 		const settings = host.settings(profileRole);
 		try {
 			const backend = await this.#options.createBackend(settings.backend);
@@ -678,7 +686,7 @@ export class SessionReview {
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
 				tools: createTreeTools(candidate.root, call.tree),
 				systemPromptAppend: call.instruction,
-				maxRequestsPerTurn: requestsOf(call.part),
+				maxRequestsPerTurn: left,
 				createId: host.createId,
 			};
 		} catch (error) {

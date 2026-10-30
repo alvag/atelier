@@ -180,7 +180,7 @@ export async function freezeCandidate(cwd: string, options: FreezeOptions = {}):
 		await gitText([...safe, "read-tree", base], { cwd: root, env });
 		await gitText([...safe, "add", "--all"], { cwd: root, env });
 		const tree = (await gitText([...safe, "write-tree"], { cwd: root, env })).trim();
-		const reviewed = tree === base ? undefined : reviewedBase(root, chosen, options);
+		const reviewed = tree === base ? undefined : await reviewedBase(root, chosen, options);
 		const candidate = await describeCandidate(root, gitDir, chosen.commit, reviewed?.tree ?? base, tree);
 		return {
 			ok: true,
@@ -259,12 +259,19 @@ async function chooseBase(root: string, head: string, options: FreezeOptions): P
 
 /**
  * The reviewed tree, when it can be the base: the same repository, a turn that started on the HEAD the review
- * ended at, and a base that is still that commit (no reset, rebase or checkout since, which would leave a note).
+ * ended at, a base that is still that commit (no reset, rebase or checkout since, which would leave a note), and a
+ * tree git still holds: no ref keeps a frozen tree, so `git prune` or `git gc` may have removed it.
  */
-function reviewedBase(root: string, chosen: Base & { ok: true }, options: FreezeOptions): ReviewedTree | undefined {
+async function reviewedBase(
+	root: string,
+	chosen: Base & { ok: true },
+	options: FreezeOptions,
+): Promise<ReviewedTree | undefined> {
 	const { reviewed, turnStart } = options;
 	if (reviewed === undefined || reviewed.root !== root || chosen.note !== undefined) return undefined;
-	return turnStart === reviewed.head && chosen.commit === turnStart ? reviewed : undefined;
+	if (turnStart !== reviewed.head || chosen.commit !== turnStart) return undefined;
+	const kept = await runGit(["cat-file", "-e", `${reviewed.tree}^{tree}`], { cwd: root });
+	return kept.code === 0 ? reviewed : undefined;
 }
 
 /** git ends a printed path with one newline; a path may itself end in spaces or newlines. */

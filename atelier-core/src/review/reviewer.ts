@@ -29,6 +29,8 @@ export interface ReviewDeps {
 		tree: string;
 		/** Which part of a change split for the lenses this lens call reviews; absent for a whole change. */
 		part?: LensPart;
+		/** Model requests the earlier tries of this lens call spent: a second try only gets what they left. */
+		used?: number;
 		signal?: AbortSignal;
 	}): Promise<RoleResult>;
 	/** Asks the main agent to correct the findings in one turn. */
@@ -130,6 +132,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		prompt: string,
 		tree: string,
 		part?: LensPart,
+		used?: number,
 	): Promise<RoleResult> => {
 		try {
 			const result = await deps.runRole({
@@ -138,6 +141,7 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 				prompt,
 				tree,
 				...(part ? { part } : {}),
+				...(used ? { used } : {}),
 				...(signal ? { signal } : {}),
 			});
 			charge(result);
@@ -190,9 +194,11 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 		part: LensPart | undefined,
 	): Promise<{ findings: Finding[] } | { error: string; refusal: Refusal }> => {
 		let attempt = prompt;
+		let used = 0;
 		for (let tries = 0; tries < 2; tries++) {
-			const reply = await callRole(lens, LENS_INSTRUCTIONS[lens], attempt, candidate.tree, part);
+			const reply = await callRole(lens, LENS_INSTRUCTIONS[lens], attempt, candidate.tree, part, used);
 			if (!reply.ok) return { error: `Lens ${lens} failed: ${reply.error}`, refusal: roleFailure(reply) };
+			used += reply.requests ?? 0;
 			const parsed = parseFindings(reply.text, lens);
 			if (parsed.ok) return { findings: parsed.findings };
 			if (tries === 1)
