@@ -180,8 +180,11 @@ describe("readSessionStats", () => {
 			config(),
 			started("anthropic-api", "api_key"),
 			child("verify:verifier", 0.4, 40, "opus"),
-			child("review:risk", 0.1, 20, "sonnet"),
-			child("review:reliability", 0.2, 10, "haiku"),
+			child("review:risk#1", 0.05, 10, "sonnet"),
+			child("review:risk#2", 0.05, 10, "sonnet"),
+			// A lens split into parts runs once per part, tagged `#<part>`: still one role.
+			child("review:reliability#1", 0.1, 4, "haiku"),
+			child("review:reliability#2", 0.1, 6, "haiku"),
 			finished({
 				usage: usage(80),
 				costUsd: 0.85,

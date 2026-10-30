@@ -27,6 +27,8 @@ export interface ReviewDeps {
 		instruction: string;
 		prompt: string;
 		tree: string;
+		/** Which part of a change split for the lenses this lens call reviews; absent for a whole change. */
+		part?: LensPart;
 		signal?: AbortSignal;
 	}): Promise<RoleResult>;
 	/** Asks the main agent to correct the findings in one turn. */
@@ -35,6 +37,11 @@ export interface ReviewDeps {
 	freeze(): Promise<FreezeResult>;
 	now(): Date;
 	createId(): string;
+}
+
+export interface LensPart {
+	index: number;
+	count: number;
 }
 
 export interface ReviewInput {
@@ -116,9 +123,22 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	const interrupted = () => signal?.aborted === true;
 	const stopped = () => finish("unavailable", "interrupted", { cause: "interrupted" });
 	/** A role that throws is a role that failed. */
-	const callRole = async (role: RoleName, instruction: string, prompt: string, tree: string): Promise<RoleResult> => {
+	const callRole = async (
+		role: RoleName,
+		instruction: string,
+		prompt: string,
+		tree: string,
+		part?: LensPart,
+	): Promise<RoleResult> => {
 		try {
-			const result = await deps.runRole({ role, instruction, prompt, tree, ...(signal ? { signal } : {}) });
+			const result = await deps.runRole({
+				role,
+				instruction,
+				prompt,
+				tree,
+				...(part ? { part } : {}),
+				...(signal ? { signal } : {}),
+			});
 			charge(result);
 			return result;
 		} catch (error) {
@@ -166,10 +186,11 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	const runPart = async (
 		lens: Lens,
 		prompt: string,
+		part: LensPart | undefined,
 	): Promise<{ findings: Finding[] } | { error: string; refusal: Refusal }> => {
 		let attempt = prompt;
 		for (let tries = 0; tries < 2; tries++) {
-			const reply = await callRole(lens, LENS_INSTRUCTIONS[lens], attempt, candidate.tree);
+			const reply = await callRole(lens, LENS_INSTRUCTIONS[lens], attempt, candidate.tree, part);
 			if (!reply.ok) return { error: `Lens ${lens} failed: ${reply.error}`, refusal: roleFailure(reply) };
 			const parsed = parseFindings(reply.text, lens);
 			if (parsed.ok) return { findings: parsed.findings };
@@ -186,7 +207,12 @@ export async function* runReview(input: ReviewInput, deps: ReviewDeps): AsyncGen
 	const runLens = async (
 		lens: Lens,
 	): Promise<{ findings: Finding[]; failure?: { error: string; refusal: Refusal } }> => {
-		const outcomes = await Promise.all((prompts.get(lens) as string[]).map((prompt) => runPart(lens, prompt)));
+		const own = prompts.get(lens) as string[];
+		const outcomes = await Promise.all(
+			own.map((prompt, index) =>
+				runPart(lens, prompt, own.length > 1 ? { index: index + 1, count: own.length } : undefined),
+			),
+		);
 		const found = outcomes.flatMap((outcome) => ("findings" in outcome ? outcome.findings : []));
 		const failure = outcomes.find((outcome) => "error" in outcome);
 		// Each part numbered its findings from 1; joined, they are numbered again so ids stay unique.

@@ -197,7 +197,10 @@ async function readFile(path: string): Promise<FileRead> {
 		if (tag?.startsWith("verify:") || tag?.startsWith("review:")) {
 			const [first] = partsOf(event, fallback);
 			roleTurns.push({
-				role: tag.startsWith("verify:") ? tag.slice("verify:".length) : `review-${tag.slice("review:".length)}`,
+				// A lens split into parts is tagged `review:<lens>#<part>`; every part is the same role.
+				role: tag.startsWith("verify:")
+					? tag.slice("verify:".length)
+					: `review-${tag.slice("review:".length).replace(/#\d+$/, "")}`,
 				model: first?.model ?? fallback.model,
 				spent: phaseOf(event),
 				subscription: first?.subscription ?? false,

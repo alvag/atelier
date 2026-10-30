@@ -427,6 +427,25 @@ describe("Conversation", () => {
 		expect(text).not.toContain("Risk report.Reliability report.");
 	});
 
+	it("keeps the parts of a split lens apart, interleaved as they stream", () => {
+		const on = (agent: string, body: Body) => ({ ...body, agent, parentCallId: "r" }) as Body;
+		const one = "review:reliability#1";
+		const two = "review:reliability#2";
+		const { text } = shown([
+			on(one, { type: "session_started", backend: "b", model: "m", authSource: "subscription" }),
+			on(two, { type: "session_started", backend: "b", model: "m", authSource: "subscription" }),
+			on(one, { type: "text_delta", text: "First " }),
+			on(two, { type: "text_delta", text: "Second " }),
+			on(one, { type: "text_delta", text: "part." }),
+			on(two, { type: "text_delta", text: "part." }),
+			on(one, { type: "turn_finished", stopReason: "end_turn", usage }),
+			on(two, { type: "turn_finished", stopReason: "end_turn", usage }),
+		]);
+		expect(text).toContain("review:reliability#1 · m · 0 tools");
+		expect(text).toContain("review:reliability#2 · m · 0 tools");
+		expect(text).not.toContain("First Second");
+	});
+
 	it("expects a cache miss only in the compaction's turn and the next one", () => {
 		const compacted: Body = {
 			type: "compaction_finished",

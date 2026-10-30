@@ -496,7 +496,7 @@ export type AtelierEventBody =
 			lenses: string[];
 			lensesReason?: string;
 	  }
-	/** Progress of a review the user agreed to or asked for; role events follow tagged `agent: "review:<role>"`. */
+	/** Progress of a review the user agreed to or asked for; role events follow tagged `agent: "review:<role>"`, `review:<lens>#<part>` for a lens split into parts. */
 	| { type: "review_progress"; reviewId: string; step: ReviewStep }
 	| {
 			type: "review_finished";

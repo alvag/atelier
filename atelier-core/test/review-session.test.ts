@@ -713,6 +713,34 @@ describe("consent and the cycle", () => {
 		expect(types(next).filter((type) => type.startsWith("review_"))).toEqual([]);
 	});
 
+	it("splits the request cap among a lens's parts and gives each part its own agent tag", async () => {
+		const big = "line\n".repeat(24_000);
+		const roles = new RoleBackend((role, prompt) => {
+			if (role === "refuter" || role === "validator") return defaultReply(role, prompt);
+			const part = /Part (\d) of 2/.exec(prompt)?.[1] ?? "?";
+			return `Checked part ${part}.\n${JSON.stringify({ findings: [] })}`;
+		});
+		const s = await start({
+			roles,
+			turns: [[DECLARED_NONE, change("one/big.txt", big), change("two/big.txt", big), ...HIGH_TURN.slice(1)]],
+		});
+		const events = await s.send("add auth");
+		expect(ofType(events, "review_finished")[0]).toMatchObject({ verdict: "approved" });
+		const reliability = roles.roles.filter((role) => role.role === "reliability");
+		expect(reliability).toHaveLength(2);
+		for (const part of reliability) expect(part.maxRequestsPerTurn).toBe(REVIEW_ROLE_MAX_REQUESTS / 2);
+		const said = (agent: string) =>
+			ofType(events, "text_delta")
+				.filter((event) => event.agent === agent)
+				.map((event) => event.text)
+				.join("");
+		expect(said("review:reliability#1")).toContain("Checked part 1.");
+		expect(said("review:reliability#1")).not.toContain("Checked part 2.");
+		expect(said("review:reliability#2")).toContain("Checked part 2.");
+		expect(said("review:reliability#2")).not.toContain("Checked part 1.");
+		expect(said("review:reliability")).toBe("");
+	});
+
 	it("caps the model requests of every lens, the refuter and the validator", async () => {
 		const turns = [HIGH_TURN, [change("src/auth.ts", "export const a = 2;\n"), { event: finished }]];
 		const s = await start({ turns });
