@@ -45,10 +45,12 @@ import { CodexAccess, type CodexAccessOptions, NotSignedInError } from "./access
 import {
 	estimateItem,
 	findItemCut,
+	type ImageView,
 	itemFileActivity,
 	outputText,
 	replaceItems,
 	turnPromptBeforeItem,
+	viewItem,
 	withInstruction,
 } from "./compaction.ts";
 import { type CodexReasoning, codexContextWindow, codexReasoning, DEFAULT_CODEX_MODEL } from "./models.ts";
@@ -301,7 +303,7 @@ class OpenAiCodexSession implements BackendSession {
 					stopReason = "turn_limit";
 					break;
 				}
-				if (!thresholdFailed && !this.#unmeasured && this.#contextTokens() > this.#compaction.compactAt) {
+				if (!thresholdFailed && !this.#unmeasured && this.#contextTokens(false) > this.#compaction.compactAt) {
 					thresholdFailed = !(yield* this.#compact("threshold", abort.signal, meter));
 					if (abort.signal.aborted) {
 						stopReason = "interrupted";
@@ -377,19 +379,7 @@ class OpenAiCodexSession implements BackendSession {
 		return buildResponsesBody({
 			model,
 			instructions: this.#setup.instructions,
-			input:
-				imageInputProblem(BACKEND_ID, model) === undefined
-					? (options.input ?? this.#history)
-					: (options.input ?? this.#history).map((item) =>
-							item.type !== "message"
-								? item
-								: {
-										...item,
-										content: item.content.map((part) =>
-											part.type === "input_image" ? { type: "input_text" as const, text: imageOmission(model) } : part,
-										),
-									},
-						),
+			input: (options.input ?? this.#history).map((item) => viewItem(item, this.#omission(model))),
 			tools: this.#setup.tools,
 			...(options.summary ? { toolChoice: "none" as const } : {}),
 			// Always asked, so each response's reasoning comes back encrypted and the next request can carry it.
@@ -482,11 +472,25 @@ class OpenAiCodexSession implements BackendSession {
 		};
 	}
 
-	/** The last measured size plus an estimate of what was appended since. */
-	#contextTokens(): number {
+	/** The text that stands in for an image `model` does not accept; undefined when it accepts them. */
+	#omission(model: string): string | undefined {
+		return imageInputProblem(BACKEND_ID, model) === undefined ? undefined : imageOmission(model);
+	}
+
+	/** Images as the current model's requests carry them. */
+	#view(allowance = true): ImageView {
+		return { omission: this.#omission(this.#model), allowance };
+	}
+
+	/**
+	 * The last measured size plus an estimate of what was appended since. `allowance` false leaves out what images not
+	 * yet measured by the API are assumed to cost, as the threshold check does.
+	 */
+	#contextTokens(allowance = true): number {
+		const view = this.#view(allowance);
 		return this.#history
 			.slice(this.#measured.length)
-			.reduce((sum, item) => sum + estimateItem(item), this.#measured.tokens);
+			.reduce((sum, item) => sum + estimateItem(item, view), this.#measured.tokens);
 	}
 
 	/** Replaces the history before a cut with its summary; resolves to whether it did. A failure leaves it as it was. */
@@ -508,7 +512,7 @@ class OpenAiCodexSession implements BackendSession {
 			error,
 		});
 		const items = this.#history;
-		const cut = findItemCut(items, this.#compaction.keepRecent);
+		const cut = findItemCut(items, this.#compaction.keepRecent, this.#view());
 		if (cut === undefined) {
 			yield failed("There is not enough history to compact.");
 			return false;
@@ -536,8 +540,9 @@ class OpenAiCodexSession implements BackendSession {
 			turnPrompt: carried,
 			state: this.#setup.compactionState?.(),
 		});
-		const removed = items.slice(0, cut).reduce((sum, item) => sum + estimateItem(item), 0);
-		const tokensAfter = Math.max(0, tokensBefore - removed + estimateItem(next[0] as ResponsesItem));
+		const view = this.#view();
+		const removed = items.slice(0, cut).reduce((sum, item) => sum + estimateItem(item, view), 0);
+		const tokensAfter = Math.max(0, tokensBefore - removed + estimateItem(next[0] as ResponsesItem, view));
 		this.#history = next;
 		this.#files = files;
 		this.#measured = { tokens: tokensAfter, length: next.length };

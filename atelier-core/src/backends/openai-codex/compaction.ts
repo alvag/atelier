@@ -9,12 +9,34 @@ import type { ResponsesItem } from "../../responses/client.ts";
 // A coarse allowance until API usage measures the image; encoded bytes are not text tokens.
 const IMAGE_TOKENS = 8_192;
 
-/** Estimates unmeasured context and the verbatim tail: four text characters per token, plus an image allowance. */
-export function estimateItem(item: ResponsesItem): number {
-	if (item.type !== "message") return Math.ceil(JSON.stringify(item).length / 4);
-	const textContent = item.content.filter((part) => part.type !== "input_image");
-	const images = item.content.length - textContent.length;
-	return Math.ceil(JSON.stringify({ ...item, content: textContent }).length / 4) + images * IMAGE_TOKENS;
+/** How the current model sees images: an `omission` text stands in for each when it accepts none. */
+export interface ImageView {
+	omission?: string | undefined;
+	/** False leaves the allowance out: the size the text alone is known to have. */
+	allowance?: boolean;
+}
+
+/** The item as one request carries it; stored items are never changed. */
+export function viewItem(item: ResponsesItem, omission: string | undefined): ResponsesItem {
+	if (omission === undefined || item.type !== "message") return item;
+	return {
+		...item,
+		content: item.content.map((part) =>
+			part.type === "input_image" ? { type: "input_text" as const, text: omission } : part,
+		),
+	};
+}
+
+/** Estimates unmeasured context and the verbatim tail: four text characters per token, plus an allowance per image sent. */
+export function estimateItem(item: ResponsesItem, view: ImageView = {}): number {
+	const shown = viewItem(item, view.omission);
+	if (shown.type !== "message") return Math.ceil(JSON.stringify(shown).length / 4);
+	const textContent = shown.content.filter((part) => part.type !== "input_image");
+	const images = shown.content.length - textContent.length;
+	return (
+		Math.ceil(JSON.stringify({ ...shown, content: textContent }).length / 4) +
+		(view.allowance === false ? 0 : images * IMAGE_TOKENS)
+	);
 }
 
 const isInput = (item: ResponsesItem | undefined) =>
@@ -26,10 +48,14 @@ function isCut(items: readonly ResponsesItem[], index: number): boolean {
 }
 
 /** Index where the verbatim tail starts: the shortest tail that reaches `keepRecent` tokens; undefined when none. */
-export function findItemCut(items: readonly ResponsesItem[], keepRecent: number): number | undefined {
+export function findItemCut(
+	items: readonly ResponsesItem[],
+	keepRecent: number,
+	view: ImageView = {},
+): number | undefined {
 	let tail = 0;
 	for (let index = items.length - 1; index > 0; index--) {
-		tail += estimateItem(items[index] as ResponsesItem);
+		tail += estimateItem(items[index] as ResponsesItem, view);
 		if (tail >= keepRecent && isCut(items, index)) return index;
 	}
 	return undefined;
