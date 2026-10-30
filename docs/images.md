@@ -56,6 +56,9 @@ Saved sessions can contain normalized image bytes. Treat saved or exported histo
 
 ## Preparation and limits
 
+- A prompt batch accepts at most **20 images** and **20 MiB of normalized image bytes**, before
+  base64 encoding. Preparation checks canonical base64 and source size before decoding, processes
+  images sequentially and stops after cancellation before preparing the next image.
 - A source may contain at most **40,000,000 decoded pixels** and **20 MiB of encoded data**.
   The decoder enforces the pixel limit before allocating the full image.
 - Images are oriented, stripped of metadata and resized without enlargement to at most
