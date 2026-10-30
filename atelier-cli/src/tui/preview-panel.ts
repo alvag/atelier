@@ -12,17 +12,20 @@ export function previewLines(preview: string): string[] {
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 /**
  * What a row never splits, captured to keep it: a marker of the sanitizer (`⟨U+061C⟩`), or a terminal sequence: CSI,
- * OSC (a hyperlink's, say) up to its BEL or ST, or another escape and its one character.
+ * OSC (a hyperlink's, say) up to its BEL or ST, APC and DCS up to ST, or another escape and its one character.
  */
 const WHOLE =
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: a terminal sequence starts with the escape character
-	/(⟨U\+[0-9A-F]{4,6}⟩|\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_])/;
+	/(⟨U\+[0-9A-F]{4,6}⟩|\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[_P][\s\S]*?\x1b\\|\x1b[@-Z\\-_])/;
 /** A hyperlink's sequence, OSC 8: its target, empty when it ends one. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: the sequence starts with the escape character
 const HYPERLINK = /^\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]*)(?:\x07|\x1b\\)$/;
 /** A color or style sequence, SGR; `\x1b[m` and `\x1b[0m` end them all. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: the sequence starts with the escape character
 const STYLE = /^\x1b\[[0-9;]*m$/;
+/** A whole APC or DCS has no columns; pi-tui's width helper does not recognize DCS. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the sequence starts with the escape character
+const CONTROL_STRING = /^\x1b[_P][\s\S]*\x1b\\$/;
 const RESET = "\x1b[0m";
 const END_LINK = "\x1b]8;;\x07";
 
@@ -48,7 +51,7 @@ function cutLine(line: string, width: number): string[] {
 	let style = "";
 	let link = "";
 	for (const piece of pieces(line)) {
-		const size = visibleWidth(piece);
+		const size = CONTROL_STRING.test(piece) ? 0 : visibleWidth(piece);
 		if (used > 0 && used + size > width) {
 			rows.push(`${row}${link === "" ? "" : END_LINK}${style === "" ? "" : RESET}`);
 			row = `${style}${link}`;
