@@ -33,6 +33,8 @@ export const receiptSchema = z.object({
 	refuted: z.array(refutedSchema),
 	followUps: z.array(findingSchema),
 	correction: z.object({ budget: z.number(), used: z.number() }).nullable(),
+	/** How many parts the lenses reviewed the change in, when it was too large for one prompt; absent for one. */
+	parts: z.number().int().min(2).optional(),
 	verdict: z.enum(["approved", "escalated", "declined", "unavailable"]),
 	unavailableReason: z.string().optional(),
 	/** Why an escalated review was handed back to the human. */

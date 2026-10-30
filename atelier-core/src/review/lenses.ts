@@ -5,6 +5,8 @@ import type { Lens } from "./risk.ts";
 
 /** A lens prompt, instruction included, may not exceed this; over it the review is refused, never cut. */
 export const LENS_CONTEXT_LIMIT_BYTES = 200 * 1024;
+/** A change too large for one prompt is split into at most this many parts; past them it is refused. */
+export const MAX_LENS_PARTS = 4;
 
 const COMMON = [
 	"You are a read-only code reviewer: you cannot change files or run commands, only read and grep the frozen change.",
@@ -35,10 +37,12 @@ export const LENS_INSTRUCTIONS: Record<Lens, string> = {
 export interface LensPromptInput {
 	candidate: Candidate;
 	lens: Lens;
-	/** The full patch from readPatch. */
+	/** The full patch from readPatch, or the part of it this prompt holds. */
 	patch: string;
 	/** Why the change got its risk level, as reported by the assessment. */
 	reasons: readonly string[];
+	/** Which part of a split change the patch is; absent for a whole change. */
+	part?: { index: number; count: number };
 }
 
 export type BudgetExceeded = {
@@ -68,6 +72,7 @@ export function buildLensPrompt(input: LensPromptInput): LensPrompt {
 		"Changed files:",
 		...files,
 		"",
+		...(input.part === undefined ? [] : [partNote(input.part)]),
 		"Patch:",
 		input.patch,
 	].join("\n");
@@ -77,7 +82,71 @@ export function buildLensPrompt(input: LensPromptInput): LensPrompt {
 	return { ok: true, instruction, prompt, bytes };
 }
 
-/** The full patch between the candidate's trees; a patch over the budget is refused, not cut. */
+function partNote(part: { index: number; count: number }): string {
+	return `Part ${part.index} of ${part.count}: this patch holds only some of the changed files; the other parts are reviewed separately. Read the rest of the change with read or grep when you need it.`;
+}
+
+/**
+ * The prompts of every lens of a review. A change whose prompt fits every lens gets exactly the one prompt
+ * `buildLensPrompt` gives. Otherwise the patch is split by file, keeping the files in path order (so a folder
+ * stays together), into the fewest parts that each fit the lens with the longest instruction, so every lens
+ * gets the same parts. A file whose patch cannot fit alone, or more than `MAX_LENS_PARTS` parts, is refused.
+ */
+export function buildLensPrompts(
+	input: Omit<LensPromptInput, "lens" | "part">,
+	lenses: readonly Lens[],
+): { ok: true; prompts: Map<Lens, string[]> } | BudgetExceeded {
+	const whole = new Map<Lens, string[]>();
+	let largest: BudgetExceeded | undefined;
+	for (const lens of lenses) {
+		const built = buildLensPrompt({ ...input, lens });
+		if (built.ok) whole.set(lens, [built.prompt]);
+		else if (largest === undefined || built.bytes > largest.bytes) largest = built;
+	}
+	if (largest === undefined) return { ok: true, prompts: whole };
+
+	const widest = lenses.reduce((a, b) =>
+		Buffer.byteLength(LENS_INSTRUCTIONS[b]) > Buffer.byteLength(LENS_INSTRUCTIONS[a]) ? b : a,
+	);
+	// The patch is the prompt's last line, so a part's size is the prompt without a patch plus the patch's bytes.
+	const empty = buildLensPrompt({ ...input, lens: widest, patch: "", part: { index: 1, count: MAX_LENS_PARTS } });
+	const room = LENS_CONTEXT_LIMIT_BYTES - (empty.ok ? empty.bytes : LENS_CONTEXT_LIMIT_BYTES);
+	const parts: string[][] = [];
+	let size = 0;
+	for (const file of splitPatch(input.patch)) {
+		const bytes = Buffer.byteLength(file);
+		if (bytes > room) return { ...largest, bytes: LENS_CONTEXT_LIMIT_BYTES - room + bytes };
+		const last = parts.at(-1);
+		if (last !== undefined && size + bytes <= room) {
+			last.push(file);
+			size += bytes;
+		} else {
+			parts.push([file]);
+			size = bytes;
+		}
+	}
+	if (parts.length > MAX_LENS_PARTS) return largest;
+
+	const prompts = new Map<Lens, string[]>();
+	for (const lens of lenses) {
+		const built: string[] = [];
+		for (const [index, files] of parts.entries()) {
+			const part = { index: index + 1, count: parts.length };
+			const prompt = buildLensPrompt({ ...input, lens, patch: files.join(""), part });
+			if (!prompt.ok) return prompt;
+			built.push(prompt.prompt);
+		}
+		prompts.set(lens, built);
+	}
+	return { ok: true, prompts };
+}
+
+/** The patch of each file, in the order git gave them; joined again they are the whole patch. */
+function splitPatch(patch: string): string[] {
+	return patch.split(/(?=^diff --git )/m).filter((file) => file.length > 0);
+}
+
+/** The full patch between the candidate's trees; one over what `MAX_LENS_PARTS` parts can hold is refused, not cut. */
 export async function readPatch(candidate: Candidate): Promise<{ ok: true; patch: string } | BudgetExceeded> {
 	const result = await runGit(
 		[
@@ -91,10 +160,10 @@ export async function readPatch(candidate: Candidate): Promise<{ ok: true; patch
 			candidate.base,
 			candidate.tree,
 		],
-		{ cwd: candidate.root, limitBytes: LENS_CONTEXT_LIMIT_BYTES + 1 },
+		{ cwd: candidate.root, limitBytes: MAX_LENS_PARTS * LENS_CONTEXT_LIMIT_BYTES + 1 },
 	);
 	if (result.code !== 0) throw new Error(result.stderr.trim() || `git diff-tree exited with ${result.code}`);
-	if (result.stdout.length > LENS_CONTEXT_LIMIT_BYTES)
+	if (result.stdout.length > MAX_LENS_PARTS * LENS_CONTEXT_LIMIT_BYTES)
 		return {
 			ok: false,
 			code: "lens_context_budget_exceeded",

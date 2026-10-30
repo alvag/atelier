@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ZERO_USAGE } from "../src/events.ts";
 import { freezeCandidate } from "../src/review/candidate.ts";
 import type { Finding } from "../src/review/findings.ts";
+import { buildLensPrompt, LENS_CONTEXT_LIMIT_BYTES, LENS_INSTRUCTIONS, readPatch } from "../src/review/lenses.ts";
 import type { Receipt } from "../src/review/receipts.ts";
 import {
 	correctionBudget,
@@ -726,5 +727,127 @@ describe("refusal causes", () => {
 		controller.abort();
 		const { receipt } = await drive(env, harness(env, {}).deps, controller.signal);
 		expect(refusal(receipt)).toEqual({ cause: "interrupted", observed: undefined });
+	});
+});
+
+describe("a candidate over the lens limit", () => {
+	/** Adds `files` to the worktree and freezes the candidate again, reviewed by `lenses`. */
+	async function grow(env: Awaited<ReturnType<typeof setup>>, files: Record<string, string>, lenses: Lens[]) {
+		for (const [path, text] of Object.entries(files)) {
+			await mkdir(join(env.root, dirname(path)), { recursive: true });
+			await writeFile(join(env.root, path), text);
+		}
+		const frozen = await freezeCandidate(env.root);
+		if (!frozen.ok) throw new Error(frozen.reason);
+		env.candidate = frozen.candidate;
+		env.assessment = assessRisk(frozen.candidate, { lenses });
+	}
+	const big = (kib: number) => lines(kib * 64).padEnd(kib * 1024, "z");
+	const lensCalls = (calls: RoleCall[], lens: Lens) => calls.filter((call) => call.role === lens);
+
+	it("reviews a change that fits as one prompt per lens, the same as before", async () => {
+		const env = await setup(4);
+		const { deps, calls } = harness(env, {});
+		const { receipt } = await drive(env, deps);
+		const patch = await readPatch(env.candidate);
+		if (!patch.ok) throw new Error(patch.code);
+		const expected = buildLensPrompt({
+			candidate: env.candidate,
+			lens: "reliability",
+			patch: patch.patch,
+			reasons: env.assessment.reasons,
+		});
+		if (!expected.ok) throw new Error(expected.code);
+		expect(lensCalls(calls, "reliability").map((call) => call.prompt)).toEqual([expected.prompt]);
+		expect(receipt.parts).toBeUndefined();
+	});
+
+	it("splits it by area into parts that each fit, with every changed file listed and unique ids", async () => {
+		const env = await setup(4);
+		await grow(env, { "one/big.txt": big(120), "two/big.txt": big(120) }, ["reliability", "risk"]);
+		const { deps, calls } = harness(env, {
+			lens: (call) =>
+				ok(
+					report(
+						finding({
+							severity: "warning",
+							path: call.prompt.includes("one/big.txt b/") ? "one/big.txt" : "two/big.txt",
+						}),
+					),
+				),
+		});
+		const { receipt, events } = await drive(env, deps);
+		expect(receipt.verdict).toBe("approved");
+		expect(receipt.parts).toBe(2);
+		for (const lens of ["reliability", "risk"] as const) {
+			const prompts = lensCalls(calls, lens).map((call) => call.prompt);
+			expect(prompts).toHaveLength(2);
+			expect(prompts[0]).toContain("Part 1 of 2");
+			expect(prompts[0]).toContain("diff --git a/one/big.txt b/one/big.txt");
+			expect(prompts[0]).not.toContain("diff --git a/two/big.txt");
+			expect(prompts[1]).toContain("Part 2 of 2");
+			expect(prompts[1]).toContain("diff --git a/two/big.txt b/two/big.txt");
+			for (const prompt of prompts) {
+				expect(prompt).toContain("- one/big.txt (A,");
+				expect(prompt).toContain("- two/big.txt (A,");
+				expect(Buffer.byteLength(LENS_INSTRUCTIONS[lens]) + Buffer.byteLength(prompt)).toBeLessThanOrEqual(
+					LENS_CONTEXT_LIMIT_BYTES,
+				);
+			}
+		}
+		expect(receipt.followUps.map((f) => f.id).sort()).toEqual(["RK-001", "RK-002", "RL-001", "RL-002"]);
+		expect(events.filter((e) => e.type === "lens_started")).toHaveLength(2);
+		expect(events).toContainEqual({ type: "lens_finished", lens: "reliability", ok: true, findings: 2 });
+	});
+
+	it("still refuses a single file whose patch does not fit, with no model call", async () => {
+		const env = await setup(4);
+		await grow(env, { "huge.txt": big(210) }, ["reliability"]);
+		const { deps, calls } = harness(env, {});
+		const { receipt } = await drive(env, deps);
+		expect(receipt).toMatchObject({ verdict: "unavailable", cause: "context_too_large" });
+		expect(calls).toHaveLength(0);
+	});
+
+	it("refuses a change that needs more than 4 parts, with no model call", async () => {
+		const env = await setup(4);
+		const files = Object.fromEntries(["a", "b", "c", "d", "e"].map((name) => [`${name}/big.txt`, big(150)]));
+		await grow(env, files, ["reliability"]);
+		const { deps, calls } = harness(env, {});
+		const { receipt } = await drive(env, deps);
+		expect(receipt).toMatchObject({ verdict: "unavailable", cause: "context_too_large" });
+		expect(Number.parseInt(receipt.observed ?? "", 10)).toBeGreaterThan(5 * 150 * 1024);
+		expect(calls).toHaveLength(0);
+	});
+
+	it("is unavailable when one part fails, and keeps what the other parts found as follow-ups", async () => {
+		const env = await setup(4);
+		await grow(env, { "one/big.txt": big(120), "two/big.txt": big(120) }, ["reliability"]);
+		const { deps } = harness(env, {
+			lens: (call) =>
+				call.prompt.includes("Part 2 of 2")
+					? { ok: false, error: "rate limited", usage: usage() }
+					: ok(report(finding({ severity: "critical" }))),
+		});
+		const { receipt, events } = await drive(env, deps);
+		expect(receipt).toMatchObject({ verdict: "unavailable", cause: "role_failed", observed: "rate limited" });
+		expect(receipt.followUps).toEqual([expect.objectContaining({ id: "RL-001", severity: "critical" })]);
+		expect(events).toContainEqual({ type: "lens_finished", lens: "reliability", ok: false, findings: 1 });
+	});
+
+	it("gives the refuter only the findings, never the patch of any part", async () => {
+		const env = await setup(4);
+		await grow(env, { "one/big.txt": big(120), "two/big.txt": big(120) }, ["reliability"]);
+		const { deps, calls } = harness(env, {
+			lens: (call) =>
+				call.prompt.includes("Part 1 of 2") ? ok(report(finding({ path: "one/big.txt" }))) : ok(report()),
+			refuter: () => ok(verdicts({ id: "RL-001", verdict: "refuted" })),
+		});
+		const { receipt } = await drive(env, deps);
+		expect(receipt.verdict).toBe("approved");
+		const refuter = calls.filter((call) => call.role === "refuter");
+		expect(refuter).toHaveLength(1);
+		expect(refuter[0]?.prompt).not.toContain("diff --git");
+		expect(Buffer.byteLength(refuter[0]?.prompt ?? "")).toBeLessThan(2048);
 	});
 });

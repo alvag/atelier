@@ -6,7 +6,14 @@ import { describe, expect, it } from "vitest";
 import type { Candidate } from "../src/review/candidate.ts";
 import { freezeCandidate } from "../src/review/candidate.ts";
 import { type Finding, isBlocking, parseFindings } from "../src/review/findings.ts";
-import { buildLensPrompt, LENS_CONTEXT_LIMIT_BYTES, LENS_INSTRUCTIONS, readPatch } from "../src/review/lenses.ts";
+import {
+	buildLensPrompt,
+	buildLensPrompts,
+	LENS_CONTEXT_LIMIT_BYTES,
+	LENS_INSTRUCTIONS,
+	MAX_LENS_PARTS,
+	readPatch,
+} from "../src/review/lenses.ts";
 import { LENSES } from "../src/review/risk.ts";
 import { REFUTER_INSTRUCTION } from "../src/review/roles.ts";
 
@@ -201,8 +208,47 @@ describe("buildLensPrompt", () => {
 	});
 });
 
+describe("buildLensPrompts", () => {
+	const diff = (path: string, bytes: number) => `diff --git a/${path} b/${path}\n+${"q".repeat(bytes)}\n`;
+
+	it("keeps one prompt per lens, the one buildLensPrompt gives, when the change fits", () => {
+		const patch = diff("src/a.ts", 10);
+		const built = buildLensPrompts({ candidate: fakeCandidate(), patch, reasons: [] }, ["risk", "reliability"]);
+		if (!built.ok) throw new Error(built.code);
+		for (const lens of ["risk", "reliability"] as const) {
+			const one = buildLensPrompt({ candidate: fakeCandidate(), lens, patch, reasons: [] });
+			if (!one.ok) throw new Error(one.code);
+			expect(built.prompts.get(lens)).toEqual([one.prompt]);
+		}
+	});
+
+	it("splits by file in path order, never cutting a file, and the parts join into the whole patch", () => {
+		const files = [diff("a/1.ts", 90_000), diff("a/2.ts", 90_000), diff("b/1.ts", 90_000)];
+		const built = buildLensPrompts({ candidate: fakeCandidate(), patch: files.join(""), reasons: [] }, ["risk"]);
+		if (!built.ok) throw new Error(built.code);
+		const prompts = built.prompts.get("risk") ?? [];
+		expect(prompts).toHaveLength(2);
+		expect(prompts[0]).toContain(`Part 1 of 2: this patch holds only some of the changed files`);
+		expect(prompts[0]).toContain(`${files[0]}${files[1]}`);
+		expect(prompts[1]?.endsWith(`Patch:\n${files[2]}`)).toBe(true);
+	});
+
+	it("refuses a file that cannot fit alone, and more parts than the cap", () => {
+		const alone = buildLensPrompts(
+			{ candidate: fakeCandidate(), patch: diff("x.ts", LENS_CONTEXT_LIMIT_BYTES), reasons: [] },
+			["risk"],
+		);
+		expect(alone).toMatchObject({ ok: false, code: "lens_context_budget_exceeded", limit: LENS_CONTEXT_LIMIT_BYTES });
+		if (!alone.ok) expect(alone.bytes).toBeGreaterThan(LENS_CONTEXT_LIMIT_BYTES);
+
+		const many = Array.from({ length: MAX_LENS_PARTS + 1 }, (_, i) => diff(`d${i}.ts`, 150_000)).join("");
+		const over = buildLensPrompts({ candidate: fakeCandidate(), patch: many, reasons: [] }, ["risk"]);
+		expect(over).toMatchObject({ ok: false, code: "lens_context_budget_exceeded" });
+	});
+});
+
 describe("readPatch", () => {
-	it("returns the full patch between the frozen trees, and rejects one over the budget", async () => {
+	it("returns the full patch between the frozen trees, and rejects one over what the parts can hold", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "atelier-patch-"));
 		try {
 			const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
@@ -218,7 +264,12 @@ describe("readPatch", () => {
 			expect(small.patch).toContain("+two");
 
 			await mkdir(join(dir, "big"));
-			await writeFile(join(dir, "big/huge.txt"), "z".repeat(LENS_CONTEXT_LIMIT_BYTES + 10));
+			await writeFile(join(dir, "big/one.txt"), "z".repeat(LENS_CONTEXT_LIMIT_BYTES + 10));
+			const one = await freezeCandidate(dir);
+			if (!one.ok) throw new Error(one.reason);
+			expect(await readPatch(one.candidate)).toMatchObject({ ok: true });
+
+			await writeFile(join(dir, "big/huge.txt"), "z".repeat(MAX_LENS_PARTS * LENS_CONTEXT_LIMIT_BYTES));
 			const big = await freezeCandidate(dir);
 			if (!big.ok) throw new Error(big.reason);
 			expect(await readPatch(big.candidate)).toMatchObject({
