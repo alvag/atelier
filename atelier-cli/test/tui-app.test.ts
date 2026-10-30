@@ -5418,6 +5418,7 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 			h.screen.type("x");
 			await shows(h, "1 character (hidden)");
 			expect(r.read).not.toHaveBeenCalled();
+			expect(h.screen.screen()).not.toContain("clipboard image dropped");
 			h.screen.type("\x03");
 			await shows(h, "no key given; nothing changed");
 			await quit(h, code);
@@ -5465,6 +5466,64 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 				} finally {
 					await quit(h, code);
 				}
+			},
+		);
+
+		it.each([0, 2])(
+			"reports clipboard drops once per core permission question with %s queued reads",
+			async (queued) => {
+				const r = reader();
+				const gates: (() => void)[] = [];
+				const { h, code } = await open(
+					[
+						[
+							{ event: started },
+							{ run: () => new Promise<void>((resolve) => (gates[0] = resolve)) },
+							{ toolCall: { tool: "bash", input: { command: "echo first" } } },
+							{ run: () => new Promise<void>((resolve) => (gates[1] = resolve)) },
+							{ toolCall: { tool: "bash", input: { command: "echo second" } } },
+							{ event: finished },
+						],
+						[{ event: finished }],
+					],
+					{ platform: "darwin", readClipboardImage: r.read },
+				);
+				const note = "clipboard image dropped: a question opened; paste it again";
+				const notes = () => h.screen.frame().join("\n").split(note).length - 1;
+				h.screen.type("run tools");
+				h.screen.type("\r");
+				await until(() => gates[0] !== undefined);
+				h.screen.type("draft");
+				for (const round of [0, 1]) {
+					await until(() => gates[round] !== undefined);
+					const release = r.hold();
+					for (let i = 0; i <= queued; i++) h.screen.type(CTRL_V);
+					await until(() => r.signals.length === round + 1);
+					gates[round]?.();
+					await shows(h, "Run this command?");
+					await until(() => notes() === round + 1);
+					expect(h.screen.frame().join("\n")).toContain("Run this command?");
+					expect(r.signals[round]?.aborted).toBe(true);
+					h.screen.type(CTRL_V);
+					release();
+					await until(() => r.read.mock.settledResults[round]?.type === "fulfilled");
+					await new Promise((resolve) => setImmediate(resolve));
+					expect(notes()).toBe(round + 1);
+					expect(r.read).toHaveBeenCalledTimes(round + 1);
+					expect(h.screen.screen()).not.toContain("[Image #");
+					h.screen.type("\x03");
+					await until(() => h.backend.toolResults.length === round + 1);
+					expect(h.backend.toolResults[round]?.output).toBe("The user denied this command.");
+				}
+				await shows(h, "$0.50");
+				expect(notes()).toBe(2);
+				expect(h.backend.interrupts).toBe(0);
+				h.screen.type("\r");
+				await until(() => sends(h).length === 2);
+				expect(sends(h)[1]?.prompt).toBe("draft");
+				expect(sends(h)[1]?.images).toBeUndefined();
+				await shows(h, "$1.00");
+				await quit(h, code);
 			},
 		);
 

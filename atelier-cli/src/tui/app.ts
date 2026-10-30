@@ -704,8 +704,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 	/** A question hides the draft: old clipboard work must never change it, even after the question closes. */
 	const addQuestion = (entry: (typeof questions)[number]) => {
-		for (const read of pendingReads) if (read.source === "clipboard image") read.discard = true;
+		let dropped = false;
+		for (const read of pendingReads) {
+			if (read.source !== "clipboard image" || read.discard) continue;
+			read.discard = true;
+			dropped = true;
+		}
 		abortClipboardReads();
+		if (dropped) conversation.note("clipboard image dropped: a question opened; paste it again", true);
 		questions.push(entry);
 		if (questions.length === 1) showQuestion();
 	};
