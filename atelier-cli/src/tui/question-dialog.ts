@@ -103,6 +103,8 @@ export class QuestionDialog implements Component, Focusable {
 	/** The options checked, by index, and whether `Type something…` is. */
 	readonly #checked = new Set<number>();
 	#otherChecked = false;
+	/** Whether a box or the text has changed: before that, a multi-select question has no answer as it stands. */
+	#touched = false;
 	readonly #paint: Paint;
 	readonly #guardMs: number;
 	readonly #paste: PasteFilter;
@@ -229,26 +231,40 @@ export class QuestionDialog implements Component, Focusable {
 
 	/** The text typed changed: a multi-select question checks `Type something…` while it has text, unchecks it without. */
 	#typed(): void {
-		if (this.#multiSelect) this.#otherChecked = this.#text !== "";
+		if (!this.#multiSelect) return;
+		this.#otherChecked = this.#text !== "";
+		this.#touched = true;
 	}
 
 	/** Checks or unchecks the box of `row`, an option or `Type something…`. */
 	#flip(row: number): void {
+		this.#touched = true;
 		if (row === this.#options.length) this.#otherChecked = !this.#otherChecked;
 		else if (this.#checked.has(row)) this.#checked.delete(row);
 		else this.#checked.add(row);
 	}
 
-	/** `Next →`: hands on what is checked, unless `Type something…` is checked without a text, or too long a one. */
+	/** What is checked, or why it cannot be sent: `Type something…` checked without a text, or with too long a one. */
+	#checks(): { options: number[]; other?: string } | { problem: string } {
+		if (this.#otherChecked && this.#text.trim() === "") return { problem: "Type an answer, or uncheck Type something" };
+		if (this.#otherChecked && this.#text.length > OTHER_MAX)
+			return { problem: `Too long: ${this.#text.length} of ${OTHER_MAX} characters` };
+		return { options: [...this.#checked].sort((a, b) => a - b), ...(this.#otherChecked ? { other: this.#text } : {}) };
+	}
+
+	/**
+	 * A multi-select question's boxes as they stand, or why they cannot be sent: what a batch takes for a tab left
+	 * without `Next →`. Undefined for a single-choice question, and before any box or the text changed.
+	 */
+	current(): { options: number[]; other?: string } | { problem: string } | undefined {
+		return this.#multiSelect && this.#touched ? this.#checks() : undefined;
+	}
+
+	/** `Next →`: hands on what is checked, unless it cannot be sent: then the hint line says why. */
 	#next(): void {
-		if (this.#otherChecked && this.#text.trim() === "") this.#problem = "Type an answer, or uncheck Type something";
-		else if (this.#otherChecked && this.#text.length > OTHER_MAX)
-			this.#problem = `Too long: ${this.#text.length} of ${OTHER_MAX} characters`;
-		else
-			this.#give({
-				options: [...this.#checked].sort((a, b) => a - b),
-				...(this.#otherChecked ? { other: this.#text } : {}),
-			});
+		const checks = this.#checks();
+		if ("problem" in checks) this.#problem = checks.problem;
+		else this.#give(checks);
 	}
 
 	/** A key on `Type something…`: it edits the text; true when it was one. */

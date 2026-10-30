@@ -331,6 +331,37 @@ describe("AskDialog, multi-select", () => {
 		expect(sent).toEqual([[{ options: [] }, { options: [2], other: "me" }]]);
 	});
 
+	it("keeps the boxes checked on a tab left with ← or →, without Next →", () => {
+		const { dialog, sent, lines } = asked([tools, extras]);
+		dialog.handleInput("1");
+		dialog.handleInput("3");
+		dialog.handleInput(RIGHT);
+		expect(lines(120)[1]).toBe(" ←  ✔ Tools   ○ Extras   ✔ Submit  →");
+		dialog.handleInput(RIGHT);
+		expect(lines(120)).toContain("  ✔ Tools    Biome, Vitest");
+		dialog.handleInput("1");
+		expect(sent).toEqual([[{ options: [0, 2] }, { options: [] }]]);
+	});
+
+	it("does not send a tab left with Type something… checked and empty: Submit goes back to it and says why", () => {
+		const { dialog, sent, lines } = asked([tools, extras]);
+		dialog.handleInput("2");
+		dialog.handleInput("4");
+		dialog.handleInput(RIGHT);
+		dialog.handleInput(RIGHT);
+		expect(lines(120)).toContain("  ○ Tools    — Type an answer, or uncheck Type something");
+		dialog.handleInput("1");
+		expect(sent).toEqual([]);
+		expect(lines(120)[3]).toBe(" Which tools should run?");
+		expect(lines(120)).toContain(" Type an answer, or uncheck Type something");
+		dialog.handleInput("x");
+		dialog.handleInput("\r");
+		dialog.handleInput("\r");
+		dialog.handleInput(RIGHT);
+		dialog.handleInput("1");
+		expect(sent).toEqual([[{ options: [1], other: "x" }, { options: [] }]]);
+	});
+
 	it("still sends a single multi-select question with its Submit", () => {
 		const { dialog, sent } = asked([tools]);
 		for (const key of ["3", "\x1b[B", "\x1b[B", "\r"]) dialog.handleInput(key);
