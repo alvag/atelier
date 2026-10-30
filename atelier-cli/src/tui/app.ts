@@ -332,7 +332,7 @@ async function startSession(
 	const started = (await link.request({
 		command: "session.start",
 		cwd: args.cwd,
-		userQuestions: { multiSelect: true },
+		userQuestions: { multiSelect: true, preview: true },
 		// The TUI shows a job's end outside any turn (`session_event`).
 		sessionEvents: true,
 		...(chosen.model === undefined ? {} : { model: chosen.model }),
@@ -366,7 +366,7 @@ async function resumeSession(
 		command: "session.resume",
 		sessionId: savedId,
 		cwd,
-		userQuestions: { multiSelect: true },
+		userQuestions: { multiSelect: true, preview: true },
 		sessionEvents: true,
 	})) as Opened & {
 		name?: string;
@@ -703,6 +703,15 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		reportRunning();
 	};
 	/**
+	 * The rows a question may take: the terminal's, less those of the parts that stay on screen with it, and full screen
+	 * the bar and the transcript's row.
+	 */
+	const questionRows = () => {
+		const width = options.terminal.columns;
+		const others = [status, odd, queue, footer].reduce((rows, part) => rows + part.render(width).length, 0);
+		return options.terminal.rows - others - (fullscreen ? 2 : 0);
+	};
+	/**
 	 * Asks an `ask_user` batch, its questions as tabs when there are several, and sends the answers once all are given;
 	 * Esc or Ctrl+C sends `null`. The core's `user_question_resolved` closes it with nothing sent, so a late key answers
 	 * nothing.
@@ -756,10 +765,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 						label: shown(option.label).text,
 						...(option.description === undefined ? {} : { description: shown(option.description).text }),
 						...(option.recommended ? { recommended: true } : {}),
+						...(option.preview === undefined ? {} : { preview: shown(option.preview).text }),
 					})),
 				})),
 				guardMs: options.answerGuardMs ?? ANSWER_GUARD_MS,
 				paste: input,
+				height: questionRows,
 			},
 			paint,
 			(answers) => finish(answers === null ? null : sent(answers)),

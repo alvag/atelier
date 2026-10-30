@@ -65,13 +65,20 @@ export class AskDialog implements Component, Focusable {
 	#tab = 0;
 	#done = false;
 	readonly #guardMs: number;
+	readonly #height: (() => number) | undefined;
 	/** When the review came on screen, for its guard. */
 	#reviewedAt = 0;
 	/** The review's row with the cursor: `Submit answers` first. */
 	#choice = 0;
 
 	constructor(
-		options: { questions: readonly AskQuestion[]; guardMs?: number; paste?: PasteFilter },
+		options: {
+			questions: readonly AskQuestion[];
+			guardMs?: number;
+			paste?: PasteFilter;
+			/** The most rows it may take on screen, its rules and tab bar included; a question's preview is cut to fit. */
+			height?: () => number;
+		},
 		paint: Paint,
 		send: (answers: AskAnswer[] | null) => void,
 	) {
@@ -81,6 +88,7 @@ export class AskDialog implements Component, Focusable {
 		this.#send = send;
 		this.#answers = options.questions.map(() => undefined);
 		this.#guardMs = options.guardMs ?? 0;
+		this.#height = options.height;
 		const tabs = options.questions.length > 1;
 		this.#dialogs = options.questions.map(
 			(question, index) =>
@@ -218,7 +226,10 @@ export class AskDialog implements Component, Focusable {
 
 	render(width: number): string[] {
 		const rule = this.#paint("cyan", "─".repeat(Math.max(1, width)));
-		const body = this.#reviewing ? this.#reviewLines(width) : (this.#dialog?.body(width) ?? []);
+		// The rules, and a batch's tab bar with the blank row under it.
+		const frame = this.#dialogs.length === 1 ? 2 : 4;
+		const rows = (this.#height?.() ?? Number.POSITIVE_INFINITY) - frame;
+		const body = this.#reviewing ? this.#reviewLines(width) : (this.#dialog?.body(width, rows) ?? []);
 		if (this.#dialogs.length === 1) return [rule, ...body, rule];
 		return [rule, truncateToWidth(this.#tabBar(width), width), "", ...body, rule];
 	}
