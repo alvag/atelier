@@ -2164,7 +2164,7 @@ export class Session {
 		const tasks = this.#tasks;
 		if (tasks === undefined)
 			return fail("Refused: this session cannot receive a background result; run the task without background.");
-		const refusal = this.#backgroundRefusal(agent);
+		const refusal = this.#backgroundRefusal(agent) ?? (agent.name === "worker" ? await this.#noSandbox() : undefined);
 		if (refusal !== undefined) return fail(refusal);
 		let place: ReturnType<BackgroundTasks["reserve"]>;
 		try {
@@ -2297,6 +2297,22 @@ export class Session {
 		if (problem !== undefined)
 			return `Refused: the session's profile had problems when it was read (${problem.path}: ${problem.message}), so the subagent's backend and model cannot be confirmed; fix the profile and start a new session, or run the task without background.`;
 		return undefined;
+	}
+
+	/**
+	 * Why a worker cannot run in the background here: it writes only inside the sandbox, so with it off or not available
+	 * (or no tool that runs in it) it is refused. Undefined when the sandbox is there.
+	 */
+	async #noSandbox(): Promise<string | undefined> {
+		const tool = this.#options.tools.find((candidate) => candidate.sandboxStatus !== undefined);
+		const status = this.#options.noSandbox
+			? { available: false as const, reason: SANDBOX_OFF }
+			: ((await tool?.sandboxStatus?.({ cwd: this.#options.cwd })) ?? {
+					available: false as const,
+					reason: "no tool runs in it",
+				});
+		if (status.available) return undefined;
+		return `Refused: a worker runs in the background only in the sandbox, which is not available here (${status.reason}); run it without background.`;
 	}
 
 	/** What a subagent runs with: its entry in the profile (only the worker and the explorer have one), else the parent's. */
