@@ -75,6 +75,9 @@ the original images again.
 
 Saved prompt entries carry an optional `imageCount`, not image bytes. RPC resume returns that count
 in `entries`; normalized pixels remain in the backend resume state (or Claude Code's own transcript).
+The CLI and TUI replay show `[Image #n]` markers for that count, including image-only prompts,
+without duplicating markers already present in the saved text. These are transcript labels,
+not attachments in the new draft.
 A resumed conversation is already history: changing backend before its next prompt still summarizes
 it rather than starting the new backend empty.
 

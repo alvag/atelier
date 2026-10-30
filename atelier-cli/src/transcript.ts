@@ -41,11 +41,29 @@ function asking(turn: SavedTurn, event: Extract<SavedEntry, { type: "event" }>["
 	}
 }
 
+/** Restore visible attachment counts without adding markers already present in an older transcript. */
+function promptWithImages(text: string, count = 0): string {
+	const present = new Set(text.match(/\[Image #[1-9]\d*\]/g) ?? []);
+	const missing: string[] = [];
+	for (let next = 1; present.size + missing.length < count; next++) {
+		const marker = `[Image #${next}]`;
+		if (!present.has(marker)) missing.push(marker);
+	}
+	if (missing.length === 0) return text;
+	return `${text}${text !== "" && !/\s$/.test(text) ? " " : ""}${missing.join(" ")}`;
+}
+
 /** The prompts of a saved session, each with the final text the main agent wrote in that turn. */
 function turnsOf(entries: readonly SavedEntry[]): SavedTurn[] {
 	const turns: SavedTurn[] = [];
 	for (const entry of entries) {
-		if (entry.type === "prompt") turns.push({ turnId: entry.turnId, prompt: entry.text, steers: [], asked: [] });
+		if (entry.type === "prompt")
+			turns.push({
+				turnId: entry.turnId,
+				prompt: promptWithImages(entry.text, entry.imageCount),
+				steers: [],
+				asked: [],
+			});
 		else if (entry.type === "text" && entry.agent === undefined && entry.parentCallId === undefined) {
 			const turn = turns.at(-1);
 			if (turn?.turnId === entry.turnId) turn.answer = entry.text;

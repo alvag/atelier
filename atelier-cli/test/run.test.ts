@@ -1965,6 +1965,24 @@ describe("saved sessions", () => {
 		expect(h.out()).not.toContain("child words");
 	});
 
+	it.each([
+		{ text: "compare", count: 2, shown: "compare [Image #1] [Image #2]" },
+		{ text: "", count: 1, shown: "[Image #1]" },
+		{ text: "already [Image #7]", count: 1, shown: "already [Image #7]" },
+		{ text: "[Image #1] repeats [Image #1]", count: 2, shown: "[Image #1] repeats [Image #1] [Image #2]" },
+		{ text: "literal [Image #1]", count: 0, shown: "literal [Image #1]" },
+	])("shows saved prompt image counts without duplicating markers: $text / $count", async ({ text, count, shown }) => {
+		const record = new SessionStore(home).create(cwd);
+		record.config({ backend: "claude-code", mode: "normal" });
+		record.prompt("images", text, count);
+		record.state("claude-code", { sessionId: "cc-images" });
+		await record.flush();
+		const { h, code } = await resumeWith(["--resume", record.id, "go"]);
+		expect(code).toBe(0);
+		expect(h.out()).toContain(`> ${shown}\n`);
+		expect(h.backend.prompts).toEqual(["go"]);
+	});
+
 	it("leaves the questions the user answered out of a line-by-line resume", async () => {
 		const store = new SessionStore(home);
 		const record = store.create(cwd);
