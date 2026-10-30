@@ -35,6 +35,12 @@ resuming with one sends the original normalized pixels again. Compaction can sti
 older history with a summary. A text-only carried prompt marks images it cannot retain with
 `[image omitted: the carried prompt is text-only; see the summary]`.
 
+Responses uses an **8,192-token allowance per unmeasured image** for context and compaction-tail
+estimates, rather than treating base64 as text. Text keeps its character-based estimate. This is a
+compaction heuristic, not a billing estimate: API-reported usage replaces it after a response,
+including the first response after resuming. Large encoded images alone therefore do not count
+as hundreds of thousands of text tokens or force a summary request.
+
 Saved sessions can contain normalized image bytes. Treat saved or exported histories as sensitive.
 
 ## Preparation and limits

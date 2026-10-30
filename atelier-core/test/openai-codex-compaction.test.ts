@@ -5,7 +5,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { AuthStore, authFile } from "../src/auth-store.ts";
-import type { BackendSession, BackendStartOptions } from "../src/backend.ts";
+import type { BackendSession, BackendStartOptions, ResumeState } from "../src/backend.ts";
 import { OpenAiCodexBackend } from "../src/backends/openai-codex/backend.ts";
 import { turnPromptBeforeItem } from "../src/backends/openai-codex/compaction.ts";
 import { SUMMARY_HEADINGS } from "../src/compaction/compactor.ts";
@@ -84,6 +84,126 @@ async function twoTurns(session: BackendSession, lastUsage = small): Promise<voi
 	api.answers.push({ events: completed([textItem("ok")], lastUsage) });
 	await all(session.send("second"));
 }
+
+async function screenshotData(): Promise<string> {
+	const pixels = Buffer.alloc(512 * 512 * 4);
+	let seed = 42;
+	for (let index = 0; index < pixels.length; index++) {
+		seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+		pixels[index] = seed >>> 24;
+	}
+	const data = (
+		await sharp(pixels, { raw: { width: 512, height: 512, channels: 4 } })
+			.png()
+			.toBuffer()
+	).toString("base64");
+	expect(data.length).toBeGreaterThan(1_400_000);
+	return data;
+}
+
+async function imageSession(data: string, resume?: ResumeState): Promise<BackendSession> {
+	return new OpenAiCodexBackend({ store, codexUrl: api.url, baseDelayMs: 0 }).start({
+		cwd: "/work",
+		systemPromptAppend: "",
+		tools: [],
+		executeTool: async () => ({
+			ok: true,
+			output: "Image: 512×512 (image/png)",
+			images: [{ mimeType: "image/png", data }],
+		}),
+		...(resume === undefined ? {} : { resume }),
+	});
+}
+
+it("does not compact a low-token turn because its read image has a large base64 encoding", async () => {
+	const data = await screenshotData();
+	api.answers.push(
+		{
+			events: completed([callItem("capture", "read", { path: "capture.png" })], {
+				input_tokens: 2000,
+				output_tokens: 5,
+			}),
+		},
+		...Array.from({ length: 3 }, () => ({
+			events: completed([textItem(SUMMARY)], { input_tokens: 2000, output_tokens: 5 }),
+		})),
+	);
+	const session = await imageSession(data);
+	try {
+		const events = await all(session.send("earlier prompt"));
+		expect(events.filter((event) => event.type === "compaction_started")).toEqual([]);
+		expect(api.requests).toHaveLength(2);
+		expect(events.at(-1)).toMatchObject({
+			type: "turn_finished",
+			requests: 2,
+			context: { tokens: 2005, compactAt: 223616 },
+		});
+		expect(JSON.stringify(inputOf(api.requests[1]))).toContain(`data:image/png;base64,${data}`);
+	} finally {
+		await session.close();
+	}
+});
+
+it("keeps the original prompt and pixels verbatim on successive small turns after resume", async () => {
+	const data = await screenshotData();
+	const original = { type: "message", role: "user", content: [{ type: "input_text", text: "earlier prompt" }] };
+	const seed = await imageSession(data, {
+		messages: [
+			original,
+			{ type: "function_call", call_id: "capture", name: "read", arguments: '{"path":"capture.png"}' },
+			{ type: "function_call_output", call_id: "capture", output: "Image: 512×512 (image/png)" },
+			{
+				type: "message",
+				role: "user",
+				content: [{ type: "input_image", image_url: `data:image/png;base64,${data}`, detail: "auto" }],
+			},
+			{ type: "message", role: "assistant", content: [{ type: "output_text", text: "I saw the image." }] },
+		],
+	});
+	let resume = seed.resumeState?.();
+	await seed.close();
+	api.answers.push(
+		...Array.from({ length: 6 }, () => ({
+			events: completed([textItem(SUMMARY)], { input_tokens: 2000, output_tokens: 5 }),
+		})),
+	);
+	for (let turn = 0; turn < 2; turn++) {
+		if (resume === undefined) throw new Error("Missing saved image history.");
+		const session = await imageSession(data, resume);
+		try {
+			const before = api.requests.length;
+			const events = await all(session.send("small follow-up"));
+			expect(events.filter((event) => event.type === "compaction_started")).toEqual([]);
+			expect(api.requests).toHaveLength(before + 1);
+			expect(inputOf(api.requests.at(-1))).toContainEqual(original);
+			expect(JSON.stringify(inputOf(api.requests.at(-1)))).toContain(`data:image/png;base64,${data}`);
+			resume = session.resumeState?.();
+		} finally {
+			await session.close();
+		}
+	}
+});
+
+it("still compacts large text at the default threshold", async () => {
+	const text = "x".repeat(1_400_000);
+	const session = await imageSession("", {
+		messages: [
+			{ type: "message", role: "user", content: [{ type: "input_text", text }] },
+			{ type: "message", role: "assistant", content: [{ type: "output_text", text: "tail ".repeat(17000) }] },
+		],
+	});
+	api.answers.push({ events: completed([textItem(SUMMARY)]) }, { events: completed([textItem("Done.")]) });
+	try {
+		const events = await all(session.send("small follow-up"));
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "compaction_finished", ok: true, reason: "threshold" }),
+		);
+		expect(api.requests).toHaveLength(2);
+		expect(JSON.stringify(inputOf(api.requests[0]))).toContain(text);
+	} finally {
+		await session.close();
+	}
+});
 
 it("explains each image a text-only carried prompt cannot retain", async () => {
 	const data = (

@@ -6,9 +6,15 @@ import type { ResponsesItem } from "../../responses/client.ts";
  * tools touched, and the history that replaces it. The summary request and its checks are the compactor's own.
  */
 
-/** About four characters per token, of the item as the API takes it: only used to size the verbatim tail. */
+// A coarse allowance until API usage measures the image; encoded bytes are not text tokens.
+const IMAGE_TOKENS = 8_192;
+
+/** Estimates unmeasured context and the verbatim tail: four text characters per token, plus an image allowance. */
 export function estimateItem(item: ResponsesItem): number {
-	return Math.ceil(JSON.stringify(item).length / 4);
+	if (item.type !== "message") return Math.ceil(JSON.stringify(item).length / 4);
+	const textContent = item.content.filter((part) => part.type !== "input_image");
+	const images = item.content.length - textContent.length;
+	return Math.ceil(JSON.stringify({ ...item, content: textContent }).length / 4) + images * IMAGE_TOKENS;
 }
 
 const isInput = (item: ResponsesItem | undefined) =>
