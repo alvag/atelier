@@ -139,20 +139,24 @@ describe("the delegation rules", () => {
 		expect(withExplorer).not.toContain("worker");
 	});
 
-	it("tie an ODD task's route to them, naming only the agents the session has", async () => {
+	it("tie an ODD task's route to them, naming only the agents the session has, and with an explorer judge breadth first", async () => {
 		const promptWith = async (agents?: SubagentDefinition[]) => {
 			const backend = new FakeBackend([]);
 			const subagents = agents === undefined ? {} : { subagents: { agents, createBackend: () => new FakeBackend([]) } };
 			await (await Session.start({ backend, cwd: process.cwd(), tools, odd: true, ...subagents })).close();
 			return backend.startOptions?.systemPromptAppend ?? "";
 		};
-		const line = (who: string) =>
-			`one task per deliverable. You never write the user's words into the log: Atelier logs them verbatim.\n- A task's route says who does it: ${who}, following the task tool's rules on when to delegate.\n- Then go task by task`;
+		const line = (who: string, after = "") =>
+			`one task per deliverable. You never write the user's words into the log: Atelier logs them verbatim.\n- A task's route says who does it: ${who}, following the task tool's rules on when to delegate.\n${after}- Then go task by task`;
+		// What made the main agent hand a wide question to an explorer instead of reading it all itself (#124).
+		const breadth =
+			"- Before your first read for a question, judge its breadth: if answering needs more than about 3 reads or 10k tokens of code, do not read it yourself; send one explorer with the question and the paths you know, and ask for at most about 2k tokens with path:line evidence. A question you can answer in up to 3 reads stays inline.\n";
 
-		expect(await promptWith([...BUILTIN_AGENTS])).toContain(line("inline (you), explorer or worker"));
+		expect(await promptWith([...BUILTIN_AGENTS])).toContain(line("inline (you), explorer or worker", breadth));
 		const onlyScout = await promptWith([{ ...explorer, name: "scout" }]);
 		expect(onlyScout).toContain(line("inline (you) or scout"));
 		expect(onlyScout).not.toContain("explorer");
+		expect(onlyScout).not.toContain("breadth");
 		expect(onlyScout).not.toContain("worker");
 		// Without subagents there is no task tool to follow.
 		expect(await promptWith()).not.toContain("route says");
