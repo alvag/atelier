@@ -337,6 +337,20 @@ describe("a worker in the background", () => {
 		expect(parent.prompts[1]).toMatch(/Its changes: 1 file changed, \+1 -1/);
 	});
 
+	it("skips a node_modules of the parent's that is a dangling link, and starts the worker all the same", async () => {
+		mkdirSync(join(repo, "pkg"), { recursive: true });
+		symlinkSync(join(repo, "gone"), join(repo, "pkg", "node_modules"));
+		const { parent, session, play, woke } = await started(
+			[[work("c1"), { event: finished }], [{ event: finished }]],
+			[() => [text("done"), { event: finished }]],
+		);
+		await play(session.send("go"));
+		expect(parent.toolResults[0]?.output).toMatch(/^Started worker in the background as task task-1/);
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(parent.prompts[1]).toContain("It changed no files.");
+	});
+
 	it("leaves the dependency folders out of the patch, whatever the worker made of them", async () => {
 		writeFileSync(join(repo, ".gitignore"), "ignored.log\nnode_modules/\n");
 		mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });

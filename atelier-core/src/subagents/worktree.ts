@@ -319,9 +319,13 @@ async function linkDependencies(top: string, tree: string, folders: readonly str
 			)
 		)
 			continue;
+		// A folder that leads nowhere (a dangling link) or cannot be listed is skipped, as the parent has nothing there.
+		const from = await realpath(join(top, folder)).catch(() => undefined);
+		const entries =
+			from === undefined ? undefined : await readdir(from, { withFileTypes: true }).catch(() => undefined);
+		if (from === undefined || entries === undefined) continue;
 		await mkdir(into, { recursive: true });
-		const from = await realpath(join(top, folder));
-		for (const entry of await readdir(from, { withFileTypes: true })) {
+		for (const entry of entries) {
 			const path = join(folder, entry.name);
 			// A scope and `.bin` hold entries of their own that may lead to a workspace package.
 			if (entry.isDirectory() && (entry.name.startsWith("@") || entry.name === ".bin")) {
