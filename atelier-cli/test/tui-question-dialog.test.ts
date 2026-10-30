@@ -711,6 +711,29 @@ describe("QuestionDialog option previews", () => {
 			expect(rows.length).toBeGreaterThan(1);
 		});
 
+		it("never splits a hyperlink's sequence, and closes and reopens it around each row break", () => {
+			const open = "\x1b]8;;https://example.com\x07";
+			const close = "\x1b]8;;\x07";
+			const shownLines = focused(`${"x".repeat(30)}${open}link${close}tail`, 60);
+			const rows = shownLines.filter((line) => line.includes("x".repeat(30)) || line.includes("tail"));
+			expect(rows).toHaveLength(2);
+			// What is left once the whole sequences are taken out has no escape character.
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: a hyperlink's sequence starts with the escape character
+			const sequences = /\x1b\]8;;[^\x07]*\x07/g;
+			for (const row of rows) expect(row.replace(sequences, "")).not.toContain("\x1b");
+			expect(rows[0]).toContain(`${open}lin${close} `);
+			expect(rows[1]).toContain(`│ ${open}k${close}tail`);
+			expect(rows.map((row) => row.replace(sequences, "")).join("\n")).toContain("xlin │");
+		});
+
+		it("ends a color at each row break and starts it again on the next row, before the panel's side", () => {
+			const shownLines = focused(`\x1b[31m${"r".repeat(40)}\x1b[0m`, 60);
+			const rows = shownLines.filter((line) => line.includes("rrr"));
+			expect(rows).toHaveLength(2);
+			expect(rows[0]).toContain(`│ \x1b[31m${"r".repeat(33)}\x1b[0m │`);
+			expect(rows[1]).toContain(`│ \x1b[31m${"r".repeat(7)}\x1b[0m`);
+		});
+
 		it("keeps a marker of the sanitizer whole on one row", () => {
 			const marker = "⟨U+061C⟩";
 			const preview = `${"x".repeat(30)}${marker}tail`;
