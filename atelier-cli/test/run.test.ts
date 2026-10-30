@@ -2540,6 +2540,57 @@ describe("ask_user on the line terminal", () => {
 		});
 	});
 
+	it("prints each option's preview below it, hidden characters shown, and answers as without one", async () => {
+		const previewed = [
+			{
+				id: "fetch",
+				question: "How should web_fetch answer a private address?",
+				options: [
+					{ id: "empty", label: "Empty response", preview: 'web_fetch("http://10.0.0.1")\n→ ""\n' },
+					{
+						id: "error",
+						label: "Explicit error",
+						description: "Says why it failed.",
+						recommended: true,
+						preview: '\x1b[31mweb_fetch("http://10.0.0.1")\n\n→ Error: refused',
+					},
+					{ id: "ask", label: "Ask first" },
+				],
+			},
+		];
+		const h = harness([[{ toolCall: { tool: "ask_user", input: { questions: previewed } } }, { event: finished }]], {
+			isTTY: true,
+			keepStdinOpen: true,
+			input: [],
+		});
+		const pending = run(["--no-review", "ask"], h.io, h.createBackend);
+		await until(() => h.out().includes("Choose 1-4 or /cancel: "));
+		(h.io.stdin as PassThrough).write("1\n");
+		await until(() => h.backend.toolResults.length === 1);
+		h.io.stdin.end();
+		await pending;
+		expect(h.out()).toContain(
+			"Question 1/1: How should web_fetch answer a private address?\n" +
+				"  1. Explicit error (Recommended)\n" +
+				"     Says why it failed.\n" +
+				'     │ ␛[31mweb_fetch("http://10.0.0.1")\n' +
+				"     │\n" +
+				"     │ → Error: refused\n" +
+				"  2. Empty response\n" +
+				'     │ web_fetch("http://10.0.0.1")\n' +
+				'     │ → ""\n' +
+				"  3. Ask first\n" +
+				"  4. Other...\n",
+		);
+		expect(h.out()).not.toContain("\x1b");
+		const tool = h.backend.startOptions?.tools.find((entry) => entry.name === "ask_user");
+		expect(tool?.description).toContain("An option of a single-choice question may also include a preview");
+		expect(JSON.parse(h.backend.toolResults[0]?.output ?? "")).toEqual({
+			status: "answered",
+			answers: [{ questionId: "fetch", optionId: "error", label: "Explicit error" }],
+		});
+	});
+
 	it("shows hidden characters in the question, labels and descriptions, and keeps the Other text raw", async () => {
 		const csi = "\x1b[31mred\x1b[0m";
 		const osc = "\x1b]0;title\x07";
