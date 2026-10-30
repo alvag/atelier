@@ -71,14 +71,28 @@ export function outcomeTitle(count: number, outcome: AskOutcome): string {
 	}
 }
 
-/** What the user answered to `question`: the option's label, their own text after `Type something:`, or nothing. */
+/**
+ * What the user answered to `question`: the option's label, their own text after `Type something:`, or nothing; of a
+ * multi-select question, the labels checked and their own text, separated by commas, or `none`.
+ */
 function answerOf(question: UserQuestion, outcome: AskOutcome): string | undefined {
 	if (outcome.status !== "answered") return undefined;
 	const answer = outcome.answers.find((entry) => entry.questionId === question.id);
 	if (answer === undefined) return undefined;
-	if ("other" in answer) return `Type something: ${shown(oneLine(answer.other))}`;
-	const option = question.options.find((candidate) => candidate.id === answer.optionId);
-	return option === undefined ? undefined : shown(option.label);
+	const label = (optionId: string) => question.options.find((candidate) => candidate.id === optionId)?.label;
+	const typed = (other: string) => `Type something: ${shown(oneLine(other))}`;
+	if ("optionIds" in answer) {
+		const labels = answer.optionIds.map(label);
+		if (labels.some((entry) => entry === undefined)) return undefined;
+		const given = [
+			...labels.map((entry) => shown(entry ?? "")),
+			...(answer.other === undefined ? [] : [typed(answer.other)]),
+		];
+		return given.length === 0 ? "none" : given.join(", ");
+	}
+	if ("other" in answer) return typed(answer.other);
+	const chosen = label(answer.optionId);
+	return chosen === undefined ? undefined : shown(chosen);
 }
 
 /**

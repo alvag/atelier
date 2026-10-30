@@ -180,6 +180,108 @@ describe("user answers", () => {
 	});
 });
 
+describe("multi-select questions", () => {
+	const checks = (recommended: boolean[] = [true, true, false]) => ({
+		id: "checks",
+		question: "Which checks?",
+		multiSelect: true,
+		options: ["biome", "tsc", "vitest"].map((id, index) => ({
+			id,
+			label: { biome: "Biome", tsc: "TypeScript", vitest: "Vitest" }[id] as string,
+			recommended: recommended[index] ?? false,
+		})),
+	});
+	const schemaOf = (multiSelect: boolean) =>
+		JSON.stringify(z.toJSONSchema(z.object(createAskUserTool(undefined, { multiSelect }).inputShape)));
+
+	it("keeps them away from a session that did not ask for them: schema, description and input", async () => {
+		expect(schemaOf(false)).not.toContain("multiSelect");
+		expect(createAskUserTool(undefined, { multiSelect: false }).description).toBe(createAskUserTool().description);
+		expect(createAskUserTool().description).not.toContain("multiSelect");
+		for (const multiSelect of [true, false]) {
+			const ask = vi.fn<AskUser>();
+			const questions = [{ ...question(), multiSelect }];
+			await expect(createAskUserTool(ask).execute({ questions }, context)).rejects.toThrow(ToolInputError);
+			expect(ask).not.toHaveBeenCalled();
+		}
+	});
+
+	it("tells the model about them when the session asked for them", () => {
+		const tool = createAskUserTool(undefined, { multiSelect: true });
+		expect(tool.description).toContain(
+			"A question takes one answer unless multiSelect: true lets the user check any number of its options, or none. " +
+				"Mark exactly one option of a single-choice question recommended: true, and any number, or none, of a multi-select one;",
+		);
+		expect(schemaOf(true)).toContain("multiSelect");
+	});
+
+	it.each([[[false, false, false]], [[true, true, false]], [[true, true, true]]])(
+		"accepts %j recommended in a multi-select question",
+		async (recommended) => {
+			const ask = vi.fn<AskUser>().mockResolvedValue({ status: "cancelled", reason: "user" });
+			const questions = [checks(recommended)];
+			await createAskUserTool(ask, { multiSelect: true }).execute({ questions }, context);
+			expect(ask).toHaveBeenCalledExactlyOnceWith(questions, context);
+		},
+	);
+
+	it.each([[[false, false]], [[true, true]]])(
+		"still wants one recommended of a single-choice question, not %j",
+		async (flags) => {
+			const ask = vi.fn<AskUser>();
+			const options = question().options.map((option, index) => ({ ...option, recommended: flags[index] }));
+			for (const multiSelect of [false, undefined]) {
+				const questions = [{ ...question(), options, ...(multiSelect === undefined ? {} : { multiSelect }) }];
+				await expect(createAskUserTool(ask, { multiSelect: true }).execute({ questions }, context)).rejects.toThrow(
+					ToolInputError,
+				);
+			}
+			expect(ask).not.toHaveBeenCalled();
+		},
+	);
+
+	it("returns the options checked, none included, with their labels and the user's own text", async () => {
+		const questions = [checks(), { ...checks(), id: "extras" }, question()];
+		const answers = [
+			{ questionId: "checks", optionIds: ["biome", "tsc"], other: " also docs " },
+			{ questionId: "extras", optionIds: [] },
+			{ questionId: "q1", optionId: "a" },
+		];
+		const tool = createAskUserTool(async () => ({ status: "answered", answers }), { multiSelect: true });
+		const outcome = await tool.execute({ questions }, context);
+		expect(outcome).toMatchObject({ ok: true, summary: "User answered 3 questions." });
+		expect(JSON.parse(outcome.output)).toEqual({
+			status: "answered",
+			answers: [
+				{ ...answers[0], labels: ["Biome", "TypeScript"] },
+				{ ...answers[1], labels: [] },
+				{ ...answers[2], label: "Minimal change" },
+			],
+		});
+	});
+
+	it.each([
+		["several options for a single-choice question", "q1", { optionIds: ["a", "b"] }],
+		["no option for a single-choice question", "q1", { optionIds: [] }],
+		["one optionId for a multi-select question", "checks", { optionId: "biome" }],
+		["bare Other for a multi-select question", "checks", { other: "Mine" }],
+		["a repeated option", "checks", { optionIds: ["biome", "biome"] }],
+		["an unknown option", "checks", { optionIds: ["biome", "missing"] }],
+		["blank Other", "checks", { optionIds: [], other: " " }],
+		["both optionId and optionIds", "checks", { optionId: "biome", optionIds: ["biome"] }],
+	])("rejects %s", (_name, questionId, form) => {
+		const questions = [question(), checks()];
+		const answers = questions.map((entry) =>
+			entry.id === questionId
+				? { questionId, ...form }
+				: entry.id === "q1"
+					? { questionId: "q1", optionId: "a" }
+					: { questionId: entry.id, optionIds: [] },
+		);
+		expect(() => parseUserAnswers(questions, answers)).toThrow();
+	});
+});
+
 it.each([
 	{ status: "cancelled", reason: "user" },
 	{ status: "cancelled", reason: "interrupted" },
