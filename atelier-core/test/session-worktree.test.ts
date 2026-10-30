@@ -526,6 +526,35 @@ describe("a worker in the background", () => {
 		for (const path of [mimic, shaped, forged]) expect(listed).toContain(`worktree ${path}`);
 	});
 
+	it("never takes for Atelier's a worktree of the user's reached through a link, dangling or not", async () => {
+		const reason = "atelier: background worker";
+		const theirs = await realpath(await mkdtemp(join(tmpdir(), "atelier-theirs-")));
+		const inScratch = await realpath(await mkdtemp(join(tmpdir(), "atelier-session-")));
+		// Both registered outside the scratch directories, then made to lead into one by a link above them.
+		const dangling = join(theirs, "gone", "work", "worktrees", "1", "tree");
+		const existing = join(theirs, "there", "work", "worktrees", "2", "tree");
+		for (const path of [dangling, existing])
+			git(repo, "worktree", "add", "-q", "--detach", "--lock", "--reason", reason, path, "HEAD");
+		await rm(join(theirs, "gone"), { recursive: true, force: true });
+		await rm(join(theirs, "there"), { recursive: true, force: true });
+		symlinkSync(join(tmpdir(), "atelier-session-missing"), join(theirs, "gone"));
+		symlinkSync(inScratch, join(theirs, "there"));
+		try {
+			const { session, play, woke } = await started(
+				[[work("c1"), { event: finished }], [{ event: finished }]],
+				[() => [text("done"), { event: finished }]],
+			);
+			await play(session.send("go"));
+			await until(() => woke() === 1);
+			await play(session.nextQueued());
+			const listed = git(repo, "worktree", "list", "--porcelain", "-z").split("\0");
+			for (const path of [dangling, existing]) expect(listed).toContain(`worktree ${path}`);
+		} finally {
+			await rm(theirs, { recursive: true, force: true });
+			await rm(inScratch, { recursive: true, force: true });
+		}
+	});
+
 	it("denies a write into the parent's tree, without asking, even in a folder the user's rules allow", async () => {
 		const rules = new PermissionRules();
 		await rules.allow([{ kind: "path", value: repo }], "session");
