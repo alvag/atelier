@@ -562,6 +562,19 @@ describe("AnthropicApiBackend", () => {
 		]);
 	});
 
+	it("runs a turn without a request limit when nobody passes one, until the model stops", async () => {
+		const loop = (id: string): Reply => ({
+			blocks: [{ type: "tool_use", id, name: "echo", input: { text: id } }],
+			stopReason: "tool_use",
+		});
+		const loops = Array.from({ length: 51 }, (_, i) => loop(`tu_${i}`));
+		const { session, api } = await start([...loops, { blocks: [{ type: "text", text: "Done" }] }]);
+		const events = await collect(session.send("loop"));
+		expect(api.bodies).toHaveLength(52);
+		expect(events.filter((e) => e.type === "error")).toEqual([]);
+		expect(finished(events)).toEqual([expect.objectContaining({ stopReason: "end_turn", requests: 52 })]);
+	});
+
 	it("stops at the request limit with a turn_limit error", async () => {
 		const loop = (id: string): Reply => ({
 			blocks: [{ type: "tool_use", id, name: "echo", input: { text: id } }],
@@ -576,7 +589,7 @@ describe("AnthropicApiBackend", () => {
 		expect(finished(events)).toEqual([expect.objectContaining({ stopReason: "turn_limit" })]);
 	});
 
-	it("lets the start options cap a turn's requests below the backend's own limit", async () => {
+	it("stops at the request limit the start options pass with a turn_limit error", async () => {
 		const loop = (id: string): Reply => ({
 			blocks: [{ type: "tool_use", id, name: "echo", input: { text: id } }],
 			stopReason: "tool_use",

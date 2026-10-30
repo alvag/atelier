@@ -120,6 +120,37 @@ async function turn(session: BackendSession, prompt = "hi"): Promise<AtelierEven
 	return events;
 }
 
+it("runs a turn without a request limit when nobody passes one, until the model stops", async () => {
+	await signInLegacy();
+	for (let i = 0; i < 51; i++)
+		api.answers.push({ events: completed([callItem(`call_${i}`, "echo", { text: `${i}` })]) });
+	api.answers.push({ events: completed([textItem("Done")]) });
+	const { session, calls } = await start();
+	const events = await turn(session);
+	expect(api.requests).toHaveLength(52);
+	expect(calls).toHaveLength(51);
+	expect(events.filter((event) => event.type === "error")).toEqual([]);
+	expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "end_turn", requests: 52 });
+});
+
+it("stops at the request limit the caller passes with a turn_limit error", async () => {
+	await signInLegacy();
+	for (let i = 0; i < 3; i++)
+		api.answers.push({ events: completed([callItem(`call_${i}`, "echo", { text: `${i}` })]) });
+	const { session } = await start({ maxRequestsPerTurn: 2 });
+	const events = await turn(session);
+	expect(api.requests).toHaveLength(2);
+	expect(events.filter((event) => event.type === "error")).toEqual([
+		{
+			type: "error",
+			code: "turn_limit",
+			message: "The turn reached its limit of 2 model requests.",
+			recoverable: true,
+		},
+	]);
+	expect(events.at(-1)).toMatchObject({ type: "turn_finished", stopReason: "turn_limit", requests: 2 });
+});
+
 it("runs a turn on ChatGPT's Codex endpoint: the account, the tools, the reasoning, the usage with the cache", async () => {
 	await signInLegacy();
 	api.answers.push({
