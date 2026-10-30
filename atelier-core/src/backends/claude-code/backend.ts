@@ -31,6 +31,8 @@ import {
 	type JsonValue,
 	ZERO_USAGE,
 } from "../../events.ts";
+import { imageInputProblem } from "../../image-support.ts";
+import type { ImageAttachment } from "../../images.ts";
 import { BACKEND_DEFAULTS } from "../../options.ts";
 import { summarizesThinking, type ThinkingSend, thinkingToSend } from "../../pricing.ts";
 import type { ToolDefinition } from "../../tools/types.ts";
@@ -432,14 +434,16 @@ class ClaudeCodeSession implements BackendSession {
 		this.#turn = undefined;
 	}
 
-	async *send(prompt: string): AsyncIterable<AtelierEventBody> {
+	async *send(prompt: string, images: readonly ImageAttachment[] = []): AsyncIterable<AtelierEventBody> {
+		const problem = images.length === 0 ? undefined : imageInputProblem(BACKEND_ID, this.#model);
+		if (problem !== undefined) throw new Error(problem);
 		let sent = prompt;
 		if (this.#stateDue) {
 			this.#stateDue = false;
 			const state = this.#compactionState?.();
 			if (state !== undefined) sent = `${state}\n\n${prompt}`;
 		}
-		yield* this.#turnFor(sent);
+		yield* this.#turnFor(sent, images);
 	}
 
 	/** Claude Code's own /compact; its compact_boundary reports the result. */
@@ -475,7 +479,7 @@ class ClaudeCodeSession implements BackendSession {
 		};
 	}
 
-	async *#turnFor(prompt: string): AsyncIterable<AtelierEventBody> {
+	async *#turnFor(prompt: string, images: readonly ImageAttachment[] = []): AsyncIterable<AtelierEventBody> {
 		const early = this.#early;
 		this.#early = [];
 		// A level belongs to the turn its Stop hook ran in, also when this turn only reports a failure.
@@ -492,7 +496,20 @@ class ClaudeCodeSession implements BackendSession {
 		this.#turn = turn;
 		this.#input.push({
 			type: "user",
-			message: { role: "user", content: prompt },
+			message: {
+				role: "user",
+				// Images ride as native content blocks; Claude Code keeps them in its own transcript for `resume`.
+				content:
+					images.length === 0
+						? prompt
+						: [
+								...(prompt === "" ? [] : [{ type: "text" as const, text: prompt }]),
+								...images.map((image) => ({
+									type: "image" as const,
+									source: { type: "base64" as const, media_type: image.mimeType, data: image.data },
+								})),
+							],
+			},
 			parent_tool_use_id: null,
 		} as SDKUserMessage);
 		yield* turn;

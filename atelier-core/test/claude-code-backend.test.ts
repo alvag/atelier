@@ -1,4 +1,5 @@
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -69,6 +70,8 @@ function fakeQuery(
 	const calls: {
 		options: Options;
 		prompts: string[];
+		/** The content of each user message exactly as the query got it. */
+		contents: unknown[];
 		/** The prompts and the control calls (`setModel:x`, `flags:{...}`), in the order the query got them. */
 		order: string[];
 		interrupts: number;
@@ -77,6 +80,7 @@ function fakeQuery(
 	} = {
 		options: {},
 		prompts: [],
+		contents: [],
 		order: [],
 		interrupts: 0,
 		closed: false,
@@ -88,6 +92,7 @@ function fakeQuery(
 			yield* boot;
 			for await (const message of prompt as AsyncIterable<SDKUserMessage>) {
 				calls.prompts.push(message.message.content as string);
+				calls.contents.push(message.message.content);
 				calls.order.push(`prompt:${message.message.content as string}`);
 				for (const item of replies.shift() ?? []) {
 					if (item instanceof Error) throw item;
@@ -1563,6 +1568,54 @@ describe("ClaudeCodeBackend saved sessions", () => {
 		expect(calls.options.persistSession).toBe(true);
 		// Until Claude Code names a session, the one resumed is the state.
 		expect(session.resumeState?.()).toEqual({ sessionId: "cc-7" });
+		await session.close();
+	});
+
+	it("sends prompt images as native user content, also without text, and resumes the session that holds them", async () => {
+		const data = (
+			await sharp({ create: { width: 1, height: 1, channels: 3, background: "red" } })
+				.png()
+				.toBuffer()
+		).toString("base64");
+		const images = [{ mimeType: "image/png" as const, data }];
+		const block = { type: "image", source: { type: "base64", media_type: "image/png", data } };
+		const first = fakeQuery(
+			[init],
+			[
+				[text("a"), result(0.01)],
+				[text("b"), result(0.02)],
+			],
+		);
+		const session = await new ClaudeCodeBackend({ query: first.query, env: {} }).start({ ...saved, persist: true });
+		for await (const _ of session.send("What is this?", images));
+		for await (const _ of session.send("", images));
+		expect(first.calls.contents).toEqual([[{ type: "text", text: "What is this?" }, block], [block]]);
+		// The pixels live in Claude Code's own transcript: resuming its session is what keeps them.
+		expect(session.resumeState?.()).toEqual({ sessionId: "s" });
+		await session.close();
+		const again = fakeQuery([init], [[text("c"), result(0.03)]]);
+		const resumed = await new ClaudeCodeBackend({ query: again.query, env: {}, sessionExists: async () => true }).start(
+			{
+				...saved,
+				persist: true,
+				resume: { sessionId: "s" },
+			},
+		);
+		for await (const _ of resumed.send("And now?"));
+		expect(again.calls.options.resume).toBe("s");
+		expect(again.calls.contents).toEqual(["And now?"]);
+		await resumed.close();
+	});
+
+	it("refuses fresh images for a model that does not take them before sending anything", async () => {
+		const { query, calls } = fakeQuery([init], [[text("a"), result(0.01)]]);
+		const session = await new ClaudeCodeBackend({ query, env: {} }).start({ ...saved, model: "mystery-model" });
+		await expect(
+			(async () => {
+				for await (const _ of session.send("Look", [{ mimeType: "image/png", data: "AA==" }]));
+			})(),
+		).rejects.toThrow("Image input support is unknown for claude-code/mystery-model.");
+		expect(calls.contents).toEqual([]);
 		await session.close();
 	});
 

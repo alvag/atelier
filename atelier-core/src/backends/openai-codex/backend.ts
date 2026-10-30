@@ -28,6 +28,7 @@ import {
 	ZERO_USAGE,
 } from "../../events.ts";
 import { imageInputProblem, imageOmission } from "../../image-support.ts";
+import type { ImageAttachment } from "../../images.ts";
 import type { ThinkingLevel } from "../../profiles/index.ts";
 import {
 	buildResponsesBody,
@@ -268,8 +269,10 @@ class OpenAiCodexSession implements BackendSession {
 		if (change.compaction !== undefined) this.#summary = change.compaction ?? undefined;
 	}
 
-	async *send(prompt: string): AsyncIterable<AtelierEventBody> {
+	async *send(prompt: string, images: readonly ImageAttachment[] = []): AsyncIterable<AtelierEventBody> {
 		if (this.#closed) throw new Error("The openai-codex session is closed.");
+		const problem = images.length === 0 ? undefined : imageInputProblem(BACKEND_ID, this.#model);
+		if (problem !== undefined) throw new Error(problem);
 		if (!this.#announced) {
 			this.#announced = true;
 			yield {
@@ -285,7 +288,20 @@ class OpenAiCodexSession implements BackendSession {
 		let usage: Usage = { ...ZERO_USAGE };
 		let requests = 0;
 		let stopReason = "error";
-		this.#history.push({ type: "message", role: "user", content: [{ type: "input_text", text: prompt }] });
+		this.#history.push({
+			type: "message",
+			role: "user",
+			content: [
+				...(prompt === "" && images.length > 0 ? [] : [{ type: "input_text" as const, text: prompt }]),
+				...images.map(
+					(image): InputImage => ({
+						type: "input_image",
+						image_url: `data:${image.mimeType};base64,${image.data}`,
+						detail: "auto",
+					}),
+				),
+			],
+		});
 		this.#turnStart = this.#history.length - 1;
 		this.#turnPrompt = undefined;
 		const meter = { usage: { ...ZERO_USAGE }, requests: 0 };

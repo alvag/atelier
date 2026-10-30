@@ -86,6 +86,59 @@ async function start(options: Partial<BackendStartOptions> = {}, variant?: Codex
 }
 
 it.each(["legacy", "chatgpt"] as const)(
+	"sends prompt images as input_image items, also without text, and keeps them through resume on %s",
+	async (variant) => {
+		await (variant === "legacy" ? signInLegacy() : signInChatGpt());
+		const data = (
+			await sharp({ create: { width: 1, height: 1, channels: 3, background: "red" } })
+				.png()
+				.toBuffer()
+		).toString("base64");
+		const images = [{ mimeType: "image/png" as const, data }];
+		const part = { type: "input_image", image_url: `data:image/png;base64,${data}`, detail: "auto" };
+		api.answers.push(...Array.from({ length: 3 }, () => ({ events: completed([textItem("Done.")]) })));
+		const { session } = await start({}, variant);
+		for await (const _ of session.send("What is this?", images));
+		for await (const _ of session.send("", images));
+		const userItem = (index: number) =>
+			(api.requests[index]?.body.input as Record<string, unknown>[] | undefined)?.at(-1);
+		expect(userItem(0)).toEqual({
+			type: "message",
+			role: "user",
+			content: [{ type: "input_text", text: "What is this?" }, part],
+		});
+		expect(userItem(1)).toEqual({ type: "message", role: "user", content: [part] });
+		const resume = session.resumeState?.();
+		if (resume === undefined) throw new Error("Missing image history.");
+		await session.close();
+		const { session: resumed } = await start({ resume }, variant);
+		for await (const _ of resumed.send("And now?"));
+		const input = api.requests[2]?.body.input as Record<string, unknown>[];
+		expect(input).toContainEqual({
+			type: "message",
+			role: "user",
+			content: [{ type: "input_text", text: "What is this?" }, part],
+		});
+		expect(input).toContainEqual({ type: "message", role: "user", content: [part] });
+		await resumed.close();
+	},
+);
+
+it("refuses fresh images for a model that does not take them before touching the history", async () => {
+	await signInLegacy();
+	useModelData(new ModelData({ "openai-codex": [{ id: "text-only", images: false }] }));
+	const { session } = await start({ model: "text-only" });
+	await expect(
+		(async () => {
+			for await (const _ of session.send("Look", [{ mimeType: "image/png", data: "AA==" }]));
+		})(),
+	).rejects.toThrow("Image input is not supported by openai-codex/text-only.");
+	expect(api.requests).toHaveLength(0);
+	expect(session.resumeState?.()).toBeUndefined();
+	await session.close();
+});
+
+it.each(["legacy", "chatgpt"] as const)(
 	"carries tool images, resume and explicit model omissions on %s",
 	async (variant) => {
 		await (variant === "legacy" ? signInLegacy() : signInChatGpt());
