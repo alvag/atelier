@@ -25,6 +25,11 @@ export interface ToolContext {
 	pathRules?: readonly string[];
 	/** The session's background jobs, for `bash_background`, `job_list` and `job_stop`; only the main agent's calls have them. */
 	jobs?: Jobs;
+	/**
+	 * A background worker's call: it writes only `cwd` (its worktree) and `scratchDir`, by real path, whatever the
+	 * configuration or the rules add; its commands run only in the sandbox, under the `confined` policy.
+	 */
+	confined?: boolean;
 	/** The session's background subagents, for `job_list` and `job_stop`; only the main agent's calls have them. */
 	tasks?: BackgroundTasks;
 }

@@ -337,6 +337,11 @@ export interface SessionOptions {
 	 * subagent in the background.
 	 */
 	unattended?: boolean;
+	/**
+	 * Its tools write only `cwd` and the session's scratch directory, whatever the configuration or rules add, and its
+	 * commands run only in the sandbox (`ToolContext.confined`). For a worker in the background, in its own worktree.
+	 */
+	confined?: boolean;
 }
 
 /** What the main agent runs with, as `Session.configure` and the `session_configured` event say it. */
@@ -1813,6 +1818,7 @@ export class Session {
 				approvedPaths: this.#approvedPaths,
 				...(this.#jobs === undefined ? {} : { jobs: this.#jobs }),
 				...(this.#tasks === undefined ? {} : { tasks: this.#tasks }),
+				...(this.#options.confined === true ? { confined: true } : {}),
 				...(await this.#currentRules(emit)),
 			};
 			const gate = await this.#gate(tool, call.input, context);
@@ -2340,6 +2346,8 @@ export class Session {
 				...(this.#options.noSandbox ? { noSandbox: true } : {}),
 				// Nobody answers a background child: what would ask is denied instead.
 				...(unattended ? { unattended: true } : {}),
+				// A worker in its worktree writes nothing outside it, whatever reaches there through a link.
+				...(worktree === undefined ? {} : { confined: true }),
 				...(unattended || this.#options.approve === undefined ? {} : { approve: this.#options.approve }),
 				// A worker in its own worktree gets none of the user's allowances: what it would do outside it, through a rule
 				// that covers the parent's folder or a command run outside the sandbox, asks, so it is denied.
