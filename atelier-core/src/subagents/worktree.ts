@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { lstat, mkdir, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, normalize, relative, sep } from "node:path";
+import { basename, join, normalize, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import { systemTmpdir } from "../scratch.ts";
 
@@ -302,20 +302,38 @@ async function nestedDependencyFolders(dir: string): Promise<string[]> {
 }
 
 /**
- * Gives the worktree the parent's dependencies, for the worker to read and run its tests with: each folder a link to
- * the parent's, made at once. The worker is confined to its worktree, so it never writes through them.
+ * Gives the worktree the parent's dependencies, for the worker to read and run its tests with, made at once and
+ * nothing copied: each `node_modules` is a folder of its own whose entries (those of a scope like `@org` and of `.bin`
+ * one by one too) are links to the parent's. An entry that leads to a package of the repository itself, outside any
+ * `node_modules` (a workspace package), leads to the same package in the worktree instead, so the worker runs its own
+ * change of it. The worker is confined to its worktree, so it never writes through the others.
  */
 async function linkDependencies(top: string, tree: string, folders: readonly string[]): Promise<void> {
-	for (const folder of folders) {
-		const to = join(tree, folder);
+	const pending = folders.filter((folder) => folder !== "");
+	for (let folder = pending.pop(); folder !== undefined; folder = pending.pop()) {
+		const into = join(tree, folder);
 		if (
-			await lstat(to).then(
+			await lstat(into).then(
 				() => true,
 				() => false,
 			)
 		)
 			continue;
-		await mkdir(dirname(to), { recursive: true });
-		await symlink(join(top, folder), to);
+		await mkdir(into, { recursive: true });
+		const from = await realpath(join(top, folder));
+		for (const entry of await readdir(from, { withFileTypes: true })) {
+			const path = join(folder, entry.name);
+			// A scope and `.bin` hold entries of their own that may lead to a workspace package.
+			if (entry.isDirectory() && (entry.name.startsWith("@") || entry.name === ".bin")) {
+				pending.push(path);
+				continue;
+			}
+			const parentEntry = join(from, entry.name);
+			const real = entry.isSymbolicLink() ? await realpath(parentEntry).catch(() => parentEntry) : parentEntry;
+			const inRepo = relative(top, real);
+			const workspace =
+				inRepo !== "" && !inRepo.startsWith("..") && !/(^|\/)node_modules(\/|$)/.test(inRepo) && real !== parentEntry;
+			await symlink(workspace ? join(tree, inRepo) : parentEntry, join(tree, path));
+		}
 	}
 }
