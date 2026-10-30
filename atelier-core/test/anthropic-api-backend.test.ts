@@ -9,6 +9,7 @@ import { createOpenCodeGoBackend } from "../src/backends/opencode-go/backend.ts"
 import type { AtelierEvent, AtelierEventBody } from "../src/events.ts";
 import { FakeBackend } from "../src/fake-backend.ts";
 import { FakeMemory } from "../src/memory/port.ts";
+import { currentModelData, ModelData, useModelData } from "../src/model-catalog/index.ts";
 import { costOfRequest } from "../src/pricing.ts";
 import { Session } from "../src/session.ts";
 import { readTool } from "../src/tools/read.ts";
@@ -1012,7 +1013,140 @@ const textOfBody = (body: Record<string, unknown> | undefined) => JSON.stringify
 const ofType = <T extends AtelierEventBody["type"]>(events: AtelierEventBody[], type: T) =>
 	events.filter((e): e is Extract<AtelierEventBody, { type: T }> => e.type === type);
 
+async function unmeasuredImage() {
+	const { normalizeImage } = await import("../src/images.ts");
+	const raw = Buffer.alloc(512 * 512 * 4);
+	let seed = 17;
+	for (let i = 0; i < raw.length; i++) {
+		seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+		raw[i] = seed >>> 24;
+	}
+	return (
+		await normalizeImage(
+			await sharp(raw, { raw: { width: 512, height: 512, channels: 4 } })
+				.png()
+				.toBuffer(),
+		)
+	).image;
+}
+
 describe("AnthropicApiBackend compaction", () => {
+	it("does not threshold-compact an unmeasured image as base64 text (D6)", async () => {
+		const image = await unmeasuredImage();
+		const { session, api } = await start(
+			[
+				{ blocks: [{ type: "text", text: "hello" }], usage: { input: 5, output: 1 } },
+				// Valid as a normal reply, but also lets an erroneous summary request finish.
+				summaryReply(),
+				{ blocks: [{ type: "text", text: "done" }] },
+			],
+			undefined,
+			{ contextWindow: 200_000, keepRecentTokens: 1 },
+		);
+		try {
+			await collect(session.send("hello"));
+			const events = await collect(session.send("inspect", [image]));
+			expect(ofType(events, "compaction_started")).toEqual([]);
+			expect(api.bodies).toHaveLength(2);
+		} finally {
+			await session.close();
+		}
+	});
+
+	it.each([5, 2000])("uses measured image usage (%s input tokens) on the following turn", async (input) => {
+		const image = await unmeasuredImage();
+		const { session, api } = await start(
+			[
+				{ blocks: [{ type: "text", text: "hello" }], usage: { input: 5, output: 1 } },
+				{ blocks: [{ type: "text", text: "seen" }], usage: { input, output: 1 } },
+				summaryReply(),
+				{ blocks: [{ type: "text", text: "done" }] },
+			],
+			undefined,
+			{ contextWindow: 200_000, compactAt: 1000, keepRecentTokens: 1 },
+		);
+		try {
+			await collect(session.send("hello"));
+			const seen = await collect(session.send("inspect", [image]));
+			expect(ofType(seen, "compaction_started")).toEqual([]);
+			expect(finished(seen)[0]).toMatchObject({ context: { tokens: input + 1 } });
+			const next = await collect(session.send("again"));
+			expect(ofType(next, "compaction_started")).toMatchObject(input > 1000 ? [{ reason: "threshold" }] : []);
+			expect(api.bodies).toHaveLength(input > 1000 ? 4 : 3);
+		} finally {
+			await session.close();
+		}
+	});
+
+	it("still compacts and retries when an unmeasured image request actually overflows", async () => {
+		const image = await unmeasuredImage();
+		const { session, api } = await start(
+			[
+				{ blocks: [{ type: "text", text: "hello" }], usage: { input: 5, output: 1 } },
+				overflow,
+				summaryReply(),
+				{ blocks: [{ type: "text", text: "seen" }] },
+			],
+			undefined,
+			{ contextWindow: 200_000, keepRecentTokens: 1 },
+		);
+		try {
+			await collect(session.send("hello"));
+			const events = await collect(session.send("inspect", [image]));
+			expect(ofType(events, "compaction_started")).toMatchObject([{ reason: "overflow" }]);
+			expect(api.bodies).toHaveLength(4);
+			for (const index of [1, 3]) expect(textOfBody(api.bodies[index])).toContain(image.data);
+			expect(finished(events)[0]).toMatchObject({ stopReason: "end_turn" });
+		} finally {
+			await session.close();
+		}
+	});
+
+	it("counts omitted images as text for context and tail cuts without destroying saved pixels", async () => {
+		const image = await unmeasuredImage();
+		const catalog = currentModelData();
+		useModelData(new ModelData({ "anthropic-api": [{ id: "text-only", images: false }] }));
+		const { session, api } = await start(
+			[{ blocks: [{ type: "text", text: "Text." }] }, { blocks: [{ type: "text", text: "Vision." }] }],
+			undefined,
+			{ contextWindow: 200_000, keepRecentTokens: 5000 },
+			undefined,
+			{
+				model: "text-only",
+				resume: {
+					messages: [
+						{ role: "user", content: "hello" },
+						{ role: "assistant", content: "hello" },
+						{
+							role: "user",
+							content: [{ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.data } }],
+						},
+						{ role: "assistant", content: "seen" },
+					],
+				},
+			},
+		);
+		try {
+			const manual = await collect(compactOf(session));
+			expect(ofType(manual, "compaction_started")[0]?.tokens).toBeLessThan(5000);
+			expect(ofType(manual, "compaction_finished")).toMatchObject([
+				{ ok: false, error: "There is not enough history to compact." },
+			]);
+			expect(api.bodies).toHaveLength(0);
+			await collect(session.send("describe"));
+			expect(textOfBody(api.bodies[0])).toContain("[image omitted: text-only does not accept images]");
+			expect(textOfBody(api.bodies[0])).not.toContain(image.data);
+			expect(JSON.stringify(session.resumeState?.())).toContain(image.data);
+			await session.configure?.({ model: "claude-sonnet-5-5" });
+			await collect(session.send("again"));
+			expect(api.bodies).toHaveLength(2);
+			expect(textOfBody(api.bodies[1])).toContain(image.data);
+		} finally {
+			useModelData(catalog);
+			await session.close();
+		}
+	});
+
 	/** A small window so a test history crosses it; `keepRecentTokens: 1` keeps only the last exchange. */
 	async function compacting(
 		script: Scripted[],

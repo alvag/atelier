@@ -22,6 +22,8 @@ export interface ModelTransport {
 	): AsyncGenerator<ModelDelta, Anthropic.Message>;
 	/** The model's input window; any failure falls back to a default, never to an error. */
 	contextWindow(model: string): Promise<number>;
+	/** Text sent instead of a file image this transport cannot carry. */
+	fileImageOmission?(model: string): string;
 	/** Whether the error is the API's answer to a prompt larger than the window. */
 	isOverflow(error: unknown): boolean;
 	/** The `error` event for a failed request, with `message` already redacted. */

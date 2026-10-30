@@ -1,4 +1,10 @@
-import { type CompactedParts, compactedText, type FileActivity } from "../../compaction/compactor.ts";
+import {
+	type CompactedParts,
+	compactedText,
+	type FileActivity,
+	IMAGE_TOKENS,
+	type ImageView,
+} from "../../compaction/compactor.ts";
 import type { ResponsesItem } from "../../responses/client.ts";
 
 /**
@@ -6,15 +12,7 @@ import type { ResponsesItem } from "../../responses/client.ts";
  * tools touched, and the history that replaces it. The summary request and its checks are the compactor's own.
  */
 
-// A coarse allowance until API usage measures the image; encoded bytes are not text tokens.
-const IMAGE_TOKENS = 8_192;
-
-/** How the current model sees images: an `omission` text stands in for each when it accepts none. */
-export interface ImageView {
-	omission?: string | undefined;
-	/** False leaves the allowance out: the size the text alone is known to have. */
-	allowance?: boolean;
-}
+export type { ImageView } from "../../compaction/compactor.ts";
 
 /** The item as one request carries it; stored items are never changed. */
 export function viewItem(item: ResponsesItem, omission: string | undefined): ResponsesItem {

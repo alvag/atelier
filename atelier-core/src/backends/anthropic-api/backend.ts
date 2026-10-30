@@ -18,6 +18,7 @@ import {
 	fileActivity,
 	filesSection,
 	findCut,
+	type ImageView,
 	KEEP_RECENT_TOKENS,
 	replaceHistory,
 	turnPromptBefore,
@@ -34,7 +35,7 @@ import {
 	type Usage,
 	ZERO_USAGE,
 } from "../../events.ts";
-import { imageInputProblem } from "../../image-support.ts";
+import { imageInputProblem, imageOmission } from "../../image-support.ts";
 import type { ImageAttachment } from "../../images.ts";
 import { BACKEND_DEFAULTS } from "../../options.ts";
 import {
@@ -469,7 +470,7 @@ class AnthropicApiSession implements BackendSession {
 					stopReason = "turn_limit";
 					break;
 				}
-				if (!thresholdFailed && !this.#unmeasured && this.#contextTokens() > this.#compaction.compactAt) {
+				if (!thresholdFailed && !this.#unmeasured && this.#contextTokens(false) > this.#compaction.compactAt) {
 					thresholdFailed = !(yield* this.#compact("threshold", abort.signal, meter));
 					if (abort.signal.aborted) {
 						stopReason = "interrupted";
@@ -644,12 +645,23 @@ class AnthropicApiSession implements BackendSession {
 		};
 	}
 
-	/** The last measured size plus an estimate of what was appended since. */
-	#contextTokens(): number {
+	/** Images as the current model's requests carry them, without changing stored history. */
+	#view(allowance = true): ImageView {
+		const model = this.#state.model;
+		return {
+			omission: imageInputProblem(this.#id, model) === undefined ? undefined : imageOmission(model),
+			fileOmission: this.#transportFor(model).fileImageOmission?.(model),
+			allowance,
+		};
+	}
+
+	/** The last measured size plus the unmeasured tail; threshold checks leave out image allowances. */
+	#contextTokens(allowance = true): number {
 		const measured = this.#measured ?? { tokens: 0, length: 0 };
+		const view = this.#view(allowance);
 		return this.#state.messages
 			.slice(measured.length)
-			.reduce((sum, message) => sum + estimateTokens(message), measured.tokens);
+			.reduce((sum, message) => sum + estimateTokens(message, view), measured.tokens);
 	}
 
 	/**
@@ -678,7 +690,8 @@ class AnthropicApiSession implements BackendSession {
 			};
 		};
 		const messages = this.#state.messages;
-		const cut = findCut(messages, this.#compaction.keepRecent);
+		const view = this.#view();
+		const cut = findCut(messages, this.#compaction.keepRecent, view);
 		if (cut === undefined) {
 			yield failed("There is not enough history to compact.");
 			return false;
@@ -707,8 +720,8 @@ class AnthropicApiSession implements BackendSession {
 			turnPrompt: carried,
 			state: this.#compactionState?.(),
 		});
-		const removed = messages.slice(0, cut).reduce((sum, message) => sum + estimateTokens(message), 0);
-		const tokensAfter = Math.max(0, tokensBefore - removed + estimateTokens(next[0] as Anthropic.MessageParam));
+		const removed = messages.slice(0, cut).reduce((sum, message) => sum + estimateTokens(message, view), 0);
+		const tokensAfter = Math.max(0, tokensBefore - removed + estimateTokens(next[0] as Anthropic.MessageParam, view));
 		this.#state.messages = next;
 		this.#files = files;
 		this.#measured = { tokens: tokensAfter, length: next.length };
