@@ -1,9 +1,8 @@
 import { execFile } from "node:child_process";
 import { lstat, mkdir, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, normalize, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import { systemTmpdir } from "../scratch.ts";
-import { realpathAllowMissing } from "../tools/paths.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -230,29 +229,41 @@ export async function createTaskWorktree(cwd: string, dir: string): Promise<Task
 }
 
 /**
- * Forgets the worktrees Atelier made that a crash left, one by one. One is Atelier's only when all of these hold: its
- * real path is `worktrees/<n>/tree` in a session's scratch directory, it is locked with exactly Atelier's reason, and
- * its folder is gone. The listing is read with NUL separators, and a path with a line break is never taken, so no name
- * can pass for a field. A worktree of the user's is never touched, whatever its path, lock or state.
+ * Forgets the worktrees Atelier made that a crash left, one by one. One is Atelier's only when all of these hold: it is
+ * locked with exactly Atelier's reason, and the path git lists for it (`ownStalePath`) is a worktree's place in a
+ * session's scratch directory, gone. The listing is read with NUL separators, so no name can pass for a field. A
+ * worktree of the user's is never touched, whatever its path, lock or state.
  */
 async function forgetStaleWorktrees(top: string): Promise<void> {
 	const listed = await git(top, ["worktree", "list", "--porcelain", "-z"]).catch(() => "");
-	const scratchRoot = await realpath(systemTmpdir()).catch(() => systemTmpdir());
+	const roots = [...new Set([systemTmpdir(), await realpath(systemTmpdir()).catch(() => systemTmpdir())])];
 	for (const record of listed.split("\0\0")) {
 		const fields = record.split("\0");
 		const path = fields.find((field) => field.startsWith("worktree "))?.slice("worktree ".length);
-		if (path === undefined || /[\n\r]/.test(path) || !fields.includes(`locked ${OWN_LOCK}`)) continue;
-		const real = await realpathAllowMissing(path);
-		if (!OWN_WORKTREE.test(relative(scratchRoot, real))) continue;
-		if (
-			await lstat(path).then(
-				() => true,
-				() => false,
-			)
-		)
-			continue;
+		if (path === undefined || !fields.includes(`locked ${OWN_LOCK}`) || !(await ownStalePath(path, roots))) continue;
 		await git(top, ["worktree", "remove", "--force", "--force", path]).catch(() => "");
 	}
+}
+
+/**
+ * Whether `path`, as written and never through a link, is `<session>/work/worktrees/<n>/tree` under one of the scratch
+ * directories' `roots`, and gone: no line break or `..` in it, no part of it below the root a link or anything but a
+ * folder, and some part missing. A link anywhere below the root would make it another place than it says.
+ */
+async function ownStalePath(path: string, roots: readonly string[]): Promise<boolean> {
+	if (/[\n\r]/.test(path) || normalize(path) !== path) return false;
+	const root = roots.find((candidate) => path.startsWith(`${candidate}${sep}`));
+	if (root === undefined) return false;
+	const rest = path.slice(root.length + 1);
+	if (!OWN_WORKTREE.test(rest)) return false;
+	let at = root;
+	for (const part of rest.split(sep)) {
+		at = join(at, part);
+		const stat = await lstat(at).catch(() => undefined);
+		if (stat === undefined) return true;
+		if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+	}
+	return false;
 }
 
 /**

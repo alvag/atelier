@@ -389,9 +389,18 @@ export function agentPolicy({
 }
 
 /**
+ * What the library makes writable by itself, whatever the policy says: its own TMPDIR, and under the home two log
+ * folders, left out only when a read deny covers them. A confined command gets neither.
+ */
+const LIBRARY_TEMP = ["/tmp/claude", "/private/tmp/claude"];
+const LIBRARY_HOME_WRITES = [join(".npm", "_logs"), join(".claude", "debug")];
+
+/**
  * A background worker's commands: they write only its working directory (its worktree) and its scratch directory,
- * where their TMPDIR is; not the system temporary directory, a package cache, what the configuration files add, nor
- * the shared git data of the repository. Everything else is as for the agent: what they read, and what stays protected.
+ * where their TMPDIR is; not the system temporary directory, a package cache, what the configuration files add, the
+ * shared git data of the repository, nor what the library would make writable by itself (`LIBRARY_TEMP` is denied,
+ * the home's log folders are read-denied so the library leaves them out). Everything else is as for the agent: what
+ * they read, and what stays protected.
  */
 export function confinedPolicy({
 	cwd,
@@ -400,7 +409,13 @@ export function confinedPolicy({
 	gitPaths,
 }: Pick<AgentPolicyInput, "cwd" | "scratchDir" | "home" | "gitPaths">): SandboxPolicy {
 	const { filesystem } = agentPolicy({ cwd, tempDir: cwd, home, ...(gitPaths === undefined ? {} : { gitPaths }) });
-	return { filesystem: { ...filesystem, allowWrite: [cwd, ...(scratchDir === undefined ? [] : [scratchDir])] } };
+	return {
+		filesystem: {
+			denyRead: [...filesystem.denyRead, ...LIBRARY_HOME_WRITES.map((folder) => join(home, folder))],
+			allowWrite: [cwd, ...(scratchDir === undefined ? [] : [scratchDir])],
+			denyWrite: [...filesystem.denyWrite, ...LIBRARY_TEMP],
+		},
+	};
 }
 
 /** The TMPDIR of a confined command: a folder of its own in the scratch directory, else in the working directory. */

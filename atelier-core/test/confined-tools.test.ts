@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBashTool, gateCommand } from "../src/tools/bash.ts";
 import { createEditTool } from "../src/tools/edit.ts";
-import { isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
+import { confinedPolicy, isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
 import type { ToolContext } from "../src/tools/types.ts";
 import { createWriteTool } from "../src/tools/write.ts";
 
@@ -36,6 +36,11 @@ afterEach(async () => {
 
 const confined = (): ToolContext => ({ cwd, scratchDir: scratch, confined: true });
 const parentFile = () => readFile(join(parent, "pkg", "index.js"), "utf8");
+const exists = (path: string) =>
+	stat(path).then(
+		() => true,
+		() => false,
+	);
 
 describe("a confined call", () => {
 	it("writes and edits nothing through a link out of its folder, whatever the configuration allows", async () => {
@@ -62,6 +67,17 @@ describe("a confined call", () => {
 	});
 });
 
+describe("the confined policy", () => {
+	it("writes only the folder and the scratch directory, and denies what the library would add by itself", () => {
+		const { filesystem } = confinedPolicy({ cwd, scratchDir: scratch, home });
+		expect(filesystem.allowWrite).toEqual([cwd, scratch]);
+		expect(filesystem.denyWrite).toEqual(expect.arrayContaining(["/tmp/claude", "/private/tmp/claude"]));
+		expect(filesystem.denyRead).toEqual(
+			expect.arrayContaining([join(home, ".npm", "_logs"), join(home, ".claude", "debug")]),
+		);
+	});
+});
+
 describe.skipIf(!onMac)("a confined command in the sandbox", () => {
 	let sandbox: Sandbox;
 	beforeEach(() => {
@@ -84,6 +100,13 @@ describe.skipIf(!onMac)("a confined command in the sandbox", () => {
 		);
 		expect(own.ok).toBe(true);
 		expect(own.output).toContain(scratch);
+		// Nor what the library makes writable by itself: its own TMPDIR and the home's log folders.
+		await mkdir(join(home, ".npm", "_logs"), { recursive: true });
+		const probe = `atelier-confined-${process.pid}`;
+		const library = await run(`echo x > /tmp/claude/${probe}; echo y > ${home}/.npm/_logs/${probe}`, confined());
+		expect(library.ok).toBe(false);
+		expect(await exists(`/tmp/claude/${probe}`)).toBe(false);
+		expect(await exists(join(home, ".npm", "_logs", probe))).toBe(false);
 		// The same command of an agent that is not confined takes the configuration's allowWrite.
 		expect((await run("echo child > deps/pkg/index.js", { cwd, scratchDir: scratch })).ok).toBe(true);
 	});
