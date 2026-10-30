@@ -45,6 +45,9 @@ import {
 } from "./verifier.ts";
 import { createWorkspace } from "./workspace.ts";
 
+/** Model requests one lens, the refuter or the validator may make, on every backend. */
+export const REVIEW_ROLE_MAX_REQUESTS = 50;
+
 export interface ReviewConsentRequest {
 	reviewId: string;
 	level: string;
@@ -630,6 +633,7 @@ export class SessionReview {
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
 				tools: createTreeTools(candidate.root, call.tree),
 				systemPromptAppend: call.instruction,
+				maxRequestsPerTurn: REVIEW_ROLE_MAX_REQUESTS,
 				createId: host.createId,
 			};
 		} catch (error) {

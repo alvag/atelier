@@ -29,7 +29,12 @@ import {
 import { RISK_RULES } from "../src/prompt.ts";
 import { LENS_INSTRUCTIONS } from "../src/review/lenses.ts";
 import { REFUTER_INSTRUCTION, VALIDATOR_INSTRUCTION } from "../src/review/roles.ts";
-import { VERIFIER_INSTRUCTION, VERIFIER_INSTRUCTION_WITHOUT_BASH } from "../src/review/verifier.ts";
+import { REVIEW_ROLE_MAX_REQUESTS } from "../src/review/session-review.ts";
+import {
+	VERIFIER_INSTRUCTION,
+	VERIFIER_INSTRUCTION_WITHOUT_BASH,
+	VERIFIER_MAX_REQUESTS,
+} from "../src/review/verifier.ts";
 import { reviewEnabled } from "../src/server/rpc-server.ts";
 import type { SubagentDefinition } from "../src/subagents/definitions.ts";
 import { isInsideSandbox, Sandbox } from "../src/tools/sandbox.ts";
@@ -132,6 +137,7 @@ class RoleBackend implements AgentBackend {
 		prompt: string;
 		cwd: string;
 		system: string;
+		maxRequestsPerTurn?: number;
 	}[] = [];
 	/** What the tool calls a role made through `probes` answered, in order. */
 	readonly probed: { ok: boolean; output: string }[] = [];
@@ -168,6 +174,7 @@ class RoleBackend implements AgentBackend {
 					system: options.systemPromptAppend,
 					...(options.model === undefined ? {} : { model: options.model }),
 					...(options.thinking === undefined ? {} : { thinking: options.thinking }),
+					...(options.maxRequestsPerTurn === undefined ? {} : { maxRequestsPerTurn: options.maxRequestsPerTurn }),
 				});
 				if (backend.announce)
 					yield {
@@ -509,6 +516,10 @@ describe("the risk declaration", () => {
 		});
 		expect(ofType(events, "review_finished")[0]).toMatchObject({ verdict: "approved" });
 		expect(s.roles.roles.map((role) => role.role)).toEqual(["verifier", "resilience"]);
+		expect(s.roles.roles.map((role) => role.maxRequestsPerTurn)).toEqual([
+			VERIFIER_MAX_REQUESTS,
+			REVIEW_ROLE_MAX_REQUESTS,
+		]);
 	});
 
 	it("asks once, inside the turn, when a code change has no declaration; the answer counts", async () => {
@@ -700,6 +711,22 @@ describe("consent and the cycle", () => {
 		// Neither the reviewed nor the corrected change is offered again.
 		const next = await collect(s.session.send("hello"));
 		expect(types(next).filter((type) => type.startsWith("review_"))).toEqual([]);
+	});
+
+	it("caps the model requests of every lens, the refuter and the validator", async () => {
+		const turns = [HIGH_TURN, [change("src/auth.ts", "export const a = 2;\n"), { event: finished }]];
+		const s = await start({ turns });
+		await s.send("add auth");
+		const caps = Object.fromEntries(s.roles.roles.map((role) => [role.role, role.maxRequestsPerTurn]));
+		expect(caps).toEqual({
+			risk: 50,
+			resilience: 50,
+			readability: 50,
+			reliability: 50,
+			refuter: 50,
+			validator: 50,
+		});
+		expect(REVIEW_ROLE_MAX_REQUESTS).toBe(50);
 	});
 
 	it("runs a clean review to approved without a correction", async () => {
