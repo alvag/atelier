@@ -601,4 +601,67 @@ describe("QuestionDialog option previews", () => {
 		]);
 		expect(shown.at(-2)).toBe(" ↑↓ move · 1-4 pick · enter select · esc cancel");
 	});
+
+	describe("with short labels", () => {
+		const short = (preview: string) => ({
+			question: "Which one?",
+			height: () => 40,
+			options: [{ label: "A", recommended: true, preview }, { label: "B" }],
+		});
+		/** The text between a panel row's sides, wherever the row is. */
+		const inside = (lines: string[]) =>
+			lines.flatMap((line) => {
+				const match = /│ (.*) │$/.exec(line);
+				return match ? [match[1] ?? ""] : [];
+			});
+		const letters = (text: string) => text.replace(/\s+/g, "");
+
+		it("loses nothing of a three-line preview beside the options at 60 columns", () => {
+			const preview = `first line\n${"x".repeat(38)}CD\nthird`;
+			const { shown, lines } = dialog(short(preview));
+			shown.handleInput(DOWN);
+			const shownLines = lines(60);
+			for (const line of shownLines) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+			expect(letters(inside(shownLines).join(""))).toBe(letters(preview));
+			expect(shownLines.join("\n")).toContain("3. Type something…");
+		});
+
+		it("keeps the Type something row whole beside the panel", () => {
+			const { shown, lines } = dialog(short("one\ntwo\nthree"));
+			shown.handleInput(DOWN);
+			const row = lines(120).find((line) => line.includes("3. Type something…"));
+			expect(row).toMatch(/^ {3}3\. Type something… +│ two +│$/);
+		});
+
+		it("shows the draft typed there whole, the panel beside it while it fits and under the options after", () => {
+			const { shown, lines } = dialog(short("one\ntwo\nthree"));
+			for (const key of [DOWN, DOWN, DOWN]) shown.handleInput(key);
+			shown.handleInput("use a third approach");
+			const besideIt = lines(80);
+			// The panel says the row has no preview; the draft's row is beside its last, blank row.
+			expect(besideIt.join("\n")).toContain("┌ 3. Type something…");
+			expect(besideIt.find((line) => line.includes("3. use a third approach"))).toMatch(/approach +│ +│$/);
+			// 41 characters leave the panel too few columns beside the draft: it goes under the options.
+			shown.handleInput(" and keep the old one");
+			const under = lines(80);
+			expect(under.find((line) => line.startsWith(" ❯ 3. "))).toBe(" ❯ 3. use a third approach and keep the old one");
+			expect(under.join("\n")).toContain(" ┌ 3. Type something…");
+			for (const line of under) expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+		});
+
+		it.each([40, 60, 80, 120])("loses no character of a valid preview at %i columns", (width) => {
+			const preview = [
+				'const answer = await fetch("https://example.com/a/very/long/path/that/keeps/going/on", {',
+				'\tmethod: "POST",',
+				"});",
+				"漢字かな交じりの行も切れずに残ります。",
+				"x".repeat(70),
+			].join("\n");
+			const { shown, lines } = dialog(short(preview));
+			shown.handleInput(DOWN);
+			const shownLines = lines(width);
+			for (const line of shownLines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			expect(letters(inside(shownLines).join(""))).toBe(letters(preview));
+		});
+	});
 });
