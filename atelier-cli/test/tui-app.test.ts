@@ -31,6 +31,7 @@ import type { CoreLink } from "../src/tui/app.ts";
 import { HerdrStatusReporter } from "../src/tui/herdr-status.ts";
 import { png } from "./support/png.ts";
 import { PRINTABLE_KEYS } from "./support/printable-keys.ts";
+import { tiff } from "./support/tiff.ts";
 
 /** `/stats` reads as it does, after `held` when a test sets it. */
 const statsRead = vi.hoisted(() => ({ held: undefined as Promise<void> | undefined }));
@@ -4813,9 +4814,10 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 			ClientCommand,
 			{ command: "session.send" }
 		>[];
-	const open = async (turns: FakeStep[][] = [[{ event: started }, { event: finished }]]) => {
+	const open = async (turns: FakeStep[][] = [[{ event: started }, { event: finished }]], tui: object = {}) => {
 		// A backend whose model takes images.
 		const h = harness(turns, { backendId: "anthropic-api" });
+		h.io.tui = { ...h.io.tui, ...tui };
 		const code = run(["--no-session"], h.io, () => h.backend);
 		await until(h.screen.started);
 		return { h, code };
@@ -5136,5 +5138,237 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 		await shows(h, "xy");
 		expect(h.screen.stopped()).toBe(false);
 		await quit(h, code);
+	});
+	describe("clipboard image (Ctrl+V)", () => {
+		const CTRL_V = "\x16";
+		const TEXT_PASTE = "text paste";
+		/** A fake reader: what it was asked, the signals it got, and a way to hold and answer each read. */
+		const reader = (answer: () => Uint8Array | undefined | Promise<Uint8Array | undefined> = () => png()) => {
+			const signals: AbortSignal[] = [];
+			let gate: Promise<void> | undefined;
+			const read = vi.fn(async (signal: AbortSignal) => {
+				signals.push(signal);
+				await gate;
+				return answer();
+			});
+			const hold = () => {
+				let release!: () => void;
+				gate = new Promise<void>((resolve) => {
+					release = resolve;
+				});
+				return release;
+			};
+			return { read, signals, hold };
+		};
+		const openWith = (fakeReader: ReturnType<typeof reader>, platform: NodeJS.Platform = "darwin") =>
+			open(undefined, { platform, readClipboardImage: fakeReader.read });
+
+		it("attaches a clipboard image as a marker beside typed text and sends it natively", async () => {
+			const r = reader();
+			const { h, code } = await openWith(r);
+			h.screen.type("look ");
+			h.screen.type(CTRL_V);
+			await shows(h, "look [Image #1]");
+			h.screen.type(" here");
+			h.screen.type("\r");
+			await until(() => sends(h).length === 1);
+			expect(sends(h)[0]?.prompt).toBe("look  here");
+			expect(sends(h)[0]?.images).toHaveLength(1);
+			expect(r.read).toHaveBeenCalledTimes(1);
+			await quit(h, code);
+		});
+
+		it("normalizes a clipboard TIFF so the backend receives PNG or JPEG", async () => {
+			const { h, code } = await openWith(reader(() => tiff()));
+			h.screen.type(CTRL_V);
+			await shows(h, "[Image #1]");
+			h.screen.type("\r");
+			await until(() => sends(h).length === 1);
+			const image = sends(h)[0]?.images?.[0];
+			expect(image?.mimeType).toMatch(/^image\/(png|jpeg)$/);
+			expect(Buffer.from(image?.data ?? "", "base64").subarray(0, 4)).not.toEqual(tiff().subarray(0, 4));
+			await quit(h, code);
+		});
+
+		it("sends an image-only prompt from the clipboard", async () => {
+			const { h, code } = await openWith(reader());
+			h.screen.type(CTRL_V);
+			await shows(h, "[Image #1]");
+			h.screen.type("\r");
+			await until(() => sends(h).length === 1);
+			expect(sends(h)[0]?.images).toHaveLength(1);
+			await quit(h, code);
+		});
+
+		it("leaves the draft alone and points to the text paste when the clipboard has no image", async () => {
+			const { h, code } = await openWith(reader(() => undefined));
+			h.screen.type("draft");
+			h.screen.type(CTRL_V);
+			await shows(h, TEXT_PASTE);
+			expect(h.screen.screen()).toContain("draft");
+			expect(h.screen.screen()).not.toContain("[Image #");
+			await quit(h, code);
+		});
+
+		it("says why when the reader fails or the bytes are not an image, and keeps the draft", async () => {
+			let answer: () => Uint8Array | undefined = () => {
+				throw new Error("Could not read the clipboard image: timed out");
+			};
+			const { h, code } = await openWith(reader(() => answer()));
+			h.screen.type("draft");
+			h.screen.type(CTRL_V);
+			await shows(h, "timed out");
+			answer = () => new TextEncoder().encode("not an image");
+			h.screen.type(CTRL_V);
+			await until(() => h.screen.screen().split("error:").length === 3);
+			expect(h.screen.screen()).toContain("draft");
+			expect(h.screen.screen()).not.toContain("[Image #");
+			await quit(h, code);
+		});
+
+		it("holds Enter while the clipboard is read", async () => {
+			const r = reader();
+			const release = r.hold();
+			const { h, code } = await openWith(r);
+			h.screen.type(CTRL_V);
+			h.screen.type("\r");
+			await shows(h, "still reading");
+			expect(sends(h)).toEqual([]);
+			release();
+			await shows(h, "[Image #1]");
+			await quit(h, code);
+		});
+
+		it.each([
+			["typing", "x"],
+			["moving the cursor", "\x1b[D"],
+		])("drops a clipboard image read while the draft changes by %s", async (_name, key) => {
+			const r = reader();
+			const { h, code } = await openWith(r);
+			h.screen.type("ab");
+			const release = r.hold();
+			h.screen.type(CTRL_V);
+			await until(() => r.read.mock.calls.length === 1);
+			h.screen.type(key);
+			release();
+			await shows(h, DROPPED);
+			expect(h.screen.screen()).not.toContain("[Image #1]");
+			await quit(h, code);
+		});
+
+		it("aborts a read on Ctrl+C and never brings the cleared draft back", async () => {
+			const r = reader();
+			const { h, code } = await openWith(r);
+			h.screen.type("abc");
+			const release = r.hold();
+			h.screen.type(CTRL_V);
+			await until(() => r.signals.length === 1);
+			h.screen.type("\x03");
+			expect(r.signals[0]?.aborted).toBe(true);
+			release();
+			await shows(h, DROPPED);
+			expect(h.screen.frame().join("\n")).not.toContain("[Image #1]");
+			h.screen.type("\r");
+			expect(sends(h)).toEqual([]);
+			await quit(h, code);
+		});
+
+		it("aborts the read and skips the queued ones when the TUI quits", async () => {
+			const r = reader();
+			const release = r.hold();
+			const { h, code } = await openWith(r);
+			h.screen.type(CTRL_V);
+			h.screen.type(CTRL_V);
+			await until(() => r.signals.length === 1);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			expect(r.signals[0]?.aborted).toBe(true);
+			release();
+			await until(() => r.read.mock.settledResults[0]?.type === "fulfilled");
+			// One turn of the event loop runs everything the settled read left queued.
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(r.read).toHaveBeenCalledTimes(1);
+		});
+
+		it("aborts a read across /new", async () => {
+			const r = reader();
+			const { h, code } = await openWith(r);
+			let starts!: () => void;
+			h.core.holds.set(
+				"session.start",
+				new Promise<void>((resolve) => {
+					starts = resolve;
+				}),
+			);
+			h.screen.type("/new");
+			h.screen.type("\r");
+			await until(() => h.core.commands.filter((command) => command.command === "session.start").length === 2);
+			const release = r.hold();
+			h.screen.type(CTRL_V);
+			await until(() => r.signals.length === 1);
+			starts();
+			await until(() => r.signals[0]?.aborted === true);
+			release();
+			await shows(h, DROPPED);
+			expect(h.screen.screen()).not.toContain("[Image #1]");
+			await quit(h, code);
+		});
+
+		it("never reads the clipboard while a question is open", async () => {
+			const r = reader();
+			const { h, code } = await openWith(r);
+			h.screen.type("/login api-key anthropic");
+			h.screen.type("\r");
+			await shows(h, "0 characters (hidden)");
+			h.screen.type(CTRL_V);
+			// The question is still open and takes this key, so the Ctrl+V before it was seen and dropped.
+			h.screen.type("x");
+			await shows(h, "1 character (hidden)");
+			expect(r.read).not.toHaveBeenCalled();
+			h.screen.type("\x03");
+			await shows(h, "no key given; nothing changed");
+			await quit(h, code);
+		});
+
+		it("invokes no reader and says so outside macOS", async () => {
+			const r = reader();
+			const { h, code } = await openWith(r, "linux");
+			h.screen.type("draft");
+			h.screen.type(CTRL_V);
+			await shows(h, "macOS");
+			expect(h.screen.screen()).toContain(TEXT_PASTE);
+			expect(h.screen.screen()).toContain("draft");
+			expect(r.read).not.toHaveBeenCalled();
+			await quit(h, code);
+		});
+
+		it("keeps a clipboard read, a pasted path and pasted text in the order they were made", async () => {
+			const r = reader();
+			const { h, code } = await openWith(r);
+			const release = r.hold();
+			h.screen.type(CTRL_V);
+			paste(h, await imageFile());
+			paste(h, "then text");
+			await until(() => r.signals.length === 1);
+			expect(fake.calls).toEqual([]);
+			release();
+			await shows(h, "[Image #1][Image #2]then text");
+			await quit(h, code);
+		});
+
+		it("gives a refused send back with its clipboard image", async () => {
+			const { h, code } = await openWith(reader());
+			h.screen.type(CTRL_V);
+			await shows(h, "[Image #1]");
+			h.core.failing.add("session.send");
+			h.screen.type("\r");
+			await shows(h, "session.send refused");
+			h.core.failing.delete("session.send");
+			await shows(h, "[Image #1]");
+			h.screen.type("\r");
+			await until(() => sends(h).length === 2);
+			expect(sends(h)[1]?.images).toEqual(sends(h)[0]?.images);
+			await quit(h, code);
+		});
 	});
 });

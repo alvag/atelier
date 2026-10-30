@@ -6,6 +6,7 @@ import {
 	describeError,
 	type JsonValue,
 	type McpServerStatus,
+	normalizeImage,
 	type PermissionMode,
 	type PreparedImage,
 	type QueuedMessage,
@@ -54,6 +55,7 @@ import {
 import { savedParts } from "../transcript.ts";
 import { type AskAnswer, AskDialog } from "./ask-dialog.ts";
 import { Attention } from "./attention.ts";
+import { readClipboardImage } from "./clipboard-image.ts";
 import { Conversation } from "./conversation.ts";
 import {
 	type Choice,
@@ -105,6 +107,9 @@ const PATH_PASTE_CHARS = 4096;
 const IMAGES_BUSY = "Images cannot be queued. Wait for the current turn to finish.";
 // biome-ignore lint/suspicious/noControlCharactersInRegex: an escape sequence is one key
 const KEYS = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[\s\S]|[\s\S]/gu;
+const NO_CLIPBOARD_IMAGE = "No image on the clipboard. To paste text, use your terminal's text paste.";
+const CLIPBOARD_UNSUPPORTED =
+	"Ctrl+V attaches clipboard images on macOS only. To paste text, use your terminal's text paste.";
 const ANIMATED = "Animated image: only the first frame was attached.";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
@@ -146,8 +151,11 @@ export interface TuiOptions {
 	answerGuardMs?: number;
 	/** How often the terminal is told a running turn's new line at most (default 500 ms). */
 	statusIntervalMs?: number;
-	/** The system the notices are sent for, and what starts their commands (default: this process's, detached). */
+	/** The system the clipboard images and notices are for (default: this process's). */
 	platform?: NodeJS.Platform;
+	/** The clipboard's image as PNG or TIFF bytes for Ctrl+V; undefined when it holds none (default: macOS's pasteboard). */
+	readClipboardImage?: (signal: AbortSignal) => Promise<Uint8Array | undefined>;
+	/** Starts a notice's command (default: detached). */
 	spawn?: (command: string, args: string[]) => void;
 }
 
@@ -638,6 +646,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	let pasteEpoch = 0;
 	/** Where the editor's text and cursor stand for the pastes waiting: they insert only where they were made. */
 	let pasteSpot = "";
+	/** The clipboard reads under way: Ctrl+C, a new session and quitting abort their subprocesses. */
+	const clipboardReads = new Set<AbortController>();
+	const abortClipboardReads = () => {
+		for (const read of clipboardReads) read.abort();
+	};
 	const spot = () => JSON.stringify([editor.getText(), editor.getCursor()]);
 	const programStatus = new ProgramStatusReporter(options.terminal, options.statusIntervalMs);
 	/** What the main agent is doing, the terminal's line for it. */
@@ -956,6 +969,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const quit = (code: number) => {
 		if (quitting) return;
 		quitting = true;
+		abortClipboardReads();
 		finish(code);
 	};
 	/** Why the TUI quit, said once the terminal is given back: in the alternate screen it would be wiped with it. */
@@ -1165,6 +1179,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		savedId = next.savedId;
 		pasted.reset();
 		pasteEpoch++;
+		abortClipboardReads();
 		titleName = next.name;
 		showTitle();
 		conversation = shownIn;
@@ -1566,12 +1581,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 	};
 	editor.onSubmit = (line) => void submit(line);
-	/** Reads a paste that may name image files; one made before an edit, a move or a new session is dropped, never merged. */
-	const readPaste = (text: string) => {
-		const plain = () => editor.handleInput(`${PASTE_START}${text}${PASTE_END}`);
-		const mayBeFile = text.length <= PATH_PASTE_CHARS && /[\\/]|\.\w+['"]?(\s|$)/.test(text.trim());
-		// Text that cannot name a file goes in at once, unless a read is ahead of it.
-		if (reading === 0 && !mayBeFile) return plain();
+	/**
+	 * Runs `prepare` behind the reads ahead of it and inserts the images it yields at the cursor; `none` runs when it
+	 * yields none. A read made before an edit, a move or a new session is dropped, never merged.
+	 */
+	const queueRead = (
+		prepare: ((signal: AbortSignal) => Promise<PreparedImage[] | undefined>) | undefined,
+		none: () => void,
+	) => {
 		if (reading === 0) pasteSpot = spot();
 		const epoch = pasteEpoch;
 		const stale = () => quitting || epoch !== pasteEpoch || spot() !== pasteSpot;
@@ -1579,24 +1596,23 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		pastes = pastes.then(async () => {
 			let prepared: PreparedImage[] | undefined;
 			let failure: unknown;
-			if (mayBeFile && !stale()) {
+			if (prepare !== undefined && !stale()) {
+				const abort = new AbortController();
+				clipboardReads.add(abort);
 				try {
-					prepared = await preparePastedImages(text, {
-						cwd: args.cwd,
-						...(options.home === undefined ? {} : { home: options.home }),
-					});
+					prepared = await prepare(abort.signal);
 				} catch (error) {
 					failure = error;
+				} finally {
+					clipboardReads.delete(abort);
 				}
 			}
 			reading--;
 			if (quitting) return;
 			if (stale()) conversation.note("pasted text dropped: the draft changed while it was read; paste it again", true);
 			else if (failure !== undefined) conversation.note(`error: ${describeError(failure)}`, true);
-			else if (prepared === undefined) {
-				plain();
-				pasteSpot = spot();
-			} else {
+			else if (prepared === undefined) none();
+			else {
 				try {
 					const marker = pasted.add(editor.getText(), prepared);
 					editor.insertTextAtCursor(marker);
@@ -1608,6 +1624,34 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			}
 			tui.requestRender();
 		});
+	};
+	const readPaste = (text: string) => {
+		const plain = () => editor.handleInput(`${PASTE_START}${text}${PASTE_END}`);
+		const mayBeFile = text.length <= PATH_PASTE_CHARS && /[\\/]|\.\w+['"]?(\s|$)/.test(text.trim());
+		// Text that cannot name a file goes in at once, unless a read is ahead of it.
+		if (reading === 0 && !mayBeFile) return plain();
+		const prepare = (_signal: AbortSignal) =>
+			preparePastedImages(text, {
+				cwd: args.cwd,
+				...(options.home === undefined ? {} : { home: options.home }),
+			});
+		queueRead(mayBeFile ? prepare : undefined, () => {
+			plain();
+			pasteSpot = spot();
+		});
+	};
+	/** Ctrl+V: the clipboard's image, read in the order of the pastes; the clipboard's text is the terminal's to paste. */
+	const readClipboard = () => {
+		if ((options.platform ?? process.platform) !== "darwin") return conversation.note(CLIPBOARD_UNSUPPORTED);
+		const read = options.readClipboardImage ?? readClipboardImage;
+		queueRead(
+			async (signal) => {
+				const bytes = await read(signal);
+				signal.throwIfAborted();
+				return bytes === undefined ? undefined : [await normalizeImage(bytes, { clipboard: true })];
+			},
+			() => conversation.note(NO_CLIPBOARD_IMAGE),
+		);
 	};
 	const waitForPaste = () => {
 		conversation.note("still reading the pasted file; press Enter again in a moment");
@@ -1632,9 +1676,15 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 		if (matchesKey(data, "ctrl+c")) {
 			pasteEpoch++;
+			abortClipboardReads();
 			if (busy && !interrupted) interrupt();
 			else if (!busy && editor.getText() !== "") editor.setText("");
 			else quit(EXIT_INTERRUPTED);
+			tui.requestRender();
+			return { consume: true };
+		}
+		if (matchesKey(data, "ctrl+v") && questions.length === 0) {
+			readClipboard();
 			tui.requestRender();
 			return { consume: true };
 		}
