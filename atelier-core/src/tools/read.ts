@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { z } from "zod";
+import { readImageFile } from "../image-files.ts";
 import { errorMessage, failure, MAX_BYTES, MAX_LINES, takeHead } from "./limits.ts";
 import { protectedReadPaths, resolveOutside, resolveReadable } from "./paths.ts";
 import { defineTool, type ToolDefinition } from "./types.ts";
@@ -84,8 +85,8 @@ export function createReadTool(options: ReadOptions = {}): ToolDefinition {
 	return defineTool({
 		name: "read",
 		description: options.outside
-			? "Read a text file. Lines are numbered. Long files are truncated; use offset and limit to page through them. Absolute and ../ paths work; the user's secret directories are protected."
-			: "Read a text file inside the working directory. Lines are numbered. Long files are truncated; use offset and limit to page through them.",
+			? "Read a text file or a PNG, JPEG, GIF or WebP image. Text lines are numbered and truncated; use offset and limit to page through text. Images are returned to models with image input. Absolute and ../ paths work; the user's secret directories are protected."
+			: "Read a text file or a PNG, JPEG, GIF or WebP image inside the working directory. Text lines are numbered and truncated; use offset and limit to page through text. Images are returned to models with image input.",
 		inputShape: {
 			path: z
 				.string()
@@ -102,7 +103,18 @@ export function createReadTool(options: ReadOptions = {}): ToolDefinition {
 				const absolute = options.outside
 					? await resolveOutside(cwd, path, await protectedReadPaths(cwd, options.home ?? homedir()))
 					: await resolveReadable(cwd, path, scratchDir);
-				if ((await stat(absolute)).isDirectory()) return failure(`Not a file: ${path}`);
+				if (!(await stat(absolute)).isFile()) return failure(`Not a file: ${path}`);
+				const image = await readImageFile(absolute);
+				if (image !== undefined) {
+					const output = `Image: ${image.width}×${image.height} (${image.image.mimeType})`;
+					return {
+						ok: true,
+						output: image.animated ? `${output}\nAnimated image: only the first frame was attached.` : output,
+						summary: `${path} · ${output}`,
+						truncated: false,
+						images: [image.image],
+					};
+				}
 				const start = offset ?? 1;
 				const end = limit === undefined ? Number.POSITIVE_INFINITY : start + limit - 1;
 				const { lines, total, binary } = await scan(absolute, start, end);

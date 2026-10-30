@@ -1323,6 +1323,27 @@ describe("ClaudeCodeBackend context usage", () => {
 });
 
 describe("createToolBridge", () => {
+	it("returns tool images as MCP image content", async () => {
+		const { default: sharp } = await import("sharp");
+		const data = (
+			await sharp({ create: { width: 2, height: 1, channels: 3, background: "red" } })
+				.png()
+				.toBuffer()
+		).toString("base64");
+		const bridge = createToolBridge([echo], async () => ({
+			ok: true,
+			output: "Image",
+			images: [{ mimeType: "image/png", data }],
+		}));
+		const handler = bridge.definitions[0]?.handler as (args: unknown, extra: unknown) => Promise<unknown>;
+		const result = await handler({ text: "capture" }, {});
+		expect(result).toMatchObject({
+			content: [
+				{ type: "text", text: "Image" },
+				{ type: "image", mimeType: "image/png", data },
+			],
+		});
+	});
 	function bridgeWith(results: { ok: boolean; output: string; steering?: string }[]) {
 		const received: ToolCall[] = [];
 		const bridge = createToolBridge([echo], async (call) => {

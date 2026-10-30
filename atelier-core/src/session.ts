@@ -33,6 +33,7 @@ import {
 	type SubagentTag,
 	ZERO_USAGE,
 } from "./events.ts";
+import { imageInputProblem } from "./image-support.ts";
 import type { McpManager } from "./mcp/manager.ts";
 import { createMcpTools, MCP_CALL_TOOL, MCP_SEARCH_TOOL, mcpInstructionsNote, mcpPromptBlock } from "./mcp/tools.ts";
 import {
@@ -1916,6 +1917,10 @@ export class Session {
 				}
 			}
 			const outcome = await tool.execute(call.input, context);
+			if (outcome.images?.length) {
+				const problem = imageInputProblem(this.#backendSessionId, this.#model);
+				if (problem !== undefined) return fail(problem);
+			}
 			emit({
 				type: "tool_call_finished",
 				callId,
@@ -1927,7 +1932,11 @@ export class Session {
 				...(outcome.startLines === undefined ? {} : { startLines: outcome.startLines }),
 				...(outcome.newStartLines === undefined ? {} : { newStartLines: outcome.newStartLines }),
 			});
-			return { ok: outcome.ok, output: outcome.output };
+			return {
+				ok: outcome.ok,
+				output: outcome.output,
+				...(outcome.images === undefined ? {} : { images: outcome.images }),
+			};
 		} catch (error) {
 			const prefix = error instanceof ToolInputError ? "Invalid input" : "Tool failed";
 			return fail(`${prefix}: ${describeError(error)}`);

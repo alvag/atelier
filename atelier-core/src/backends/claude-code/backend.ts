@@ -119,7 +119,11 @@ export function createToolBridge(tools: readonly ToolDefinition[], executeTool: 
 			// What the user steered goes in a block of its own, as Claude Code itself gives what is typed while it works.
 			const steering = result.steering === undefined ? [] : [{ type: "text" as const, text: result.steering }];
 			return {
-				content: [{ type: "text" as const, text: result.output }, ...steering],
+				content: [
+					{ type: "text" as const, text: result.output },
+					...(result.images ?? []).map((image) => ({ type: "image" as const, ...image })),
+					...steering,
+				],
 				...(result.ok ? {} : { isError: true }),
 			};
 		}),
