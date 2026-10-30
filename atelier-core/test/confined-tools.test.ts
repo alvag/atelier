@@ -76,6 +76,13 @@ describe("the confined policy", () => {
 			expect.arrayContaining([join(home, ".npm", "_logs"), join(home, ".claude", "debug")]),
 		);
 	});
+
+	it("keeps the reads the configuration denies, and none of the writes it adds", () => {
+		const additions = { allowWrite: [parent], denyRead: [join(home, "private")] };
+		const { filesystem } = confinedPolicy({ cwd, scratchDir: scratch, home, additions });
+		expect(filesystem.denyRead).toContain(join(home, "private"));
+		expect(filesystem.allowWrite).toEqual([cwd, scratch]);
+	});
 });
 
 describe.skipIf(!onMac)("a confined command in the sandbox", () => {
@@ -107,6 +114,13 @@ describe.skipIf(!onMac)("a confined command in the sandbox", () => {
 		expect(library.ok).toBe(false);
 		expect(await exists(`/tmp/claude/${probe}`)).toBe(false);
 		expect(await exists(join(home, ".npm", "_logs", probe))).toBe(false);
+		// What the user's configuration denies reading stays denied.
+		await mkdir(join(home, ".atelier"), { recursive: true });
+		await writeFile(join(home, "notes.txt"), "private notes\n");
+		await writeFile(join(home, ".atelier", "sandbox.json"), JSON.stringify({ denyRead: ["notes.txt"] }));
+		const denied = await run(`cat ${home}/notes.txt`, confined());
+		expect(denied.output).not.toContain("private notes");
+		expect(denied.output).toMatch(/Operation not permitted/);
 		// The same command of an agent that is not confined takes the configuration's allowWrite.
 		expect((await run("echo child > deps/pkg/index.js", { cwd, scratchDir: scratch })).ok).toBe(true);
 	});
