@@ -83,6 +83,7 @@ export class QuestionDialog implements Component, Focusable {
 	focused = false;
 	readonly #question: string;
 	readonly #tabs: boolean;
+	readonly #onTab: ((step: -1 | 1) => void) | undefined;
 	readonly #options: readonly QuestionOption[];
 	readonly #paint: Paint;
 	readonly #guardMs: number;
@@ -92,7 +93,7 @@ export class QuestionDialog implements Component, Focusable {
 	/** The row of the cursor, none until a key puts it on one; the last row is `Type something…`. */
 	#cursor: number | undefined;
 	#answered = false;
-	/** How many answers it gave: a batch reopens it after each one. */
+	/** How many times it handed the input on, by an answer or a move to another tab: a batch reopens it after each. */
 	#given = 0;
 	/** What the user typed on `Type something…`, and where the text cursor is in it, in characters. */
 	#text = "";
@@ -106,6 +107,8 @@ export class QuestionDialog implements Component, Focusable {
 			options: readonly QuestionOption[];
 			/** Whether it is one tab of a batch: the hint line says ←→ moves among them. */
 			tabs?: boolean;
+			/** A batch's move to another tab, by ← (-1) or → (1), when they are not the text's. */
+			onTab?: (step: -1 | 1) => void;
 			guardMs?: number;
 			/** The filter that followed the input before this question appeared; one of its own by default. */
 			paste?: PasteFilter;
@@ -115,6 +118,7 @@ export class QuestionDialog implements Component, Focusable {
 	) {
 		this.#question = options.question;
 		this.#tabs = options.tabs ?? false;
+		this.#onTab = options.onTab;
 		this.#options = options.options;
 		this.#paint = paint;
 		this.#guardMs = options.guardMs ?? 0;
@@ -218,6 +222,8 @@ export class QuestionDialog implements Component, Focusable {
 		// option.
 		this.#paste.read(data, {
 			keys: (keys) => {
+				// Moving among the tabs takes no guard, as before a question appears; the rest of the chunk is the next tab's.
+				if (!this.#answered && this.#given === given && this.#tab(keys)) return;
 				if (live()) this.#key(keys);
 			},
 			keep: () => live() && this.#typing,
@@ -225,6 +231,15 @@ export class QuestionDialog implements Component, Focusable {
 				if (live() && this.#typing) this.#insert(text.replace(/\r\n?/g, "\n"));
 			},
 		});
+	}
+
+	/** ← or → handed to the batch, unless there is no batch or they edit the text typed; true when they were. */
+	#tab(keys: string): boolean {
+		const step = matchesKey(keys, "left") ? -1 : matchesKey(keys, "right") ? 1 : 0;
+		if (step === 0 || this.#onTab === undefined || this.editing) return false;
+		this.#given++;
+		this.#onTab(step);
+		return true;
 	}
 
 	#key(keys: string): void {

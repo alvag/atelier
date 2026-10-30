@@ -126,6 +126,34 @@ describe("AskDialog", () => {
 		expect(sent).toEqual([[{ other: "y" }, { option: 0 }]]);
 	});
 
+	it("moves among the tabs with ← and → that come in the chunk that closes a paste", () => {
+		const { dialog, lines } = asked([language, checks]);
+		dialog.handleInput(RIGHT);
+		dialog.handleInput("\x1b[200~pasted on an option");
+		dialog.handleInput(` row\x1b[201~${LEFT}`);
+		expect(lines(120)[3]).toBe(" Which language should commit messages use?");
+		dialog.handleInput("\x1b[200~again");
+		dialog.handleInput(`\x1b[201~${RIGHT}`);
+		dialog.handleInput(RIGHT);
+		expect(lines(120)[3]).toBe(" Review your answers");
+		dialog.handleInput("\x1b[200~on the review");
+		dialog.handleInput(`\x1b[201~${LEFT}`);
+		expect(lines(120)[3]).toBe(" Which checks should run before each commit?");
+	});
+
+	it("leaves ← and → that come with a paste's end to the text when something is typed there", () => {
+		const { dialog, sent } = asked([language, checks]);
+		dialog.handleInput(UP);
+		dialog.handleInput("ab");
+		dialog.handleInput("\x1b[200~X");
+		dialog.handleInput(`Y\x1b[201~${LEFT}`);
+		dialog.handleInput("Z");
+		dialog.handleInput("\r");
+		dialog.handleInput("1");
+		dialog.handleInput("\r");
+		expect(sent).toEqual([[{ other: "abXZY" }, { option: 0 }]]);
+	});
+
 	it("cancels the whole batch on Esc, on any tab", () => {
 		const { dialog, sent } = asked([language, checks]);
 		dialog.handleInput("1");

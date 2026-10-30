@@ -43,11 +43,6 @@ export class PasteFilter {
 	/** What the open paste holds so far, when it is kept. */
 	#kept: string | undefined;
 
-	/** Whether nothing is pending: no paste open and no cut marker waiting for the rest of it. */
-	get idle(): boolean {
-		return !this.pasting && this.#pending === "";
-	}
-
 	/** The keys in `data`, without what was pasted. */
 	feed(data: string): string {
 		let keys = "";
