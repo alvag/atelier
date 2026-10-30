@@ -462,11 +462,15 @@ export class QuestionDialog implements Component, Focusable {
 		return [...options, "", ...panel.map((line) => ` ${line}`)];
 	}
 
-	/** The columns of the options' rows with their descriptions under them: up to the `Recommended` tag. */
+	/**
+	 * The columns of the options' rows with their descriptions under them: up to the `Recommended` tag, and at least
+	 * `Type something…`, or the draft typed there with the cursor after it, whole.
+	 */
 	#listWidth(): number {
 		const column = Math.max(0, ...this.#options.map((option) => visibleWidth(option.label)));
 		const tagged = this.#options.some((option) => option.recommended);
-		return this.#indent + column + (tagged ? visibleWidth(RECOMMENDED) + 2 : 0);
+		const typed = this.#text === "" ? visibleWidth(TYPE_SOMETHING) : visibleWidth(visibleText(this.#text).text) + 1;
+		return this.#indent + Math.max(column + (tagged ? visibleWidth(RECOMMENDED) + 2 : 0), typed);
 	}
 
 	/**
