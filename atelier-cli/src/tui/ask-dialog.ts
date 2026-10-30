@@ -7,6 +7,8 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+// The prompt editor's own decoding of printable keys, which the package's index does not export.
+import { decodePrintableKey } from "@earendil-works/pi-tui/dist/keys.js";
 import { PasteFilter } from "./dialog.ts";
 import { fitHint, type QuestionAnswer, QuestionDialog, type QuestionOption } from "./question-dialog.ts";
 import type { Paint } from "./style.ts";
@@ -146,10 +148,11 @@ export class AskDialog implements Component, Focusable {
 	#review(data: string): void {
 		const keys = this.#paste.feed(data);
 		if (keys === "" || Date.now() - this.#reviewedAt < this.#guardMs) return;
+		const typed = decodePrintableKey(keys) ?? keys;
 		if (matchesKey(keys, "escape")) this.#finish(null);
 		else if (matchesKey(keys, "up") || matchesKey(keys, "down")) this.#choice = 1 - this.#choice;
-		else if (matchesKey(keys, "enter") || keys === "1" || keys === "2") {
-			const choice = keys === "1" ? 0 : keys === "2" ? 1 : this.#choice;
+		else if (matchesKey(keys, "enter") || typed === "1" || typed === "2") {
+			const choice = typed === "1" ? 0 : typed === "2" ? 1 : this.#choice;
 			this.#choice = choice;
 			if (choice === 0) this.#submit();
 			else this.#finish(null);

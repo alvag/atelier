@@ -260,6 +260,23 @@ describe("QuestionDialog's Type something row", () => {
 		expect(answers).toEqual([{ other: "y" }]);
 	});
 
+	it("types printable keys as the prompt editor takes them: Kitty CSI-u and modifyOtherKeys too", () => {
+		const { shown, answers, lines } = dialog();
+		shown.handleInput("3");
+		// a, A (Shift with its shifted key), é, a space, Ñ, then B as xterm's modifyOtherKeys sends it.
+		for (const key of ["\x1b[97u", "\x1b[97:65;2u", "\x1b[233u", "\x1b[32u", "Ñ", "\x1b[27;2;66~"])
+			shown.handleInput(key);
+		expect(typeRow(lines(120))).toBe(" ❯ 3. aAé ÑB");
+		shown.handleInput("\r");
+		expect(answers).toEqual([{ other: "aAé ÑB" }]);
+	});
+
+	it("picks with a number key sent as Kitty CSI-u", () => {
+		const { shown, answers } = dialog();
+		shown.handleInput("\x1b[50u");
+		expect(answers).toEqual([{ option: 1 }]);
+	});
+
 	it("shows control characters as markers and sends them as typed", () => {
 		const { shown, answers, lines } = dialog();
 		shown.handleInput("3");
