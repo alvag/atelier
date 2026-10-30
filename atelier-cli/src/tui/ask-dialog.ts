@@ -133,9 +133,11 @@ export class AskDialog implements Component, Focusable {
 	}
 
 	/** Goes to the tab before (-1) or after (1) the one on screen, when there is one. */
-	#step(step: -1 | 1): void {
+	#step(step: -1 | 1): boolean {
 		const next = Math.min(this.#dialogs.length, Math.max(0, this.#tab + step));
-		if (next !== this.#tab) this.#show(next);
+		if (next === this.#tab) return false;
+		this.#show(next);
+		return true;
 	}
 
 	/** Puts tab `index` on screen, its guard started again; the one after the questions is the review. */
@@ -189,21 +191,39 @@ export class AskDialog implements Component, Focusable {
 
 	/** A key on the review: Up/Down, 1 or 2, Enter, and Esc; the paste filter takes out what was pasted. */
 	#review(data: string): void {
-		const keys = this.#paste.feed(data);
-		if (matchesKey(keys, "left")) {
-			this.#step(-1);
-			return;
-		}
-		if (keys === "" || Date.now() - this.#reviewedAt < this.#guardMs) return;
-		const typed = decodePrintableKey(keys) ?? keys;
-		if (matchesKey(keys, "escape")) this.#finish(null);
-		else if (matchesKey(keys, "up") || matchesKey(keys, "down")) this.#choice = 1 - this.#choice;
-		else if (matchesKey(keys, "enter") || typed === "1" || typed === "2") {
-			const choice = typed === "1" ? 0 : typed === "2" ? 1 : this.#choice;
-			this.#choice = choice;
-			if (choice === 0) this.#submit();
-			else this.#finish(null);
-		}
+		const guarded = Date.now() - this.#reviewedAt < this.#guardMs;
+		let live = true;
+		this.#paste.read(data, {
+			keys: (keys) => {
+				if (!live) return;
+				// → on the last tab does nothing: keep the keys after it, including Enter in this chunk.
+				while (keys !== "") {
+					// biome-ignore lint/suspicious/noControlCharactersInRegex: a terminal key starts with ESC
+					const first = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O.)/.exec(keys)?.[0];
+					if (first === undefined || !matchesKey(first, "right")) break;
+					keys = keys.slice(first.length);
+				}
+				if (matchesKey(keys, "left")) {
+					live = !this.#step(-1);
+					return;
+				}
+				if (keys === "" || guarded) return;
+				const typed = decodePrintableKey(keys) ?? keys;
+				if (matchesKey(keys, "escape")) {
+					live = false;
+					this.#finish(null);
+				} else if (matchesKey(keys, "up") || matchesKey(keys, "down")) this.#choice = 1 - this.#choice;
+				else if (matchesKey(keys, "enter") || typed === "1" || typed === "2") {
+					live = false;
+					const choice = typed === "1" ? 0 : typed === "2" ? 1 : this.#choice;
+					this.#choice = choice;
+					if (choice === 0) this.#submit();
+					else this.#finish(null);
+				}
+			},
+			keep: () => false,
+			pasted: () => {},
+		});
 	}
 
 	/** Starts the guard of the question on screen. */

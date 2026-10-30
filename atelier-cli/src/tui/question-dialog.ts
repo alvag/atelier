@@ -112,7 +112,7 @@ export class QuestionDialog implements Component, Focusable {
 	focused = false;
 	readonly #question: string;
 	readonly #tabs: boolean;
-	readonly #onTab: ((step: -1 | 1) => void) | undefined;
+	readonly #onTab: ((step: -1 | 1) => boolean) | undefined;
 	readonly #options: readonly QuestionOption[];
 	readonly #multiSelect: boolean;
 	/** Whether a multi-select question's last row says `Submit`: it is the last question; `Next →` otherwise. */
@@ -149,8 +149,8 @@ export class QuestionDialog implements Component, Focusable {
 			last?: boolean;
 			/** Whether it is one tab of a batch: the hint line says ←→ moves among them. */
 			tabs?: boolean;
-			/** A batch's move to another tab, by ← (-1) or → (1), when they are not the text's. */
-			onTab?: (step: -1 | 1) => void;
+			/** Moves by ← (-1) or → (1), when they are not the text's; true only when the tab changed. */
+			onTab?: (step: -1 | 1) => boolean;
 			guardMs?: number;
 			/** The filter that followed the input before this question appeared; one of its own by default. */
 			paste?: PasteFilter;
@@ -336,8 +336,8 @@ export class QuestionDialog implements Component, Focusable {
 	#tab(keys: string): boolean {
 		const step = matchesKey(keys, "left") ? -1 : matchesKey(keys, "right") ? 1 : 0;
 		if (step === 0 || this.#onTab === undefined || this.editing) return false;
+		if (!this.#onTab(step)) return false;
 		this.#given++;
-		this.#onTab(step);
 		return true;
 	}
 

@@ -2606,6 +2606,36 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("keeps input at both tab boundaries and sends the pasted answer once", async () => {
+			const h = harness([]);
+			const stub = listingCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => h.screen.screen().includes("profile cheap"));
+			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
+			askUser(stub.emit);
+			await until(() => h.screen.screen().includes("○ Q1   ○ Q2"));
+			h.screen.type("3");
+			h.screen.type("\x1b[D\x1b[200~boundary paste\x1b[201~");
+			await until(() => h.screen.screen().includes("3. boundary paste"));
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("Which cache?"));
+			h.screen.type("1");
+			await until(() => h.screen.screen().includes("Review your answers"));
+			expect(answers()).toHaveLength(0);
+			h.screen.type("\x1b[C\r");
+			await until(() => answers().length === 1);
+			expect(answers()[0]).toMatchObject({
+				callId: "u1",
+				answers: [
+					{ questionId: "q1", other: "boundary paste" },
+					{ questionId: "q2", optionId: "d" },
+				],
+			});
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
 		it("checks boxes of multi-select questions, sends them in the question's order and keeps them in the transcript", async () => {
 			const h = harness([]);
 			const stub = listingCore();
