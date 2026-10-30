@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { copyFile, link, lstat, mkdir, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, join, normalize, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { systemTmpdir } from "../scratch.ts";
@@ -162,15 +162,27 @@ function alternateEntry(path: string): string {
 	return `"${escaped}"`;
 }
 
-/** Copies the loose objects of `from` that `to` lacks; an object is the same file wherever it is. */
+/**
+ * Copies the loose objects of `from` that `to` lacks, published as git publishes its own: each written whole to a
+ * temporary file beside it (`tmp_obj_`, which git's own cleanup takes) and then hard-linked to its name, which fails
+ * when the object is already there. So no reader, another worker's launch included, ever sees part of one.
+ */
 async function copyObjects(from: string, to: string): Promise<void> {
 	for (const folder of await readdir(from).catch((): string[] => [])) {
 		if (!/^[0-9a-f]{2}$/.test(folder)) continue;
 		await mkdir(join(to, folder), { recursive: true });
-		for (const name of await readdir(join(from, folder)))
-			await copyFile(join(from, folder, name), join(to, folder, name), constants.COPYFILE_EXCL).catch((error) => {
-				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			});
+		for (const name of await readdir(join(from, folder))) {
+			const temporary = join(to, folder, `tmp_obj_atelier_${randomBytes(6).toString("hex")}`);
+			await copyFile(join(from, folder, name), temporary);
+			try {
+				await link(temporary, join(to, folder, name)).catch(async (error) => {
+					// Where hard links are not allowed, a rename publishes it as whole, as git does.
+					if ((error as NodeJS.ErrnoException).code !== "EEXIST") await rename(temporary, join(to, folder, name));
+				});
+			} finally {
+				await rm(temporary, { force: true });
+			}
+		}
 	}
 }
 
