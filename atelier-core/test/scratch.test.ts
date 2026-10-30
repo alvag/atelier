@@ -11,7 +11,7 @@ import {
 	REUSED_PID_MARGIN_MS,
 	sweepStaleScratch,
 } from "../src/scratch.ts";
-import { sweepingChild } from "./support/sweeping-child.ts";
+import { canFakePs, sweepingChild } from "./support/sweeping-child.ts";
 
 let root: string;
 const children: ChildProcess[] = [];
@@ -137,13 +137,20 @@ describe("the sweep that the first directory starts", () => {
 		await until(async () => !(await exists(old)));
 	});
 
-	it("never keeps a process that is done alive, however long the sweep takes", async () => {
-		const child = await sweepingChild(root, process.execPath);
-		children.push(child.process);
-		await until(async () => child.exited !== undefined, 12_000);
-		expect(child.exited).toBe(0);
-		expect(child.stdout).toBe("sweeping\n");
-	}, 20_000);
+	it.skipIf(!canFakePs)(
+		"never keeps a process that is done alive, however long the sweep takes",
+		async () => {
+			const child = await sweepingChild(root, process.execPath);
+			try {
+				await until(async () => child.exited !== undefined, 12_000);
+				expect(child.exited).toBe(0);
+				expect(child.stdout).toBe("sweeping\n");
+			} finally {
+				child.stop();
+			}
+		},
+		20_000,
+	);
 });
 
 describe("sweepStaleScratch", () => {

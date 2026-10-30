@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { type SweepingChild, sweepingChild } from "../../atelier-core/test/support/sweeping-child.ts";
+import { canFakePs, sweepingChild, type TrackedChild } from "../../atelier-core/test/support/sweeping-child.ts";
 
 /**
  * The Electron the desktop runs the core with, or undefined when its binary is not installed. Found through its
@@ -22,7 +22,7 @@ function electronBinary(): string | undefined {
 
 const electron = electronBinary();
 let root: string | undefined;
-let child: SweepingChild | undefined;
+let child: TrackedChild | undefined;
 
 /** Waits for a condition instead of a fixed delay. */
 async function until(condition: () => boolean, timeoutMs: number): Promise<void> {
@@ -34,13 +34,13 @@ async function until(condition: () => boolean, timeoutMs: number): Promise<void>
 }
 
 afterEach(async () => {
-	child?.process.kill("SIGKILL");
+	child?.stop();
 	child = undefined;
 	if (root !== undefined) await rm(root, { recursive: true, force: true });
 	root = undefined;
 });
 
-describe.skipIf(electron === undefined)("the core on Electron's Node", () => {
+describe.skipIf(electron === undefined || !canFakePs)("the core on Electron's Node", () => {
 	it("sweeps the temporary folder in its worker and ends on its own, without errors", async () => {
 		root = await mkdtemp(join(tmpdir(), "atelier-electron-test-"));
 		child = await sweepingChild(root, electron as string, { ELECTRON_RUN_AS_NODE: "1" });
