@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { measuredTools, tallyParentCalls } from "../scripts/delegation-calls.ts";
+import { measuredTools, notingResponses, tallyBackground, tallyParentCalls } from "../scripts/delegation-calls.ts";
+import type { ModelTransport } from "../src/backends/anthropic-api/transport.ts";
 import type { AtelierEvent } from "../src/index.ts";
 import { defineTool } from "../src/tools/types.ts";
 
@@ -60,6 +61,86 @@ describe("the parent's calls in a measured turn", () => {
 			["e", 7000],
 		]);
 		expect(tallyParentCalls(events, chars).readCharsBeforeTask).toBe(1000);
+	});
+});
+
+describe("the parent's background work in a measured session", () => {
+	const task = (callId: string, prompt: string, background?: boolean) =>
+		at({ type: "tool_call_started", callId, tool: "task", input: { agent: "worker", prompt, background } });
+	const bash = (callId: string, command: string) =>
+		at({ type: "tool_call_started", callId, tool: "bash", input: { command } });
+
+	it("counts launches, the responses that made them, polls, applies and the checks after the last apply", () => {
+		const events = [
+			task("a", "add the option", true),
+			task("b", "add the validation", true),
+			at({ type: "tool_call_started", callId: "c", tool: "job_list", input: {} }),
+			bash("d", "sleep 30"),
+			bash("e", "node_modules/.bin/vitest run"),
+			bash("f", "git -C /repo apply /tmp/task-1.patch"),
+			bash("g", "git apply --check /tmp/task-2.patch"),
+			bash("h", "git apply /tmp/task-2.patch"),
+			bash("i", "node_modules/.bin/tsc -p . && node_modules/.bin/vitest run"),
+			task("j", "add the option", true),
+			task("k", "find where"),
+			at({ type: "tool_call_started", callId: "x", tool: "job_list", input: {}, parentCallId: "a" }),
+		];
+		const requests = new Map([
+			["a", 1],
+			["b", 1],
+			["j", 4],
+		]);
+		expect(tallyBackground(events, requests)).toEqual({
+			backgroundLaunches: 3,
+			foregroundTasks: 1,
+			launchResponses: 2,
+			relaunches: 1,
+			polls: 2,
+			applies: 2,
+			checkRuns: 2,
+			checksAfterLastApply: 1,
+		});
+	});
+
+	it("counts no launch response for a launch whose request is unknown, and nothing in an idle session", () => {
+		expect(tallyBackground([task("a", "p", true)], new Map()).launchResponses).toBe(0);
+		expect(tallyBackground([], new Map())).toEqual({
+			backgroundLaunches: 0,
+			foregroundTasks: 0,
+			launchResponses: 0,
+			relaunches: 0,
+			polls: 0,
+			applies: 0,
+			checkRuns: 0,
+			checksAfterLastApply: 0,
+		});
+	});
+});
+
+describe("a transport that notes which response made each tool call", () => {
+	it("numbers the responses and notes each tool_use block's id under its response", async () => {
+		const replies = [["a", "b"], [], ["c"]];
+		const transport = {
+			async *request() {
+				yield { type: "text_delta" as const, text: "x" };
+				return {
+					content: (replies.shift() ?? []).map((id) => ({ type: "tool_use", id, name: "bash", input: {} })),
+				};
+			},
+		} as unknown as ModelTransport;
+		const requests = new Map<string, number>();
+		const noted = notingResponses(transport, requests);
+		const deltas: unknown[] = [];
+		for (let i = 0; i < 3; i++) {
+			const stream = noted.request({} as never);
+			for (let next = await stream.next(); !next.done; next = await stream.next()) deltas.push(next.value);
+		}
+		expect(deltas).toHaveLength(3);
+		expect([...requests]).toEqual([
+			["a", 1],
+			["b", 1],
+			["c", 3],
+		]);
 	});
 });
 

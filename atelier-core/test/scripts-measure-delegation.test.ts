@@ -46,6 +46,49 @@ describe("measure-delegation", () => {
 		30_000,
 	);
 
+	it("measures a background task in a git repository whose checks pass, with the counts of its background work", async () => {
+		const script = new URL("../scripts/measure-delegation.ts", import.meta.url).pathname;
+		const json = join(root, "run.json");
+		const args = [script, "--fake-backend", "--background", "--runs", "1", "--tasks", "parallel", "--json", json];
+		const run = spawnTracked(process.execPath, args, { ATELIER_SCRATCH_SWEEP: "off", TMPDIR: root });
+		child = run;
+
+		await until(() => run.exited !== undefined, 60_000);
+		expect(run.stderr).toContain("parallel #1");
+		expect(run.exited).toBe(0);
+		const written = JSON.parse(await readFile(json, "utf8")) as {
+			background?: boolean;
+			results: { task: string; errors: string[]; background?: Record<string, number | boolean> }[];
+		};
+		expect(written.background).toBe(true);
+		expect(written.results.map((result) => [result.task, result.errors])).toEqual([["parallel", []]]);
+		// The scripted backend only answers: nothing launched or applied, and the repository's own checks pass.
+		expect(written.results[0]?.background).toEqual({
+			backgroundLaunches: 0,
+			foregroundTasks: 0,
+			launchResponses: 0,
+			relaunches: 0,
+			polls: 0,
+			applies: 0,
+			checkRuns: 0,
+			checksAfterLastApply: 0,
+			changesMade: 0,
+			checksPass: true,
+		});
+		expect(run.stdout).toContain("| background launches | 0 |");
+	}, 90_000);
+
+	it("refuses a background task without --background", async () => {
+		const script = new URL("../scripts/measure-delegation.ts", import.meta.url).pathname;
+		const args = [script, "--fake-backend", "--runs", "1", "--tasks", "needed-first"];
+		const run = spawnTracked(process.execPath, args, { ATELIER_SCRATCH_SWEEP: "off", TMPDIR: root });
+		child = run;
+
+		await until(() => run.exited !== undefined, 15_000);
+		expect(run.exited).toBe(2);
+		expect(run.stderr).toContain("needed-first runs only with --background");
+	}, 30_000);
+
 	it("records the explorer model it measured, and refuses the variants it no longer has", async () => {
 		const script = new URL("../scripts/measure-delegation.ts", import.meta.url).pathname;
 		const json = join(root, "run.json");
