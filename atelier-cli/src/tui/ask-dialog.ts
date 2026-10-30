@@ -89,6 +89,7 @@ export class AskDialog implements Component, Focusable {
 						guardMs: options.guardMs ?? 0,
 						paste: this.#paste,
 						tabs,
+						...(tabs ? { onTab: (step: -1 | 1) => this.#step(step) } : {}),
 					},
 					paint,
 					(answer) => this.#answered(index, answer),
@@ -120,6 +121,12 @@ export class AskDialog implements Component, Focusable {
 		this.#show(index + 1);
 	}
 
+	/** Goes to the tab before (-1) or after (1) the one on screen, when there is one. */
+	#step(step: -1 | 1): void {
+		const next = Math.min(this.#dialogs.length, Math.max(0, this.#tab + step));
+		if (next !== this.#tab) this.#show(next);
+	}
+
 	/** Puts tab `index` on screen, its guard started again; the one after the questions is the review. */
 	#show(index: number): void {
 		this.#tab = index;
@@ -147,6 +154,10 @@ export class AskDialog implements Component, Focusable {
 	/** A key on the review: Up/Down, 1 or 2, Enter, and Esc; the paste filter takes out what was pasted. */
 	#review(data: string): void {
 		const keys = this.#paste.feed(data);
+		if (matchesKey(keys, "left")) {
+			this.#step(-1);
+			return;
+		}
 		if (keys === "" || Date.now() - this.#reviewedAt < this.#guardMs) return;
 		const typed = decodePrintableKey(keys) ?? keys;
 		if (matchesKey(keys, "escape")) this.#finish(null);
@@ -170,18 +181,9 @@ export class AskDialog implements Component, Focusable {
 
 	handleInput(data: string): void {
 		if (this.#done) return;
-		const dialog = this.#dialog;
-		// ← and → move among the tabs, unless they edit the text typed; never inside a paste.
-		if (this.#dialogs.length > 1 && this.#paste.idle && !dialog?.editing) {
-			const step = matchesKey(data, "left") ? -1 : matchesKey(data, "right") ? 1 : 0;
-			if (step !== 0) {
-				const next = Math.min(this.#dialogs.length, Math.max(0, this.#tab + step));
-				if (next !== this.#tab) this.#show(next);
-				return;
-			}
-		}
+		// The question on screen, or the review, hands ← and → back to move among the tabs, in the order they come.
 		if (this.#reviewing) this.#review(data);
-		else dialog?.handleInput(data);
+		else this.#dialog?.handleInput(data);
 	}
 
 	invalidate(): void {}
