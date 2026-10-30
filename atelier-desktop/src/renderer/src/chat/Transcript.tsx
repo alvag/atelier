@@ -285,6 +285,7 @@ function ReviewBlock({
 			{item.declaration?.kind === "none" ? <div>Declared none: {item.declaration.reason}</div> : null}
 			{item.lensesReason === undefined ? null : <div>Lenses chosen: {item.lensesReason}</div>}
 			{item.since ? <div>Changes since {item.since}</div> : null}
+			{item.sinceReview ? <div>Changes since the last review</div> : null}
 			{item.baseNote ? <div>{item.baseNote}</div> : null}
 			{item.allowedForSession ? <div>Allowed for this session</div> : null}
 			{item.roles.map((role) => {

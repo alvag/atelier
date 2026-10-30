@@ -24,7 +24,14 @@ import { addPhaseSpent, addPhases, onePhase, phaseAgent } from "../spent.ts";
 import { createBashTool, grepTool, readTool, sandbox } from "../tools/index.ts";
 import type { Sandbox } from "../tools/sandbox.ts";
 import type { ToolDefinition } from "../tools/types.ts";
-import { type Candidate, emptyStartBase, type FreezeOptions, freezeCandidate, readTurnGit } from "./candidate.ts";
+import {
+	type Candidate,
+	emptyStartBase,
+	type FreezeOptions,
+	freezeCandidate,
+	type ReviewedTree,
+	readTurnGit,
+} from "./candidate.ts";
 import type { Finding } from "./findings.ts";
 import { gitText, runGit } from "./git.ts";
 import { followUpsBlock, type NoticePart, reviewNotice, verificationNotice } from "./notice.ts";
@@ -123,6 +130,8 @@ export class SessionReview {
 	readonly #undone = new Set<string>();
 	/** The user allowed every high-risk review of this session: no more questions until it closes. */
 	#allowedForSession = false;
+	/** What the last approved automatic review saw: the next round's base when HEAD has not moved since. */
+	#reviewed: ReviewedTree | undefined;
 	/** What the agent is told before its next prompt about the latest review; the newest replaces an older one. */
 	#notice: { verification?: NoticePart | undefined; review?: NoticePart | undefined } = {};
 	/** A notice the backend never took, for the next prompt unless a newer one came since. */
@@ -342,7 +351,12 @@ export class SessionReview {
 			...lensesReasonOf(assessment),
 			reviewDue: assessment.reviewDue,
 			...(assessment.declaration === undefined ? {} : { declaration: assessment.declaration }),
-			...(candidate.since === undefined ? {} : { since: candidate.since }),
+			// Measured from a reviewed tree, the change is not measured from the commit `since` would name.
+			...(candidate.reviewedBase !== undefined
+				? { sinceReview: candidate.reviewedBase.reviewId }
+				: candidate.since === undefined
+					? {}
+					: { since: candidate.since }),
 			...(candidate.baseNote === undefined ? {} : { baseNote: candidate.baseNote }),
 			...(allowed ? { consent: "session" as const } : {}),
 		});
@@ -367,12 +381,13 @@ export class SessionReview {
 			if (answer === "declined") return paid(await this.#declined(host, reviewId, candidate, assessment));
 			if (answer === "granted_for_session") this.#allowedForSession = true;
 		}
-		return paid(await this.#cycle(host, reviewId, candidate, assessment));
+		return paid(await this.#cycle(host, reviewId, candidate, assessment, manual));
 	}
 
 	async #startOf(cwd: string): Promise<FreezeOptions> {
 		if (this.#startedEmpty) return emptyStartBase(cwd).catch(() => ({}));
-		return this.#turnStart === undefined ? {} : { turnStart: this.#turnStart };
+		if (this.#turnStart === undefined) return {};
+		return { turnStart: this.#turnStart, ...(this.#reviewed === undefined ? {} : { reviewed: this.#reviewed }) };
 	}
 
 	async #declined(host: ReviewHost, reviewId: string, candidate: Candidate, assessment: Assessment): Promise<Spent> {
@@ -381,7 +396,13 @@ export class SessionReview {
 		return { usage: { ...ZERO_USAGE } };
 	}
 
-	async #cycle(host: ReviewHost, reviewId: string, candidate: Candidate, assessment: Assessment): Promise<Spent> {
+	async #cycle(
+		host: ReviewHost,
+		reviewId: string,
+		candidate: Candidate,
+		assessment: Assessment,
+		manual: boolean,
+	): Promise<Spent> {
 		let requests: number | undefined;
 		const count = (more: number | undefined) => {
 			if (more !== undefined) requests = (requests ?? 0) + more;
@@ -427,12 +448,31 @@ export class SessionReview {
 		}
 		const interrupted = receipt.verdict === "unavailable" && receipt.unavailableReason === "interrupted";
 		await this.#finish(host, reviewId, candidate, receipt, !interrupted);
+		// Only an approved round moves the base: what the others saw has to be seen again, whole.
+		if (!manual && receipt.verdict === "approved") await this.#advance(candidate, reviewId, receipt.id);
 		return {
 			usage: receipt.usage,
 			...(receipt.costUsd === undefined ? {} : { costUsd: receipt.costUsd }),
 			...(requests === undefined ? {} : { requests }),
 			...(phases === undefined ? {} : { phases }),
 		};
+	}
+
+	/** The next automatic round is measured from the tree this review's lenses saw, while HEAD stays where it is now. */
+	async #advance(candidate: Candidate, reviewId: string, receiptId: string): Promise<void> {
+		const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd: candidate.root }).catch(
+			() => undefined,
+		);
+		this.#reviewed =
+			head?.code === 0
+				? {
+						root: candidate.root,
+						tree: candidate.tree,
+						head: head.stdout.toString("utf8").trim(),
+						reviewId,
+						receiptId,
+					}
+				: undefined;
 	}
 
 	/** Stores the receipt (not for an interrupted review), announces the end, and forgets what the agent raised. */
@@ -792,6 +832,7 @@ function receiptOf(host: ReviewHost, candidate: Candidate, assessment: Assessmen
 		followUps: [],
 		correction: null,
 		verdict,
+		...(candidate.reviewedBase === undefined ? {} : { previousReview: candidate.reviewedBase.receiptId }),
 		usage: { ...ZERO_USAGE },
 	};
 }

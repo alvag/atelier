@@ -57,6 +57,7 @@ function assessedLines(assessed: Assessed | undefined, paint: Paint): string[] {
 		for (const entry of declaration.items) more(`declared items ${entry.items.join(", ")}: ${shown(entry.reason)}`);
 	const base = [
 		...(assessed.since === undefined ? [] : [`since ${shown(assessed.since)}`]),
+		...(assessed.sinceReview === undefined ? [] : ["since the last review"]),
 		...(assessed.baseNote === undefined ? [] : [shown(assessed.baseNote)]),
 	];
 	if (base.length > 0) more(base.join(" · "));

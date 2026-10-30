@@ -1477,6 +1477,24 @@ describe("App", () => {
 			expect(block.textContent).toContain("HEAD no longer descends from 9f8e7d6");
 		});
 
+		it("says the change is since the last review when the base advanced to the last approved round", async () => {
+			const fake = fakeBridge();
+			await openFolderAndSend(fake, "x");
+			fake.emit({
+				type: "review_assessed",
+				tree: "t",
+				level: "medium",
+				reasons: [],
+				files: ["a.ts"],
+				changedLines: 1,
+				lenses: ["reliability"],
+				reviewDue: false,
+				sinceReview: "r0",
+			});
+			const block = await screen.findByTestId("review");
+			expect(block.textContent).toContain("Changes since the last review");
+		});
+
 		it("stops showing Reviewing… when the turn ends without a result", async () => {
 			const fake = fakeBridge();
 			await openFolderAndSend(fake, "/review");

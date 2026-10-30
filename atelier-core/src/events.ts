@@ -482,6 +482,8 @@ export type AtelierEventBody =
 			declaration?: RiskDeclaration;
 			/** Short id of the commit the change is measured against, when it is not the current HEAD (the turn's commits are included). */
 			since?: string;
+			/** The review (its `reviewId`) whose tree the change is measured from, when the base advanced to the last approved round; `since` is then absent. */
+			sinceReview?: string;
 			/** Why the base is the current HEAD although the turn started earlier (a reset or rebase), or the empty tree (the turn started without commits). */
 			baseNote?: string;
 			/** `session`: the user allowed this session's reviews, so this one runs without asking. */
