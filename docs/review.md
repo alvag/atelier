@@ -12,7 +12,8 @@ Before the agent's tools run, the session captures the starting commit and a bou
 - Commits and amends made during the turn retain the starting commit's tree as the base. A reset to an ancestor followed by a new commit also retains that tree: the turn's replacement, including deletions, is reviewed rather than disappearing against HEAD.
 - A reset alone uses the final HEAD as the base, so removed history is not a candidate. Edits left uncommitted after the reset are still included.
 - A branch switch moves the base to where HEAD landed after the switch. Later commits and uncommitted edits are included, not that branch's existing history. A switch alone produces no review.
-- Unrecognized or unverifiable rewrites report `review_status` with `available: false` and a reason instead of silently treating the turn as unchanged. The explicit `/review <ref>` remains available.
+- A complete linear rebase matches the original commits to their replays in order, by unique, nonempty patches (only the index blob ids are ignored; paths, modes, hunks and bytes must match). Commits created during the turn must form a suffix of that sequence. The base is the rewritten boundary before the first own replay, excluding upstream and pre-turn commits. A pure rebase without own commits uses its landing HEAD. Dropped, empty, reordered, squashed, merged or conflict-resolved replays, and changed hunk offsets, cannot be attributed by this rule and report unavailable rather than guessing.
+- Unrecognized or unverifiable rewrites report `review_status` with `available: false` and a reason instead of silently treating the turn as unchanged. This also covers a missing or expired HEAD reflog, `core.logAllRefUpdates=false` (even when an old log remains), and a message-less `git update-ref`. A failure while re-freezing after the risk declaration reports the same status; no stale snapshot is assessed. The explicit `/review <ref>` remains available.
 
 The existing rule for a start that **is** still an ancestor is unchanged: it uses the turn-start tree, even if upstream history arrived during the turn. That separate upstream-attribution limitation is not fixed here. The temporary-index snapshot, staged/unstaged handling, first-commit rules and receipt format are unchanged. A history-move note also prevents reuse of the previous approved round's base.
 
@@ -20,6 +21,8 @@ The exact base notes are (ids are short commit ids):
 - `HEAD no longer descends from <start>, where the turn started: the base remains the turn-start tree because the turn rewrote its commits`
 - `HEAD no longer descends from <start>, where the turn started: the base moved to <base>, where HEAD landed after the branch switch, to exclude that branch's history`
 - `HEAD no longer descends from <start>, where the turn started: the base is the current HEAD`
+- `HEAD no longer descends from <start>, where the turn started: the base moved to <base>, before the turn's replayed commits, to exclude upstream history`
+- `HEAD no longer descends from <start>, where the turn started: the base moved to <base>, where HEAD landed after the rebase, to exclude upstream history`
 
 An attribution failure uses `Cannot safely attribute the turn's rewritten commits: <detail>.`, where `<detail>` is one of:
 - `the worktree's HEAD reflog is unavailable`
@@ -27,6 +30,7 @@ An attribution failure uses `Cannot safely attribute the turn's rewritten commit
 - `a HEAD reflog entry has no operation message`
 - `the HEAD reflog transitions are incomplete`
 - `a HEAD reflog operation is not attributable`
+- `the rebase replay cannot be attributed unambiguously`
 
 ### What the agent is told
 
