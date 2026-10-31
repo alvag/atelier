@@ -322,12 +322,15 @@ export class SessionReview {
 			extra = asPhase("declare", answer);
 			// The agent may have edited while answering: those edits are part of what gets assessed.
 			const again = await freezeCandidate(host.cwd, freezing);
+			if (!again.ok) {
+				host.push({ type: "review_status", available: false, reason: again.reason });
+				return paid(none);
+			}
 			// The base can move too (a reset or a commit while answering), so it counts as much as the tree.
 			if (
-				again.ok &&
-				(again.candidate.tree !== candidate.tree ||
-					again.candidate.baseCommit !== candidate.baseCommit ||
-					again.candidate.baseNote !== candidate.baseNote)
+				again.candidate.tree !== candidate.tree ||
+				again.candidate.baseCommit !== candidate.baseCommit ||
+				again.candidate.baseNote !== candidate.baseNote
 			) {
 				candidate = again.candidate;
 				if (candidate.files.length === 0 || (await findReceipt(candidate.gitDir, candidate.tree))) return paid(none);
