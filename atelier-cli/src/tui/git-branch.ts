@@ -360,7 +360,8 @@ async function untrackedLines(
 		if (info?.isSymbolicLink()) lines++;
 		if (!info?.isFile() || kind(path) === "binary") continue;
 		// Never read outside the worktree: no symlink on the way to the file before it opens (O_NOFOLLOW guards only its
-		// last component), the same file opened as checked, and both still so once it is read; else the count is unknown.
+		// last component), the same file opened as checked, and both still so before and after it is read; else the
+		// count is unknown.
 		const direct = await bounded(realpath(name)).then(
 			(real) => real === name,
 			(error: NodeJS.ErrnoException) => {
@@ -383,6 +384,11 @@ async function untrackedLines(
 		try {
 			const opened = await bounded(file.stat());
 			if (!opened.isFile() || !sameFile(opened, info)) return undefined;
+			/** Whether the opened file is still the one at its path in the worktree, with no symlink on the way. */
+			const inside = async () =>
+				sameFile(await bounded(lstat(name)), opened) && (await bounded(realpath(name))) === name;
+			// A folder moved out with the file keeps its identity: only its path tells, before a byte is read.
+			if (!(await inside())) return undefined;
 			budget -= opened.size;
 			if (budget < 0) return undefined;
 			const content = Buffer.alloc(opened.size);
@@ -392,8 +398,7 @@ async function untrackedLines(
 				if (bytesRead === 0) break;
 				read += bytesRead;
 			}
-			const after = await bounded(lstat(name));
-			if (!sameFile(after, opened) || (await bounded(realpath(name))) !== name) return undefined;
+			if (!(await inside())) return undefined;
 			lines += lineCount(content.subarray(0, read), kind(path) === "text");
 		} finally {
 			// Not awaited: a read given up on would hold the close, and with it the call.
