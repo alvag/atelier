@@ -15,6 +15,22 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd 
 const commit = (cwd: string, ...options: string[]) =>
 	git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base", ...options);
 const lines = (added: number, removed: number) => ({ added, removed });
+
+/** The lines git itself counts once the untracked files are added with intent, or nothing when git refuses to. */
+function gitAddedLines(cwd: string) {
+	git(cwd, "add", "-N", ".");
+	let numstat: string;
+	try {
+		numstat = execFileSync("git", ["diff", "--numstat", "HEAD"], { cwd, stdio: "pipe" }).toString();
+	} catch {
+		return undefined;
+	}
+	const added = numstat
+		.split("\n")
+		.filter(Boolean)
+		.reduce((sum, line) => sum + (Number.parseInt(line, 10) || 0), 0);
+	return lines(added, 0);
+}
 beforeEach(async () => {
 	base = await mkdtemp(join(tmpdir(), "atelier-git-status-"));
 	git(base, "init", "-q", "-b", "main");
@@ -392,6 +408,14 @@ process.stdout.write(output);
 		"2097152k",
 		"2147483647",
 		"2147483648",
+		"-2147483648",
+		"-2147483649",
+		"-0x80000000",
+		"-0x80000001",
+		"-2g",
+		"-3g",
+		"-2097152k",
+		"-2097153k",
 		"true\t",
 	])("reads diff.<driver>.binary=%j exactly as git does, or omits the lines where git refuses it", async (value) => {
 		await writeFile(join(base, ".gitattributes"), "*.dat diff=x\n");
@@ -401,18 +425,26 @@ process.stdout.write(output);
 		await writeFile(join(base, "f.dat"), "a\nb\n");
 		await writeFile(join(base, "g.dat"), "a\0\nb\nc\n");
 		const counted = (await readGitChanges(base, undefined, loadTolerant)).lines;
-		git(base, "add", "-N", ".");
-		let numstat: string | undefined;
-		try {
-			numstat = execFileSync("git", ["diff", "--numstat", "HEAD"], { cwd: base, stdio: "pipe" }).toString();
-		} catch {
-			numstat = undefined;
-		}
-		const added = numstat
-			?.split("\n")
-			.filter(Boolean)
-			.reduce((sum, line) => sum + (Number.parseInt(line, 10) || 0), 0);
-		expect(counted).toEqual(added === undefined ? undefined : lines(added, 0));
+		expect(counted).toEqual(gitAddedLines(base));
+	});
+
+	it.each([
+		["false", "auto"],
+		["true", "auto"],
+		["auto", "true"],
+		["true", "false"],
+		["bogus", "true"],
+		["true", "bogus"],
+	])("takes the last diff.<driver>.binary of %j then %j, as git does", async (first, last) => {
+		await writeFile(join(base, ".gitattributes"), "*.dat diff=x\n");
+		git(base, "add", ".");
+		commit(base);
+		git(base, "config", "--add", "diff.x.binary", first);
+		git(base, "config", "--add", "diff.x.binary", last);
+		await writeFile(join(base, "f.dat"), "a\nb\n");
+		await writeFile(join(base, "g.dat"), "a\0\nb\nc\n");
+		const counted = (await readGitChanges(base, undefined, loadTolerant)).lines;
+		expect(counted).toEqual(gitAddedLines(base));
 	});
 
 	it("omits the lines rather than counting an untracked file it cannot read as zero", async () => {
