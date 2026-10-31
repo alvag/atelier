@@ -99,7 +99,11 @@ export async function readGitChanges(
 	const bounded = <T>(work: Promise<T>): Promise<T> =>
 		new Promise<T>((resolve, reject) => {
 			const stop = () => reject(new Error("Git status expired"));
-			if (expired()) return stop();
+			if (expired()) {
+				// Given up on before it starts: its own failure, if any, is no one's to handle.
+				work.catch(() => {});
+				return stop();
+			}
 			const timer = setTimeout(stop, deadline - Date.now());
 			signal?.addEventListener("abort", stop, { once: true });
 			work.then(resolve, reject).finally(() => {
@@ -154,11 +158,20 @@ export async function readGitChanges(
 		};
 		// Retain only non-executable settings that affect file comparisons and ignore/attribute rules.
 		const settings = await query(["config", "--null", "--list"]);
+		/** Each diff driver's `binary` setting, which tells its files binary or text without running anything. */
+		const drivers = new Map<string, boolean>();
 		for (const entry of settings.split("\0")) {
 			const split = entry.indexOf("\n");
 			const key = split < 0 ? entry : entry.slice(0, split);
+			const value = split < 0 ? "true" : entry.slice(split + 1);
 			if (/^core\.(autocrlf|eol|filemode|ignorecase|symlinks|precomposeunicode|excludesfile|attributesfile)$/.test(key))
-				safety.push("-c", `${key}=${split < 0 ? "true" : entry.slice(split + 1)}`);
+				safety.push("-c", `${key}=${value}`);
+			const driver = /^diff\.([^=\p{Cc}]+)\.binary$/u.exec(key)?.[1];
+			const binary = /^(true|yes|on|1)$/i.test(value) ? true : /^(false|no|off|0|)$/i.test(value) ? false : undefined;
+			if (driver !== undefined && binary !== undefined) {
+				drivers.set(driver, binary);
+				safety.push("-c", `${key}=${binary}`);
+			}
 		}
 		// rev-parse reads metadata, not worktree contents: unlike status it cannot invoke clean filters.
 		const [objectFormat, refFormat] = (await query(["rev-parse", "--show-object-format", "--show-ref-format"]))
@@ -249,8 +262,8 @@ export async function readGitChanges(
 			for (let i = 0; i < fields.length; i += 3) {
 				const [path = "", name, value = ""] = fields.slice(i, i + 3);
 				if (!paths.has(path) || !name) return changes;
-				if (name === "filter") return changes;
-				// As git diff tells binary files: `-diff` (or `binary`) is one, `diff` is text whatever its bytes.
+				// Git converts these files before it compares them, which their raw contents cannot show.
+				if (name === "filter" || name === "working-tree-encoding") return changes;
 				if (name === "diff") diffs.set(path, value);
 			}
 		}
@@ -270,7 +283,7 @@ export async function readGitChanges(
 			]),
 		);
 		if (tracked === undefined) return changes;
-		const added = await untrackedLines(worktree, untracked, diffs, bounded);
+		const added = await untrackedLines(worktree, untracked, (path) => kindOf(diffs.get(path), drivers), bounded);
 		if (added !== undefined && !expired()) changes.lines = { added: tracked.added + added, removed: tracked.removed };
 		return changes;
 	} catch {
@@ -318,36 +331,38 @@ function numstatLines(output: string): { added: number; removed: number } | unde
 
 /**
  * The lines of the untracked files, all of them added, read without git: a symlink is one line (its target), a binary
- * file none (by its `diff` attribute, else by its bytes), and anything else (a FIFO, a socket, a nested repository) is
+ * file none (by its attributes and diff driver, else by its bytes, see `kindOf`), and anything else (a FIFO, a socket, a nested repository) is
  * never opened. Over 1000 files or 8 MiB, none. Each wait goes through `bounded`, so a slow read cannot outlive the call.
  */
 async function untrackedLines(
 	worktree: string,
 	paths: string[],
-	diffs: ReadonlyMap<string, string>,
+	kind: (path: string) => FileKind,
 	bounded: <T>(work: Promise<T>) => Promise<T>,
 ): Promise<number | undefined> {
 	if (paths.length > UNTRACKED_MAX_FILES) return undefined;
 	let lines = 0;
 	let budget = UNTRACKED_MAX_BYTES;
 	for (const path of paths) {
-		const diff = diffs.get(path);
-		if (diff === "unset") continue;
 		const name = join(worktree, path);
 		const info = await bounded(lstat(name)).catch((error: NodeJS.ErrnoException) => {
 			// Removed since git listed it: it adds nothing.
 			if (error.code === "ENOENT") return undefined;
 			throw error;
 		});
+		// Git counts a symlink's target as its one line, whatever its attributes say.
 		if (info?.isSymbolicLink()) lines++;
-		if (!info?.isFile()) continue;
+		if (!info?.isFile() || kind(path) === "binary") continue;
 		// Never follow a link or wait on a FIFO that replaced the file since.
 		const opening = open(name, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-		const file = await bounded(opening).catch((error: unknown) => {
+		const file = await bounded(opening).catch((error: NodeJS.ErrnoException) => {
 			// Given up on: whenever it opens, it is closed.
 			opening.then((late) => late.close()).catch(() => {});
+			// Removed since its check: it adds nothing. Any other failure leaves the count unknown.
+			if (error.code === "ENOENT") return undefined;
 			throw error;
 		});
+		if (file === undefined) continue;
 		try {
 			const opened = await bounded(file.stat());
 			if (!opened.isFile()) continue;
@@ -360,13 +375,27 @@ async function untrackedLines(
 				if (bytesRead === 0) break;
 				read += bytesRead;
 			}
-			lines += lineCount(content.subarray(0, read), diff === "set");
+			lines += lineCount(content.subarray(0, read), kind(path) === "text");
 		} finally {
 			// Not awaited: a read given up on would hold the close, and with it the call.
 			file.close().catch(() => {});
 		}
 	}
 	return lines;
+}
+
+/** What a file is to `git diff`: by its attributes, or by its contents (`unknown`). */
+type FileKind = "binary" | "text" | "unknown";
+
+/**
+ * As git diff tells binary files: `-diff` (or `binary`) makes one binary and `diff` makes one text, whatever its bytes;
+ * a driver's `binary` setting does the same for its files, and anything else leaves it to the contents.
+ */
+function kindOf(diff: string | undefined, drivers: ReadonlyMap<string, boolean>): FileKind {
+	if (diff === "unset") return "binary";
+	if (diff === "set") return "text";
+	const binary = diff === undefined ? undefined : drivers.get(diff);
+	return binary === undefined ? "unknown" : binary ? "binary" : "text";
 }
 
 /** Like `git diff --numstat`: the last line counts without its newline, and a binary file has none unless `text`. */
