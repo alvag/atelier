@@ -100,6 +100,7 @@ import { readTuiSettings } from "./settings.ts";
 import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
 import { StatusLine, terminalTitle } from "./status-line.ts";
 import { editorTheme, type Paint, painter, Shade, Tones } from "./style.ts";
+import { activeTheme, ink } from "./theme.ts";
 import { runUserShell, type UserShellOptions, type UserShellResult } from "./user-shell.ts";
 
 const PASTE_START = "\x1b[200~";
@@ -563,7 +564,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			...(effort === undefined ? {} : { effort }),
 		};
 	};
-	const bar = new StatusBar(paint, () => ({
+	const bar = new StatusBar(ink(activeTheme, options.color, getTerminalColorMode()), () => ({
 		...footer.state,
 		...footer.place,
 		git: changes,
@@ -766,12 +767,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 	/**
 	 * The rows a question may take: the terminal's, less those of the parts that stay on screen with it, and full screen
-	 * the bar and the transcript's row.
+	 * the header and the transcript's row.
 	 */
 	const questionRows = () => {
 		const width = options.terminal.columns;
 		const others = [status, odd, queue, footer].reduce((rows, part) => rows + part.render(width).length, 0);
-		return options.terminal.rows - others - (fullscreen ? 2 : 0);
+		return options.terminal.rows - others - (fullscreen ? bar.render(width).length + 1 : 0);
 	};
 	/**
 	 * Asks an `ask_user` batch, its questions as tabs when there are several, and sends the answers once all are given;

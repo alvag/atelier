@@ -367,8 +367,8 @@ describe("TUI", { timeout: 20_000 }, () => {
 		expect(screen).toContain("❯ fix it");
 		expect(screen).toContain("Done now.");
 		expect(screen).toContain("⎿ Read 1 file");
-		expect(h.screen.frame()[0]).toContain("m · profile default");
-		expect(h.screen.frame()[0]).toMatch(/\$0\.50$/);
+		expect(h.screen.frame()[0]).toContain("m · Profile default");
+		expect(h.screen.frame()[1]).toMatch(/cost \$0\.50$/);
 		expect(h.screen.frame().at(-1)).toBe(" auto · sandbox ✗ · exploring");
 		h.screen.type("/exit");
 		h.screen.type("\r");
@@ -617,7 +617,8 @@ describe("TUI", { timeout: 20_000 }, () => {
 		await until(() => h.screen.screen().includes("Ask Atelier to do anything"));
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: the background's sequence is what is checked
 		expect(h.screen.raw()).toMatch(/\x1b\[100m› .*Ask Atelier to do anything/);
-		expect(h.screen.screen()).not.toContain("─".repeat(20));
+		// Under the header and its rule, the editor has no rules of its own.
+		expect(h.screen.frame().slice(3).join("\n")).not.toContain("─".repeat(20));
 		h.screen.type("fix it");
 		await until(() => h.screen.screen().includes("› fix it"));
 		h.screen.type("\x03");
@@ -657,11 +658,12 @@ describe("TUI", { timeout: 20_000 }, () => {
 		await mkdir(join(cwd, ".git"));
 		await writeFile(join(cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
 		const code = run(["--no-session"], h.io, () => h.backend);
-		await until(() => h.screen.screen().includes(`${basename(cwd)} main ·`));
+		await until(() => h.screen.frame()[1]?.includes("│ main ") === true);
+		expect(h.screen.frame()[0]).toContain(basename(cwd));
 		await writeFile(join(cwd, ".git", "HEAD"), "ref: refs/heads/feat/next\n");
 		h.screen.type("switch");
 		h.screen.type("\r");
-		await until(() => h.screen.screen().includes(`${basename(cwd)} feat/next ·`));
+		await until(() => h.screen.frame()[1]?.includes("│ feat/next ") === true);
 		h.screen.type("\x03");
 		expect(await code).toBe(130);
 	});
@@ -672,17 +674,18 @@ describe("TUI", { timeout: 20_000 }, () => {
 		const rows = (count: number, word: string) =>
 			Array.from({ length: count }, (_, i) => `${word} ${String(i + 1).padStart(2, "0")}`).join("\n\n");
 
-		it("fixes the session bar above the transcript without a header or version, and leaves only the transcript on exit", async () => {
+		it("fixes the header above the transcript without the scrolling one, and leaves only the transcript on exit", async () => {
 			const h = harness([
 				[{ event: started }, { event: { type: "text_delta", text: "Hello back." } }, { event: finished }],
 			]);
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.frame()[0]?.includes("profile default") === true);
+			await until(() => h.screen.frame()[0]?.includes("Profile default") === true);
 			expect(h.screen.raw()).toContain(ALT_ON);
 			expect(h.screen.frame()[0]).toContain(basename(cwd));
-			expect(h.screen.frame()[0]).toContain("fake · profile default");
+			expect(h.screen.frame()[0]).toContain("fake · Profile default");
+			expect(h.screen.frame()[0]).toMatch(/^Atelier │ /);
 			expect(h.screen.frame().at(-1)).toBe(" normal");
-			expect(h.screen.screen()).not.toContain("Atelier ");
+			expect(h.screen.frame().slice(3).join("\n")).not.toContain("Atelier ");
 			h.screen.type("hello");
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("$0.50"));
@@ -691,7 +694,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 			expect(await code).toBe(0);
 			const after = plain(h.screen.raw().slice(h.screen.raw().lastIndexOf(ALT_OFF)));
 			expect(after).not.toContain("Atelier ");
-			expect(after).not.toContain("profile default");
+			expect(after).not.toContain("Profile default");
 			expect(after).not.toContain("$0.50");
 			expect(after).toContain("❯ hello");
 			expect(after).toContain("Hello back.");
@@ -705,14 +708,15 @@ describe("TUI", { timeout: 20_000 }, () => {
 			// Wide enough for the whole folder, however long the temporary directory is.
 			const h = harness([], { columns: cwd.length + 100 });
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.frame()[0]?.includes("profile default") === true);
-			expect(h.screen.frame()[0]).toContain(`${cwd} · fake · profile default`);
-			expect(h.screen.screen()).not.toContain("Atelier ");
+			await until(() => h.screen.frame()[0]?.includes("Profile default") === true);
+			expect(h.screen.frame()[0]).toContain(`│ ${cwd} `);
+			expect(h.screen.frame()[0]).toContain("│ fake · Profile default");
+			expect(h.screen.frame().slice(3).join("\n")).not.toContain("Atelier ");
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
 		});
 
-		it("splits custom status items without duplicating session data or showing the version", async () => {
+		it("splits custom status items without duplicating session data, the version included", async () => {
 			const h = harness([
 				[
 					{ event: started },
@@ -733,10 +737,11 @@ describe("TUI", { timeout: 20_000 }, () => {
 			await until(h.screen.started);
 			h.screen.type("go");
 			h.screen.type("\r");
-			await until(() => h.screen.frame()[0]?.endsWith("$0.50") === true);
+			await until(() => h.screen.frame()[1]?.endsWith("cost $0.50") === true);
 			expect(h.screen.frame().at(-1)).toBe(" implementing · normal");
-			expect(h.screen.frame().filter((line) => line?.includes("profile default"))).toHaveLength(1);
-			expect(h.screen.screen()).not.toMatch(/Atelier |v\d+\.\d+\.\d+/);
+			expect(h.screen.frame().filter((line) => line?.includes("Profile default"))).toHaveLength(1);
+			expect(h.screen.frame().filter((line) => /v\d+\.\d+\.\d+/.test(line ?? ""))).toHaveLength(1);
+			expect(h.screen.frame().slice(3).join("\n")).not.toMatch(/Atelier |v\d+\.\d+\.\d+/);
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
 		});
@@ -749,7 +754,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 				JSON.stringify({ kind: "atelier.settings", version: 1, tui: { statusLine: ["cost", "version"] } }),
 			);
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.frame()[0]?.includes("profile default") === true);
+			await until(() => h.screen.frame()[0]?.includes("Profile default") === true);
 			expect(h.screen.frame().at(-1)).toMatch(/^─+$/);
 			h.screen.type("\x04");
 			expect(await code).toBe(0);
@@ -779,13 +784,13 @@ describe("TUI", { timeout: 20_000 }, () => {
 			const h = harness([[{ event: started }, { event: finished }]], { columns: 120 });
 			const code = run(["--no-session", "--no-review"], h.io, () => h.backend);
 			try {
-				await until(() => h.screen.frame()[0]?.includes("main +3 −1 ·") === true);
+				await until(() => h.screen.frame()[1]?.includes("│ main · +3 −1 ") === true);
 				await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
 				expect(await readFile(join(cwd, ".git", "index"))).toEqual(index);
 				await rm(join(cwd, "new", "two"));
 				h.screen.type("refresh");
 				h.screen.type("\r");
-				await until(() => h.screen.frame()[0]?.includes("main +2 −1 ·") === true);
+				await until(() => h.screen.frame()[1]?.includes("│ main · +2 −1 ") === true);
 				await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
 			} finally {
 				h.screen.type("\x04");
@@ -809,7 +814,7 @@ else if (process.argv.includes('status')) {
 			const code = run(["--no-session", "--no-review"], h.io, () => h.backend);
 			try {
 				await until(() => existsSync(pidFile));
-				expect(h.screen.frame()[0]).toContain("main ·");
+				expect(h.screen.frame()[1]).toContain("│ main ");
 				h.screen.type("/status");
 				h.screen.type("\r");
 				await until(() => h.screen.screen().includes("cost: none yet"));
@@ -865,8 +870,8 @@ else if (process.argv.includes('status')) {
 			let mark = h.screen.raw().length;
 			for (let i = 0; i < 4; i++) h.screen.type("\x1b[5~");
 			await until(() => since(mark).includes("row 01"));
-			expect(h.screen.frame()[0]).toContain("m · profile default");
-			expect(h.screen.frame()[0]).toMatch(/\$0\.50$/);
+			expect(h.screen.frame()[0]).toContain("m · Profile default");
+			expect(h.screen.frame()[1]).toMatch(/cost \$0\.50$/);
 			mark = h.screen.raw().length;
 			for (let i = 0; i < 4; i++) h.screen.type("\x1b[6~");
 			await until(() => since(mark).includes("row 60"));
@@ -879,7 +884,7 @@ else if (process.argv.includes('status')) {
 			h.screen.type("more");
 			h.screen.type("\r");
 			await until(() => since(mark).includes("$1.50"));
-			expect(h.screen.frame()[0]).toMatch(/\$1\.50$/);
+			expect(h.screen.frame()[1]).toMatch(/cost \$1\.50$/);
 			expect(h.screen.frame().at(-1)).toBe(" normal · sandbox ✗");
 			expect(since(mark)).not.toContain("fresh answer");
 			mark = h.screen.raw().length;
@@ -896,7 +901,7 @@ else if (process.argv.includes('status')) {
 				if (text.includes("The core exited")) saidAt = h.screen.raw().length;
 			};
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.frame()[0]?.includes("profile default") === true);
+			await until(() => h.screen.frame()[0]?.includes("Profile default") === true);
 			h.core.exit({ code: 1, signal: null, stderr: "boom" });
 			expect(await code).toBe(1);
 			expect(saidAt).toBeGreaterThan(h.screen.raw().lastIndexOf(ALT_OFF));
@@ -1387,7 +1392,7 @@ else if (process.argv.includes('status')) {
 		h.screen.type("/effort high");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("effort: high from the next turn"));
-		expect(h.screen.screen()).toContain("claude-sonnet-5-5 high · profile default");
+		expect(h.screen.screen()).toContain("claude-sonnet-5-5 high · Profile default");
 		h.screen.type("go");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("$0.50"));
@@ -1712,7 +1717,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		return { link, log, emit };
 	}
 
-	it("updates the fixed bar's gauge, clears stale context, and keeps the right block on resize", async () => {
+	it("updates the header's gauge, clears stale context, and keeps the usage whole on resize", async () => {
 		const h = harness([], { columns: 120 });
 		const stub = stubCore();
 		h.io.tui.connect = async () => stub.link;
@@ -1720,22 +1725,22 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		await until(h.screen.started);
 		stub.emit({ ...started, effort: "high", profile: { name: "claude", origin: "explicit", roles: {} } });
 		stub.emit({ ...finished, context: { tokens: 110_000, window: 1_000_000, compactAt: 983_616 } });
-		const right = "ctx ▰▱▱▱▱▱▱▱ 11% · 1M · $0.50";
-		await until(() => h.screen.frame()[0]?.endsWith(right) === true);
-		expect(h.screen.frame()[0]).toHaveLength(120);
+		const usage = "ctx ▰▱▱▱▱▱▱▱ 11% · 1M · cost $0.50";
+		await until(() => h.screen.frame()[1]?.endsWith(usage) === true);
+		expect(h.screen.frame()[2]).toBe("─".repeat(120));
 		h.screen.resize(80);
-		await until(() => h.screen.frame()[0]?.length === 80);
-		expect(h.screen.frame()[0]).toMatch(/ctx ▰▱▱▱▱▱▱▱ 11% · 1M · \$0\.50$/);
+		await until(() => h.screen.frame()[2]?.length === 80);
+		expect(h.screen.frame()[1]).toMatch(/ctx ▰▱▱▱▱▱▱▱ 11% · 1M · cost \$0\.50$/);
 		stub.emit({ type: "compaction_finished", ok: true });
-		await until(() => h.screen.frame()[0]?.includes("ctx ▱▱▱▱▱▱▱▱ ? · 1M") === true);
+		await until(() => h.screen.frame()[1]?.includes("ctx ▱▱▱▱▱▱▱▱ ? · 1M") === true);
 		stub.emit({ type: "session_configured", backend: "fake", model: "other", permissionMode: "normal" });
 		await until(() => h.screen.frame()[0]?.includes("other high") === true);
-		expect(h.screen.frame()[0]).not.toContain("ctx");
+		expect(h.screen.frame()[1]).not.toContain("ctx");
 		stub.emit({ ...finished, context: { tokens: 20_000, window: 200_000, compactAt: 183_616 } });
-		await until(() => h.screen.frame()[0]?.includes("ctx ▰▱▱▱▱▱▱▱ 10% · 200k") === true);
+		await until(() => h.screen.frame()[1]?.includes("ctx ▰▱▱▱▱▱▱▱ 10% · 200k") === true);
 		stub.emit({ type: "session_configured", backend: "openai-codex", permissionMode: "normal" });
 		await until(() => h.screen.frame()[0]?.includes("openai-codex") === true);
-		expect(h.screen.frame()[0]).not.toContain("ctx");
+		expect(h.screen.frame()[1]).not.toContain("ctx");
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
 	});
@@ -2116,7 +2121,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 		const code = run(["--no-session"], h.io, () => h.backend);
 		await until(h.screen.started);
-		await until(() => h.screen.screen().includes("opus medium · profile cheap"));
+		await until(() => h.screen.screen().includes("opus medium · Profile cheap"));
 		const sent = (name: string) => stub.log.commands.filter((command) => command.command === name);
 
 		h.screen.type("/model");
@@ -2137,12 +2142,12 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 
 		h.screen.type("/profile");
 		h.screen.type("\r");
-		await until(() => h.screen.screen().includes("Profile"));
-		expect(h.screen.screen()).toMatch(/cheap +current · active/);
+		// The header always says Profile: wait for the list's row instead.
+		await until(() => /cheap +current · active/.test(h.screen.screen()));
 		h.screen.type("\x1b[B");
 		h.screen.type("\r");
 		await until(() => h.screen.screen().includes("profile: fast from the next turn"));
-		expect(h.screen.screen()).toContain("sonnet high · profile fast");
+		expect(h.screen.screen()).toContain("sonnet high · Profile fast");
 
 		// Esc closes a list without changing anything.
 		const mark = h.screen.raw().length;
@@ -2260,7 +2265,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			{ command: "session.set_backend", sessionId: "s1", backend: "openai-codex", model: "gpt-luna" },
 		]);
 		expect(h.screen.screen()).toContain("backend: openai-codex, model: gpt-luna from the next turn");
-		expect(h.screen.screen()).toContain("gpt-luna medium · profile cheap");
+		expect(h.screen.screen()).toContain("gpt-luna medium · Profile cheap");
 		expect(stub.log.commands.filter((command) => command.command === "session.set_model")).toEqual([]);
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
@@ -2545,7 +2550,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 		const code = run(["--no-session"], h.io, () => h.backend);
 		await until(h.screen.started);
-		await until(() => h.screen.screen().includes("profile cheap"));
+		await until(() => h.screen.screen().includes("Profile cheap"));
 		const approvals = () => stub.log.commands.filter((command) => command.command === "session.approve");
 		const ask = (command: string, reason?: string) =>
 			stub.emit({ type: "approval_requested", tool: "bash", callId: "a1", command, ...(reason ? { reason } : {}) });
@@ -2612,7 +2617,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			expect(stub.log.commands.find((command) => command.command === "session.start")).toMatchObject({
 				userQuestions: { multiSelect: true, preview: true },
 			});
@@ -2674,7 +2679,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			for (const [index, [name, input, decoded]] of PRINTABLE_KEYS.entries()) {
 				const question = `Which checks (${name})?`;
@@ -2703,7 +2708,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			askUser(stub.emit);
 			await until(() => h.screen.screen().includes("○ Q1   ○ Q2"));
@@ -2733,7 +2738,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			const checks = {
 				id: "checks",
@@ -2784,7 +2789,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			const fetch = {
 				id: "fetch",
@@ -2815,7 +2820,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const long = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
 			const fetch = {
 				id: "fetch",
@@ -2846,7 +2851,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			const [db, cache] = batch;
 			stub.emit({
@@ -2882,7 +2887,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			stub.emit({ type: "user_question_requested", callId: "u4", questions: [batch[0]] });
 			await until(() => h.screen.screen().includes("Type something…"));
@@ -2902,7 +2907,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			stub.emit({
 				type: "user_question_requested",
 				callId: "alm",
@@ -2933,7 +2938,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = listingCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const question =
 				"Before changing the existing production database and its backup strategy, should we keep all existing records?";
 			const label = "Keep all existing production records and create a separate migration backup";
@@ -2952,7 +2957,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			stub.emit({ type: "tool_call_started", callId: "wide", tool: "ask_user", input: { questions } });
 			stub.emit({ type: "user_question_requested", callId: "wide", questions });
 			await until(() => h.screen.screen().includes("Type something…"));
-			expect(h.screen.frame()[0]).toContain("profile cheap");
+			expect(h.screen.frame()[0]).toContain("Profile cheap");
 			expect(h.screen.frame()[0]).not.toContain("Question");
 			// Each row is written on its own: the words of a wrapped text meet across rows with blanks between them.
 			const content = () => h.screen.screen().replace(/\s+/g, " ");
@@ -2980,7 +2985,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			const sentinels = [
 				{
@@ -3018,7 +3023,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const answers = () => stub.log.commands.filter((command) => command.command === "session.answer_user");
 			askUser(stub.emit);
 			await until(() => h.screen.screen().includes("○ Q1   ○ Q2"));
@@ -3163,7 +3168,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 300 };
 		const code = run(["--no-session"], h.io, () => h.backend);
 		await until(h.screen.started);
-		await until(() => h.screen.screen().includes("profile cheap"));
+		await until(() => h.screen.screen().includes("Profile cheap"));
 		const answers = () => stub.log.commands.filter((command) => command.command === "session.review_consent");
 		stub.emit({
 			type: "review_consent_requested",
@@ -3239,7 +3244,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link, answerGuardMs: 0 };
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
-			await until(() => h.screen.screen().includes("profile cheap"));
+			await until(() => h.screen.screen().includes("Profile cheap"));
 			const sent = (name: string) => stub.log.commands.filter((command) => command.command === name);
 			const since = (mark: number) => plain(h.screen.raw().slice(mark));
 			/** Opens the question with `draft` in the editor: a list's command is sent first, and the draft typed as it loads. */
@@ -4753,7 +4758,7 @@ describe("TUI and background jobs", { timeout: 20_000 }, () => {
 				const withJobs = (jobs: string) => (order === "custom" ? ` ${jobs} · ${activity}` : ` ${activity} · ${jobs}`);
 				expect(h.screen.frame().at(-1)).toBe(withJobs("1 job"));
 				const top = h.screen.frame()[0];
-				expect(top).toContain("m · profile default");
+				expect(top).toContain("m · Profile default");
 				expect(top).not.toMatch(/\b\d+ jobs?\b|notices? waiting/);
 				h.screen.type("\x1b");
 				await until(() => h.screen.screen().includes("interrupted"));
@@ -4764,7 +4769,7 @@ describe("TUI and background jobs", { timeout: 20_000 }, () => {
 				expect(h.backend.prompts).toHaveLength(1);
 				h.screen.type("continue");
 				h.screen.type("\r");
-				await until(() => h.screen.frame()[0]?.endsWith("$0.50") === true);
+				await until(() => h.screen.frame()[1]?.endsWith("cost $0.50") === true);
 				expect(h.backend.prompts[1]).toMatch(/^Background job 1 /);
 				expect(h.screen.frame().at(-1)).toBe(` ${activity}`);
 			} finally {
