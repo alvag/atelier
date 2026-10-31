@@ -59,23 +59,42 @@ function turnsOf(entries: readonly SavedEntry[]) {
 	const turns: SavedTurn[] = [];
 	/** The commands run when this many turns had started: 0 is before the first prompt. */
 	const shells = new Map<number, ShellRecord[]>();
+	// Shell results split incremental text on disk, not the answer; other response boundaries keep the legacy reading.
+	let joinAnswer = false;
+	let hasAnswerSegment = false;
 	for (const entry of entries) {
-		if (entry.type === "shell_result") shells.set(turns.length, [...(shells.get(turns.length) ?? []), entry.result]);
-		else if (entry.type === "prompt")
+		if (entry.type === "shell_result") {
+			shells.set(turns.length, [...(shells.get(turns.length) ?? []), entry.result]);
+			joinAnswer = hasAnswerSegment;
+		} else if (entry.type === "prompt") {
+			joinAnswer = false;
+			hasAnswerSegment = false;
 			turns.push({
 				turnId: entry.turnId,
 				prompt: promptWithImages(entry.text, entry.imageCount),
 				steers: [],
 				asked: [],
 			});
-		else if (entry.type === "text" && entry.agent === undefined && entry.parentCallId === undefined) {
+		} else if (entry.type === "text" && entry.agent === undefined && entry.parentCallId === undefined) {
 			const turn = turns.at(-1);
-			if (turn?.turnId === entry.turnId) turn.answer = entry.text;
+			if (turn?.turnId === entry.turnId) {
+				turn.answer = joinAnswer ? (turn.answer ?? "") + entry.text : entry.text;
+				hasAnswerSegment = true;
+			}
 		} else if (entry.type === "event") {
 			const turn = turns.at(-1);
-			if (turn?.turnId !== entry.event.turnId) continue;
-			if (entry.event.type === "queued_message") turn.steers.push(entry.event.text);
-			else asking(turn, entry.event);
+			const event = entry.event;
+			if (turn?.turnId !== event.turnId) continue;
+			if (
+				event.agent === undefined &&
+				event.parentCallId === undefined &&
+				(event.type === "tool_call_started" || event.type === "tool_call_finished" || event.type === "turn_finished")
+			) {
+				joinAnswer = false;
+				hasAnswerSegment = false;
+			}
+			if (event.type === "queued_message") turn.steers.push(event.text);
+			else asking(turn, event);
 		}
 	}
 	return { turns, shells };

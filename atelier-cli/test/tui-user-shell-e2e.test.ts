@@ -1,7 +1,7 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { PassThrough } from "node:stream";
 import { type AtelierEvent, type ClientCommand, FakeBackend, type FakeStep, RpcServer } from "@atelier/core";
 import type { CoreExit } from "@atelier/core/client";
@@ -175,10 +175,30 @@ function open(turns: FakeStep[][], args: string[] = ["--no-review"]) {
 const exists = (name: string) => existsSync(join(cwd, name));
 
 describe("TUI user shell commands, end to end", { timeout: 30_000 }, () => {
-	it("creates the working and home fixtures under the configured temporary directory", async () => {
-		const root = await realpath(tmpdir());
-		expect(dirname(cwd)).toBe(root);
-		expect(dirname(home)).toBe(root);
+	it("saves the full output of a large ! command privately under the isolated temporary directory", async () => {
+		const temp = await realpath(await mkdtemp(join(tmpdir(), "atelier-shell-e2e-tmp-")));
+		try {
+			vi.stubEnv("TMPDIR", temp);
+			const h = open([answer]);
+			await until(h.screen.started);
+			h.send("!head -c 60000 /dev/zero | tr '\\0' x");
+			await until(() => h.shellResults().length === 1);
+			const saved = h.shellResults()[0]?.result;
+			expect(saved?.truncated).toBe(true);
+			if (saved?.fullOutputPath === undefined) throw new Error("Expected a saved full-output file");
+			const path = await realpath(saved.fullOutputPath);
+			const inside = relative(temp, path);
+			expect(inside.startsWith("..") || isAbsolute(inside)).toBe(false);
+			expect(inside.split("/")).toHaveLength(2);
+			expect((await readFile(path)).equals(Buffer.alloc(60000, "x"))).toBe(true);
+			expect(statSync(path).mode & 0o777).toBe(0o600);
+			expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
+			expect(h.backend.prompts).toEqual([]);
+			h.send("/exit");
+			expect(await h.code).toBe(0);
+		} finally {
+			await rm(temp, { recursive: true, force: true });
+		}
 	});
 
 	it("shows the output, calls no model for ! and !!, and gives the model the ! results once, in order, on the next prompt", async () => {

@@ -92,6 +92,41 @@ const header = (id: string, extra: Record<string, unknown> = {}) => ({
 const config = { type: "config", backend: "claude-code", mode: "normal" };
 
 describe("recording a session", () => {
+	it.each([false, true])(
+		"preserves text/shell file order before and after continuation (complete=%s)",
+		async (complete) => {
+			const record = new SessionStore(home).create(cwd);
+			const result = {
+				executionId: "ordered-shell",
+				command: "printf hi",
+				output: "hi",
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+				excludeFromContext: false,
+			};
+			try {
+				record.prompt("t", "work");
+				record.event({ type: "text_delta", turnId: "t", seq: 1, text: "Visible before shell." });
+				await record.shellResult(result);
+				// No flush or turn end: the acknowledged result must already have the preceding text on disk.
+				const expected = [
+					{ type: "text", turnId: "t", text: "Visible before shell." },
+					{ type: "shell_result", result },
+				];
+				if (complete) {
+					record.event({ type: "text_delta", turnId: "t", seq: 2, text: " Visible after shell." });
+					await record.flush();
+					expected.push({ type: "text", turnId: "t", text: " Visible after shell." });
+				}
+				const saved = await linesOf(record.path);
+				expect(saved.filter((entry) => entry.type === "text" || entry.type === "shell_result")).toEqual(expected);
+			} finally {
+				await record.release();
+			}
+		},
+	);
+
 	it("writes a file under the folder's key with a header, the configuration, the prompt, the events and the state", async () => {
 		const { record, backend, session } = await started([
 			[
