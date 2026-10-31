@@ -10,6 +10,9 @@ const swap = vi.hoisted(() => ({
 	after: undefined as undefined | ((path: string) => Promise<void>),
 	beforeRealpath: undefined as undefined | ((path: string) => Promise<void>),
 	afterRealpath: undefined as undefined | ((path: string) => Promise<void>),
+	beforeOpen: undefined as undefined | ((path: string) => Promise<void>),
+	/** The paths whose opened file had bytes read from it. */
+	reads: [] as string[],
 }));
 vi.mock("node:fs/promises", async (original) => {
 	const real = await original<typeof import("node:fs/promises")>();
@@ -20,6 +23,19 @@ vi.mock("node:fs/promises", async (original) => {
 			const result = await real.lstat(...args);
 			await swap.after?.(String(args[0]));
 			return result;
+		},
+		open: async (...args: Parameters<typeof real.open>) => {
+			const path = String(args[0]);
+			await swap.beforeOpen?.(path);
+			const file = await real.open(...args);
+			const read = file.read.bind(file) as (...rest: unknown[]) => Promise<{ bytesRead: number }>;
+			return Object.assign(file, {
+				read: async (...rest: unknown[]) => {
+					const result = await read(...rest);
+					if (result.bytesRead > 0) swap.reads.push(path);
+					return result;
+				},
+			});
 		},
 		realpath: async (...args: Parameters<typeof real.realpath>) => {
 			await swap.beforeRealpath?.(String(args[0]));
@@ -50,6 +66,8 @@ afterEach(async () => {
 	swap.after = undefined;
 	swap.beforeRealpath = undefined;
 	swap.afterRealpath = undefined;
+	swap.beforeOpen = undefined;
+	swap.reads = [];
 	await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -110,7 +128,7 @@ it("does not read outside the worktree through an ancestor replaced before the f
 	expect(changes.lines).toBeUndefined();
 });
 
-it("does not publish what it read outside the worktree when every check before the read passed", async () => {
+it("reads nothing outside the worktree when every check before the open passed", async () => {
 	const { file, swapIn, swapBack } = await ancestors();
 	const steps: string[] = [];
 	const step = (name: string, action: () => Promise<void>) => async (path: string) => {
@@ -119,7 +137,7 @@ it("does not publish what it read outside the worktree when every check before t
 		await action();
 	};
 	// The file's check and the open both go through the symlink, the path check between them does not; only the
-	// checks after the read can tell.
+	// checks after the open can tell.
 	let lstats = 0;
 	swap.before = async (path) => {
 		if (path !== file) return;
@@ -131,12 +149,31 @@ it("does not publish what it read outside the worktree when every check before t
 	swap.afterRealpath = step("in before open", swapIn);
 	const changes = await readGitChanges(cwd, undefined, { timeoutMs: 30_000 });
 	expect(steps).toEqual(["in before lstat", "back before realpath", "in before open", "back before the last lstat"]);
+	expect(swap.reads).toEqual([]);
+	expect(changes.lines).toBeUndefined();
+});
+
+it("never consumes a byte of a file moved out of the worktree, with its folder, just before it opens", async () => {
+	const { file } = await ancestors();
+	const dir = join(cwd, "pending");
+	const moved = join(root, "moved");
+	swap.beforeOpen = async (path) => {
+		if (path !== file) return;
+		swap.beforeOpen = undefined;
+		// The same file, so the same device and inode, now outside the worktree behind a symlink.
+		await fs.rename(dir, moved);
+		await fs.symlink(moved, dir);
+	};
+	const changes = await readGitChanges(cwd, undefined, { timeoutMs: 30_000 });
+	expect(await fs.realpath(file)).toBe(join(moved, "file"));
+	expect(swap.reads).toEqual([]);
 	expect(changes.lines).toBeUndefined();
 });
 
 it("counts the file as usual when nothing is replaced", async () => {
-	await ancestors();
+	const { file } = await ancestors();
 	expect(await readGitChanges(cwd, undefined, { timeoutMs: 30_000 })).toEqual({ lines: { added: 1, removed: 0 } });
+	expect(swap.reads).toEqual([file]);
 });
 
 // D-2/D-5: preserve a bad setting or omit the counter; never silently ignore it.
