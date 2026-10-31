@@ -1435,6 +1435,42 @@ describe("a turn after an approved review whose commit was rewritten", () => {
 		expectRewrittenBase(s, await revise(s));
 	});
 
+	it.each(["new", "existing", "return"])(
+		"RD-001: keeps earlier turn changes after checkout to an own commit (%s)",
+		async (kind) => {
+			const cwd = await repo();
+			gitIn(cwd, "branch", "foreign");
+			const checkout =
+				kind === "new"
+					? [git("checkout", "-q", "-b", "own")]
+					: [
+							git("branch", "own"),
+							...(kind === "return" ? [git("checkout", "-q", "foreign")] : []),
+							git("checkout", "-q", "own"),
+						];
+			const s = await approvedThen(
+				[
+					change("earlier.ts", "export const earlier = 'turn-owned';\n"),
+					git("add", "-A"),
+					git("commit", "-q", "--amend", "--no-edit"),
+					...checkout,
+					change("src/auth.ts", REVISED),
+					git("add", "-A"),
+					git("commit", "-q", "--amend", "--no-edit"),
+				],
+				cwd,
+			);
+			const events = await revise(s);
+			expectReviewOfRevision(s, events);
+			expect(ofType(events, "review_assessed")[0]).toMatchObject({
+				files: ["earlier.ts", "src/auth.ts"],
+				since: s.approved.slice(0, 7),
+				baseNote: `HEAD no longer descends from ${s.approved.slice(0, 7)}, where the turn started: the base remains the turn-start tree because the turn rewrote its commits`,
+			});
+			expect(s.roles.roles.some((role) => role.prompt.includes("turn-owned"))).toBe(true);
+		},
+	);
+
 	it("reviews an amend in a linked worktree using that worktree's HEAD reflog", async () => {
 		const cwd = await repo();
 		const root = await mkdtemp(join(tmpdir(), "atelier-linked-review-"));
@@ -1552,6 +1588,30 @@ describe("a turn after an approved review whose commit was rewritten", () => {
 		const base = gitIn(cwd, "rev-parse", "--short=7", "HEAD^").trim();
 		expect(ofType(events, "review_assessed")[0]).toMatchObject({
 			files: ["src/auth.ts"],
+			since: base,
+			baseNote: `HEAD no longer descends from ${s.approved.slice(0, 7)}, where the turn started: the base moved to ${base}, before the turn's replayed commits, to exclude upstream history`,
+		});
+	});
+
+	it("RD-001: keeps the replayed boundary when branching and amending a rebased own commit", async () => {
+		const cwd = await upstreamRepo();
+		const s = await approvedThen(
+			[
+				change("src/auth.ts", REVISED),
+				...commit("revise"),
+				git("rebase", "-q", "upstream"),
+				git("checkout", "-q", "-b", "own"),
+				change("after.ts", "export const after = 1;\n"),
+				git("add", "-A"),
+				git("commit", "-q", "--amend", "--no-edit"),
+			],
+			cwd,
+		);
+		const events = await revise(s);
+		expectReviewOfRevision(s, events);
+		const base = gitIn(cwd, "rev-parse", "--short=7", "HEAD^").trim();
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			files: ["after.ts", "src/auth.ts"],
 			since: base,
 			baseNote: `HEAD no longer descends from ${s.approved.slice(0, 7)}, where the turn started: the base moved to ${base}, before the turn's replayed commits, to exclude upstream history`,
 		});
