@@ -77,7 +77,7 @@ import {
 	footerWithMode,
 	type StatusItem,
 } from "./footer.ts";
-import { readGitBranch, readGitChanges } from "./git-branch.ts";
+import { type GitChanges, readGitBranch, readGitChanges } from "./git-branch.ts";
 import { Header, type HeaderState, StatusBar } from "./header.ts";
 import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
@@ -530,7 +530,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	footer.place = { cwd: args.cwd, ...version };
 	/** Refresh without blocking: only the latest read can update the screen, and none can outlive it. */
 	let placeRead: AbortController | undefined;
-	let changes: number | undefined;
+	let changes: GitChanges = {};
 	const readBranch = async () => {
 		placeRead?.abort();
 		const pending = new AbortController();
@@ -538,12 +538,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const branch = await readGitBranch(args.cwd);
 		if (pending.signal.aborted) return;
 		footer.place = { cwd: args.cwd, ...version, ...(branch === undefined ? {} : { branch }) };
-		changes = undefined;
+		changes = {};
 		tui.requestRender();
 		if (!fullscreen) return;
-		const counted = await readGitChanges(args.cwd, pending.signal);
+		const read = await readGitChanges(args.cwd, pending.signal);
 		if (pending.signal.aborted) return;
-		changes = counted;
+		changes = read;
 		tui.requestRender();
 	};
 	// What the core answered, until the session's own events say more.
@@ -566,7 +566,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const bar = new StatusBar(paint, () => ({
 		...footer.state,
 		...footer.place,
-		...(changes === undefined ? {} : { changes }),
+		git: changes,
 		cwd: args.cwd,
 		...(options.home === undefined ? {} : { home: options.home }),
 	}));

@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import { visibleText } from "@atelier/core";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type FooterState, footerLine } from "./footer.ts";
+import type { GitChanges } from "./git-branch.ts";
 import type { Paint } from "./style.ts";
 
 /** What the header says: Atelier's version, where it works, and the model and level the session runs with. */
@@ -21,7 +22,18 @@ const shortPath = (cwd: string, home: string | undefined) =>
 
 const shown = (text: string) => visibleText(text).text;
 
-export type StatusBarState = FooterState & { cwd: string; home?: string; changes?: number };
+export type StatusBarState = FooterState & { cwd: string; home?: string; git?: GitChanges };
+
+/** `+12 −4 ↑2 ↓1`: lines added and removed, commits ahead and behind; a zero or unknown one is left out. */
+const counters = ({ lines, commits }: GitChanges = {}) =>
+	[
+		lines?.added ? `+${lines.added}` : "",
+		lines?.removed ? `−${lines.removed}` : "",
+		commits?.ahead ? `↑${commits.ahead}` : "",
+		commits?.behind ? `↓${commits.behind}` : "",
+	]
+		.filter(Boolean)
+		.join(" ");
 
 /** Newlines and tabs are useful in the transcript, but not in a fixed one-row summary. */
 const oneLine = (text: string) => shown(text).replaceAll("\n", "␊").replaceAll("\t", "␉");
@@ -48,7 +60,7 @@ export class StatusBar implements Component {
 			.replaceAll("\t", "␉");
 		let path = oneLine(shortPath(state.cwd, state.home));
 		let branch = state.branch === undefined ? "" : oneLine(state.branch);
-		const changes = state.changes !== undefined && state.changes > 0 ? ` ±${state.changes}` : "";
+		const changes = counters(state.git) && ` ${counters(state.git)}`;
 		const left = () =>
 			[path + (branch ? ` ${this.#paint("cyan", branch)}` : "") + changes, running].filter(Boolean).join(separator);
 		const budget = Math.max(0, width - visibleWidth(right) - (right ? 1 : 0));
