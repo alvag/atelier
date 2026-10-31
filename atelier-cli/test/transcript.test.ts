@@ -135,6 +135,14 @@ describe("saved review responses", () => {
 		expect(restore(prompt, text("Done."), response, tool)).toBe("resumed session saved: 1 turn\n> work\nDone.\n");
 	});
 
+	it("adds no paragraph for a response whose visible text is empty, wherever it is", () => {
+		const blank = text(" \n\t\n");
+		const expected = "resumed session saved: 1 turn\n> work\nDone.\n\nFixed.\n";
+		expect(restore(prompt, text("Done."), response, blank, response, text("Fixed."))).toBe(expected);
+		expect(restore(prompt, blank, response, text("Done."), response, text("Fixed."))).toBe(expected);
+		expect(restore(prompt, text("Done."), response, text("Fixed."), response, blank)).toBe(expected);
+	});
+
 	it("keeps reading a session saved without the marks as before", () => {
 		expect(restore(prompt, text("Done."), shell, text("Declaring."))).toContain("> work\nDone.Declaring.\n");
 	});
@@ -229,5 +237,10 @@ describe("a resumed turn whose review asked for the risk declaration", () => {
 		const { texts, restored } = await resumed([say("Nothing to declare.")], false);
 		expect(texts).toEqual(["Done.", "Nothing to declare."]);
 		expect(restored).toBe("resumed session saved: 1 turn\n> edit\nDone.\n\nNothing to declare.\n");
+	});
+
+	it("adds no paragraph for a declaration whose text is empty", async () => {
+		const { restored } = await resumed([say("")], false);
+		expect(restored).toBe("resumed session saved: 1 turn\n> edit\nDone.\n");
 	});
 });

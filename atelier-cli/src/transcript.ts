@@ -147,7 +147,9 @@ export function savedParts(id: string, name: string | undefined, entries: readon
 			out = "";
 		}
 		const answers = turn.answer === undefined ? turn.answered : [...turn.answered, turn.answer];
-		if (answers.length > 0) out += `${answers.map((answer) => visibleText(answer).text.trimEnd()).join("\n\n")}\n`;
+		// A response whose visible text is empty adds neither a paragraph nor a separator.
+		const shown = answers.map((answer) => visibleText(answer).text.trimEnd()).filter((answer) => answer.trim() !== "");
+		if (answers.length > 0) out += `${shown.join("\n\n")}\n`;
 		ran(index + 1);
 	}
 	if (out !== "") parts.push({ text: out });
