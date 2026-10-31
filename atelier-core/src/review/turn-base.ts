@@ -96,6 +96,7 @@ async function attributeRebase(
 	start: string,
 	entries: readonly Entry[],
 	owned: string[],
+	initialRefs: readonly string[] | null,
 ): Promise<{ boundary?: string | undefined; landed: string } | null> {
 	const first = entries[0];
 	const finish = entries[entries.length - 1];
@@ -108,8 +109,10 @@ async function attributeRebase(
 	const ownIndexes = (originals ?? []).flatMap(([sha], i) => (owned.includes(sha) ? [i] : []));
 	if (originals === null || originals.length !== replays.length) return null;
 	if (originals.length === 0) return { landed };
-	const firstOwn = ownIndexes[0] ?? 0;
+	const firstOwn = ownIndexes[0] ?? originals.length;
 	if (ownIndexes.length > 0 && ownIndexes.length !== originals.length - firstOwn) return null;
+	const lastPreTurn = originals[firstOwn - 1]?.[0];
+	if (lastPreTurn !== undefined && !(await existedAtStart(cwd, lastPreTurn, initialRefs))) return null;
 	if ((await runGit(["merge-base", "--is-ancestor", start, first.from], { cwd })).code !== 0) return null;
 	const replayed = await chain(cwd, ["--no-walk=unsorted", ...replays]);
 	if (replayed === null || replayed.some(([, parent], i) => parent !== (i === 0 ? first.to : replays[i - 1])))
@@ -164,7 +167,7 @@ export async function rewrittenTurnBase(
 			if (!(await existedAtStart(cwd, entry.to, boundary.refs))) return unavailable(NEW_HISTORY);
 			let end = i + 1;
 			while (entries[end]?.message.startsWith("rebase (pick): ")) end++;
-			const rebase = await attributeRebase(cwd, base, entries.slice(i, end + 1), owned);
+			const rebase = await attributeRebase(cwd, base, entries.slice(i, end + 1), owned, boundary.refs);
 			if (rebase === null) return unavailable(REPLAY_FAILED);
 			resetBase = undefined;
 			rewritten = rebase.boundary !== undefined;
