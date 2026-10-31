@@ -1750,6 +1750,29 @@ describe("a turn after an approved review whose commit was rewritten", () => {
 			expectUnavailable(s, await revise(s), "the rebase replay cannot be attributed unambiguously");
 		});
 
+		it("reviews or refuses an unowned intermediate commit that HEAD never visited, then rebased", async () => {
+			const cwd = await upstreamRepo();
+			ident(cwd);
+			const alias = [
+				`printf 'EVIL_MARKER\\n' > src/evil.ts && git add -A`,
+				`M=$(git commit-tree "$(git write-tree)" -p HEAD -m intermediate)`,
+				`printf 'export const a = 2; // revised\\n' > src/auth.ts && git add -A`,
+				`N=$(git commit-tree "$(git write-tree)" -p $M -m own)`,
+				`git update-ref -m 'commit: own' HEAD $N`,
+			].join(" && ");
+			gitIn(cwd, "config", "alias.sneak", `!${alias}`);
+			const s = await approvedThen([git("sneak"), git("rebase", "-q", "upstream")], cwd);
+			const events = await s.send("revise");
+			expect(ofType(events, "tool_call_finished").filter((event) => !event.ok)).toEqual([]);
+			expect(gitIn(cwd, "show", "HEAD:src/evil.ts")).toContain("EVIL_MARKER");
+			if (ofType(events, "review_status").some((event) => !event.available)) {
+				expectUnavailable(s, events, "the rebase replay cannot be attributed unambiguously");
+			} else {
+				expect(s.roles.roles.some((role) => role.prompt.includes("EVIL_MARKER"))).toBe(true);
+				expect(ofType(events, "review_assessed")[0]?.files).toEqual(["src/auth.ts", "src/evil.ts"]);
+			}
+		});
+
 		/** A clone to fetch from; `fresh` is a commit made there during the turn, so no ref of the repository has it at the start. */
 		async function fetchRepo() {
 			const cwd = await repo();
