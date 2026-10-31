@@ -337,6 +337,33 @@ process.stdout.write(output);
 		expect((await readGitChanges(base, undefined, loadTolerant)).lines).toBeUndefined();
 	});
 
+	it("keeps counting when the working-tree encoding is disabled or UTF-8, which git does not convert", async () => {
+		await writeFile(join(base, ".gitattributes"), "* -working-tree-encoding\n*.u8 working-tree-encoding=UTF-8\n");
+		await writeFile(join(base, "tracked"), "old\n");
+		await writeFile(join(base, "a.u8"), "x\n");
+		git(base, "add", ".");
+		commit(base);
+		await writeFile(join(base, "tracked"), "one\ntwo\n");
+		await writeFile(join(base, "a.u8"), "x\ny\n");
+		expect(git(base, "diff", "--numstat", "HEAD").toString()).toBe("1\t0\ta.u8\n2\t1\ttracked\n");
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(3, 1) });
+	});
+
+	it("reads a driver's binary setting as git reads a boolean, numbers included", async () => {
+		git(base, "config", "diff.bin.binary", "2");
+		git(base, "config", "diff.nobin.binary", "0k");
+		await writeFile(join(base, ".gitattributes"), "*.dat diff=bin\n*.zero diff=nobin\n");
+		git(base, "add", ".");
+		commit(base);
+		await writeFile(join(base, "a.dat"), "a\nb\n");
+		await writeFile(join(base, "b.zero"), "a\0\nb\nc\n");
+		const untracked = await readGitChanges(base, undefined, loadTolerant);
+		expect(untracked).toEqual({ lines: lines(3, 0) });
+		git(base, "add", "-N", ".");
+		expect(git(base, "diff", "--numstat", "HEAD").toString()).toBe("-\t-\ta.dat\n3\t0\tb.zero\n");
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual(untracked);
+	});
+
 	it("omits the lines rather than counting an untracked file it cannot read as zero", async () => {
 		await writeFile(join(base, "readable"), "one\n");
 		await writeFile(join(base, "locked"), "two\n", { mode: 0o000 });
