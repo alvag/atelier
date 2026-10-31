@@ -632,6 +632,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	/** A slash command is still running (a list, a backend move, a new session starting): nothing else is sent. */
 	let commanding = false;
 	let interrupted = false;
+	/** How many events of the session's turns the TUI has heard: one heard while a send waits shows a turn runs. */
+	let heard = 0;
 	let finish: (code: number) => void = () => {};
 	const done = new Promise<number>((resolve) => {
 		finish = resolve;
@@ -891,6 +893,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const onEvent = (id: string, event: AtelierEvent) => {
 		if (id !== sessionId) return;
+		heard++;
 		// A queued message that starts a turn of its own is that turn's first event.
 		if (event.type === "queued_message" && event.seq === 1 && !busy) {
 			interrupted = false;
@@ -992,22 +995,25 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		quit(EXIT_FAILED);
 	};
 	/**
-	 * Starts a turn with `command`, typed as `line`. A `busy` refusal means a turn started before the core received it
-	 * (a notice woke one): the TUI goes on running that turn, and `turnRefused` keeps what was sent.
+	 * Starts a turn with `command`, typed as `line`; `turnRefused` keeps what a `busy` refusal sends back. The TUI goes
+	 * on running only a turn it heard of while it waited (a notice woke one before the core received the command): a
+	 * change of mode in flight also refuses images as busy, with no turn running.
 	 */
 	const startTurn = async (command: ClientCommand, line: string) => {
 		interrupted = false;
 		setBusy(true);
+		const heardBefore = heard;
 		try {
 			await link.request(command);
 			return true;
 		} catch (error) {
-			if (error instanceof RpcError && error.code === "busy") turnRefused(command, line);
-			else {
-				conversation.note(`error: ${describeError(error)}`, true);
+			const refused = error instanceof RpcError && error.code === "busy";
+			if (!refused) conversation.note(`error: ${describeError(error)}`, true);
+			if (!refused || heard === heardBefore) {
 				setBusy(false);
 				reportState("idle");
 			}
+			if (refused) turnRefused(command, line);
 			tui.requestRender();
 			return false;
 		}

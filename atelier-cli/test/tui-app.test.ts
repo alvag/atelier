@@ -135,6 +135,8 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 	const commands: ClientCommand[] = [];
 	/** Commands the core answers with an error instead of running them. */
 	const failing = new Set<string>();
+	/** Commands the core refuses as busy with no turn running, as it does images while a change of mode is in flight. */
+	const busy = new Set<string>();
 	/** Commands whose answer waits for a promise: the core did the work, the TUI has not heard yet. */
 	const holds = new Map<string, Promise<void>>();
 	/** Commands that reach the core only once a promise resolves: the TUI sent them, the core has not received them. */
@@ -192,14 +194,16 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 				const gate = holds.get(command.command);
 				const answer = failing.has(command.command)
 					? Promise.reject(new Error(`${command.command} refused`))
-					: new Promise((resolve, reject) => {
-							const id = `r${++nextId}`;
-							pending.set(id, { command: command.command, resolve, reject });
-							const write = () => input.write(encodeMessage({ ...command, type: "command", id }));
-							const delay = delays.get(command.command);
-							if (delay === undefined) write();
-							else void delay.then(write);
-						});
+					: busy.has(command.command)
+						? Promise.reject(new RpcError("busy", "Images cannot be queued. Wait for the current turn to finish."))
+						: new Promise((resolve, reject) => {
+								const id = `r${++nextId}`;
+								pending.set(id, { command: command.command, resolve, reject });
+								const write = () => input.write(encodeMessage({ ...command, type: "command", id }));
+								const delay = delays.get(command.command);
+								if (delay === undefined) write();
+								else void delay.then(write);
+							});
 				return gate === undefined ? answer : answer.finally(() => gate);
 			},
 			onEvent(listener) {
@@ -225,7 +229,7 @@ function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: Fa
 	const exit = (coreExit: CoreExit) => {
 		for (const listener of exitListeners) listener(coreExit);
 	};
-	return { connect, commands, failing, holds, delays, answered, envs, closed: () => closed, exit };
+	return { connect, commands, failing, busy, holds, delays, answered, envs, closed: () => closed, exit };
 }
 
 /** Takes out styles and terminal sequences; OSC and APC ones (hyperlinks, Kitty images) end at BEL or ST. */
@@ -5033,6 +5037,23 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 		await until(() => h.backend.prompts.length === 3);
 		expect(sends(h).at(-1)?.prompt).toBe(" what is this");
 		expect(sends(h).at(-1)?.images).toHaveLength(1);
+		await quit(h, code);
+	});
+
+	it("sends again an image draft the core refused as busy with no turn running", async () => {
+		const { h, code } = await open();
+		await pasteImage(h, await imageFile());
+		h.screen.type(" what is this");
+		h.core.busy.add("session.send");
+		h.screen.type("\r");
+		await shows(h, BUSY);
+		h.core.busy.delete("session.send");
+		await until(() => h.screen.statuses.at(-1)?.state === "idle");
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 1);
+		expect(sends(h)).toHaveLength(2);
+		expect(sends(h)[1]?.images).toHaveLength(1);
+		await shows(h, "$0.50");
 		await quit(h, code);
 	});
 
