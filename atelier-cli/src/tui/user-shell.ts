@@ -8,6 +8,9 @@ import { MAX_BYTES, MAX_LINES, tailBytes } from "../../../atelier-core/src/tools
 /** How long a cancelled command gets between SIGTERM and SIGKILL. */
 const KILL_GRACE_MS = 2000;
 
+/** How long output already written by an exited shell may still be read when a descendant keeps the pipes open. */
+const POST_EXIT_DRAIN_MS = 250;
+
 export interface UserShellOptions {
 	cwd: string;
 	/** Live output, stdout and stderr interleaved as they arrive. */
@@ -143,7 +146,7 @@ function killGroup(child: ChildProcess, cutOutput: () => void): { escalated: Pro
 /**
  * Runs `command` as the user would in their shell, outside the agent: no guard, sandbox, permissions or model.
  * It has no stdin and its own session, so no controlling terminal; resolves once the shell has exited and its
- * output is drained, or cancellation's grace period closes pipes held by escaped descendants.
+ * output is drained for a bounded time, or cancellation's grace period closes pipes held by escaped descendants.
  */
 export function runUserShell(command: string, options: UserShellOptions): Promise<UserShellResult> {
 	const env = options.env ?? process.env;
@@ -157,9 +160,11 @@ export function runUserShell(command: string, options: UserShellOptions): Promis
 		let cancelled = false;
 		let killing: ReturnType<typeof killGroup> | undefined;
 		let settled = false;
+		let draining: NodeJS.Timeout | undefined;
 		const settle = (exitCode: number | null, killedBy?: string, error?: string) => {
 			if (settled) return;
 			settled = true;
+			clearTimeout(draining);
 			killing?.stop();
 			signal?.removeEventListener("abort", cancel);
 			const saved = sink.finish();
@@ -191,14 +196,16 @@ export function runUserShell(command: string, options: UserShellOptions): Promis
 			return;
 		}
 		const flushers: (() => void)[] = [];
+		const cutOutput = () => {
+			for (const flush of flushers) flush();
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+		};
 		const cancel = () => {
 			if (cancelled || child.pid === undefined) return;
 			cancelled = true;
-			killing = killGroup(child, () => {
-				for (const flush of flushers) flush();
-				child.stdout?.destroy();
-				child.stderr?.destroy();
-			});
+			clearTimeout(draining);
+			killing = killGroup(child, cutOutput);
 		};
 		const onText = (text: string) => {
 			if (!text) return;
@@ -215,12 +222,23 @@ export function runUserShell(command: string, options: UserShellOptions): Promis
 			};
 			flushers.push(flush);
 			stream?.on("data", (chunk: Buffer) => {
+				if (settled) return;
 				sink.push(chunk);
 				onText(decoder.write(chunk));
 			});
 			stream?.on("end", flush);
 		}
 		child.on("error", (error) => settle(null, undefined, cwdFailure(options.cwd) ?? error.message));
+		// A descendant may keep the pipes open after the shell is gone; that must not hold the result back.
+		child.on("exit", (code, killedBy) => {
+			const finish = () => {
+				if (settled) return;
+				cutOutput();
+				settle(code, killedBy ?? undefined);
+			};
+			if (killing && groupAlive(child)) void killing.escalated.then(finish);
+			else draining = setTimeout(finish, POST_EXIT_DRAIN_MS);
+		});
 		child.on("close", async (code, killedBy) => {
 			// Descendants that outlive the shell and ignore SIGTERM are still killed when the grace ends.
 			if (killing && groupAlive(child)) await killing.escalated;
