@@ -291,6 +291,19 @@ process.stdout.write(output);
 		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(5, 1) });
 	});
 
+	it("tells untracked binary and text files by their diff attribute, as once they are added", async () => {
+		await writeFile(join(base, ".gitattributes"), "*.bin binary\n*.txt diff\n");
+		git(base, "add", ".");
+		commit(base);
+		await writeFile(join(base, "payload.bin"), "a\nb\nc\n");
+		await writeFile(join(base, "forced.txt"), "a\0\nb\n");
+		await writeFile(join(base, "plain"), "x\0y\n");
+		const untracked = await readGitChanges(base, undefined, loadTolerant);
+		expect(untracked).toEqual({ lines: lines(2, 0) });
+		git(base, "add", "-N", ".");
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual(untracked);
+	});
+
 	it.each(["sha1", "sha256"])("counts against the empty %s tree before the first commit", async (format) => {
 		const repository = join(base, format);
 		await mkdir(repository);
