@@ -1063,7 +1063,12 @@ export class Session {
 			// A change left by a turn that finished well is assessed before the turn ends, its cost joining the turn's; a turn
 			// that changed nothing of its own is not charged with what others changed in the worktree.
 			const clean = !failed && finish !== undefined && !signal.aborted && !NOT_REVIEWED.has(finish.stopReason);
-			if (!clean || !this.#review || !this.#changedFiles) return ended;
+			if (!clean || !this.#review) return ended;
+			// Its HEAD lookup still ends inside the turn: landing later, it would replace the next turn's base.
+			if (!this.#changedFiles) {
+				await this.#review.turnStarted();
+				return ended;
+			}
 			return addSpent(ended, await this.#review.endOfTurn(this.#reviewHost(turn, signal, backendSession)));
 		});
 	}
