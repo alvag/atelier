@@ -95,6 +95,18 @@ export async function readGitChanges(
 ): Promise<GitChanges> {
 	const deadline = Date.now() + (options.timeoutMs ?? STATUS_TIMEOUT_MS);
 	const expired = () => Date.now() >= deadline || signal?.aborted === true;
+	/** `work`, unless the deadline or an abort comes first: then the call goes on without it. */
+	const bounded = <T>(work: Promise<T>): Promise<T> =>
+		new Promise<T>((resolve, reject) => {
+			const stop = () => reject(new Error("Git status expired"));
+			if (expired()) return stop();
+			const timer = setTimeout(stop, deadline - Date.now());
+			signal?.addEventListener("abort", stop, { once: true });
+			work.then(resolve, reject).finally(() => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", stop);
+			});
+		});
 	const changes: GitChanges = {};
 	let view: string | undefined;
 	try {
@@ -197,7 +209,7 @@ export async function readGitChanges(
 			const counts = /^(\d+)\t(\d+)\n$/.exec(
 				await query(["rev-list", "--left-right", "--count", `HEAD...${upstream}`]).catch(() => ""),
 			);
-			if (counts !== null) changes.commits = { ahead: Number(counts[1]), behind: Number(counts[2]) };
+			if (counts !== null && !expired()) changes.commits = { ahead: Number(counts[1]), behind: Number(counts[2]) };
 		}
 		const output = await query([
 			"status",
@@ -229,13 +241,17 @@ export async function readGitChanges(
 		// Filters are never run, so their raw worktree contents cannot give a trustworthy count.
 		// --all also distinguishes a literal filter=unspecified from an absent attribute.
 		const attributes = await query(["check-attr", "-z", "--all", "--stdin"], `${[...paths].join("\0")}\0`);
+		const diffs = new Map<string, string>();
 		if (attributes !== "") {
 			if (!attributes.endsWith("\0")) return changes;
 			const fields = attributes.slice(0, -1).split("\0");
 			if (fields.length % 3 !== 0) return changes;
 			for (let i = 0; i < fields.length; i += 3) {
-				if (!paths.has(fields[i] ?? "") || !fields[i + 1]) return changes;
-				if (fields[i + 1] === "filter") return changes;
+				const [path = "", name, value = ""] = fields.slice(i, i + 3);
+				if (!paths.has(path) || !name) return changes;
+				if (name === "filter") return changes;
+				// As git diff tells binary files: `-diff` (or `binary`) is one, `diff` is text whatever its bytes.
+				if (name === "diff") diffs.set(path, value);
 			}
 		}
 		// The tracked files' lines, staged and unstaged together; without filters, textconv or external diff programs.
@@ -254,8 +270,8 @@ export async function readGitChanges(
 			]),
 		);
 		if (tracked === undefined) return changes;
-		const added = await untrackedLines(worktree, untracked, expired);
-		if (added !== undefined) changes.lines = { added: tracked.added + added, removed: tracked.removed };
+		const added = await untrackedLines(worktree, untracked, diffs, bounded);
+		if (added !== undefined && !expired()) changes.lines = { added: tracked.added + added, removed: tracked.removed };
 		return changes;
 	} catch {
 		return changes;
@@ -302,16 +318,23 @@ function numstatLines(output: string): { added: number; removed: number } | unde
 
 /**
  * The lines of the untracked files, all of them added, read without git: a symlink is one line (its target), a binary
- * file none, and anything else (a FIFO, a socket, a nested repository) is never opened. Over 1000 files or 8 MiB, none.
+ * file none (by its `diff` attribute, else by its bytes), and anything else (a FIFO, a socket, a nested repository) is
+ * never opened. Over 1000 files or 8 MiB, none. Each wait goes through `bounded`, so a slow read cannot outlive the call.
  */
-async function untrackedLines(worktree: string, paths: string[], expired: () => boolean): Promise<number | undefined> {
+async function untrackedLines(
+	worktree: string,
+	paths: string[],
+	diffs: ReadonlyMap<string, string>,
+	bounded: <T>(work: Promise<T>) => Promise<T>,
+): Promise<number | undefined> {
 	if (paths.length > UNTRACKED_MAX_FILES) return undefined;
 	let lines = 0;
 	let budget = UNTRACKED_MAX_BYTES;
 	for (const path of paths) {
-		if (expired()) return undefined;
+		const diff = diffs.get(path);
+		if (diff === "unset") continue;
 		const name = join(worktree, path);
-		const info = await lstat(name).catch((error: NodeJS.ErrnoException) => {
+		const info = await bounded(lstat(name)).catch((error: NodeJS.ErrnoException) => {
 			// Removed since git listed it: it adds nothing.
 			if (error.code === "ENOENT") return undefined;
 			throw error;
@@ -319,30 +342,36 @@ async function untrackedLines(worktree: string, paths: string[], expired: () => 
 		if (info?.isSymbolicLink()) lines++;
 		if (!info?.isFile()) continue;
 		// Never follow a link or wait on a FIFO that replaced the file since.
-		const file = await open(name, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+		const opening = open(name, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+		const file = await bounded(opening).catch((error: unknown) => {
+			// Given up on: whenever it opens, it is closed.
+			opening.then((late) => late.close()).catch(() => {});
+			throw error;
+		});
 		try {
-			const opened = await file.stat();
+			const opened = await bounded(file.stat());
 			if (!opened.isFile()) continue;
 			budget -= opened.size;
 			if (budget < 0) return undefined;
 			const content = Buffer.alloc(opened.size);
 			let read = 0;
 			while (read < content.length) {
-				const { bytesRead } = await file.read(content, read, content.length - read, read);
+				const { bytesRead } = await bounded(file.read(content, read, content.length - read, read));
 				if (bytesRead === 0) break;
 				read += bytesRead;
 			}
-			lines += lineCount(content.subarray(0, read));
+			lines += lineCount(content.subarray(0, read), diff === "set");
 		} finally {
-			await file.close();
+			// Not awaited: a read given up on would hold the close, and with it the call.
+			file.close().catch(() => {});
 		}
 	}
 	return lines;
 }
 
-/** Like `git diff --numstat`: the last line counts without its newline, and a binary file has none. */
-function lineCount(content: Buffer): number {
-	if (content.length === 0 || content.subarray(0, BINARY_PROBE_BYTES).includes(0)) return 0;
+/** Like `git diff --numstat`: the last line counts without its newline, and a binary file has none unless `text`. */
+function lineCount(content: Buffer, text: boolean): number {
+	if (content.length === 0 || (!text && content.subarray(0, BINARY_PROBE_BYTES).includes(0))) return 0;
 	let lines = 0;
 	for (let at = content.indexOf(10); at >= 0; at = content.indexOf(10, at + 1)) lines++;
 	return content[content.length - 1] === 10 ? lines : lines + 1;
