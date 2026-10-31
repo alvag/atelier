@@ -8,12 +8,16 @@ Review with receipts (M7, Receipt-Driven Development): at the end of a turn that
 
 ### Rewritten commits
 
-Before the agent's tools run, the session captures the starting commit and a boundary in that worktree's HEAD reflog, located with `git rev-parse --git-path logs/HEAD` (not the common gitdir in a linked worktree). When the starting commit is no longer an ancestor of HEAD:
+Before the agent's tools run, the session captures the starting commit, all ref tips with `git for-each-ref` (local branches, remote-tracking refs, tags and stash), and a boundary in that worktree's HEAD reflog, located with `git rev-parse --git-path logs/HEAD` (not the common gitdir in a linked worktree). When the starting commit is no longer an ancestor of HEAD:
 - Commits and amends made during the turn retain the starting commit's tree as the base. A reset to an ancestor followed by a new commit also retains that tree: the turn's replacement, including deletions, is reviewed rather than disappearing against HEAD.
 - A reset alone uses the final HEAD as the base, so removed history is not a candidate. Edits left uncommitted after the reset are still included.
 - A branch switch onto pre-existing history moves the base to where HEAD landed after the switch. Later commits and uncommitted edits are included, not that branch's existing history. Creating or switching to a branch at a commit made during this turn instead restores that commit's attributed base and ownership, even after visiting another branch; earlier turn changes must not disappear from a later amend. The same rule retains the mapped boundary of a turn-owned rebase replay. A switch alone produces no review of unrelated history.
-- A complete linear rebase matches the original commits to their replays in order, by unique, nonempty patches (only the index blob ids are ignored; paths, modes, hunks and bytes must match). Commits created during the turn must form a suffix of that sequence. The base is the rewritten boundary before the first own replay, excluding upstream and pre-turn commits. A pure rebase without own commits uses its landing HEAD. Dropped, empty, reordered, squashed, merged or conflict-resolved replays, and changed hunk offsets, cannot be attributed by this rule and report unavailable rather than guessing.
+- A complete linear rebase matches the original commits to their replays in order, by unique, nonempty patches (only the index blob ids are ignored; paths, modes, hunks and bytes must match). Commits created during the turn must form a suffix of that sequence. The base is the rewritten boundary before the first own replay, excluding upstream and pre-turn commits. A pure rebase without own commits uses its landing HEAD only after the same replay checks; operation messages alone cannot make newly written changes pre-turn replays. Dropped, empty, reordered, squashed, merged or conflict-resolved replays, and changed hunk offsets, cannot be attributed by this rule and report unavailable rather than guessing.
 - Unrecognized or unverifiable rewrites report `review_status` with `available: false` and a reason instead of silently treating the turn as unchanged. This also covers a missing or expired HEAD reflog, `core.logAllRefUpdates=false` (even when an old log remains), and a message-less `git update-ref`. A failure while re-freezing after the risk declaration reports the same status; no stale snapshot is assessed. The explicit `/review <ref>` remains available.
+
+Reflog messages are written by the operation and can be forged, so a `checkout:` or `rebase (start):` message alone never proves that a destination is unrelated pre-turn history. A checkout without a saved own-commit base, or a rebase's starting landing/upstream, must be reachable from one of the initial ref tips. The check uses the captured tips, not the refs at review time; annotated tags and ancestors of tips count. If that proof fails, automatic review reports `review_status` with `available: false` and `Cannot safely attribute the turn's rewritten commits: a HEAD move goes to history that did not exist when the turn started.`
+
+Consequently, on this rewritten-history path, a fetch or pull followed by checkout or rebase onto history first obtained during the turn reports unavailable rather than excluding that history silently. This conservative cost is intentional; `/review <ref>` remains available for an explicit comparison. A repository without commits at turn start keeps its existing empty-start rule.
 
 The existing rule for a start that **is** still an ancestor is unchanged: it uses the turn-start tree, even if upstream history arrived during the turn. That separate upstream-attribution limitation is not fixed here. The temporary-index snapshot, staged/unstaged handling, first-commit rules and receipt format are unchanged. A history-move note also prevents reuse of the previous approved round's base.
 
@@ -31,6 +35,7 @@ An attribution failure uses `Cannot safely attribute the turn's rewritten commit
 - `the HEAD reflog transitions are incomplete`
 - `a HEAD reflog operation is not attributable`
 - `the rebase replay cannot be attributed unambiguously`
+- `a HEAD move goes to history that did not exist when the turn started`
 
 ### What the agent is told
 
