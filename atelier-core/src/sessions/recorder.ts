@@ -96,7 +96,10 @@ export class SessionRecorder {
 		});
 	}
 
-	/** A finished shell command, saved after any text streamed before it. */
+	/**
+	 * A finished shell command, written in order after any text streamed before it. The promise says whether the result
+	 * itself was saved; a failure to write that text is kept for `takeFailure`, as any other write's.
+	 */
 	shellResult(result: ShellResult): Promise<void> {
 		this.#endSegment();
 		const written = this.#queue.then(() => this.#write({ type: "shell_result", result }));
@@ -185,6 +188,11 @@ export class SessionRecorder {
 			this.#messages = digests;
 			if (changed) this.#yoloTold = yoloTold;
 		});
+	}
+
+	/** A further backend response of the main agent starts in turn `turnId`: the text before it is another response's. */
+	response(turnId: string): void {
+		this.#append({ type: "response", turnId });
 	}
 
 	name(name: string): void {
