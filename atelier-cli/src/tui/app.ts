@@ -77,7 +77,7 @@ import {
 	footerWithMode,
 	type StatusItem,
 } from "./footer.ts";
-import { readGitBranch, readGitChanges } from "./git-branch.ts";
+import { type GitChanges, readGitBranch, readGitChanges } from "./git-branch.ts";
 import { Header, type HeaderState, StatusBar } from "./header.ts";
 import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
@@ -100,6 +100,7 @@ import { readTuiSettings } from "./settings.ts";
 import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
 import { StatusLine, terminalTitle } from "./status-line.ts";
 import { editorTheme, type Paint, painter, Shade, Tones } from "./style.ts";
+import { activeTheme, ink } from "./theme.ts";
 import { runUserShell, type UserShellOptions, type UserShellResult } from "./user-shell.ts";
 
 const PASTE_START = "\x1b[200~";
@@ -530,7 +531,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	footer.place = { cwd: args.cwd, ...version };
 	/** Refresh without blocking: only the latest read can update the screen, and none can outlive it. */
 	let placeRead: AbortController | undefined;
-	let changes: number | undefined;
+	let changes: GitChanges = {};
 	const readBranch = async () => {
 		placeRead?.abort();
 		const pending = new AbortController();
@@ -538,12 +539,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const branch = await readGitBranch(args.cwd);
 		if (pending.signal.aborted) return;
 		footer.place = { cwd: args.cwd, ...version, ...(branch === undefined ? {} : { branch }) };
-		changes = undefined;
+		changes = {};
 		tui.requestRender();
 		if (!fullscreen) return;
-		const counted = await readGitChanges(args.cwd, pending.signal);
+		const read = await readGitChanges(args.cwd, pending.signal);
 		if (pending.signal.aborted) return;
-		changes = counted;
+		changes = read;
 		tui.requestRender();
 	};
 	// What the core answered, until the session's own events say more.
@@ -563,10 +564,10 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			...(effort === undefined ? {} : { effort }),
 		};
 	};
-	const bar = new StatusBar(paint, () => ({
+	const bar = new StatusBar(ink(activeTheme, options.color, getTerminalColorMode()), () => ({
 		...footer.state,
 		...footer.place,
-		...(changes === undefined ? {} : { changes }),
+		git: changes,
 		cwd: args.cwd,
 		...(options.home === undefined ? {} : { home: options.home }),
 	}));
@@ -766,12 +767,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 	/**
 	 * The rows a question may take: the terminal's, less those of the parts that stay on screen with it, and full screen
-	 * the bar and the transcript's row.
+	 * the header and the transcript's row.
 	 */
 	const questionRows = () => {
 		const width = options.terminal.columns;
 		const others = [status, odd, queue, footer].reduce((rows, part) => rows + part.render(width).length, 0);
-		return options.terminal.rows - others - (fullscreen ? 2 : 0);
+		return options.terminal.rows - others - (fullscreen ? bar.render(width).length + 1 : 0);
 	};
 	/**
 	 * Asks an `ask_user` batch, its questions as tabs when there are several, and sends the answers once all are given;

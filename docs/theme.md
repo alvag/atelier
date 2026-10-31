@@ -1,6 +1,6 @@
 # Theme
 
-The TUI's color palette lives in one place, `atelier-cli/src/tui/theme.ts`, as a theme: named tokens instead of raw colors. Elements created or reworked from now on paint with these tokens; the existing ones keep their styles in `atelier-cli/src/tui/style.ts` until they are reworked, so nothing changes color yet.
+The TUI's color palette lives in one place, `atelier-cli/src/tui/theme.ts`, as a theme: named tokens instead of raw colors. Elements created or reworked from now on paint with these tokens; the existing ones keep their styles in `atelier-cli/src/tui/style.ts` until they are reworked. The first to use them is the fullscreen header (see [Fullscreen header](cli.md#fullscreen-header)).
 
 ## Tokens
 
