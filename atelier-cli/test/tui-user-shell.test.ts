@@ -213,11 +213,35 @@ describe("runUserShell", () => {
 		const { result, live } = run(`sleep 300 & echo $! > ${pidFile}; echo ready; wait`, { signal: controller.signal });
 		await until(() => live.join("").includes("ready") && existsSync(pidFile));
 		const childPid = Number(readFileSync(pidFile, "utf8"));
-		controller.abort();
-		const done = await result;
-		expect(done.cancelled).toBe(true);
-		expect(done.signal).toBe("SIGTERM");
-		expect(() => process.kill(childPid, 0)).toThrow();
+		// Only the signal-0 probe of the child reports "alive" for its first three calls; everything else is real.
+		const realKill = process.kill.bind(process);
+		let probes = 0;
+		const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+			if (pid === childPid && signal === 0 && probes++ < 3) return true;
+			return realKill(pid, signal);
+		});
+		try {
+			controller.abort();
+			const done = await result;
+			expect(done.cancelled).toBe(true);
+			expect(done.signal).toBe("SIGTERM");
+			await until(() => {
+				try {
+					process.kill(childPid, 0);
+					return false;
+				} catch (error) {
+					expect(error).toMatchObject({ code: "ESRCH" });
+					return true;
+				}
+			});
+		} finally {
+			kill.mockRestore();
+			try {
+				process.kill(childPid, "SIGKILL");
+			} catch {
+				// Already gone, which is the expected outcome.
+			}
+		}
 	});
 
 	it.each([false, true])(

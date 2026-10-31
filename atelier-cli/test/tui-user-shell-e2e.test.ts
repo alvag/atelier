@@ -1,8 +1,7 @@
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { type AtelierEvent, type ClientCommand, FakeBackend, type FakeStep, RpcServer } from "@atelier/core";
 import type { CoreExit } from "@atelier/core/client";
@@ -176,10 +175,10 @@ function open(turns: FakeStep[][], args: string[] = ["--no-review"]) {
 const exists = (name: string) => existsSync(join(cwd, name));
 
 describe("TUI user shell commands, end to end", { timeout: 30_000 }, () => {
-	it("uses the system temporary directory", () => {
-		if (process.platform !== "darwin") return;
-		const system = execFileSync("getconf", ["DARWIN_USER_TEMP_DIR"], { encoding: "utf8" }).trim();
-		expect(tmpdir().replace(/\/$/, "")).toBe(system.replace(/\/$/, ""));
+	it("creates the working and home fixtures under the configured temporary directory", async () => {
+		const root = await realpath(tmpdir());
+		expect(dirname(cwd)).toBe(root);
+		expect(dirname(home)).toBe(root);
 	});
 
 	it("shows the output, calls no model for ! and !!, and gives the model the ! results once, in order, on the next prompt", async () => {
@@ -281,5 +280,35 @@ describe("TUI user shell commands, end to end", { timeout: 30_000 }, () => {
 		expect(h.backend.interrupts).toBe(0);
 		h.send("/exit");
 		expect(await h.code).toBe(0);
+	});
+
+	it("keeps the answer before a shell result visible after resume", async () => {
+		const gate = Promise.withResolvers<void>();
+		releases.add(gate.resolve);
+		const first = open([
+			[
+				{ event: { type: "text_delta", text: "Visible before shell." } },
+				{ run: () => gate.promise },
+				{ event: { type: "text_delta", text: " Visible after shell." } },
+				{ event: { type: "turn_finished", stopReason: "end_turn", usage } },
+			],
+		]);
+		first.backend.resumeState = { sessionId: "cc-resume-probe" };
+		await until(first.screen.started);
+		first.send("work");
+		await until(() => first.screen.screen().includes("Visible before shell."));
+		first.send("!printf hi");
+		await until(() => first.shellResults().length === 1);
+		gate.resolve();
+		await until(() => first.core.finished() === 1);
+		first.send("/exit");
+		expect(await first.code).toBe(0);
+
+		const second = open([answer], ["--no-review", "--continue"]);
+		second.backend.resumeState = { sessionId: "cc-resume-probe" };
+		await until(() => second.screen.screen().includes("Visible after shell."));
+		expect(second.screen.screen()).toContain("Visible before shell.");
+		second.send("/exit");
+		expect(await second.code).toBe(0);
 	});
 });
