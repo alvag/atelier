@@ -19,6 +19,17 @@ const PLACEHOLDER = "Ask Atelier to do anything";
 /** Starts the rows the editor draws as borders, so that its band tells them from what was typed. */
 const BORDER = "\x1b_atelier:border\x07";
 
+/** A command typed after `!`, or after `!!` when the model does not see it; a bare marker is an ordinary prompt. */
+export function parseShell(text: string): { command: string; exclude: boolean } | undefined {
+	const exclude = text.startsWith("!!");
+	const command = text.slice(exclude ? 2 : 1);
+	return text.startsWith("!") && command.trim() !== "" ? { command, exclude } : undefined;
+}
+
+/** What the editor says under a shell command's draft. */
+const SHELL_NOTICE = "Shell · outside sandbox";
+const EXCLUDED_NOTICE = " · excluded from context";
+
 /** `line` padded with spaces to `width` columns. */
 export const padded = (line: string, width: number) => `${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`;
 
@@ -85,19 +96,31 @@ export class PromptEditor extends Editor {
 		return `${BORDER}${hiddenLineCount > 0 ? this.#paint("dim", `${direction} ${hiddenLineCount} more`) : ""}`;
 	}
 
+	#before = "";
+
+	/** The text as it stood before the last key, which is what Enter submitted, without the trimming `onSubmit` gets. */
+	get untrimmed(): string {
+		return this.#before;
+	}
+
 	override handleInput(data: string): void {
-		if (!this.hidden) super.handleInput(data);
+		if (this.hidden) return;
+		this.#before = this.getExpandedText();
+		super.handleInput(data);
 	}
 
 	override render(width: number): string[] {
 		if (this.hidden) return [];
-		if (!this.#shade.on) return super.render(width);
+		const shell = parseShell(this.getText());
+		const notice =
+			shell === undefined ? [] : [this.#paint("yellow", `${SHELL_NOTICE}${shell.exclude ? EXCLUDED_NOTICE : ""}`)];
+		if (!this.#shade.on) return [...super.render(width), ...notice.map((line) => `${INDENT}${line}`)];
 		const lines = super.render(Math.max(1, width - MARK.length));
 		const empty = this.getText() === "";
 		// The band ends at the bottom border; the rows under it are the completions, lined up with the text.
 		const bottom = lines.findLastIndex((line) => line.startsWith(BORDER));
 		let first = true;
-		return lines.map((line, index) => {
+		const rows = lines.map((line, index) => {
 			if (index > bottom) return `${INDENT}${line}`;
 			if (line.startsWith(BORDER)) return this.#band(`${INDENT}${line.slice(BORDER.length)}`, width);
 			const text = first && empty ? `${line.trimEnd()}${this.#paint("dim", PLACEHOLDER)}` : line;
@@ -105,6 +128,9 @@ export class PromptEditor extends Editor {
 			first = false;
 			return this.#band(row, width);
 		});
+		// The notice sits right under the band, over the completions.
+		rows.splice(bottom + 1, 0, ...notice.map((line) => `${INDENT}${line}`));
+		return rows;
 	}
 
 	/** The pointer over the text is where the text is, after the mark. */

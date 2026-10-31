@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import {
 	type AtelierEvent,
@@ -82,7 +83,7 @@ import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
 import { preparePastedImages } from "./pasted-images.ts";
 import { ProgramStatusReporter } from "./program-status.ts";
-import { PromptEditor } from "./prompt.ts";
+import { PromptEditor, parseShell } from "./prompt.ts";
 import { type ImageDraft, PromptImages } from "./prompt-images.ts";
 import { QueuePanel } from "./queue-panel.ts";
 import {
@@ -99,6 +100,7 @@ import { readTuiSettings } from "./settings.ts";
 import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
 import { StatusLine, terminalTitle } from "./status-line.ts";
 import { editorTheme, type Paint, painter, Shade, Tones } from "./style.ts";
+import { runUserShell, type UserShellOptions, type UserShellResult } from "./user-shell.ts";
 
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
@@ -112,6 +114,8 @@ const NO_CLIPBOARD_IMAGE = "No image on the clipboard. To paste text, use your t
 const CLIPBOARD_UNSUPPORTED =
 	"Ctrl+V attaches clipboard images on macOS only. To paste text, use your terminal's text paste.";
 const ANIMATED = "Animated image: only the first frame was attached.";
+const SHELL_BUSY = "A shell command is already running. Press Esc to cancel it first.";
+const SHELL_IMAGES = "Images cannot be sent with a shell command. Remove the shell marker or the images.";
 
 /** The core as the TUI talks to it: `RpcClient`, or an in-process server in tests. */
 export interface CoreLink {
@@ -156,6 +160,8 @@ export interface TuiOptions {
 	platform?: NodeJS.Platform;
 	/** The clipboard's image as PNG or TIFF bytes for Ctrl+V; undefined when it holds none (default: macOS's pasteboard). */
 	readClipboardImage?: (signal: AbortSignal) => Promise<Uint8Array | undefined>;
+	/** Runs the commands typed after `!` and `!!` (default: `runUserShell`); tests pass a fake. */
+	runShell?: (command: string, options: UserShellOptions) => Promise<UserShellResult>;
 	/** Starts a notice's command (default: detached). */
 	spawn?: (command: string, args: string[]) => void;
 }
@@ -396,6 +402,7 @@ async function resumeSession(
 	const entries = resumed.entries as unknown as SavedEntry[];
 	for (const part of savedParts(savedId, resumed.name, entries))
 		if ("text" in part) conversation.plain(part.text);
+		else if ("shell" in part) conversation.shellResult(part.shell);
 		else conversation.answered(part.questions, part.outcome);
 	const name = resumed.name ?? sentTexts(entries).find(namesSession);
 	return {
@@ -629,6 +636,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	tui.setFocus(editor);
 
 	let busy = false;
+	/** The command typed after `!` that runs now, one at a time: `exited` settles when it ended, before its result is saved. */
+	let shell: { abort: AbortController; exited: Promise<void> } | undefined;
+	/** The results on their way to the core: quitting gives them a moment, a core that does not answer cannot hold it. */
+	const saving = new Map<Promise<void>, Conversation>();
+	let shellEpoch = 0;
 	/** A slash command is still running (a list, a backend move, a new session starting): nothing else is sent. */
 	let commanding = false;
 	let interrupted = false;
@@ -985,6 +997,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if (quitting) return;
 		quitting = true;
 		abortClipboardReads();
+		shell?.abort.abort();
 		finish(code);
 	};
 	/** Why the TUI quit, said once the terminal is given back: in the alternate screen it would be wiped with it. */
@@ -1460,6 +1473,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	/** Starts a new session with what was chosen and the mode in use; the one before stays on screen. */
 	const runNew = async () => {
 		const mode = isMode(footer.state.mode) ? footer.state.mode : undefined;
+		await stopShell();
 		const shownIn = nextConversation("new session");
 		try {
 			switchTo(await startSession(link, args, chosen, mode), shownIn);
@@ -1488,6 +1502,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			if (chosenId === undefined) return;
 		}
 		if (chosenId === savedId) return conversation.note(`session ${shown(chosenId).text} is the one running`);
+		await stopShell();
 		const shownIn = nextConversation("resumed session");
 		try {
 			switchTo(await resumeSession(link, args.cwd, chosenId, shownIn), shownIn);
@@ -1549,8 +1564,101 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			editor.disableSubmit = false;
 		}
 	};
-	const submit = async (line: string) => {
+	/** Aborts the running shell command and waits for it to end, as a session move does; its result is saved on its own. */
+	const stopShell = async () => {
+		shellEpoch++;
+		shell?.abort.abort();
+		await shell?.exited;
+	};
+	/**
+	 * Runs a command the user typed, outside the agent, now even during a turn. It shows live output in one block and
+	 * only the result goes to the core, once: a result that cannot be saved is reported and the command never reruns.
+	 */
+	const runShellCommand = (command: string, exclude: boolean) => {
+		const asked = sessionId;
+		const shownIn = conversation;
+		const abort = new AbortController();
+		const block = shownIn.shell(command, exclude);
+		const redraw = () => {
+			if (!quitting) tui.requestRender();
+		};
+		const running = (options.runShell ?? runUserShell)(command, {
+			cwd: args.cwd,
+			signal: abort.signal,
+			onOutput: (text) => {
+				block.output(text);
+				redraw();
+			},
+		}).catch(
+			(error: unknown): UserShellResult => ({
+				output: "",
+				exitCode: null,
+				cancelled: false,
+				truncated: false,
+				error: describeError(error),
+			}),
+		);
+		const save = async (result: UserShellResult) => {
+			try {
+				await link.request({
+					command: "session.shell_result",
+					sessionId: asked,
+					result: { executionId: randomUUID(), command, excludeFromContext: exclude, ...result },
+				});
+			} catch (error) {
+				shownIn.note(`error: could not save the shell result: ${describeError(error)}`, true);
+			}
+			redraw();
+		};
+		const own = {
+			abort,
+			exited: running.then((result) => {
+				block.finish(result);
+				if (shell === own) shell = undefined;
+				const saved = save(result).finally(() => saving.delete(saved));
+				saving.set(saved, shownIn);
+				redraw();
+			}),
+		};
+		shell = own;
+	};
+	/** `!command` and `!!command` run in the shell; a draft with images, or while one runs, stays in the editor. */
+	const submitShell = (line: string, typed: { command: string; exclude: boolean }) => {
+		if (pasted.has(line)) {
+			editor.setText(line);
+			return conversation.note(SHELL_IMAGES, true);
+		}
+		if (shell !== undefined) {
+			editor.setText(line);
+			return conversation.note(SHELL_BUSY, true);
+		}
+		editor.addToHistory(line);
+		editor.setText("");
+		runShellCommand(typed.command, typed.exclude);
+		tui.requestRender();
+	};
+	const submit = async (line: string): Promise<void> => {
+		const typed = parseShell(line);
+		if (typed !== undefined) return submitShell(line, typed);
 		const text = line.trim();
+		// Completed results must reach the core before a new prompt; session controls never wait for that write.
+		if (!busy && !commanding && text !== "" && !isStatsCommand(text) && !/^\/(?:new|resume|exit)(?:\s|$)/.test(text)) {
+			const pending = [...saving].filter(([, shownIn]) => shownIn === conversation).map(([saved]) => saved);
+			if (pending.length > 0) {
+				const epoch = shellEpoch;
+				editor.setText("");
+				await Promise.all(pending);
+				if (quitting || epoch !== shellEpoch) return;
+				if (commanding) return giveBack([line]);
+				const draft = editor.getExpandedText();
+				editor.setText("");
+				const submitted = submit(line);
+				// Submitting clears the editor; keep anything typed while the save was pending, after any refused prompt.
+				editor.setText([editor.getExpandedText(), draft].filter((text) => text !== "").join("\n\n"));
+				tui.requestRender();
+				return submitted;
+			}
+		}
 		if (pasted.has(line)) {
 			if (commanding) return;
 			if (busy) return enqueue(line, "steer");
@@ -1632,7 +1740,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			await startTurn({ command: "session.send", sessionId, prompt: line }, line);
 		}
 	};
-	editor.onSubmit = (line) => void submit(line);
+	// A shell command keeps the bytes after its marker: the editor trims what it submits, and the command's tail may matter.
+	editor.onSubmit = (line) => {
+		const raw = editor.untrimmed;
+		void submit(raw.trim() === line && parseShell(line) !== undefined ? raw : line);
+	};
 	/**
 	 * Runs `prepare` behind the reads ahead of it and inserts the images it yields at the cursor; `none` runs when it
 	 * yields none. A read made before an edit, a move or a new session is dropped, never merged.
@@ -1740,6 +1852,17 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			tui.requestRender();
 			return { consume: true };
 		}
+		// Esc stops a running command first, without touching the turn or a question; then it clears a shell draft.
+		if (matchesKey(data, "escape") && shell !== undefined) {
+			shell.abort.abort();
+			tui.requestRender();
+			return { consume: true };
+		}
+		if (matchesKey(data, "escape") && parseShell(editor.getText()) !== undefined && !editor.isShowingAutocomplete()) {
+			editor.setText("");
+			tui.requestRender();
+			return { consume: true };
+		}
 		if (
 			matchesKey(data, "escape") &&
 			busy &&
@@ -1754,7 +1877,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		// Alt+Enter queues a follow-up while a turn runs, and sends like Enter when none does.
 		if (matchesKey(data, "alt+enter") && questions.length === 0) {
 			const line = editor.getExpandedText();
-			if (busy && !commanding) enqueue(line, "follow_up");
+			if (busy && !commanding && parseShell(line) === undefined) enqueue(line, "follow_up");
 			else void submit(line);
 			tui.requestRender();
 			return { consume: true };
@@ -1876,11 +1999,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const released = herdr?.release();
 		tui.stop();
 		if (farewell !== undefined) options.stderr(farewell);
+		// The command ends before the session closes; its result is saved too, if the core answers in time.
+		await shell?.exited;
 		// A core that does not answer must not keep the terminal's owner waiting: close the link anyway.
 		let timer: NodeJS.Timeout | undefined;
 		const gaveUp = new Promise<void>((resolve) => {
 			timer = setTimeout(resolve, options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS);
 		});
+		await Promise.race([Promise.all(saving.keys()), gaveUp]);
 		await Promise.race([link.request({ command: "session.close", sessionId }).catch(() => {}), gaveUp]);
 		clearTimeout(timer);
 		await Promise.all([link.close(), released]);

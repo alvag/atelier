@@ -6,6 +6,7 @@ import { ActivityBlock } from "./activity-block.ts";
 import { AnsweredBlock, type AskOutcome, answerLines, finishedOutcome, questionsOf } from "./answered-block.ts";
 import { PromptBlock } from "./prompt.ts";
 import { ReviewBlock } from "./review-block.ts";
+import { ShellLine, type ShellRecord } from "./shell-block.ts";
 import { markdownTheme, type Paint, Shade, Tones } from "./style.ts";
 import { AgentGroup, type CardView, ToolCard } from "./tool-card.ts";
 import { VerifyCard } from "./verify-card.ts";
@@ -183,6 +184,18 @@ export class Conversation extends Container {
 	/** A line of the client's own, such as the answer to `/mode`; `warn` shows it in yellow. */
 	note(text: string, warn = false): void {
 		this.#add(new Text(warn ? this.#paint("yellow", text) : this.#paint("dim", text), 1, 0));
+	}
+
+	/** A command the user runs: one block that its live output and its result update. */
+	shell(command: string, exclude: boolean): ShellLine {
+		const block = new Text("", 1, 0);
+		this.#add(block);
+		return new ShellLine(command, exclude, (text) => block.setText(text));
+	}
+
+	/** A saved command's result, such as one of a resumed session: shown, never run. */
+	shellResult(record: ShellRecord): void {
+		this.shell(record.command, record.excludeFromContext).finish(record);
 	}
 
 	/** What an `ask_user` batch came to, as the block a settled batch leaves, such as one of a resumed session. */

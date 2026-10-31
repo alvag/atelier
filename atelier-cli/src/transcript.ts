@@ -1,5 +1,6 @@
 import { type SavedEntry, type UserQuestion, visibleText } from "@atelier/core";
 import { type AskOutcome, finishedOutcome, questionsOf } from "./tui/answered-block.ts";
+import { type ShellRecord, savedShellText } from "./tui/shell-block.ts";
 
 /** An `ask_user` batch of the main agent in a saved turn, and what it came to; none when the file ends before it settled. */
 interface SavedAsk {
@@ -53,11 +54,14 @@ function promptWithImages(text: string, count = 0): string {
 	return `${text}${text !== "" && !/\s$/.test(text) ? " " : ""}${missing.join(" ")}`;
 }
 
-/** The prompts of a saved session, each with the final text the main agent wrote in that turn. */
-function turnsOf(entries: readonly SavedEntry[]): SavedTurn[] {
+/** The prompts of a saved session, each with the final text the main agent wrote in that turn, and the commands the user ran after each. */
+function turnsOf(entries: readonly SavedEntry[]) {
 	const turns: SavedTurn[] = [];
+	/** The commands run when this many turns had started: 0 is before the first prompt. */
+	const shells = new Map<number, ShellRecord[]>();
 	for (const entry of entries) {
-		if (entry.type === "prompt")
+		if (entry.type === "shell_result") shells.set(turns.length, [...(shells.get(turns.length) ?? []), entry.result]);
+		else if (entry.type === "prompt")
 			turns.push({
 				turnId: entry.turnId,
 				prompt: promptWithImages(entry.text, entry.imageCount),
@@ -74,25 +78,34 @@ function turnsOf(entries: readonly SavedEntry[]): SavedTurn[] {
 			else asking(turn, entry.event);
 		}
 	}
-	return turns;
+	return { turns, shells };
 }
 
 /** A prompt after `> `, its other lines lined up under it. */
 const promptLine = (text: string) => `> ${visibleText(text).text.replace(/\n/g, "\n  ")}\n`;
 
 /** A piece of a resumed session's transcript: text as it is printed, or an `ask_user` batch the TUI shows as a block. */
-export type SavedPart = { text: string } | { questions: UserQuestion[]; outcome: AskOutcome };
+export type SavedPart = { text: string } | { questions: UserQuestion[]; outcome: AskOutcome } | { shell: ShellRecord };
 
 /**
  * The transcript of a resumed session in pieces: the line saying what was resumed, then each prompt (and what the user
  * steered with during its turn) as text, the `ask_user` batches that settled in the turn, and the turn's final text.
  */
 export function savedParts(id: string, name: string | undefined, entries: readonly SavedEntry[]): SavedPart[] {
-	const turns = turnsOf(entries);
+	const { turns, shells } = turnsOf(entries);
 	const label = name === undefined ? "" : ` "${visibleText(name).text}"`;
 	const parts: SavedPart[] = [];
 	let out = `resumed session ${id}${label}: ${turns.length} ${turns.length === 1 ? "turn" : "turns"}\n`;
-	for (const turn of turns) {
+	/** Closes the text so far with the commands the user ran after `count` turns. */
+	const ran = (count: number) => {
+		for (const record of shells.get(count) ?? []) {
+			if (out !== "") parts.push({ text: out });
+			out = "";
+			parts.push({ shell: record });
+		}
+	};
+	ran(0);
+	for (const [index, turn] of turns.entries()) {
 		out += promptLine(turn.prompt);
 		for (const steer of turn.steers) out += promptLine(steer);
 		for (const { questions, outcome } of turn.asked) {
@@ -102,6 +115,7 @@ export function savedParts(id: string, name: string | undefined, entries: readon
 			out = "";
 		}
 		if (turn.answer !== undefined) out += `${visibleText(turn.answer).text.trimEnd()}\n`;
+		ran(index + 1);
 	}
 	if (out !== "") parts.push({ text: out });
 	return parts;
@@ -115,6 +129,6 @@ export function savedParts(id: string, name: string | undefined, entries: readon
  */
 export function savedTranscript(id: string, name: string | undefined, entries: readonly SavedEntry[]): string {
 	return savedParts(id, name, entries)
-		.map((part) => ("text" in part ? part.text : ""))
+		.map((part) => ("text" in part ? part.text : "shell" in part ? `${savedShellText(part.shell)}\n` : ""))
 		.join("");
 }
