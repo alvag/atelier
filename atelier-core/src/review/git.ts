@@ -32,19 +32,25 @@ export function gitEnv(extra: Readonly<Record<string, string>> | undefined): Nod
 }
 
 /** Runs git without a shell. Never rejects for a non-zero exit: the code is in the result. */
-export function runGit(args: readonly string[], options: GitOptions): Promise<GitResult> {
+export function runGit(args: readonly string[], options: GitOptions & { input?: string }): Promise<GitResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn("git", args, {
 			cwd: options.cwd,
 			env: gitEnv(options.env),
-			stdio: ["ignore", "pipe", "pipe"],
+			stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 			timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 		});
+		let inputFailed = false;
+		child.stdin?.on("error", () => {
+			inputFailed = true;
+			child.kill();
+		});
+		child.stdin?.end(options.input);
 		const chunks: Buffer[] = [];
 		let bytes = 0;
 		let truncated = false;
 		let stderr = "";
-		child.stdout.on("data", (chunk: Buffer) => {
+		child.stdout?.on("data", (chunk: Buffer) => {
 			if (truncated) return;
 			const limit = options.limitBytes;
 			if (limit !== undefined && bytes + chunk.length > limit) {
@@ -57,12 +63,17 @@ export function runGit(args: readonly string[], options: GitOptions): Promise<Gi
 			chunks.push(chunk);
 			bytes += chunk.length;
 		});
-		child.stderr.on("data", (chunk: Buffer) => {
+		child.stderr?.on("data", (chunk: Buffer) => {
 			if (stderr.length < STDERR_LIMIT) stderr += chunk.toString("utf8");
 		});
 		child.on("error", reject);
 		child.on("close", (code) => {
-			resolve({ code: truncated ? 0 : (code ?? 1), stdout: Buffer.concat(chunks), stderr, truncated });
+			resolve({
+				code: inputFailed ? 1 : truncated ? 0 : (code ?? 1),
+				stdout: Buffer.concat(chunks),
+				stderr,
+				truncated,
+			});
 		});
 	});
 }

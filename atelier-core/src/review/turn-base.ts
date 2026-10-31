@@ -1,10 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { gitText, runGit } from "./git.ts";
 
-/** A prefix of this worktree's HEAD reflog, captured before the turn's tools can run. */
+/** This worktree's HEAD reflog prefix and all ref tips, captured before the turn's tools can run. */
 export interface TurnReflog {
 	path: string;
 	text: string;
+	refs: readonly string[] | null;
 }
 
 export type TurnBase = { ok: true; commit?: string; note?: string } | { ok: false; reason: string };
@@ -12,7 +13,7 @@ type Entry = { from: string; to: string; message: string };
 type Move = "switch" | "landing" | "replay";
 const OWN_COMMIT = /^commit( \((initial|amend)\))?: /;
 
-export async function captureTurnReflog(cwd: string): Promise<TurnReflog | null> {
+async function readHeadReflog(cwd: string): Promise<Pick<TurnReflog, "path" | "text"> | null> {
 	try {
 		const logging = await runGit(["config", "--type=bool", "--get", "core.logAllRefUpdates"], { cwd });
 		if (logging.code === 0 && logging.stdout.toString("utf8").trim() === "false") return null;
@@ -28,11 +29,40 @@ export async function captureTurnReflog(cwd: string): Promise<TurnReflog | null>
 	}
 }
 
+export async function captureTurnReflog(cwd: string): Promise<TurnReflog | null> {
+	const reflog = await readHeadReflog(cwd);
+	if (reflog === null) return null;
+	let refs: string[] | null = null;
+	try {
+		const text = await gitText(["for-each-ref", "--format=%(objectname)"], { cwd });
+		if (/^(?:[0-9a-f]{40}(?:[0-9a-f]{24})?\n)*$/.test(text)) refs = text === "" ? [] : text.trimEnd().split("\n");
+	} catch {
+		// Without initial refs, no later destination can be proved to be pre-turn history.
+	}
+	return { ...reflog, refs };
+}
+
+async function existedAtStart(cwd: string, destination: string, refs: readonly string[] | null): Promise<boolean> {
+	if (refs === null) return false;
+	try {
+		const result = await runGit(["rev-list", "-n", "1", destination, "--stdin"], {
+			cwd,
+			// Command-line --not does not affect revisions read from stdin. Git peels tag objects here.
+			input: refs.map((sha) => `^${sha}\n`).join(""),
+			limitBytes: 128,
+		});
+		return result.code === 0 && !result.truncated && result.stdout.length === 0;
+	} catch {
+		return false;
+	}
+}
+
 function unavailable(detail: string): TurnBase {
 	return { ok: false, reason: `Cannot safely attribute the turn's rewritten commits: ${detail}.` };
 }
 
 const REPLAY_FAILED = "the rebase replay cannot be attributed unambiguously";
+const NEW_HISTORY = "a HEAD move goes to history that did not exist when the turn started";
 
 async function signatures(cwd: string, shas: readonly string[]): Promise<string[] | null> {
 	const out: string[] = [];
@@ -77,9 +107,9 @@ async function attributeRebase(
 	const originals = await chain(cwd, ["--reverse", `${first.to}..${first.from}`]);
 	const ownIndexes = (originals ?? []).flatMap(([sha], i) => (owned.includes(sha) ? [i] : []));
 	if (originals === null || originals.length !== replays.length) return null;
-	if (ownIndexes.length === 0) return { landed };
+	if (originals.length === 0) return { landed };
 	const firstOwn = ownIndexes[0] ?? 0;
-	if (ownIndexes.length !== originals.length - firstOwn) return null;
+	if (ownIndexes.length > 0 && ownIndexes.length !== originals.length - firstOwn) return null;
 	if ((await runGit(["merge-base", "--is-ancestor", start, first.from], { cwd })).code !== 0) return null;
 	const replayed = await chain(cwd, ["--no-walk=unsorted", ...replays]);
 	if (replayed === null || replayed.some(([, parent], i) => parent !== (i === 0 ? first.to : replays[i - 1])))
@@ -92,6 +122,7 @@ async function attributeRebase(
 	const after = await signatures(cwd, replays);
 	if (before === null || after === null || new Set(before).size !== before.length) return null;
 	if (before.some((sig, i) => sig === "" || sig !== after[i])) return null;
+	if (ownIndexes.length === 0) return { landed };
 	for (const i of ownIndexes) owned[owned.indexOf(originals[i]?.[0] ?? "")] = replays[i] ?? "";
 	return { boundary: firstOwn === 0 ? first.to : replays[firstOwn - 1], landed };
 }
@@ -103,7 +134,7 @@ export async function rewrittenTurnBase(
 	head: string,
 	boundary: TurnReflog | null,
 ): Promise<TurnBase> {
-	const current = await captureTurnReflog(cwd);
+	const current = await readHeadReflog(cwd);
 	if (boundary === null || current === null) return unavailable("the worktree's HEAD reflog is unavailable");
 	if (current.path !== boundary.path || !current.text.startsWith(boundary.text))
 		return unavailable("the worktree's HEAD reflog no longer contains the turn-start boundary");
@@ -130,6 +161,7 @@ export async function rewrittenTurnBase(
 		const entry = entries[i];
 		if (entry === undefined) return unavailable("the HEAD reflog transitions are incomplete");
 		if (entry.message.startsWith("rebase (start): ")) {
+			if (!(await existedAtStart(cwd, entry.to, boundary.refs))) return unavailable(NEW_HISTORY);
 			let end = i + 1;
 			while (entries[end]?.message.startsWith("rebase (pick): ")) end++;
 			const rebase = await attributeRebase(cwd, base, entries.slice(i, end + 1), owned);
@@ -156,6 +188,7 @@ export async function rewrittenTurnBase(
 				owned.splice(0, owned.length, ...previous.owned);
 				rewritten = true;
 			} else {
+				if (!(await existedAtStart(cwd, entry.to, boundary.refs))) return unavailable(NEW_HISTORY);
 				owned.length = 0;
 				base = entry.to;
 				moved = "switch";

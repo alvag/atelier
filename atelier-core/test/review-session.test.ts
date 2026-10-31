@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
@@ -1693,6 +1693,173 @@ describe("a turn after an approved review whose commit was rewritten", () => {
 		const events = await s.send("move HEAD");
 		expect(gitIn(cwd, "rev-parse", "HEAD").trim()).toBe(side);
 		expectUnavailable(s, events, "a HEAD reflog entry has no operation message");
+	});
+
+	describe("D6: a HEAD move goes only to history that existed when the turn started", () => {
+		const NEW_HISTORY = "a HEAD move goes to history that did not exist when the turn started";
+		const ident = (cwd: string) => {
+			gitIn(cwd, "config", "user.email", "t@t");
+			gitIn(cwd, "config", "user.name", "t");
+		};
+
+		/** A start-base review, or the exact unavailable status; never a silent or wrongly based review. */
+		function expectStartBaseOrUnavailable(s: Awaited<ReturnType<typeof approvedThen>>, events: AtelierEvent[]) {
+			if (ofType(events, "review_status").some((event) => !event.available)) {
+				expectUnavailable(s, events, NEW_HISTORY);
+			} else expectRewrittenBase(s, events);
+		}
+
+		it.each([
+			["a spoofed amend", "!GIT_REFLOG_ACTION='checkout: moving from topic to own' git commit -q --amend --no-edit"],
+			[
+				"a spoofed update-ref",
+				`!git update-ref -m 'checkout: moving from topic to own' HEAD "$(git commit-tree "$(git write-tree)" -p HEAD^ -m rewrite)"`,
+			],
+		])("does not take %s of the turn's commit for a checkout of its own work", async (_name, alias) => {
+			const cwd = await repo();
+			ident(cwd);
+			gitIn(cwd, "config", "alias.spoof", alias);
+			const s = await approvedThen([change("src/auth.ts", REVISED), git("add", "-A"), git("spoof")], cwd);
+			expectStartBaseOrUnavailable(s, await revise(s));
+		});
+
+		it("is unavailable when a fake rebase lands on a commit created during the turn", async () => {
+			const cwd = await repo();
+			ident(cwd);
+			const fake = [
+				`N=$(git commit-tree "$(git write-tree)" -p HEAD -m landed)`,
+				`git update-ref -m "rebase (start): checkout $N" HEAD $N`,
+				`git update-ref -m "rebase (finish): returning to refs/heads/x" HEAD $N`,
+			].join(" && ");
+			gitIn(cwd, "config", "alias.fake", `!${fake}`);
+			const s = await approvedThen([...amend, git("fake")], cwd);
+			expectUnavailable(s, await revise(s), NEW_HISTORY);
+		});
+
+		it("is unavailable when a fake replay over existing upstream hides an own rewrite", async () => {
+			const cwd = await upstreamRepo();
+			ident(cwd);
+			const fake = [
+				`N=$(git commit-tree "$(git write-tree)" -p "$(git rev-parse upstream)" -m rewrite)`,
+				`git update-ref -m 'rebase (start): checkout upstream' HEAD upstream`,
+				`git update-ref -m 'rebase (pick): rewrite' HEAD $N`,
+				`git update-ref -m 'rebase (finish): returning to refs/heads/x' HEAD $N`,
+			].join(" && ");
+			gitIn(cwd, "config", "alias.fake", `!${fake}`);
+			const s = await approvedThen([change("src/auth.ts", REVISED), git("add", "-A"), git("fake")], cwd);
+			expectUnavailable(s, await revise(s), "the rebase replay cannot be attributed unambiguously");
+		});
+
+		/** A clone to fetch from; `fresh` is a commit made there during the turn, so no ref of the repository has it at the start. */
+		async function fetchRepo() {
+			const cwd = await repo();
+			const remote = await mkdtemp(join(tmpdir(), "atelier-review-remote-"));
+			dirs.push(remote);
+			execFileSync("git", ["clone", "-q", cwd, remote]);
+			gitIn(cwd, "remote", "add", "up", remote);
+			const fresh = [
+				git("-C", remote, "checkout", "-q", "-b", "fresh"),
+				git("-C", remote, "commit", "-q", "--allow-empty", "-m", "fresh"),
+				git("fetch", "-q", "up", "fresh"),
+			];
+			return { cwd, remote, fresh };
+		}
+
+		it("is unavailable when a checkout goes to history fetched during the turn", async () => {
+			const { cwd, fresh } = await fetchRepo();
+			const s = await approvedThen(
+				[
+					...fresh,
+					git("checkout", "-q", "-b", "own", "up/fresh"),
+					change("src/auth.ts", REVISED),
+					git("add", "-A"),
+					git("commit", "-qm", "own"),
+				],
+				cwd,
+			);
+			expectUnavailable(s, await revise(s), NEW_HISTORY);
+		});
+
+		it("is unavailable when a rebase goes onto history fetched during the turn", async () => {
+			const { cwd, fresh } = await fetchRepo();
+			const s = await approvedThen(
+				[...fresh, change("src/auth.ts", REVISED), ...commit("revise"), git("rebase", "-q", "up/fresh")],
+				cwd,
+			);
+			expectUnavailable(s, await revise(s), NEW_HISTORY);
+		});
+
+		it("still reviews a checkout of history fetched before the turn, from a remote-tracking ref", async () => {
+			const { cwd, remote } = await fetchRepo();
+			gitIn(remote, "checkout", "-q", "-b", "fresh");
+			gitIn(remote, "commit", "-q", "--allow-empty", "-m", "early");
+			gitIn(cwd, "fetch", "-q", "up", "fresh");
+			const landed = gitIn(cwd, "rev-parse", "up/fresh").trim();
+			const s = await approvedThen(
+				[
+					git("checkout", "-q", "-b", "own", "up/fresh"),
+					change("src/auth.ts", REVISED),
+					git("add", "-A"),
+					git("commit", "-qm", "own"),
+				],
+				cwd,
+			);
+			const events = await revise(s);
+			expectReviewOfRevision(s, events);
+			expect(ofType(events, "review_assessed")[0]).toMatchObject({ since: landed.slice(0, 7), files: ["src/auth.ts"] });
+		});
+
+		/** Foreign history `F <- T` that only what `hold` creates keeps: the branch it was made on is deleted. */
+		async function hiddenHistory(hold: (cwd: string, tip: string) => void) {
+			const cwd = await repo();
+			const branch = gitIn(cwd, "branch", "--show-current").trim();
+			gitIn(cwd, "checkout", "-q", "-b", "gone");
+			for (const name of ["f", "t"]) {
+				await writeFile(join(cwd, `${name}.ts`), "foreign\n");
+				gitIn(cwd, "add", "-A");
+				gitIn(cwd, "commit", "-qm", name);
+			}
+			const tip = gitIn(cwd, "rev-parse", "HEAD").trim();
+			const older = gitIn(cwd, "rev-parse", "HEAD~1").trim();
+			hold(cwd, tip);
+			gitIn(cwd, "checkout", "-q", branch);
+			gitIn(cwd, "branch", "-D", "gone");
+			return { cwd, tip, older };
+		}
+
+		it.each([
+			["a tag", (cwd: string, tip: string) => gitIn(cwd, "tag", "kept", tip)],
+			[
+				"an annotated tag",
+				(cwd: string, tip: string) => {
+					gitIn(cwd, "tag", "-a", "-m", "kept", "kept", tip);
+					gitIn(cwd, "update-ref", "refs/tags/tree", gitIn(cwd, "rev-parse", "HEAD^{tree}").trim());
+				},
+			],
+			[
+				"a stash",
+				(cwd: string) => {
+					writeFileSync(join(cwd, "a.ts"), "dirty\n");
+					gitIn(cwd, "stash", "push", "-q");
+				},
+			],
+		])("reviews own work after a checkout of history only %s holds, or an ancestor of it", async (name, hold) => {
+			const { cwd, tip, older } = await hiddenHistory(hold);
+			// a stash commit's first parent is the foreign tip; a tag points at it, so its ancestor is the target
+			const target = name.endsWith("tag") ? older : tip;
+			const s = await approvedThen(
+				[
+					git("checkout", "-q", "--detach", target),
+					change("src/auth.ts", REVISED),
+					git("add", "-A"),
+					git("commit", "-qm", "own"),
+				],
+				cwd,
+			);
+			const events = await revise(s);
+			expectReviewOfRevision(s, events);
+			expect(ofType(events, "review_assessed")[0]).toMatchObject({ since: target.slice(0, 7) });
+		});
 	});
 });
 
