@@ -167,10 +167,11 @@ export async function readGitChanges(
 			if (/^core\.(autocrlf|eol|filemode|ignorecase|symlinks|precomposeunicode|excludesfile|attributesfile)$/.test(key))
 				safety.push("-c", `${key}=${value}`);
 			const driver = /^diff\.([^=\p{Cc}]+)\.binary$/u.exec(key)?.[1];
-			const binary = /^(true|yes|on|1)$/i.test(value) ? true : /^(false|no|off|0|)$/i.test(value) ? false : undefined;
-			if (driver !== undefined && binary !== undefined) {
-				drivers.set(driver, binary);
-				safety.push("-c", `${key}=${binary}`);
+			// As written, so that git in the view reads it as the user's git does, even a value it refuses.
+			if (driver !== undefined && !/\p{Cc}/u.test(value)) {
+				safety.push("-c", `${key}=${value}`);
+				const binary = gitBoolean(value);
+				if (binary !== undefined) drivers.set(driver, binary);
 			}
 		}
 		// rev-parse reads metadata, not worktree contents: unlike status it cannot invoke clean filters.
@@ -263,7 +264,7 @@ export async function readGitChanges(
 				const [path = "", name, value = ""] = fields.slice(i, i + 3);
 				if (!paths.has(path) || !name) return changes;
 				// Git converts these files before it compares them, which their raw contents cannot show.
-				if (name === "filter" || name === "working-tree-encoding") return changes;
+				if (name === "filter" || (name === "working-tree-encoding" && converts(value))) return changes;
 				if (name === "diff") diffs.set(path, value);
 			}
 		}
@@ -383,6 +384,18 @@ async function untrackedLines(
 	}
 	return lines;
 }
+
+/** A config value as git reads a boolean: `true`/`yes`/`on`, `false`/`no`/`off`/empty, or a number, `0` false. */
+function gitBoolean(value: string): boolean | undefined {
+	if (/^(true|yes|on)$/i.test(value)) return true;
+	if (/^(false|no|off|)$/i.test(value)) return false;
+	const number = /^[-+]?(\d+)[kmg]?$/i.exec(value)?.[1];
+	return number === undefined ? undefined : !/^0+$/.test(number);
+}
+
+/** Whether a `working-tree-encoding` value makes git convert the file: not when unset or the default UTF-8. */
+const converts = (value: string) =>
+	value !== "unset" && value !== "unspecified" && value !== "set" && !/^utf-?8$/i.test(value);
 
 /** What a file is to `git diff`: by its attributes, or by its contents (`unknown`). */
 type FileKind = "binary" | "text" | "unknown";
