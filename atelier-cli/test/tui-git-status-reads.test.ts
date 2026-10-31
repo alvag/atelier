@@ -161,7 +161,7 @@ describe("reading untracked files", () => {
 		["realpath", 3],
 	] as const)("skips a file gone at its %s #%i, as git no longer sees it", async (kind, at) => {
 		reads.release();
-		git("commit", "-q", "--allow-empty", "-m", "base");
+		git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "--allow-empty", "-m", "base");
 		await writeFile(join(base, "other"), "three\n");
 		let gone = false;
 		reads.fault = async (current, path, call) => {

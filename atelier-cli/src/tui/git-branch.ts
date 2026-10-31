@@ -173,8 +173,9 @@ export async function readGitChanges(
 			const binary = driverBinary(value);
 			if (driver === undefined || binary === undefined) refusedDriver = true;
 			else {
-				// `auto` leaves it to the contents, as no setting does.
-				if (binary !== "auto") drivers.set(driver, binary);
+				// The last setting counts, as in git; `auto` leaves it to the contents, as no setting does.
+				if (binary === "auto") drivers.delete(driver);
+				else drivers.set(driver, binary);
 				safety.push("-c", `${key}=${value}`);
 			}
 		}
@@ -421,21 +422,23 @@ const UNITS: Record<string, number> = { "": 1, k: 1024, m: 1024 ** 2, g: 1024 **
 /**
  * A `diff.<driver>.binary` value as git reads it, or nothing when git refuses it: `auto` (the contents decide), a
  * boolean (`true`/`yes`/`on`, `false`/`no`/`off`/empty), or an int read as strtoimax reads it in base 0 (leading
- * blanks, a sign, `0x` hex or `0` octal, a k/m/g unit, within an int), true unless 0.
+ * blanks, a sign, `0x` hex or `0` octal, a k/m/g unit, within an int), true unless 0. The last one set counts.
  */
 function driverBinary(value: string): boolean | "auto" | undefined {
 	if (/^auto$/i.test(value)) return "auto";
 	if (/^(true|yes|on)$/i.test(value)) return true;
 	if (/^(false|no|off|)$/i.test(value)) return false;
-	const number = /^[ \t\n\v\f\r]*[-+]?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)([kKmMgG]?)$/.exec(value);
+	const number = /^[ \t\n\v\f\r]*([-+]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)([kKmMgG]?)$/.exec(value);
 	if (number === null) return undefined;
-	const [, digits = "", unit = ""] = number;
+	const [, sign, digits = "", unit = ""] = number;
 	const magnitude = /^0[xX]/.test(digits)
 		? Number.parseInt(digits.slice(2), 16)
 		: digits.startsWith("0")
 			? Number.parseInt(digits, 8)
 			: Number(digits);
-	if (magnitude > Math.floor(INT_MAX / (UNITS[unit.toLowerCase()] ?? 1))) return undefined;
+	// An int goes from -INT_MAX - 1 to INT_MAX, with its unit.
+	const limit = sign === "-" ? INT_MAX + 1 : INT_MAX;
+	if (magnitude > Math.floor(limit / (UNITS[unit.toLowerCase()] ?? 1))) return undefined;
 	return magnitude !== 0;
 }
 
