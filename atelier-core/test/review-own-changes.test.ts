@@ -3,7 +3,11 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { McpSdkServerConfigWithInstance, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
+import { ClaudeCodeBackend, type QueryFunction, type SdkQuery } from "../src/backends/claude-code/backend.ts";
 import {
 	type AtelierEvent,
 	type AtelierEventBody,
@@ -16,9 +20,11 @@ import {
 import { McpManager } from "../src/mcp/manager.ts";
 import { createBackgroundTools } from "../src/tools/background.ts";
 import { createBashTool } from "../src/tools/bash.ts";
+import { createEditTool } from "../src/tools/edit.ts";
 import { grepTool } from "../src/tools/grep.ts";
 import { readTool } from "../src/tools/read.ts";
 import { Sandbox, type SandboxManagerLike } from "../src/tools/sandbox.ts";
+import { createWriteTool } from "../src/tools/write.ts";
 
 const MCP_FIXTURE = fileURLToPath(new URL("fixtures/mcp/server.ts", import.meta.url));
 const ASK =
@@ -217,5 +223,126 @@ describe("the end-of-turn review of a turn that ran a tool that may change files
 		expect(s.main.prompts[1]).toContain('Background job 1 ("late") ended');
 		expect(assessed(events)).toHaveLength(1);
 		expect(s.main.prompts.at(-1)).toBe(ASK);
+	});
+});
+
+/** A repo with one commit and a clean worktree. */
+async function cleanRepo(): Promise<string> {
+	const root = await dirtyRepo();
+	execFileSync("git", ["checkout", "-q", "--", "a.ts"], { cwd: root });
+	return root;
+}
+
+/**
+ * A fake Claude Code that, for its first prompt, calls Atelier's `tool` through the MCP server the backend gives it, as
+ * Claude Code does, and ends every prompt with a successful result.
+ */
+function claudeCodeCalling(tool: string, args: Record<string, unknown>) {
+	const prompts: string[] = [];
+	const message = (value: Record<string, unknown>) =>
+		({ uuid: "u", session_id: "s", ...value }) as unknown as SDKMessage;
+	const result = message({
+		type: "result",
+		subtype: "success",
+		is_error: false,
+		stop_reason: "end_turn",
+		total_cost_usd: 0,
+		result: "",
+		usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+	});
+	const query: QueryFunction = ({ prompt, options }) => {
+		async function* run(): AsyncGenerator<SDKMessage, void> {
+			yield message({
+				type: "system",
+				subtype: "init",
+				apiKeySource: "none",
+				model: "claude-opus-5-5",
+				mcp_servers: [{ name: "atelier", status: "connected" }],
+			});
+			for await (const user of prompt as AsyncIterable<SDKUserMessage>) {
+				prompts.push(user.message.content as string);
+				if (prompts.length === 1) {
+					const server = options.mcpServers?.atelier as McpSdkServerConfigWithInstance;
+					const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+					await server.instance.connect(serverSide);
+					const client = new Client({ name: "fake-claude-code", version: "0.0.0" });
+					await client.connect(clientSide);
+					await client.callTool({ name: tool, arguments: args });
+					await client.close();
+				}
+				yield result;
+			}
+		}
+		return Object.assign(run(), {
+			async interrupt() {},
+			async accountInfo() {
+				return { subscriptionType: "max", apiProvider: "firstParty", tokenSource: "claude.ai" };
+			},
+			async supportedModels() {
+				return [];
+			},
+			async setModel() {},
+			async applyFlagSettings() {},
+			close() {},
+		}) as SdkQuery;
+	};
+	return { query, prompts };
+}
+
+describe("the end-of-turn review of a turn that writes, as before", () => {
+	/** A home of its own: the real one's protected files are none of these tests' business. */
+	const home = join(tmpdir(), "atelier-own-changes-home");
+	const writeTool = createWriteTool({ home });
+	const writing = { tools: [writeTool, createEditTool({ home }), createBashTool({ sandbox: sandbox() })] };
+
+	it("assesses a turn that writes a file, and asks its risk", async () => {
+		const turn = [call("write", { path: "b.ts", content: "export const b = 1;\n" }), { event: finished }];
+		const s = await start([turn, DECLARING], writing, await cleanRepo());
+		const events = await s.send("write");
+		expect(assessed(events)).toEqual([expect.objectContaining({ files: ["b.ts"] })]);
+		expect(s.main.prompts).toEqual(["write", ASK]);
+	});
+
+	it("assesses a turn that edits a file", async () => {
+		const edit = call("edit", { path: "a.ts", edits: [{ oldText: "base", newText: "edited" }] });
+		const s = await start([[edit, { event: finished }], DECLARING], writing, await cleanRepo());
+		const events = await s.send("edit");
+		expect(assessed(events)).toEqual([expect.objectContaining({ files: ["a.ts"] })]);
+		expect(s.main.prompts).toEqual(["edit", ASK]);
+	});
+
+	it("assesses a turn that writes a file with a command", async () => {
+		const bash = call("bash", { command: "printf 'export const c = 1;\\n' > c.ts" });
+		const s = await start([[bash, { event: finished }], DECLARING], writing, await cleanRepo());
+		const events = await s.send("write");
+		expect(assessed(events)).toEqual([expect.objectContaining({ files: ["c.ts"] })]);
+		expect(s.main.prompts).toEqual(["write", ASK]);
+	});
+
+	it("assesses a Claude Code turn that writes a file through Atelier's tools", async () => {
+		const cwd = await cleanRepo();
+		const fake = claudeCodeCalling("write", { path: "d.ts", content: "export const d = 1;\n" });
+		const session = await Session.start({
+			backend: new ClaudeCodeBackend({ query: fake.query, env: {} }),
+			cwd,
+			tools: [writeTool],
+			review: { createBackend: () => new FakeBackend([]) },
+		});
+		sessions.push(session);
+		const events: AtelierEvent[] = [];
+		for await (const event of session.send("write")) events.push(event);
+		expect(events.find((event) => event.type === "tool_call_finished")).toMatchObject({ ok: true });
+		expect(assessed(events)).toEqual([expect.objectContaining({ files: ["d.ts"] })]);
+		expect(fake.prompts).toHaveLength(2);
+		expect(fake.prompts.at(-1)).toBe(ASK);
+	});
+
+	it("still reviews with /review the changes a turn without its own left alone", async () => {
+		const s = await start([[text("hola"), { event: finished }]]);
+		expect(assessed(await s.send("hola"))).toEqual([]);
+		const reviewed: AtelierEvent[] = [];
+		for await (const event of s.session.review()) reviewed.push(event);
+		expect(assessed(reviewed)).toEqual([expect.objectContaining({ files: ["a.ts"] })]);
+		expect(reviewed.some((event) => event.type === "review_finished")).toBe(true);
 	});
 });
