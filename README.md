@@ -105,7 +105,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Enter             | Send the prompt; while a turn runs, queue it as a steer, which the agent gets with its next tool result.       |
 | Alt+Enter         | While a turn runs, queue a follow-up, which runs as a turn of its own after it.                                |
 | Shift+Up          | Take the queued messages back into the editor, to edit them and send them again (also Alt+Up).                 |
-| Esc               | Interrupt the running turn (what is queued comes back to the editor); in a question or a list, deny or cancel. |
+| Esc               | Cancel a `!` command or clear a `!` draft; else interrupt the turn; in a question or list, cancel.             |
 | Up / Down         | Prompt history; move in lists and questions.                                                                   |
 | Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit; in a question or a list, as Esc.              |
 | Ctrl+D            | Quit, on an empty editor; in a question or a list, as Esc.                                                     |
@@ -115,7 +115,18 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                                        |
 | PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.                         |
 
-While a question or a list is open, the editor is hidden and every key goes to the question, Ctrl+C and Ctrl+D included: they close it as Esc does, without interrupting the turn or quitting. What you had typed comes back to the editor, unsent, when it closes.
+### Shell commands
+
+Type `!` and a command to run it yourself, outside the agent and its sandbox, at any time, even while a turn runs; `!!` runs it too but keeps the result out of the model's context:
+
+```text
+!git status --short
+!!cat .env.local
+```
+
+The output shows in the transcript and the result is saved with the session, so it is there when you resume it. `!!` is not a privacy mode: the command and its output are stored locally in the session file, and only the model does not get them. Esc cancels a running command. The next prompt waits for its completed result to be saved; `/new`, `/resume` and quitting remain available and discard a prompt still waiting for that save. Commands have no terminal, so `sudo` or anything else that asks for a password or opens an editor fails. See [shell commands you run](docs/cli.md).
+
+While a question or a list is open, the editor is hidden and keys go to it, Ctrl+C and Ctrl+D included: they close it without interrupting the turn or quitting. Esc first cancels a running shell command or clears a shell draft, leaving the question open; otherwise it closes the question or list. What remains of your draft comes back to the editor, unsent, when it closes.
 
 ### Structured questions
 
