@@ -1373,6 +1373,134 @@ describe("the turn's candidate", () => {
 	});
 });
 
+describe("a turn after an approved review whose commit was rewritten", () => {
+	const REVISED = "export const a = 2; // revised\n";
+	const git = (...args: string[]): FakeStep => call("git", { args }, `c-${args.join("-")}`);
+
+	/** Turn 1 commits src/auth.ts and is approved; `next` is turn 2. The reviewers' earlier prompts are cleared. */
+	async function approvedThen(next: FakeStep[], cwd?: string) {
+		const first = [
+			DECLARED_NONE,
+			change("src/auth.ts", "export const a = 1;\n"),
+			...commit("auth"),
+			{ event: finished },
+		];
+		const turns = [first, [DECLARED_NONE, ...next, { event: finished }]];
+		const s = await start({ ...(cwd === undefined ? {} : { cwd }), turns, roles: new RoleBackend(clean) });
+		const [done] = ofType(await s.send("add auth"), "review_finished");
+		expect(done).toMatchObject({ verdict: "approved" });
+		s.roles.roles.length = 0;
+		return { ...s, approved: gitIn(s.cwd, "rev-parse", "HEAD").trim() };
+	}
+
+	/** Turn 2 ran; every git command of it succeeded, and the commit approved in turn 1 is no longer HEAD's. */
+	async function revise(s: Awaited<ReturnType<typeof approvedThen>>) {
+		const events = await s.send("revise");
+		expect(ofType(events, "tool_call_finished").filter((event) => !event.ok)).toEqual([]);
+		expect(gitIn(s.cwd, "rev-parse", "HEAD").trim()).not.toBe(s.approved);
+		expect(gitIn(s.cwd, "status", "--porcelain").trim()).toBe("");
+		return events;
+	}
+
+	function expectReviewOfRevision(s: Awaited<ReturnType<typeof approvedThen>>, events: AtelierEvent[]) {
+		expect(ofType(events, "review_assessed")).toHaveLength(1);
+		expect(s.roles.roles.some((role) => role.prompt.includes("revised"))).toBe(true);
+	}
+
+	function expectRewrittenBase(s: Awaited<ReturnType<typeof approvedThen>>, events: AtelierEvent[]) {
+		expectReviewOfRevision(s, events);
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			files: ["src/auth.ts"],
+			since: s.approved.slice(0, 7),
+			baseNote: `HEAD no longer descends from ${s.approved.slice(0, 7)}, where the turn started: the base remains the turn-start tree because the turn rewrote its commits`,
+		});
+	}
+
+	it("reviews the edit that amends the approved commit", async () => {
+		const s = await approvedThen([
+			change("src/auth.ts", REVISED),
+			git("add", "-A"),
+			git("commit", "-q", "--amend", "--no-edit"),
+		]);
+		expectRewrittenBase(s, await revise(s));
+	});
+
+	it("reviews the new commit that replaces the approved one after a soft reset", async () => {
+		const s = await approvedThen([
+			git("reset", "-q", "--soft", "HEAD~1"),
+			change("src/auth.ts", REVISED),
+			git("add", "-A"),
+			git("commit", "-qm", "auth again"),
+		]);
+		expectRewrittenBase(s, await revise(s));
+	});
+
+	it("reviews an amend in a linked worktree using that worktree's HEAD reflog", async () => {
+		const cwd = await repo();
+		const root = await mkdtemp(join(tmpdir(), "atelier-linked-review-"));
+		dirs.push(root);
+		const linked = join(root, "linked");
+		gitIn(cwd, "worktree", "add", "-q", "-b", "linked", linked);
+		const s = await approvedThen(
+			[change("src/auth.ts", REVISED), git("add", "-A"), git("commit", "-q", "--amend", "--no-edit")],
+			linked,
+		);
+		expectRewrittenBase(s, await revise(s));
+	});
+
+	it("includes staged, unstaged and untracked edits after an amend without changing the real index", async () => {
+		const s = await approvedThen([
+			change("src/auth.ts", REVISED),
+			git("add", "-A"),
+			git("commit", "-q", "--amend", "--no-edit"),
+			change("staged.ts", "staged\n"),
+			git("add", "staged.ts"),
+			change("staged.ts", "unstaged\n"),
+			change("untracked.ts", "untracked\n"),
+		]);
+		const events = await s.send("revise and leave edits");
+		expectReviewOfRevision(s, events);
+		expect(ofType(events, "review_assessed")[0]?.files).toEqual(["src/auth.ts", "staged.ts", "untracked.ts"]);
+		expect(gitIn(s.cwd, "show", ":staged.ts")).toBe("staged\n");
+		expect(await readFile(join(s.cwd, "staged.ts"), "utf8")).toBe("unstaged\n");
+		expect(gitIn(s.cwd, "status", "--porcelain")).toContain("?? untracked.ts");
+	});
+
+	it("does not review history removed by a reset alone", async () => {
+		const s = await approvedThen([git("reset", "-q", "--hard", "HEAD~1")]);
+		const events = await revise(s);
+		expect(ofType(events, "review_assessed")).toEqual([]);
+		expect(ofType(events, "review_status").filter((event) => !event.available)).toEqual([]);
+	});
+
+	it.each([false, true])("reviews only own commits after a branch switch (commit: %s)", async (own) => {
+		const cwd = await repo();
+		const branch = gitIn(cwd, "branch", "--show-current").trim();
+		gitIn(cwd, "checkout", "-q", "-b", "other");
+		await writeFile(join(cwd, "foreign.ts"), "foreign history\n");
+		gitIn(cwd, "add", "-A");
+		gitIn(cwd, "commit", "-qm", "foreign");
+		const landed = gitIn(cwd, "rev-parse", "HEAD").trim();
+		gitIn(cwd, "checkout", "-q", branch);
+		const s = await approvedThen(
+			[git("checkout", "-q", "other"), ...(own ? [change("src/auth.ts", REVISED), ...commit("own")] : [])],
+			cwd,
+		);
+		const events = await revise(s);
+		if (!own) {
+			expect(ofType(events, "review_assessed")).toEqual([]);
+			expect(ofType(events, "review_status").filter((event) => !event.available)).toEqual([]);
+			return;
+		}
+		expectReviewOfRevision(s, events);
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			files: ["src/auth.ts"],
+			since: landed.slice(0, 7),
+			baseNote: `HEAD no longer descends from ${s.approved.slice(0, 7)}, where the turn started: the base moved to ${landed.slice(0, 7)}, where HEAD landed after the branch switch, to exclude that branch's history`,
+		});
+	});
+});
+
 describe("a repository without commits", () => {
 	const EMPTY_REASON = "The repository has no commits yet, so there is no HEAD to compare with.";
 	const ROOT_NOTE =

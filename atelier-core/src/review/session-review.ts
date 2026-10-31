@@ -40,6 +40,7 @@ import { type ReviewDeps, type RoleName, type RoleResult, runReview } from "./re
 import { type Assessment, assessRisk, type Escalation } from "./risk.ts";
 import { createRiskTool, RiskRequests } from "./tool.ts";
 import { createTreeTools } from "./tree-tools.ts";
+import { captureTurnReflog, type TurnReflog } from "./turn-base.ts";
 import { undoCorrection } from "./undo.ts";
 import { type VerifierRun, verify } from "./verification.ts";
 import {
@@ -119,6 +120,7 @@ export class SessionReview {
 	readonly #children = new Set<Session>();
 	/** The commit HEAD pointed at when the current turn started; undefined without one. */
 	#turnStart: string | undefined;
+	#turnReflog: TurnReflog | null = null;
 	/** HEAD had no commit when the current turn started: its reflog then tells its own commits from history it pulled. */
 	#startedEmpty = false;
 	/** What the user asked in the current turn, verbatim: the verifier's brief. */
@@ -151,8 +153,11 @@ export class SessionReview {
 		this.#turnStart = undefined;
 		this.#startedEmpty = false;
 		this.#starting = runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd }).then(
-			(head) => {
-				if (head.code === 0) this.#turnStart = head.stdout.toString("utf8").trim();
+			async (head) => {
+				if (head.code === 0) {
+					this.#turnStart = head.stdout.toString("utf8").trim();
+					this.#turnReflog = await captureTurnReflog(cwd);
+				}
 				// No commit, or not yet a repository.
 				else this.#startedEmpty = true;
 			},
@@ -387,7 +392,11 @@ export class SessionReview {
 	async #startOf(cwd: string): Promise<FreezeOptions> {
 		if (this.#startedEmpty) return emptyStartBase(cwd).catch(() => ({}));
 		if (this.#turnStart === undefined) return {};
-		return { turnStart: this.#turnStart, ...(this.#reviewed === undefined ? {} : { reviewed: this.#reviewed }) };
+		return {
+			turnStart: this.#turnStart,
+			turnReflog: this.#turnReflog,
+			...(this.#reviewed === undefined ? {} : { reviewed: this.#reviewed }),
+		};
 	}
 
 	async #declined(host: ReviewHost, reviewId: string, candidate: Candidate, assessment: Assessment): Promise<Spent> {

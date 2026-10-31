@@ -14,6 +14,7 @@ import {
 	opensBlockComment,
 	SCAN_LIMIT_BYTES,
 } from "./signals.ts";
+import { rewrittenTurnBase, type TurnReflog } from "./turn-base.ts";
 
 /** package.json files larger than this are kept out of the dependency check, which then treats them as unreadable. */
 const MANIFEST_LIMIT_BYTES = 1024 * 1024;
@@ -63,7 +64,7 @@ export interface Candidate {
 	baseCommit?: string;
 	/** The base commit's short id, present when the base is not the current HEAD. */
 	since?: string;
-	/** Why the base is the current HEAD when it was meant to be an earlier commit. */
+	/** Why a history move retained or changed the turn's base. */
 	baseNote?: string;
 	/** The base is the tree an earlier approved review saw, not the base commit's: that review's ids. */
 	reviewedBase?: { reviewId: string; receiptId: string };
@@ -87,8 +88,10 @@ export type FreezeResult = { ok: true; candidate: Candidate } | { ok: false; rea
 export interface FreezeOptions {
 	/** Freeze against this ref's commit instead of HEAD; an unknown ref is refused. */
 	ref?: string;
-	/** The commit a turn started at: the base while HEAD still descends from it, the current HEAD (with a note) otherwise. */
+	/** The commit a turn started at; rewrites use the turn's reflog to retain or relocate the base. */
 	turnStart?: string;
+	/** The worktree's HEAD reflog before tools ran; null if unavailable. Absent for callers without turn tracking. */
+	turnReflog?: TurnReflog | null;
 	/** The turn started without a commit: the base is the empty tree, so the turn's first commit is part of the candidate. */
 	fromEmpty?: boolean;
 	/**
@@ -258,6 +261,7 @@ async function chooseBase(root: string, head: string, options: FreezeOptions): P
 	if (start === undefined || start === head) return { ok: true, commit: head };
 	const ancestor = await runGit(["merge-base", "--is-ancestor", start, head], { cwd: root });
 	if (ancestor.code === 0) return { ok: true, commit: start };
+	if (options.turnReflog !== undefined) return rewrittenTurnBase(root, start, head, options.turnReflog);
 	return {
 		ok: true,
 		commit: head,
