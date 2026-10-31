@@ -304,6 +304,45 @@ process.stdout.write(output);
 		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual(untracked);
 	});
 
+	it("tells binary and text files by their diff driver's binary setting, as git diff does", async () => {
+		git(base, "config", "diff.bin.binary", "true");
+		git(base, "config", "diff.texty.binary", "false");
+		await writeFile(join(base, ".gitattributes"), "*.dat diff=bin\n*.tx diff=texty\n");
+		git(base, "add", ".");
+		commit(base);
+		await writeFile(join(base, "a.dat"), "a\nb\n");
+		await writeFile(join(base, "b.tx"), "a\0\nb\nc\n");
+		const untracked = await readGitChanges(base, undefined, loadTolerant);
+		expect(untracked).toEqual({ lines: lines(3, 0) });
+		git(base, "add", "-N", ".");
+		expect(git(base, "diff", "--numstat", "HEAD").toString()).toBe("-\t-\ta.dat\n3\t0\tb.tx\n");
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual(untracked);
+	});
+
+	it("counts an untracked symlink as one line even when marked binary, as once it is added", async () => {
+		await writeFile(join(base, ".gitattributes"), "link binary\n");
+		git(base, "add", ".");
+		commit(base);
+		await symlink("target", join(base, "link"));
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(1, 0) });
+		git(base, "add", "-N", "link");
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(1, 0) });
+	});
+
+	it("omits the lines when a changed path has a working-tree encoding, which git would convert", async () => {
+		await writeFile(join(base, ".gitattributes"), "*.u16 working-tree-encoding=UTF-16\n");
+		git(base, "add", ".");
+		commit(base);
+		await writeFile(join(base, "a.u16"), Buffer.from("\ufeffone\ntwo\n", "utf16le"));
+		expect((await readGitChanges(base, undefined, loadTolerant)).lines).toBeUndefined();
+	});
+
+	it("omits the lines rather than counting an untracked file it cannot read as zero", async () => {
+		await writeFile(join(base, "readable"), "one\n");
+		await writeFile(join(base, "locked"), "two\n", { mode: 0o000 });
+		expect((await readGitChanges(base, undefined, loadTolerant)).lines).toBeUndefined();
+	});
+
 	it.each(["sha1", "sha256"])("counts against the empty %s tree before the first commit", async (format) => {
 		const repository = join(base, format);
 		await mkdir(repository);
