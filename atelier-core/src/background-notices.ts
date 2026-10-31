@@ -4,6 +4,8 @@ export interface BackgroundNotice {
 	short?: string;
 	/** A worker's notice with a patch to apply: the delivery says when to run the checks. */
 	patch?: true;
+	/** The end of a `bash_background` job: what it wrote is the session's own change, reviewed with the turn that takes it. */
+	job?: true;
 }
 
 /** The characters one delivery of notices gives at most, the separators and the line of what did not fit included. */

@@ -556,7 +556,7 @@ describe("run", () => {
 			const declared: FakeStep = {
 				toolCall: { tool: "risk", input: { none: true, reason: "test" }, callId: "c-risk" },
 			};
-			const h = harness([[declared, { event: { type: "text_delta", text: "done" } }, { event: finished }]], {
+			const h = harness([[declared, wroteAuth, { event: { type: "text_delta", text: "done" } }, { event: finished }]], {
 				raw: true,
 				answers: ["\x1b[200~y\n\x1b[201~\r"],
 			});
@@ -708,6 +708,11 @@ describe("run", () => {
 });
 
 /** A git repo in `cwd` with one commit and an uncommitted change at `path`. */
+/** The turn writes `src/auth.ts` as `repoWithChange` left it: a turn that changed nothing of its own is not reviewed. */
+const wroteAuth: FakeStep = {
+	toolCall: { tool: "write", input: { path: "src/auth.ts", content: "export const x = 1;\n" }, callId: "c-write" },
+};
+
 async function repoWithChange(path: string) {
 	const git = (...args: string[]) =>
 		execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, encoding: "utf8" });
@@ -723,7 +728,12 @@ describe("run: review", () => {
 	const CONSENT_QUESTION =
 		"Review this high-risk change? y: review this change · N: skip this time · a: review all this session\n";
 	const declared: FakeStep = { toolCall: { tool: "risk", input: { none: true, reason: "test" }, callId: "c-risk" } };
-	const mainTurn: FakeStep[] = [declared, { event: { type: "text_delta", text: "done" } }, { event: finished }];
+	const mainTurn: FakeStep[] = [
+		declared,
+		wroteAuth,
+		{ event: { type: "text_delta", text: "done" } },
+		{ event: finished },
+	];
 	const noFindings: FakeStep[] = [{ event: { type: "text_delta", text: '{"findings": []}' } }, { event: finished }];
 	const lenses = (n: number) => Array.from({ length: n }, () => noFindings);
 	const reviewLines = (out: string) => out.split("\n").filter((line) => line.includes("review"));
@@ -742,7 +752,7 @@ describe("run: review", () => {
 		await repoWithChange("src/auth.ts");
 		const input = { none: true, reason: "test", lenses: ["readability"], lensesReason: "renames the output" };
 		const chose: FakeStep = { toolCall: { tool: "risk", input, callId: "c-risk" } };
-		const turn: FakeStep[] = [chose, { event: { type: "text_delta", text: "done" } }, { event: finished }];
+		const turn: FakeStep[] = [chose, wroteAuth, { event: { type: "text_delta", text: "done" } }, { event: finished }];
 		const h = harness([turn, ...lenses(2)], { isTTY: true, answers: ["y"] });
 		expect(await run(["change it"], h.io, h.createBackend)).toBe(0);
 		expect(h.backend.prompts).toHaveLength(3);

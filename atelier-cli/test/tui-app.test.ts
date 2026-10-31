@@ -1355,7 +1355,6 @@ else if (process.argv.includes('status')) {
 		h.screen.type("\r");
 		await until(() => h.backend.prompts.length === 2);
 		expect(h.backend.prompts[1]).toBe("one\n\ntwo");
-		h.screen.type("\x04");
 		await until(() => h.screen.screen().includes("$0.50"));
 		h.screen.type("\x04");
 		expect(await code).toBe(0);
