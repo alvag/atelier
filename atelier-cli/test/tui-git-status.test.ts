@@ -434,9 +434,9 @@ describe("read-only commits against the upstream", () => {
 		expect(Date.now() - started).toBeGreaterThanOrEqual(3000);
 	});
 
-	it("keeps the commits when the line count times out", { timeout: 15_000 }, async () => {
+	it("keeps the commits when the line count fails", async () => {
 		await diverged();
-		await wrappedGit("if (args.includes('status')) { setInterval(() => {}, 1000); return; }");
-		expect(await readGitChanges(base, undefined, { timeoutMs: 3000 })).toEqual({ commits: { ahead: 2, behind: 1 } });
+		await wrappedGit("if (args.includes('status')) { process.exitCode = 1; return; }");
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ commits: { ahead: 2, behind: 1 } });
 	});
 });
