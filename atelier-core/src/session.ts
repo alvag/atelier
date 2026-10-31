@@ -1060,9 +1060,10 @@ export class Session {
 			// A change left by a turn that finished well is assessed before the turn ends, its cost joining the turn's; a turn
 			// that changed nothing of its own is not charged with what others changed in the worktree.
 			const clean = !failed && finish !== undefined && !signal.aborted && !NOT_REVIEWED.has(finish.stopReason);
-			if (!clean || !this.#review) return ended;
-			// Its HEAD lookup still ends inside the turn: landing later, it would replace the next turn's base.
-			if (!this.#changedFiles) {
+			if (!this.#review) return ended;
+			// Every turn's HEAD lookup ends inside it, an interrupted or failed one's too: landing later, it would replace the
+			// next turn's base. It is one git query, so an interrupt waits for nothing more.
+			if (!clean || !this.#changedFiles) {
 				await this.#review.turnStarted();
 				return ended;
 			}
