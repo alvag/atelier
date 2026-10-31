@@ -170,10 +170,11 @@ export async function readGitChanges(
 				safety.push("-c", `${key}=${value}`);
 			if (!/^diff\..*\.binary$/su.test(key)) continue;
 			const driver = /^diff\.([^=\p{Cc}]+)\.binary$/u.exec(key)?.[1];
-			const binary = /\p{Cc}/u.test(value) ? undefined : gitBoolean(value);
+			const binary = driverBinary(value);
 			if (driver === undefined || binary === undefined) refusedDriver = true;
 			else {
-				drivers.set(driver, binary);
+				// `auto` leaves it to the contents, as no setting does.
+				if (binary !== "auto") drivers.set(driver, binary);
 				safety.push("-c", `${key}=${value}`);
 			}
 		}
@@ -400,6 +401,10 @@ async function untrackedLines(
 			}
 			if (!(await inside())) return undefined;
 			lines += lineCount(content.subarray(0, read), kind(path) === "text");
+		} catch (error) {
+			// Gone since it opened, before or as it is read: it adds nothing. Any other failure leaves the count unknown.
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw error;
 		} finally {
 			// Not awaited: a read given up on would hold the close, and with it the call.
 			file.close().catch(() => {});
@@ -410,12 +415,28 @@ async function untrackedLines(
 
 const sameFile = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
 
-/** A config value as git reads a boolean: `true`/`yes`/`on`, `false`/`no`/`off`/empty, or a number, `0` false. */
-function gitBoolean(value: string): boolean | undefined {
+const INT_MAX = 2 ** 31 - 1;
+const UNITS: Record<string, number> = { "": 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
+
+/**
+ * A `diff.<driver>.binary` value as git reads it, or nothing when git refuses it: `auto` (the contents decide), a
+ * boolean (`true`/`yes`/`on`, `false`/`no`/`off`/empty), or an int read as strtoimax reads it in base 0 (leading
+ * blanks, a sign, `0x` hex or `0` octal, a k/m/g unit, within an int), true unless 0.
+ */
+function driverBinary(value: string): boolean | "auto" | undefined {
+	if (/^auto$/i.test(value)) return "auto";
 	if (/^(true|yes|on)$/i.test(value)) return true;
 	if (/^(false|no|off|)$/i.test(value)) return false;
-	const number = /^[-+]?(\d+)[kmg]?$/i.exec(value)?.[1];
-	return number === undefined ? undefined : !/^0+$/.test(number);
+	const number = /^[ \t\n\v\f\r]*[-+]?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)([kKmMgG]?)$/.exec(value);
+	if (number === null) return undefined;
+	const [, digits = "", unit = ""] = number;
+	const magnitude = /^0[xX]/.test(digits)
+		? Number.parseInt(digits.slice(2), 16)
+		: digits.startsWith("0")
+			? Number.parseInt(digits, 8)
+			: Number(digits);
+	if (magnitude > Math.floor(INT_MAX / (UNITS[unit.toLowerCase()] ?? 1))) return undefined;
+	return magnitude !== 0;
 }
 
 /** Whether a `working-tree-encoding` value makes git convert the file: not when unset or the default UTF-8. */

@@ -364,6 +364,57 @@ process.stdout.write(output);
 		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual(untracked);
 	});
 
+	it.each([
+		"auto",
+		"AUTO",
+		"true",
+		"off",
+		"",
+		"2",
+		"0x1",
+		"0X10",
+		"0x0",
+		"010",
+		"00",
+		"08",
+		"0x",
+		"1k",
+		"0K",
+		"1g",
+		"1t",
+		"-1",
+		"+1",
+		" 1",
+		"\t1",
+		"1 ",
+		"1.5",
+		"2097151k",
+		"2097152k",
+		"2147483647",
+		"2147483648",
+		"true\t",
+	])("reads diff.<driver>.binary=%j exactly as git does, or omits the lines where git refuses it", async (value) => {
+		await writeFile(join(base, ".gitattributes"), "*.dat diff=x\n");
+		git(base, "add", ".");
+		commit(base);
+		git(base, "config", "diff.x.binary", value);
+		await writeFile(join(base, "f.dat"), "a\nb\n");
+		await writeFile(join(base, "g.dat"), "a\0\nb\nc\n");
+		const counted = (await readGitChanges(base, undefined, loadTolerant)).lines;
+		git(base, "add", "-N", ".");
+		let numstat: string | undefined;
+		try {
+			numstat = execFileSync("git", ["diff", "--numstat", "HEAD"], { cwd: base, stdio: "pipe" }).toString();
+		} catch {
+			numstat = undefined;
+		}
+		const added = numstat
+			?.split("\n")
+			.filter(Boolean)
+			.reduce((sum, line) => sum + (Number.parseInt(line, 10) || 0), 0);
+		expect(counted).toEqual(added === undefined ? undefined : lines(added, 0));
+	});
+
 	it("omits the lines rather than counting an untracked file it cannot read as zero", async () => {
 		await writeFile(join(base, "readable"), "one\n");
 		await writeFile(join(base, "locked"), "two\n", { mode: 0o000 });
