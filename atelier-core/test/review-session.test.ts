@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -1370,6 +1370,329 @@ describe("the turn's candidate", () => {
 		expect(s.asked).toHaveLength(1);
 		expect(ofType(second, "review_consent_requested")).toEqual([]);
 		expect(await receipts(cwd)).toHaveLength(1);
+	});
+});
+
+describe("a turn after an approved review whose commit was rewritten", () => {
+	const REVISED = "export const a = 2; // revised\n";
+	const git = (...args: string[]): FakeStep => call("git", { args }, `c-${args.join("-")}`);
+
+	/** Turn 1 commits src/auth.ts and is approved; `next` is turn 2. The reviewers' earlier prompts are cleared. */
+	async function approvedThen(next: FakeStep[], cwd?: string) {
+		const first = [
+			DECLARED_NONE,
+			change("src/auth.ts", "export const a = 1;\n"),
+			...commit("auth"),
+			{ event: finished },
+		];
+		const turns = [first, [DECLARED_NONE, ...next, { event: finished }]];
+		const s = await start({ ...(cwd === undefined ? {} : { cwd }), turns, roles: new RoleBackend(clean) });
+		const [done] = ofType(await s.send("add auth"), "review_finished");
+		expect(done).toMatchObject({ verdict: "approved" });
+		s.roles.roles.length = 0;
+		return { ...s, approved: gitIn(s.cwd, "rev-parse", "HEAD").trim() };
+	}
+
+	/** Turn 2 ran; every git command of it succeeded, and the commit approved in turn 1 is no longer HEAD's. */
+	async function revise(s: Awaited<ReturnType<typeof approvedThen>>) {
+		const events = await s.send("revise");
+		expect(ofType(events, "tool_call_finished").filter((event) => !event.ok)).toEqual([]);
+		expect(gitIn(s.cwd, "rev-parse", "HEAD").trim()).not.toBe(s.approved);
+		expect(gitIn(s.cwd, "status", "--porcelain").trim()).toBe("");
+		return events;
+	}
+
+	function expectReviewOfRevision(s: Awaited<ReturnType<typeof approvedThen>>, events: AtelierEvent[]) {
+		expect(ofType(events, "review_assessed")).toHaveLength(1);
+		expect(s.roles.roles.some((role) => role.prompt.includes("revised"))).toBe(true);
+	}
+
+	function expectRewrittenBase(s: Awaited<ReturnType<typeof approvedThen>>, events: AtelierEvent[]) {
+		expectReviewOfRevision(s, events);
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			files: ["src/auth.ts"],
+			since: s.approved.slice(0, 7),
+			baseNote: `HEAD no longer descends from ${s.approved.slice(0, 7)}, where the turn started: the base remains the turn-start tree because the turn rewrote its commits`,
+		});
+	}
+
+	it("reviews the edit that amends the approved commit", async () => {
+		const s = await approvedThen([
+			change("src/auth.ts", REVISED),
+			git("add", "-A"),
+			git("commit", "-q", "--amend", "--no-edit"),
+		]);
+		expectRewrittenBase(s, await revise(s));
+	});
+
+	it("reviews the new commit that replaces the approved one after a soft reset", async () => {
+		const s = await approvedThen([
+			git("reset", "-q", "--soft", "HEAD~1"),
+			change("src/auth.ts", REVISED),
+			git("add", "-A"),
+			git("commit", "-qm", "auth again"),
+		]);
+		expectRewrittenBase(s, await revise(s));
+	});
+
+	it.each(["new", "existing", "return"])(
+		"RD-001: keeps earlier turn changes after checkout to an own commit (%s)",
+		async (kind) => {
+			const cwd = await repo();
+			gitIn(cwd, "branch", "foreign");
+			const checkout =
+				kind === "new"
+					? [git("checkout", "-q", "-b", "own")]
+					: [
+							git("branch", "own"),
+							...(kind === "return" ? [git("checkout", "-q", "foreign")] : []),
+							git("checkout", "-q", "own"),
+						];
+			const s = await approvedThen(
+				[
+					change("earlier.ts", "export const earlier = 'turn-owned';\n"),
+					git("add", "-A"),
+					git("commit", "-q", "--amend", "--no-edit"),
+					...checkout,
+					change("src/auth.ts", REVISED),
+					git("add", "-A"),
+					git("commit", "-q", "--amend", "--no-edit"),
+				],
+				cwd,
+			);
+			const events = await revise(s);
+			expectReviewOfRevision(s, events);
+			expect(ofType(events, "review_assessed")[0]).toMatchObject({
+				files: ["earlier.ts", "src/auth.ts"],
+				since: s.approved.slice(0, 7),
+				baseNote: `HEAD no longer descends from ${s.approved.slice(0, 7)}, where the turn started: the base remains the turn-start tree because the turn rewrote its commits`,
+			});
+			expect(s.roles.roles.some((role) => role.prompt.includes("turn-owned"))).toBe(true);
+		},
+	);
+
+	it("reviews an amend in a linked worktree using that worktree's HEAD reflog", async () => {
+		const cwd = await repo();
+		const root = await mkdtemp(join(tmpdir(), "atelier-linked-review-"));
+		dirs.push(root);
+		const linked = join(root, "linked");
+		gitIn(cwd, "worktree", "add", "-q", "-b", "linked", linked);
+		const s = await approvedThen(
+			[change("src/auth.ts", REVISED), git("add", "-A"), git("commit", "-q", "--amend", "--no-edit")],
+			linked,
+		);
+		expectRewrittenBase(s, await revise(s));
+	});
+
+	it("includes staged, unstaged and untracked edits after an amend without changing the real index", async () => {
+		const s = await approvedThen([
+			change("src/auth.ts", REVISED),
+			git("add", "-A"),
+			git("commit", "-q", "--amend", "--no-edit"),
+			change("staged.ts", "staged\n"),
+			git("add", "staged.ts"),
+			change("staged.ts", "unstaged\n"),
+			change("untracked.ts", "untracked\n"),
+		]);
+		const events = await s.send("revise and leave edits");
+		expectReviewOfRevision(s, events);
+		expect(ofType(events, "review_assessed")[0]?.files).toEqual(["src/auth.ts", "staged.ts", "untracked.ts"]);
+		expect(gitIn(s.cwd, "show", ":staged.ts")).toBe("staged\n");
+		expect(await readFile(join(s.cwd, "staged.ts"), "utf8")).toBe("unstaged\n");
+		expect(gitIn(s.cwd, "status", "--porcelain")).toContain("?? untracked.ts");
+	});
+
+	it("does not review history removed by a reset alone", async () => {
+		const s = await approvedThen([git("reset", "-q", "--hard", "HEAD~1")]);
+		const events = await revise(s);
+		expect(ofType(events, "review_assessed")).toEqual([]);
+		expect(ofType(events, "review_status").filter((event) => !event.available)).toEqual([]);
+	});
+
+	it.each([false, true])("reviews only own commits after a branch switch (commit: %s)", async (own) => {
+		const cwd = await repo();
+		const branch = gitIn(cwd, "branch", "--show-current").trim();
+		gitIn(cwd, "checkout", "-q", "-b", "other");
+		await writeFile(join(cwd, "foreign.ts"), "foreign history\n");
+		gitIn(cwd, "add", "-A");
+		gitIn(cwd, "commit", "-qm", "foreign");
+		const landed = gitIn(cwd, "rev-parse", "HEAD").trim();
+		gitIn(cwd, "checkout", "-q", branch);
+		const s = await approvedThen(
+			[git("checkout", "-q", "other"), ...(own ? [change("src/auth.ts", REVISED), ...commit("own")] : [])],
+			cwd,
+		);
+		const events = await revise(s);
+		if (!own) {
+			expect(ofType(events, "review_assessed")).toEqual([]);
+			expect(ofType(events, "review_status").filter((event) => !event.available)).toEqual([]);
+			return;
+		}
+		expectReviewOfRevision(s, events);
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			files: ["src/auth.ts"],
+			since: landed.slice(0, 7),
+			baseNote: `HEAD no longer descends from ${s.approved.slice(0, 7)}, where the turn started: the base moved to ${landed.slice(0, 7)}, where HEAD landed after the branch switch, to exclude that branch's history`,
+		});
+	});
+
+	const unavailable = (detail: string) => `Cannot safely attribute the turn's rewritten commits: ${detail}.`;
+
+	function expectUnavailable(
+		s: Pick<Awaited<ReturnType<typeof approvedThen>>, "roles">,
+		events: AtelierEvent[],
+		detail: string,
+	) {
+		const statuses = ofType(events, "review_status").filter((event) => !event.available);
+		expect(statuses).toMatchObject([{ type: "review_status", available: false, reason: unavailable(detail) }]);
+		expect(ofType(events, "review_assessed")).toEqual([]);
+		expect(s.roles.roles).toEqual([]);
+	}
+
+	/** A divergent upstream branch holding up.ts, then back on the original branch. */
+	async function upstreamRepo(extra?: string) {
+		const cwd = await repo();
+		const branch = gitIn(cwd, "branch", "--show-current").trim();
+		gitIn(cwd, "checkout", "-q", "-b", "upstream");
+		await writeFile(join(cwd, "up.ts"), "upstream\n");
+		if (extra) await writeFile(join(cwd, extra), "dup\n");
+		gitIn(cwd, "add", "-A");
+		gitIn(cwd, "commit", "-qm", "upstream");
+		gitIn(cwd, "checkout", "-q", branch);
+		return cwd;
+	}
+
+	async function commitBefore(cwd: string) {
+		await writeFile(join(cwd, "before.ts"), "before the turn\n");
+		gitIn(cwd, "add", "-A");
+		gitIn(cwd, "commit", "-qm", "before");
+	}
+
+	const amend = [change("src/auth.ts", REVISED), git("add", "-A"), git("commit", "-q", "--amend", "--no-edit")];
+	const reflogOf = (cwd: string) => gitIn(cwd, "rev-parse", "--path-format=absolute", "--git-path", "logs/HEAD").trim();
+
+	it("reviews the turn's own commit after a rebase over a divergent upstream", async () => {
+		const cwd = await upstreamRepo();
+		await commitBefore(cwd);
+		const s = await approvedThen(
+			[change("src/auth.ts", REVISED), ...commit("revise"), git("rebase", "-q", "upstream")],
+			cwd,
+		);
+		const events = await revise(s);
+		expect(() => gitIn(cwd, "merge-base", "--is-ancestor", s.approved, "HEAD")).toThrow();
+		expect(gitIn(cwd, "ls-files", "up.ts").trim()).toBe("up.ts");
+		expectReviewOfRevision(s, events);
+		const prompt = s.roles.roles.map((role) => role.prompt).join("\n");
+		expect(prompt).not.toContain("up.ts");
+		expect(prompt).not.toContain("before.ts");
+		const base = gitIn(cwd, "rev-parse", "--short=7", "HEAD^").trim();
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			files: ["src/auth.ts"],
+			since: base,
+			baseNote: `HEAD no longer descends from ${s.approved.slice(0, 7)}, where the turn started: the base moved to ${base}, before the turn's replayed commits, to exclude upstream history`,
+		});
+	});
+
+	it("RD-001: keeps the replayed boundary when branching and amending a rebased own commit", async () => {
+		const cwd = await upstreamRepo();
+		const s = await approvedThen(
+			[
+				change("src/auth.ts", REVISED),
+				...commit("revise"),
+				git("rebase", "-q", "upstream"),
+				git("checkout", "-q", "-b", "own"),
+				change("after.ts", "export const after = 1;\n"),
+				git("add", "-A"),
+				git("commit", "-q", "--amend", "--no-edit"),
+			],
+			cwd,
+		);
+		const events = await revise(s);
+		expectReviewOfRevision(s, events);
+		const base = gitIn(cwd, "rev-parse", "--short=7", "HEAD^").trim();
+		expect(ofType(events, "review_assessed")[0]).toMatchObject({
+			files: ["after.ts", "src/auth.ts"],
+			since: base,
+			baseNote: `HEAD no longer descends from ${s.approved.slice(0, 7)}, where the turn started: the base moved to ${base}, before the turn's replayed commits, to exclude upstream history`,
+		});
+	});
+
+	it("does not review a rebase that made no commits of its own", async () => {
+		const cwd = await upstreamRepo();
+		await commitBefore(cwd);
+		const s = await start({ cwd, turns: [[DECLARED_NONE, git("rebase", "-q", "upstream"), { event: finished }]] });
+		const events = await s.send("rebase");
+		expect(ofType(events, "tool_call_finished").filter((event) => !event.ok)).toEqual([]);
+		expect(gitIn(cwd, "ls-files", "up.ts").trim()).toBe("up.ts");
+		expect(ofType(events, "review_assessed")).toEqual([]);
+		expect(ofType(events, "review_status").filter((event) => !event.available)).toEqual([]);
+	});
+
+	it("is unavailable when a rebase drops an upstream-equal own commit and keeps another", async () => {
+		const cwd = await upstreamRepo("dup.ts");
+		const s = await approvedThen(
+			[
+				change("dup.ts", "dup\n"),
+				...commit("dup"),
+				change("src/auth.ts", REVISED),
+				...commit("revise"),
+				git("rebase", "-q", "upstream"),
+			],
+			cwd,
+		);
+		expectUnavailable(s, await revise(s), "the rebase replay cannot be attributed unambiguously");
+	});
+
+	it("is unavailable when the HEAD reflog is removed during the turn", async () => {
+		const cwd = await repo();
+		const s = await approvedThen([...amend, call("remove", { path: relative(cwd, reflogOf(cwd)) })], cwd);
+		expectUnavailable(s, await revise(s), "the worktree's HEAD reflog is unavailable");
+	});
+
+	it("is unavailable when the HEAD reflog is absent before the turn", async () => {
+		const s = await approvedThen(amend);
+		await rm(reflogOf(s.cwd));
+		expectUnavailable(s, await revise(s), "the worktree's HEAD reflog is unavailable");
+	});
+
+	it.each([false, true])("is unavailable when reflogs are disabled (old log removed: %s)", async (remove) => {
+		const s = await approvedThen(amend);
+		gitIn(s.cwd, "config", "core.logAllRefUpdates", "false");
+		if (remove) await rm(reflogOf(s.cwd));
+		expectUnavailable(s, await revise(s), "the worktree's HEAD reflog is unavailable");
+	});
+
+	it("is unavailable when the turn-start reflog boundary expired", async () => {
+		const s = await approvedThen([...amend, git("reflog", "expire", "--expire=now", "HEAD")]);
+		expectUnavailable(s, await revise(s), "the worktree's HEAD reflog no longer contains the turn-start boundary");
+	});
+
+	it("does not assess a stale snapshot when the risk answer makes attribution unavailable", async () => {
+		const cwd = await upstreamRepo();
+		await commitBefore(cwd);
+		const target = gitIn(cwd, "rev-parse", "upstream").trim();
+		const s = await start({
+			cwd,
+			roles: new RoleBackend(clean),
+			turns: [
+				[change("src/auth.ts", REVISED), { event: finished }],
+				[DECLARED_NONE, git("update-ref", "HEAD", target), { event: finished }],
+			],
+		});
+		expectUnavailable(s, await s.send("edit"), "a HEAD reflog entry has no operation message");
+	});
+
+	it("is unavailable when update-ref moves HEAD without a reflog message", async () => {
+		const cwd = await repo();
+		const branch = gitIn(cwd, "branch", "--show-current").trim();
+		gitIn(cwd, "checkout", "-q", "-b", "side");
+		gitIn(cwd, "commit", "-q", "--allow-empty", "-m", "side");
+		const side = gitIn(cwd, "rev-parse", "HEAD").trim();
+		gitIn(cwd, "checkout", "-q", branch);
+		const s = await approvedThen([git("update-ref", "HEAD", side)], cwd);
+		const events = await s.send("move HEAD");
+		expect(gitIn(cwd, "rev-parse", "HEAD").trim()).toBe(side);
+		expectUnavailable(s, events, "a HEAD reflog entry has no operation message");
 	});
 });
 
