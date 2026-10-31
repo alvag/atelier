@@ -6,6 +6,8 @@ export {
 	SESSION_VERSION,
 	SessionFileError,
 	type SessionHeader,
+	type ShellHistory,
+	shellHistory,
 } from "./format.ts";
 export { SessionRecorder } from "./recorder.ts";
 export {

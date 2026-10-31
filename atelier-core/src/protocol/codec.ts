@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MAX_PROMPT_IMAGES } from "../images.ts";
 import { PERMISSION_MODES } from "../modes.ts";
+import { pickShellResult, type ShellResult, shellResultProblem } from "../shell-result.ts";
 import { THINKING_LEVELS } from "../thinking.ts";
 import {
 	BACKEND_NAMES,
@@ -114,6 +115,17 @@ const commandSchema = z.discriminatedUnion("command", [
 			message: "A prompt or at least one image is required.",
 		}),
 	z.object({ command: z.literal("session.interrupt"), sessionId }),
+	z.object({
+		command: z.literal("session.shell_result"),
+		sessionId,
+		result: z
+			.unknown()
+			.superRefine((value, context) => {
+				const problem = shellResultProblem(value);
+				if (problem !== undefined) context.addIssue({ code: "custom", message: problem });
+			})
+			.transform((value) => pickShellResult(value as ShellResult)),
+	}),
 	z.object({
 		command: z.literal("session.queue"),
 		sessionId,

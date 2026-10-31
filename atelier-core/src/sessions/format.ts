@@ -5,6 +5,7 @@ import type { AtelierEvent, JsonValue } from "../events.ts";
 import { MAX_PROMPT_IMAGES } from "../images.ts";
 import { PERMISSION_MODES, type PermissionMode } from "../modes.ts";
 import { BACKEND_NAMES, type BackendName } from "../protocol/types.ts";
+import { type ShellResult, shellResultProblem } from "../shell-result.ts";
 import { THINKING_LEVELS, type ThinkingLevel } from "../thinking.ts";
 
 export const SESSION_KIND = "atelier.session";
@@ -34,12 +35,16 @@ export interface SavedConfig {
  * One line after the header. `text` is the main agent's text of a turn segment, merged from its deltas; `event` is
  * any other event as the clients got it; `state` is what the backend needs to resume: Claude Code's session id, or
  * the messages of `anthropic-api` (`replace`: they are the whole history, otherwise they follow the ones before).
+ * A `prompt`'s optional `shellResults` are the execution ids of the user's shell results its turn carried to the
+ * model; `shell_result` is a finished one as the client reported it (written when it arrives, even during a turn).
+ * Files saved before these existed read as before, and an Atelier that does not know them skips the entry.
  * A state's optional `yoloTold` says whether the model was last told it runs in yolo (`null`: unknown, after a note
  * the backend failed on), written when that changes; a state without it keeps what an earlier one said.
  */
 export type SavedEntry =
 	| ({ type: "config" } & SavedConfig)
-	| { type: "prompt"; turnId: string; text: string; imageCount?: number }
+	| { type: "prompt"; turnId: string; text: string; imageCount?: number; shellResults?: string[] }
+	| { type: "shell_result"; result: ShellResult }
 	| { type: "text"; turnId: string; text: string; agent?: string; parentCallId?: string }
 	| { type: "event"; event: AtelierEvent }
 	| { type: "name"; name: string }
@@ -170,11 +175,21 @@ function headerOwner(line: string | undefined): { cwd?: string } {
 	return {};
 }
 
-const KNOWN_ENTRIES: ReadonlySet<string> = new Set(["config", "prompt", "text", "event", "name", "state"]);
+const KNOWN_ENTRIES: ReadonlySet<string> = new Set([
+	"config",
+	"prompt",
+	"text",
+	"event",
+	"name",
+	"state",
+	"shell_result",
+]);
 
 const isString = (value: unknown): value is string => typeof value === "string";
 const isOneOf = <T extends string>(list: readonly T[], value: unknown): value is T =>
 	list.some((item) => item === value);
+
+const isIdList = (value: unknown): value is string[] => Array.isArray(value) && value.every(isString);
 
 /** Why an entry cannot be used, or undefined when it can (or when this version does not know its type). */
 function entryProblem(value: unknown): string | undefined {
@@ -197,7 +212,12 @@ function entryProblem(value: unknown): string | undefined {
 					value.imageCount > MAX_PROMPT_IMAGES)
 			)
 				return "prompt has an invalid image count";
+			if (value.shellResults !== undefined && !isIdList(value.shellResults)) return "prompt has invalid shell results";
 			return isString(value.turnId) && isString(value.text) ? undefined : "prompt lacks its turn or its text";
+		case "shell_result": {
+			const problem = shellResultProblem(value.result);
+			return problem === undefined ? undefined : `shell_result: ${problem}`;
+		}
 		case "text":
 			return isString(value.turnId) && isString(value.text) ? undefined : "text lacks its turn or its text";
 		case "event":
@@ -278,4 +298,45 @@ export function replay(header: SessionHeader, entries: readonly SavedEntry[]): R
 /** A short digest of a message, to tell later which ones the file already holds. */
 export function digest(message: JsonValue): string {
 	return createHash("sha1").update(JSON.stringify(message)).digest("hex");
+}
+
+/** The shell results a saved session still owes its model, and every execution id it has seen. */
+export interface ShellHistory {
+	/** Every id of a result in the file, excluded ones too: a repeated one is ignored. */
+	seen: string[];
+	/** Results for the model that no accepted prompt carried yet, in the order they arrived. */
+	pending: ShellResult[];
+}
+
+/**
+ * Replays the shell entries in order. A prompt took the results it lists when the backend accepted it, the same
+ * criterion as a live turn: its turn has main text, thinking (the file keeps one empty delta), a tool call, or an end
+ * other than an error or an interrupt.
+ */
+export function shellHistory(entries: readonly SavedEntry[]): ShellHistory {
+	const arrived: ShellResult[] = [];
+	const seen = new Set<string>();
+	const taken = new Set<string>();
+	let carried: { turnId: string; ids: readonly string[] } | undefined;
+	for (const entry of entries) {
+		if (entry.type === "shell_result") {
+			if (seen.has(entry.result.executionId)) continue;
+			seen.add(entry.result.executionId);
+			if (!entry.result.excludeFromContext) arrived.push(entry.result);
+		} else if (entry.type === "prompt") carried = { turnId: entry.turnId, ids: entry.shellResults ?? [] };
+		else if (carried && acceptedFor(entry, carried.turnId)) {
+			for (const id of carried.ids) taken.add(id);
+			carried = undefined;
+		}
+	}
+	return { seen: [...seen], pending: arrived.filter((result) => !taken.has(result.executionId)) };
+}
+
+/** Whether a saved entry shows that the backend took the prompt of `turnId`. */
+function acceptedFor(entry: SavedEntry, turnId: string): boolean {
+	if (entry.type === "text") return entry.turnId === turnId;
+	if (entry.type !== "event" || entry.event.turnId !== turnId) return false;
+	const event = entry.event;
+	if (event.type === "turn_finished") return event.stopReason !== "error" && event.stopReason !== "interrupted";
+	return event.type === "tool_call_started" || event.type === "thinking_delta";
 }

@@ -46,7 +46,13 @@ import {
 	Session,
 	type SessionConfiguration,
 } from "../session.ts";
-import { type LoadedSession, SessionFileError, type SessionRecorder, SessionStore } from "../sessions/index.ts";
+import {
+	type LoadedSession,
+	SessionFileError,
+	type SessionRecorder,
+	SessionStore,
+	shellHistory,
+} from "../sessions/index.ts";
 import { BUILTIN_AGENTS, type SubagentDefinition } from "../subagents/definitions.ts";
 import { THINKING_LEVELS } from "../thinking.ts";
 import type { UserQuestionCapabilities } from "../tools/ask-user.ts";
@@ -470,6 +476,15 @@ export class RpcServer {
 				if (!removed) throw new CommandError("unknown_rule", `No rule ${message.ruleId}.`);
 				return { rules: await this.#rules(message.sessionId) };
 			}
+			case "session.shell_result": {
+				const { session } = this.#session(message.sessionId);
+				try {
+					return { ...(await session.recordShellResult(message.result)) };
+				} catch (error) {
+					if (error instanceof ConfigureError) throw new CommandError(error.code, error.message);
+					throw error;
+				}
+			}
 			case "session.set_mode": {
 				this.#session(message.sessionId).session.setPermissionMode(message.mode);
 				return { mode: message.mode };
@@ -843,6 +858,7 @@ export class RpcServer {
 				...(model === undefined ? {} : { model }),
 				...(saved?.config.thinking === undefined ? {} : { thinking: saved.config.thinking }),
 				...(saved?.resume === undefined ? {} : { resume: saved.resume }),
+				...(saved === undefined ? {} : { shell: shellHistory(saved.entries) }),
 				promptImages: saved?.entries.some((entry) => entry.type === "prompt" && (entry.imageCount ?? 0) > 0) ?? false,
 				...(saved?.yoloTold === undefined ? {} : { resumedYoloTold: saved.yoloTold }),
 				...(recorder === undefined ? {} : { record: recorder }),

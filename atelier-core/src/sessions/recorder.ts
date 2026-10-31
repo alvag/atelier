@@ -3,6 +3,7 @@ import { appendFile, chmod, mkdir, readFile, rm, stat, truncate, writeFile } fro
 import { dirname } from "node:path";
 import type { ResumeState } from "../backend.ts";
 import { type AtelierEvent, describeError } from "../events.ts";
+import type { ShellResult } from "../shell-result.ts";
 import type { ThinkingLevel } from "../thinking.ts";
 import { digest, type SavedConfig, type SavedEntry, SessionFileError, type SessionHeader } from "./format.ts";
 
@@ -80,14 +81,39 @@ export class SessionRecorder {
 		this.#append({ type: "config", ...config });
 	}
 
-	prompt(turnId: string, text: string, imageCount = 0): void {
+	/** The shell-carrying turn still needing a thinking acceptance marker. */
+	#shellThinkingTurn: string | undefined;
+
+	prompt(turnId: string, text: string, imageCount = 0, shellResults: readonly string[] = []): void {
 		this.#promptTurn = turnId;
-		this.#append({ type: "prompt", turnId, text, ...(imageCount > 0 ? { imageCount } : {}) });
+		this.#shellThinkingTurn = shellResults.length > 0 ? turnId : undefined;
+		this.#append({
+			type: "prompt",
+			turnId,
+			text,
+			...(imageCount > 0 ? { imageCount } : {}),
+			...(shellResults.length > 0 ? { shellResults: [...shellResults] } : {}),
+		});
+	}
+
+	/** A finished shell command the user ran, saved when it is reported. */
+	shellResult(result: ShellResult): Promise<void> {
+		this.#endSegment();
+		const written = this.#queue.then(() => this.#write({ type: "shell_result", result }));
+		// A failed write is the caller's to hear of, and the entries after it still try to be written.
+		this.#queue = written.catch(() => {});
+		return written;
 	}
 
 	/** Keeps what a client needs to show the turn again: thinking is dropped and the text deltas of a segment become one entry. */
 	event(event: AtelierEvent): void {
-		if (event.type === "thinking_delta") return;
+		// Only a shell-carrying prompt needs an empty thinking delta to persist that the backend took it.
+		if (event.type === "thinking_delta") {
+			if (this.#shellThinkingTurn === undefined || event.turnId !== this.#shellThinkingTurn) return;
+			this.#shellThinkingTurn = undefined;
+			this.#append({ type: "event", event: { ...event, text: "" } });
+			return;
+		}
 		// What is still queued is not the conversation's yet.
 		if (event.type === "queue_update") return;
 		// A queued message that starts a turn is its first event, and that turn's prompt already holds it.

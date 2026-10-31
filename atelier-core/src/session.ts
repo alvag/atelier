@@ -87,8 +87,9 @@ import { LEFT_YOLO, MEMORY_RULES, oddRules, RISK_RULES, YOLO_RULES } from "./pro
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
 import { createScratchDir, type ScratchDir } from "./scratch.ts";
-import type { SavedConfig } from "./sessions/format.ts";
+import type { SavedConfig, ShellHistory } from "./sessions/format.ts";
 import type { SessionRecorder } from "./sessions/recorder.ts";
+import { pickShellResult, type ShellResult, shellResultsText } from "./shell-result.ts";
 import { type LoadedSkills, loadSkills, skillsPrompt } from "./skills.ts";
 import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
 import {
@@ -316,6 +317,8 @@ export interface SessionOptions {
 	record?: SessionRecorder;
 	/** The backend resumes this saved conversation instead of starting an empty one; start rejects when it cannot. */
 	resume?: ResumeState;
+	/** The user's shell results a resumed session saved: the ids it has seen and the ones the model is still owed. */
+	shell?: ShellHistory;
 	/** Earlier recorded prompts contained images; pixels remain in the backend's opaque resume state. */
 	promptImages?: boolean;
 	/**
@@ -541,6 +544,10 @@ export class Session {
 	 * wait for the user's next prompt and start no turn of their own.
 	 */
 	#noticesHeld = false;
+	/** Every shell result reported by its execution id, with its write, so that a repeated one is ignored. */
+	readonly #shellSeen = new Map<string, Promise<void>>();
+	/** Shell results the model has not been told, in the order they arrived; they ride on the next normal prompt. */
+	#shellPending: ShellResult[] = [];
 	/** Ends the wait of a woken turn for its notices: the session's close calls it. */
 	#gathering: (() => void) | undefined;
 
@@ -548,6 +555,8 @@ export class Session {
 		this.#hadTurn =
 			options.resume !== undefined && (!("messages" in options.resume) || options.resume.messages.length > 0);
 		this.#promptImages = options.promptImages === true;
+		for (const id of options.shell?.seen ?? []) this.#shellSeen.set(id, Promise.resolve());
+		this.#shellPending = [...(options.shell?.pending ?? [])];
 		if (this.#promptImages && !this.#hadTurn)
 			this.#notices.push(
 				errorEvent(
@@ -842,6 +851,33 @@ export class Session {
 		});
 	}
 
+	/**
+	 * Keeps a shell command the user ran, finished: saved at once, shown by a resume, and, unless excluded, owed to the
+	 * model at the start of the next normal prompt. It starts no turn and enters no running one. A repeated execution
+	 * id is ignored (`duplicate`).
+	 */
+	async recordShellResult(result: ShellResult): Promise<{ duplicate: boolean }> {
+		if (this.#closed || !this.#backendSession) throw new ConfigureError("session_closed", "The session is closed.");
+		const earlier = this.#shellSeen.get(result.executionId);
+		if (earlier) {
+			await earlier;
+			return { duplicate: true };
+		}
+		const kept = pickShellResult(result);
+		this.#recordStart(undefined, "", 0);
+		const saved = this.#options.record?.shellResult(kept) ?? Promise.resolve();
+		this.#shellSeen.set(kept.executionId, saved);
+		try {
+			await saved;
+		} catch (error) {
+			// Not saved: the client may send it again.
+			this.#shellSeen.delete(kept.executionId);
+			throw new ConfigureError("shell_not_saved", `The shell result could not be saved: ${describeError(error)}`);
+		}
+		if (!kept.excludeFromContext) this.#shellPending.push(kept);
+		return { duplicate: false };
+	}
+
 	/** The effective model's refusal, checked before RPC accepts fresh prompt images. */
 	imageInputProblem(): string | undefined {
 		return imageInputProblem(this.#backendSessionId, this.#backendSession?.currentModel?.() ?? this.#model);
@@ -867,7 +903,9 @@ export class Session {
 		woken = false,
 		images: readonly ImageAttachment[] = [],
 	): AsyncGenerator<AtelierEvent> {
-		const recorded = woken ? undefined : { text: prompt, imageCount: images.length };
+		// The results the prompt carries are fixed as the turn begins; later ones wait for the next prompt.
+		const shell = woken ? [] : [...this.#shellPending];
+		const recorded = woken ? undefined : { text: prompt, imageCount: images.length, shell };
 		yield* this.#stream(turnId, recorded, entered, async (turn, signal, backendSession) => {
 			// A woken turn waits a moment for the notices of work ending with the first, then takes all there are.
 			if (woken) await this.#gatherNotices(signal);
@@ -948,9 +986,15 @@ export class Session {
 			const telling = yolo !== this.#toldYolo;
 			// What the prompt carried is the model's once it answered or called a tool, even if the turn fails after.
 			let noteTaken = false;
+			let shellTaken = false;
 			this.#promptTaken = () => {
 				reviewNotice = undefined;
 				backgroundNotices = undefined;
+				if (shell.length > 0 && !shellTaken) {
+					shellTaken = true;
+					const taken = new Set(shell.map((result) => result.executionId));
+					this.#shellPending = this.#shellPending.filter((result) => !taken.has(result.executionId));
+				}
 				if (telling) this.#toldYolo = yolo;
 				noteTaken = true;
 			};
@@ -961,6 +1005,8 @@ export class Session {
 				this.#handoff = undefined;
 				this.#carried = undefined;
 			}
+			// The user's shell results come first, as the user's own words do; the same text goes to every backend.
+			if (shell.length > 0) sent = `${shellResultsText(shell)}\n\n${sent}`;
 			this.#hadTurn = true;
 			let finish: Extract<AtelierEventBody, { type: "turn_finished" }> | undefined;
 			let failed = false;
@@ -1075,7 +1121,7 @@ export class Session {
 	async *#stream(
 		turnId: string,
 		/** The user's prompt when the turn answers one: the saved transcript starts the turn with it. */
-		prompt: { text: string; imageCount: number } | undefined,
+		prompt: { text: string; imageCount: number; shell: readonly ShellResult[] } | undefined,
 		/** The queued message the prompt comes from: the turn starts by saying it entered. */
 		entered: QueuedMessage | undefined,
 		work: (
@@ -1101,7 +1147,12 @@ export class Session {
 
 		const turn = new Channel<TurnEvent>();
 		this.#turn = turn;
-		this.#recordStart(prompt?.text, turnId, prompt?.imageCount);
+		this.#recordStart(
+			prompt?.text,
+			turnId,
+			prompt?.imageCount,
+			prompt?.shell.map((result) => result.executionId),
+		);
 		if (entered) {
 			turn.push({ type: "queued_message", ...entered });
 			this.#sayQueue();
@@ -1232,7 +1283,7 @@ export class Session {
 	}
 
 	/** The first turn saves the configuration it starts with; every turn saves its prompt. */
-	#recordStart(prompt: string | undefined, turnId: string, imageCount = 0): void {
+	#recordStart(prompt: string | undefined, turnId: string, imageCount = 0, shellIds: readonly string[] = []): void {
 		if (imageCount > 0) this.#promptImages = true;
 		const record = this.#options.record;
 		if (!record) return;
@@ -1247,7 +1298,7 @@ export class Session {
 				...(profile?.name === undefined ? {} : { profile: profile.name }),
 			});
 		}
-		if (prompt !== undefined) record.prompt(turnId, prompt, imageCount);
+		if (prompt !== undefined) record.prompt(turnId, prompt, imageCount, shellIds);
 	}
 
 	/** Waits for the saved entries; a write that failed is said in the next turn. */
