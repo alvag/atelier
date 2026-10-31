@@ -208,39 +208,39 @@ describe("runUserShell", () => {
 	});
 
 	it("cancels the whole process group and waits for it", async () => {
-		const pidFile = join(scratch(), "child.pid");
+		const dir = scratch();
+		const pidFile = join(dir, "child.pid");
 		const controller = new AbortController();
-		const { result, live } = run(`sleep 300 & echo $! > ${pidFile}; echo ready; wait`, { signal: controller.signal });
-		await until(() => live.join("").includes("ready") && existsSync(pidFile));
-		const childPid = Number(readFileSync(pidFile, "utf8"));
-		// Only the signal-0 probe of the child reports "alive" for its first three calls; everything else is real.
-		const realKill = process.kill.bind(process);
-		let probes = 0;
-		const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-			if (pid === childPid && signal === 0 && probes++ < 3) return true;
-			return realKill(pid, signal);
+		const { result, live } = run(`echo $$; sleep 300 & echo $! > ${pidFile}; echo ready; wait`, {
+			cwd: dir,
+			signal: controller.signal,
 		});
+		const groupAlive = () => {
+			try {
+				process.kill(-leader, 0);
+				return true;
+			} catch (error) {
+				expect(error).toMatchObject({ code: "ESRCH" });
+				return false;
+			}
+		};
+		let leader = 0;
 		try {
+			await until(() => live.join("").includes("ready") && existsSync(pidFile));
+			// The shell is the group leader, so its own pid names the group the runner must signal.
+			leader = Number(live.join("").split("\n")[0]);
+			expect(leader).toBeGreaterThan(1);
+			expect(groupAlive()).toBe(true);
 			controller.abort();
 			const done = await result;
 			expect(done.cancelled).toBe(true);
 			expect(done.signal).toBe("SIGTERM");
-			await until(() => {
-				try {
-					process.kill(childPid, 0);
-					return false;
-				} catch (error) {
-					expect(error).toMatchObject({ code: "ESRCH" });
-					return true;
-				}
-			});
+			await until(() => !groupAlive());
 		} finally {
-			kill.mockRestore();
-			try {
-				process.kill(childPid, "SIGKILL");
-			} catch {
-				// Already gone, which is the expected outcome.
-			}
+			controller.abort();
+			// Only the group this test started is addressed; it is normally gone already.
+			if (leader > 1 && groupAlive()) process.kill(-leader, "SIGKILL");
+			await result;
 		}
 	});
 

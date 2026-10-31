@@ -96,8 +96,9 @@ export class SessionRecorder {
 		});
 	}
 
-	/** A finished shell command, saved when reported without splitting the agent's current text segment. */
+	/** A finished shell command, saved after any text streamed before it. */
 	shellResult(result: ShellResult): Promise<void> {
+		this.#endSegment();
 		const written = this.#queue.then(() => this.#write({ type: "shell_result", result }));
 		// A failed write is the caller's to hear of, and the entries after it still try to be written.
 		this.#queue = written.catch(() => {});
