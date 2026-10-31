@@ -2,6 +2,59 @@
 
 Each release of Atelier, newest first. A release is the `vX.Y.Z` tag on `main`; its GitHub release carries the same notes.
 
+## v0.6.0
+
+Questions with several choices, background commands and subagents, images, a status bar and context gauge, and stricter protection of what the agent runs and fetches.
+
+Terminal interface:
+- A fixed status bar at the top of the full screen shows the directory, branch with the number of changed files, model, level and profile on the left, and the context and the session's cost on the right; the footer keeps the mode, sandbox, phase, task and `jobs` ([#142](https://github.com/alvag/atelier/pull/142), [#97](https://github.com/alvag/atelier/issues/97)).
+- The context shows as a gauge, `ctx ▰▰▱▱▱▱▱▱ 23% · 200k`, yellow and then red as it nears the point where the session compacts, and `?` right after a compaction until a request measures it again. A warning says when the context nears that point. The backends now compact when the context passes the window minus 16,384 tokens instead of at 200,000 ([#121](https://github.com/alvag/atelier/pull/121), [#96](https://github.com/alvag/atelier/issues/96)). The `claude-code` backend reports its context too, so its `ctx` shows as well ([#112](https://github.com/alvag/atelier/pull/112), [#95](https://github.com/alvag/atelier/issues/95)).
+- Memory searches, reads and saves show as two compact lines of their own, `🧠 search "session summary"` and `↳ ✓ 2 results`, and so does the summary that compaction saves ([#94](https://github.com/alvag/atelier/pull/94), [#92](https://github.com/alvag/atelier/issues/92); [#98](https://github.com/alvag/atelier/pull/98), [#93](https://github.com/alvag/atelier/issues/93)).
+- `!command` in the editor runs a shell command yourself, outside Atelier's sandbox and without the model (for example a push you want to do by hand), with live output and Esc to cancel; its result goes to the agent with your next prompt. `!!command` keeps it out of the agent's context ([#192](https://github.com/alvag/atelier/pull/192), [#25](https://github.com/alvag/atelier/issues/25)).
+- The terminal's agent row reports what the TUI is doing: the call that runs, the end of the turn, the error or the question that blocks it ([#118](https://github.com/alvag/atelier/pull/118), [#114](https://github.com/alvag/atelier/issues/114)).
+- A prompt sent just as a background notice wakes a turn is no longer lost: it is queued as a steer, and a draft with images or a slash command goes back to the editor ([#190](https://github.com/alvag/atelier/pull/190), [#188](https://github.com/alvag/atelier/issues/188)).
+
+Questions:
+- The agent can ask you with `ask_user`: one to four questions, each with two to four options, one recommended, and always a `Type something…` answer. Only you answer it, also in `yolo`. The TUI, the line CLI and the desktop show it ([#120](https://github.com/alvag/atelier/pull/120), [#26](https://github.com/alvag/atelier/issues/26)).
+- In the TUI a batch has tabs and a review screen before it is sent, a lighter layout, and its answers stay in the transcript, also when you resume the session ([#140](https://github.com/alvag/atelier/pull/140), [#134](https://github.com/alvag/atelier/issues/134), [#135](https://github.com/alvag/atelier/issues/135), [#136](https://github.com/alvag/atelier/issues/136); [#155](https://github.com/alvag/atelier/pull/155), [#146](https://github.com/alvag/atelier/issues/146)).
+- A question can take several answers ([#148](https://github.com/alvag/atelier/pull/148), [#137](https://github.com/alvag/atelier/issues/137)), and an option can show a preview, such as a snippet or a layout, while you are on it ([#152](https://github.com/alvag/atelier/pull/152), [#138](https://github.com/alvag/atelier/issues/138)); the TUI and the line CLI ask for both.
+
+Background work:
+- The agent can run a shell command in the background with `bash_background`, list the running ones with `job_list` and stop them with `job_stop`. It keeps working, and a result wakes it when the command ends. Closing the session stops them ([#130](https://github.com/alvag/atelier/pull/130), [#111](https://github.com/alvag/atelier/issues/111)).
+- `task` takes `background: true` to start an `explorer` or a `worker` without waiting for it, and its report comes back as a notice. A background `worker` edits in a git worktree of its own, with your dependencies linked and writes confined to it, and returns a patch that the agent applies with `git apply`. At most four run at once. The CLI, the TUI and the desktop show when they start and finish, and the footer counts them with the jobs; `atelier run` waits for them ([#150](https://github.com/alvag/atelier/pull/150), [#151](https://github.com/alvag/atelier/pull/151), [#39](https://github.com/alvag/atelier/issues/39)).
+- The agent is told what to do while a task runs, to check a finished task's evidence once, and how to apply a worker's patch and when to run the checks ([#161](https://github.com/alvag/atelier/pull/161), [#154](https://github.com/alvag/atelier/issues/154)).
+
+Agent and subagents:
+- The main agent's turn no longer stops after 50 requests on `anthropic-api` and `openai-codex`: it runs until the model stops, you interrupt it or an error ends it. The review roles keep a limit of 50 requests ([#162](https://github.com/alvag/atelier/pull/162), [#160](https://github.com/alvag/atelier/issues/160)).
+- The agent knows when to delegate: it reads up to about three files or 10k tokens itself, sends one `explorer` for more with paths and not file contents, and judges a question's breadth before reading it ([#113](https://github.com/alvag/atelier/pull/113), [#71](https://github.com/alvag/atelier/issues/71), [#72](https://github.com/alvag/atelier/issues/72); [#156](https://github.com/alvag/atelier/pull/156), [#124](https://github.com/alvag/atelier/issues/124)).
+- `grep` takes `ignoreCase`, `literal`, `context` and `limit`, and ignores your ripgrep configuration, so what it returns does not depend on `RIPGREP_CONFIG_PATH` ([#106](https://github.com/alvag/atelier/pull/106), [#69](https://github.com/alvag/atelier/issues/69), [#70](https://github.com/alvag/atelier/issues/70)).
+- Memory search takes `match_mode`: the agent retries an empty search once with `any` ([#116](https://github.com/alvag/atelier/pull/116), [#90](https://github.com/alvag/atelier/issues/90)).
+- `web_search` shows the dates and authors of its results and reports Exa's rate limit even when it comes as a 200 ([#105](https://github.com/alvag/atelier/pull/105), [#88](https://github.com/alvag/atelier/issues/88), [#89](https://github.com/alvag/atelier/issues/89)).
+- A `feature` result is bound to 2,000 lines or 50 KB, with a notice that says how to read the rest ([#115](https://github.com/alvag/atelier/pull/115), [#83](https://github.com/alvag/atelier/issues/83)).
+
+Images:
+- `read` returns an image to the model on every backend that takes images, and omits it with a notice for a model that does not. In the TUI you attach images by pasting their paths, which show as removable `[Image #n]` markers, and on macOS Ctrl+V attaches an image from the clipboard. A prompt takes up to 20 images and 20 MiB; RPC clients send them with `session.send.images`. Resumed sessions keep them ([#174](https://github.com/alvag/atelier/pull/174), [#32](https://github.com/alvag/atelier/issues/32), [#153](https://github.com/alvag/atelier/issues/153)).
+
+Review:
+- A branch too large for one review prompt is split by file into up to four parts instead of ending as `review unavailable: context_too_large`. After an automatic review that approves without a correction, the next round starts from the tree it saw, and shows as "since the last review" ([#177](https://github.com/alvag/atelier/pull/177), [#41](https://github.com/alvag/atelier/issues/41)).
+
+Models:
+- Thinking levels are sent on OpenCode Go: `minimax-m3` thinks by budget, models that reason on their own show `auto`, and when a level cannot be sent the footer says which one, `glm-5.3 medium not sent`. The deprecated `mimo-v2.5` models are gone from the list ([#104](https://github.com/alvag/atelier/pull/104), [#101](https://github.com/alvag/atelier/issues/101)).
+
+Protection:
+- Commands that run code from the repository (`npm`, `pnpm`, `make`, `cargo`, `pytest`, `./gradlew`…) offer `Allow always in this project` instead of a global rule. Those rules live in `~/.atelier/project-permissions.json`, `/permissions` shows them with their project, and a global rule saved earlier for such a command is skipped with a notice. A command nested more than 8 levels deep always asks, also in `yolo` ([#100](https://github.com/alvag/atelier/pull/100), [#78](https://github.com/alvag/atelier/issues/78), [#82](https://github.com/alvag/atelier/issues/82)).
+- `web_fetch` reaches the public internet only: it refuses shared, reserved, multicast and documentation ranges, IPv4 addresses embedded in IPv6 ones, and `localhost`, `.localhost`, `.internal` and `.local` names, so tailnet and `.local` hosts no longer work with it ([#129](https://github.com/alvag/atelier/pull/129), [#128](https://github.com/alvag/atelier/issues/128)).
+- MCP sign-in opens only `http` and `https` addresses in the browser ([#123](https://github.com/alvag/atelier/pull/123), [#64](https://github.com/alvag/atelier/issues/64)).
+
+Fixes:
+- A profile name has to be 1 to 64 letters, digits, `.`, `_` or `-`, and the notice says the rule and the invalid value ([#102](https://github.com/alvag/atelier/pull/102), [#74](https://github.com/alvag/atelier/issues/74)).
+- Starting in a folder that was deleted says so in one line instead of printing a stack trace ([#108](https://github.com/alvag/atelier/pull/108), [#66](https://github.com/alvag/atelier/issues/66)).
+- `grep` no longer takes a ripgrep warning for a match, and searches a dotfile you name even when the system `grep` is used ([#117](https://github.com/alvag/atelier/pull/117), [#109](https://github.com/alvag/atelier/issues/109), [#110](https://github.com/alvag/atelier/issues/110)).
+- Reading the git protection settings takes one git process per file instead of three ([#125](https://github.com/alvag/atelier/pull/125), [#55](https://github.com/alvag/atelier/issues/55)).
+
+Development:
+- The sandbox probes, the git status and attribute-query tests no longer fail on a loaded machine, and a failing probe keeps its diagnostics ([#127](https://github.com/alvag/atelier/pull/127), [#63](https://github.com/alvag/atelier/issues/63); [#180](https://github.com/alvag/atelier/pull/180), [#157](https://github.com/alvag/atelier/issues/157); [#182](https://github.com/alvag/atelier/pull/182), [#179](https://github.com/alvag/atelier/issues/179)); a test pins that a sandboxed command cannot hard-link a file it cannot write ([#184](https://github.com/alvag/atelier/pull/184), [#79](https://github.com/alvag/atelier/issues/79)).
+
 ## v0.5.0
 
 Sign in to more providers, one model list across them with a catalog that keeps up, and tighter protection of credentials and git state.
