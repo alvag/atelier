@@ -1586,6 +1586,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 	/** `!command` and `!!command` run in the shell; a draft with images, or while one runs, stays in the editor. */
 	const submitShell = (line: string, typed: { command: string; exclude: boolean }) => {
+		// A slash command is moving the session: keep the draft, as Enter does, so it cannot run in the old one.
+		if (commanding) return;
 		if (pasted.has(line)) {
 			editor.setText(line);
 			return conversation.note(SHELL_IMAGES, true);

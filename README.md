@@ -117,14 +117,14 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 ### Shell commands
 
-Type `!` and a command to run it yourself, outside the agent and its sandbox, at any time, even while a turn runs; `!!` runs it too but keeps the result out of the model's context:
+Type `!` and a command to run it yourself, outside the agent and its sandbox, even while a model turn runs (but not while a slash command is still running); `!!` runs it too but keeps the result out of the model's context:
 
 ```text
 !git status --short
 !!cat .env.local
 ```
 
-The output shows in the transcript and the result is saved with the session, so it is there when you resume it. `!!` is not a privacy mode: the command and its output are stored locally in the session file, and only the model does not get them. Esc cancels a running command. The next prompt waits for its completed result to be saved; `/new`, `/resume` and quitting remain available and discard a prompt still waiting for that save. Commands have no terminal, so `sudo` or anything else that asks for a password or opens an editor fails. See [shell commands you run](docs/cli.md).
+The output shows in the transcript and the result is saved with the session, so it is there when you resume it. `!!` is not a privacy mode: the command and its output are stored locally in the session file, and only the model does not get them. Esc cancels a running command. The next prompt waits for its completed result to be saved; `/new`, `/resume` and quitting remain available and discard a prompt still waiting for that save. Commands have no terminal, so `sudo` or anything else that asks for a password or opens an editor fails. After the shell exits, output capture ends within 250 ms even if a background process keeps running; later output is not shown or saved. See [shell commands you run](docs/cli.md).
 
 While a question or a list is open, the editor is hidden and keys go to it, Ctrl+C and Ctrl+D included: they close it without interrupting the turn or quitting. Esc first cancels a running shell command or clears a shell draft, leaving the question open; otherwise it closes the question or list. What remains of your draft comes back to the editor, unsent, when it closes.
 

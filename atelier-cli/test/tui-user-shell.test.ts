@@ -260,6 +260,103 @@ describe("runUserShell", () => {
 		10_000,
 	);
 
+	it.each(["stdout", "stderr"] as const)(
+		"resolves shortly after the shell exits while a live descendant retains %s",
+		async (stream) => {
+			const dir = scratch();
+			const pidFile = join(dir, "descendant.pid");
+			const gate = join(dir, "gate");
+			const wrote = join(dir, "wrote");
+			const fd = stream === "stdout" ? 1 : 2;
+			// The descendant holds the inherited pipe until the test opens the gate, then tries to write late output.
+			const script = `const fs=require("node:fs"); fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid)); setTimeout(()=>process.exit(0),30000); const t=setInterval(()=>{ if(!fs.existsSync(${JSON.stringify(gate)})) return; clearInterval(t); let outcome="written"; try{fs.writeSync(${fd},"late")}catch(error){outcome=error.code} fs.writeFileSync(${JSON.stringify(wrote)},outcome); process.exit(0)},5)`;
+			const redirect = stream === "stdout" ? "" : " >&2";
+			const background = stream === "stdout" ? "2>/dev/null" : ">/dev/null";
+			const command = `node -e '${script}' ${background} & while [ ! -e ${pidFile} ]; do sleep 0.02; done; echo before${redirect}; exit 0`;
+			const controller = new AbortController();
+			const { result, live } = run(command, {
+				cwd: dir,
+				signal: controller.signal,
+				env: { ...process.env, SHELL: "/bin/sh" },
+			});
+			let deadline: NodeJS.Timeout | undefined;
+			try {
+				const done = await Promise.race([
+					result,
+					new Promise<never>((_, reject) => {
+						deadline = setTimeout(() => reject(new Error("still waiting on pipes held after the shell exited")), 3000);
+					}),
+				]);
+				expect(done).toMatchObject({ exitCode: 0, cancelled: false, output: "before\n" });
+				// Finishing the command does not kill the descendant.
+				expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).not.toThrow();
+				writeFileSync(gate, "");
+				await until(() => existsSync(wrote));
+				expect(readFileSync(wrote, "utf8")).toBe("EPIPE");
+				expect(live.join("")).toBe("before\n");
+			} finally {
+				clearTimeout(deadline);
+				controller.abort();
+				writeFileSync(gate, "");
+				if (existsSync(pidFile)) {
+					try {
+						process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+					} catch {
+						// This test owns the descendant; it may already be gone.
+					}
+				}
+				try {
+					await Promise.race([
+						result,
+						new Promise((resolve) => {
+							deadline = setTimeout(resolve, 3000);
+						}),
+					]);
+				} finally {
+					clearTimeout(deadline);
+				}
+			}
+		},
+		10_000,
+	);
+
+	it("keeps cancellation's SIGKILL grace when abort arrives during the post-exit drain", async () => {
+		const dir = scratch();
+		const shellFile = join(dir, "shell.pid");
+		const childFile = join(dir, "child.pid");
+		const ready = join(dir, "ready");
+		const alive = (pid: number) => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+		const controller = new AbortController();
+		const command = `echo $$ > ${shellFile}; (trap '' TERM; touch ${ready}; while :; do sleep 1; done) & echo $! > ${childFile}; while [ ! -e ${ready} ]; do sleep 0.01; done; exit 0`;
+		const { result } = run(command, { cwd: dir, signal: controller.signal, env: { ...process.env, SHELL: "/bin/sh" } });
+		try {
+			await until(
+				() => existsSync(shellFile) && existsSync(childFile) && !alive(Number(readFileSync(shellFile, "utf8"))),
+			);
+			controller.abort();
+			const done = await result;
+			expect(done.cancelled).toBe(true);
+			await until(() => !alive(Number(readFileSync(childFile, "utf8"))));
+		} finally {
+			controller.abort();
+			if (existsSync(shellFile) && existsSync(childFile) && alive(Number(readFileSync(childFile, "utf8")))) {
+				try {
+					process.kill(-Number(readFileSync(shellFile, "utf8")), "SIGKILL");
+				} catch {
+					// Only this test's process group is addressed; it may already have exited.
+				}
+			}
+			await result;
+		}
+	}, 10_000);
+
 	it("kills with SIGKILL a descendant that ignores SIGTERM after the shell exited", async () => {
 		const pidFile = join(scratch(), "child.pid");
 		const controller = new AbortController();

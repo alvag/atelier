@@ -76,7 +76,13 @@ function fakeTerminal() {
 
 /** A core that answers what the TUI asks and says what it was sent; turns end when a test says so. */
 function fakeCore(
-	options: { entries?: unknown[]; shellFails?: boolean; shellHangs?: boolean; shellAck?: Promise<void> } = {},
+	options: {
+		entries?: unknown[];
+		shellFails?: boolean;
+		shellHangs?: boolean;
+		shellAck?: Promise<void>;
+		controlAck?: Promise<void>;
+	} = {},
 ) {
 	const commands: ClientCommand[] = [];
 	let listener: ((sessionId: string, event: AtelierEvent) => void) | undefined;
@@ -84,6 +90,9 @@ function fakeCore(
 		async request(command) {
 			commands.push(command);
 			if (command.command === "sessions.list") return { sessions: [{ id: "old", backend: "fake", resumable: true }] };
+			// The first start is the launch; a later start or a resume is a session move the test can hold open.
+			const moving = command.command === "session.resume" || sent("session.start").length > 1;
+			if (moving) await options.controlAck;
 			if (command.command === "session.resume") return { sessionId: "s1", entries: options.entries ?? [] };
 			if ((command.command as string) === "session.shell_result" && options.shellFails) throw new Error("disk full");
 			// A core that went away and never answers.
@@ -461,6 +470,38 @@ describe("TUI shell commands", { timeout: 20_000 }, () => {
 			}
 		},
 	);
+
+	it.each([
+		["/new", "\r"],
+		["/new", "\x1b\r"],
+		["/resume old", "\r"],
+		["/resume old", "\x1b\r"],
+	])("keeps a shell draft typed during %s and runs it only when submitted again (%j)", async (control, key) => {
+		const ack = Promise.withResolvers<void>();
+		const h = open([], { controlAck: ack.promise });
+		try {
+			await until(h.screen.started);
+			h.send(control);
+			await until(() =>
+				control === "/new" ? h.core.sent("session.start").length === 2 : h.core.sent("session.resume").length === 1,
+			);
+			h.screen.type("!echo late");
+			h.screen.type(key);
+			await turn();
+			expect(h.runner.calls).toEqual([]);
+			ack.resolve();
+			await until(() => h.screen.screen().includes("!echo late"));
+			await turn();
+			expect(h.runner.calls).toEqual([]);
+			h.screen.type(key);
+			await until(() => h.runner.calls.length === 1);
+			expect(h.runner.calls[0]?.command).toBe("echo late");
+		} finally {
+			ack.resolve();
+			h.screen.type("\x03");
+			await h.code;
+		}
+	});
 
 	it("clears a shell draft with Esc while leaving an open question alone", async () => {
 		const h = open();
