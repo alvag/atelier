@@ -62,6 +62,10 @@ const DEFAULT_BACKGROUND = "\x1b[49m";
 /** A reset inside a shaded line, after which the shade is set again. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: the resets are what is matched
 const BACKGROUND_RESET = /\x1b\[(?:0|49)?m/g;
+const DEFAULT_FOREGROUND = "\x1b[39m";
+/** A reset inside colored text, after which its color is set again. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the resets are what is matched
+const FOREGROUND_RESET = /\x1b\[(?:0|39)?m/g;
 
 /** The terminal's background a little lighter, or a little darker on a light terminal. */
 export function shadeOf(background: RgbColor): Color {
@@ -127,9 +131,15 @@ function distinct(
 	return ansi;
 }
 
+/** `text` after `ansi`, set again after every one of `resets` inside it, and `end` after it. */
+const kept = (ansi: string, resets: RegExp, end: string, text: string) =>
+	`${ansi}${text.replace(resets, (reset) => `${reset}${ansi}`)}${end}`;
+
 /** `line` on the background `ansi`, kept after every reset inside it. */
-const onBackground = (ansi: string, line: string) =>
-	`${ansi}${line.replace(BACKGROUND_RESET, (reset) => `${reset}${ansi}`)}${DEFAULT_BACKGROUND}`;
+export const onBackground = (ansi: string, line: string) => kept(ansi, BACKGROUND_RESET, DEFAULT_BACKGROUND, line);
+
+/** `text` in the color `ansi`, kept after every reset inside it, so colored text can sit inside it. */
+export const onForeground = (ansi: string, text: string) => kept(ansi, FOREGROUND_RESET, DEFAULT_FOREGROUND, text);
 
 export type Band = "removed" | "added";
 
