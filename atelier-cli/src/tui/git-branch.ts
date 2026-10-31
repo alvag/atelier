@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import {
 	copyFile,
 	lstat,
@@ -160,18 +160,21 @@ export async function readGitChanges(
 		const settings = await query(["config", "--null", "--list"]);
 		/** Each diff driver's `binary` setting, which tells its files binary or text without running anything. */
 		const drivers = new Map<string, boolean>();
+		/** A driver's `binary` setting git would refuse, which makes it fail rather than compare. */
+		let refusedDriver = false;
 		for (const entry of settings.split("\0")) {
 			const split = entry.indexOf("\n");
 			const key = split < 0 ? entry : entry.slice(0, split);
 			const value = split < 0 ? "true" : entry.slice(split + 1);
 			if (/^core\.(autocrlf|eol|filemode|ignorecase|symlinks|precomposeunicode|excludesfile|attributesfile)$/.test(key))
 				safety.push("-c", `${key}=${value}`);
+			if (!/^diff\..*\.binary$/su.test(key)) continue;
 			const driver = /^diff\.([^=\p{Cc}]+)\.binary$/u.exec(key)?.[1];
-			// As written, so that git in the view reads it as the user's git does, even a value it refuses.
-			if (driver !== undefined && !/\p{Cc}/u.test(value)) {
+			const binary = /\p{Cc}/u.test(value) ? undefined : gitBoolean(value);
+			if (driver === undefined || binary === undefined) refusedDriver = true;
+			else {
+				drivers.set(driver, binary);
 				safety.push("-c", `${key}=${value}`);
-				const binary = gitBoolean(value);
-				if (binary !== undefined) drivers.set(driver, binary);
 			}
 		}
 		// rev-parse reads metadata, not worktree contents: unlike status it cannot invoke clean filters.
@@ -225,6 +228,8 @@ export async function readGitChanges(
 			);
 			if (counts !== null && !expired()) changes.commits = { ahead: Number(counts[1]), behind: Number(counts[2]) };
 		}
+		// Git would stop at the setting instead of counting: so does the counter, as with a filter.
+		if (refusedDriver) return changes;
 		const output = await query([
 			"status",
 			"--porcelain=v1",
@@ -354,6 +359,17 @@ async function untrackedLines(
 		// Git counts a symlink's target as its one line, whatever its attributes say.
 		if (info?.isSymbolicLink()) lines++;
 		if (!info?.isFile() || kind(path) === "binary") continue;
+		// Never read outside the worktree: no symlink on the way to the file before it opens (O_NOFOLLOW guards only its
+		// last component), the same file opened as checked, and both still so once it is read; else the count is unknown.
+		const direct = await bounded(realpath(name)).then(
+			(real) => real === name,
+			(error: NodeJS.ErrnoException) => {
+				if (error.code === "ENOENT") return undefined;
+				throw error;
+			},
+		);
+		if (direct === undefined) continue;
+		if (!direct) return undefined;
 		// Never follow a link or wait on a FIFO that replaced the file since.
 		const opening = open(name, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
 		const file = await bounded(opening).catch((error: NodeJS.ErrnoException) => {
@@ -366,7 +382,7 @@ async function untrackedLines(
 		if (file === undefined) continue;
 		try {
 			const opened = await bounded(file.stat());
-			if (!opened.isFile()) continue;
+			if (!opened.isFile() || !sameFile(opened, info)) return undefined;
 			budget -= opened.size;
 			if (budget < 0) return undefined;
 			const content = Buffer.alloc(opened.size);
@@ -376,6 +392,8 @@ async function untrackedLines(
 				if (bytesRead === 0) break;
 				read += bytesRead;
 			}
+			const after = await bounded(lstat(name));
+			if (!sameFile(after, opened) || (await bounded(realpath(name))) !== name) return undefined;
 			lines += lineCount(content.subarray(0, read), kind(path) === "text");
 		} finally {
 			// Not awaited: a read given up on would hold the close, and with it the call.
@@ -384,6 +402,8 @@ async function untrackedLines(
 	}
 	return lines;
 }
+
+const sameFile = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
 
 /** A config value as git reads a boolean: `true`/`yes`/`on`, `false`/`no`/`off`/empty, or a number, `0` false. */
 function gitBoolean(value: string): boolean | undefined {
