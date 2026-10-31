@@ -9,6 +9,7 @@ export interface TurnReflog {
 
 export type TurnBase = { ok: true; commit?: string; note?: string } | { ok: false; reason: string };
 type Entry = { from: string; to: string; message: string };
+type Move = "switch" | "landing" | "replay";
 const OWN_COMMIT = /^commit( \((initial|amend)\))?: /;
 
 export async function captureTurnReflog(cwd: string): Promise<TurnReflog | null> {
@@ -120,9 +121,11 @@ export async function rewrittenTurnBase(
 	if (tip !== head) return unavailable("the HEAD reflog transitions are incomplete");
 	let base = start;
 	let resetBase: string | undefined;
-	let moved: "switch" | "landing" | "replay" | undefined;
+	let moved: Move | undefined;
 	let rewritten = false;
 	const owned: string[] = [];
+	const ownBases = new Map<string, { base: string; moved: Move | undefined; owned: string[] }>();
+	const remember = (commit: string) => ownBases.set(commit, { base, moved, owned: [...owned] });
 	for (let i = 0; i < entries.length; i++) {
 		const entry = entries[i];
 		if (entry === undefined) return unavailable("the HEAD reflog transitions are incomplete");
@@ -135,18 +138,29 @@ export async function rewrittenTurnBase(
 			rewritten = rebase.boundary !== undefined;
 			moved = rewritten ? "replay" : "landing";
 			base = rebase.boundary ?? rebase.landed;
+			for (const replay of entries.slice(i + 1, end)) if (owned.includes(replay.to)) remember(replay.to);
 			i = end;
 		} else if (OWN_COMMIT.test(entry.message)) {
 			if (resetBase !== undefined) base = resetBase;
 			resetBase = undefined;
 			rewritten = true;
 			owned.push(entry.to);
+			remember(entry.to);
 		} else if (entry.message.startsWith("checkout: ")) {
-			owned.length = 0;
-			base = entry.to;
 			resetBase = undefined;
-			moved = "switch";
-			rewritten = false;
+			const previous = ownBases.get(entry.to);
+			if (previous !== undefined) {
+				// Naming or returning to our own work must not make it pre-turn history.
+				base = previous.base;
+				moved = previous.moved;
+				owned.splice(0, owned.length, ...previous.owned);
+				rewritten = true;
+			} else {
+				owned.length = 0;
+				base = entry.to;
+				moved = "switch";
+				rewritten = false;
+			}
 		} else if (entry.message.startsWith("reset: ")) {
 			const before = resetBase ?? base;
 			const ancestor = await runGit(["merge-base", "--is-ancestor", entry.to, before], { cwd });

@@ -130,7 +130,7 @@ While a question or a list is open, the editor is hidden and keys go to it, Ctrl
 
 ### Automatic review
 
-Commits made during a turn, including amendments, are part of its automatic review. A branch switch alone does not review the other branch's history; subsequent work is measured from where the switch landed. If a rewritten history cannot be attributed safely, Atelier reports that review is unavailable and explains why instead of silently skipping it. See [review and verification](docs/review.md).
+Commits made during a turn, including amendments, are part of its automatic review. A branch switch alone does not review the other branch's history; subsequent work is measured from where the switch landed. Creating or switching to a branch at a turn-owned commit keeps its earlier changes in the review, including after an amend. If a rewritten history cannot be attributed safely, Atelier reports that review is unavailable and explains why instead of silently skipping it. See [review and verification](docs/review.md).
 
 ### Structured questions
 
