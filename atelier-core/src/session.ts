@@ -84,6 +84,7 @@ import {
 } from "./profiles/index.ts";
 import { loadProjectInstructions, type ProjectInstructions } from "./project-instructions.ts";
 import { LEFT_YOLO, MEMORY_RULES, oddRules, RISK_RULES, YOLO_RULES } from "./prompt.ts";
+import { changesFiles } from "./review/own-changes.ts";
 import { type ReviewHost, type ReviewOptions, SessionReview, type Spent } from "./review/session-review.ts";
 import { RISK_TOOL } from "./review/tool.ts";
 import { createScratchDir, type ScratchDir } from "./scratch.ts";
@@ -431,6 +432,8 @@ export class Session {
 	#systemPrompt = "";
 	/** A turn ran: there is a conversation for another backend to take over. */
 	#hadTurn = false;
+	/** The current turn ran a tool that may change the worktree: only then does its end assess a change. */
+	#changedFiles = false;
 	#promptImages = false;
 	/** The summary a new backend took over, until a turn of its own: a second change before one passes it on again. */
 	#carried: string | undefined;
@@ -925,6 +928,7 @@ export class Session {
 			const request = woken ? (this.#previousTurn?.request ?? prompt) : prompt;
 			// What the agent declared in an earlier turn does not cover this one, and its candidate starts from today's HEAD.
 			this.#review?.startTurn(this.#options.cwd, request);
+			this.#changedFiles = false;
 			// The first turn says whether memory works and gives the model the recent memory, outside the system prompt.
 			let sent = prompt;
 			if (!this.#announced) {
@@ -1056,9 +1060,10 @@ export class Session {
 				},
 				withEffectiveEffort(this.#mainAgent, backendSession.effectiveEffort?.()),
 			);
-			// A change left by a turn that finished well is assessed before the turn ends; its cost joins the turn's.
+			// A change left by a turn that finished well is assessed before the turn ends, its cost joining the turn's; a turn
+			// that changed nothing of its own is not charged with what others changed in the worktree.
 			const clean = !failed && finish !== undefined && !signal.aborted && !NOT_REVIEWED.has(finish.stopReason);
-			if (!clean || !this.#review) return ended;
+			if (!clean || !this.#review || !this.#changedFiles) return ended;
 			return addSpent(ended, await this.#review.endOfTurn(this.#reviewHost(turn, signal, backendSession)));
 		});
 	}
@@ -1835,7 +1840,7 @@ export class Session {
 	#jobEnded({ job, notice }: EndedJob): void {
 		// Past a delivery's budget, the notice only says how the job ended and where its output is.
 		const short = `${notice?.split("\n")[0]}\nIts output did not fit with the other notices: read it at ${job.outputPath}`;
-		this.#backgroundEnded(notice === undefined ? undefined : { text: notice, short }, (waiting) => ({
+		this.#backgroundEnded(notice === undefined ? undefined : { text: notice, short, job: true }, (waiting) => ({
 			type: "job_finished",
 			jobId: job.id,
 			label: job.label,
@@ -1903,6 +1908,8 @@ export class Session {
 		if (this.#backgroundNotices.length === 0) return undefined;
 		const notices = this.#backgroundNotices.splice(0);
 		this.#noticesWake = false;
+		// What a job of the session wrote after its own turn is reviewed with the turn that hears it ended.
+		if (notices.some((notice) => notice.job)) this.#changedFiles = true;
 		turn?.push({ type: "jobs_status", running: this.#runningBackground(), waiting: 0 });
 		return notices;
 	}
@@ -2027,6 +2034,7 @@ export class Session {
 					Object.assign(context, await this.#currentRules(emit));
 				}
 			}
+			if (changesFiles(call.tool, call.input, this.#options.subagents?.agents ?? [])) this.#changedFiles = true;
 			const outcome = await tool.execute(call.input, context);
 			if (outcome.images?.length) {
 				const problem = imageInputProblem(
