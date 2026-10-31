@@ -390,25 +390,58 @@ describe("TUI shell commands", { timeout: 20_000 }, () => {
 		expect(await h.code).toBe(130);
 	});
 
-	it("cancels a running command with Esc even while a question is open, and leaves the question open", async () => {
-		const h = open();
-		await until(h.screen.started);
-		h.send("work");
-		await until(() => h.core.sent("session.send").length === 1);
-		await turn();
-		h.send("!sleep 100");
-		await until(() => h.runner.calls.length === 1);
-		const questions = [{ id: "q1", question: "Pick one?", options: [{ id: "a", label: "Alpha" }] }];
-		h.core.emit({ type: "user_question_requested", callId: "u1", questions });
-		await until(() => h.screen.screen().includes("Pick one?"));
-		h.screen.type("\x1b");
-		await until(() => h.runner.calls[0]?.options.signal?.aborted === true);
-		await until(() => h.core.sent("session.shell_result").length === 1);
-		expect(h.core.sent("session.answer_user")).toEqual([]);
-		expect(h.core.sent("session.interrupt")).toEqual([]);
-		// Ctrl+C closes the question, interrupts the turn, and quits.
-		for (let i = 0; i < 3; i++) h.screen.type("\x03");
-		expect(await h.code).toBe(130);
+	it("denies an open approval with Esc while a shell command runs, and leaves the command running", async () => {
+		const h = open([], {}, { answerGuardMs: 0 });
+		try {
+			await until(h.screen.started);
+			h.send("work");
+			await until(() => h.core.sent("session.send").length === 1);
+			await turn();
+			h.send("!sleep 100");
+			await until(() => h.runner.calls.length === 1);
+			h.core.emit({ type: "approval_requested", tool: "bash", callId: "a1", command: "echo hi" });
+			await until(() => h.screen.screen().includes("Run this command?"));
+			h.screen.type("\x1b");
+			await until(() => h.core.sent("session.approve").length === 1);
+			expect(h.core.sent("session.approve")[0]).toMatchObject({ callId: "a1", approved: false });
+			expect(h.runner.calls[0]?.options.signal?.aborted).toBe(false);
+			expect(h.core.sent("session.interrupt")).toEqual([]);
+			// With no question left, Esc cancels the command.
+			h.screen.type("\x1b");
+			await until(() => h.runner.calls[0]?.options.signal?.aborted === true);
+			await until(() => h.core.sent("session.shell_result").length === 1);
+			expect(h.core.sent("session.interrupt")).toEqual([]);
+			h.core.finishTurn();
+		} finally {
+			for (let i = 0; i < 3; i++) h.screen.type("\x03");
+			expect(await h.code).toBe(130);
+		}
+	});
+
+	it("closes an open question with Esc while a shell command runs, and leaves the command running", async () => {
+		const h = open([], {}, { answerGuardMs: 0 });
+		try {
+			await until(h.screen.started);
+			h.send("work");
+			await until(() => h.core.sent("session.send").length === 1);
+			await turn();
+			h.send("!sleep 100");
+			await until(() => h.runner.calls.length === 1);
+			const questions = [{ id: "q1", question: "Pick one?", options: [{ id: "a", label: "Alpha" }] }];
+			h.core.emit({ type: "user_question_requested", callId: "u1", questions });
+			await until(() => h.screen.screen().includes("Pick one?"));
+			h.screen.type("\x1b");
+			await until(() => h.core.sent("session.answer_user").length === 1);
+			expect(h.runner.calls[0]?.options.signal?.aborted).toBe(false);
+			expect(h.core.sent("session.interrupt")).toEqual([]);
+			h.screen.type("\x1b");
+			await until(() => h.runner.calls[0]?.options.signal?.aborted === true);
+			await until(() => h.core.sent("session.shell_result").length === 1);
+			h.core.finishTurn();
+		} finally {
+			for (let i = 0; i < 3; i++) h.screen.type("\x03");
+			expect(await h.code).toBe(130);
+		}
 	});
 
 	it("waits for a completed shell result to be saved before sending the next prompt", async () => {
@@ -503,8 +536,8 @@ describe("TUI shell commands", { timeout: 20_000 }, () => {
 		}
 	});
 
-	it("clears a shell draft with Esc while leaving an open question alone", async () => {
-		const h = open();
+	it("answers an open question with Esc and keeps a hidden shell draft ready to submit", async () => {
+		const h = open([], {}, { answerGuardMs: 0 });
 		try {
 			await until(h.screen.started);
 			h.send("work");
@@ -515,14 +548,16 @@ describe("TUI shell commands", { timeout: 20_000 }, () => {
 			h.core.emit({ type: "user_question_requested", callId: "u1", questions });
 			await until(() => h.screen.screen().includes("Pick one?"));
 			h.screen.type("\x1b");
-			expect(h.core.sent("session.answer_user")).toEqual([]);
-			expect(h.core.sent("session.interrupt")).toEqual([]);
-			h.screen.type("\x03");
 			await until(() => h.core.sent("session.answer_user").length === 1);
+			expect(h.core.sent("session.interrupt")).toEqual([]);
 			h.core.finishTurn();
 			await turn();
+			// Submitting the preserved draft runs it without typing it again.
 			h.screen.type("\r");
-			expect(h.runner.calls).toEqual([]);
+			await until(() => h.runner.calls.length === 1);
+			expect(h.runner.calls[0]?.command).toBe("echo draft");
+			h.screen.type("\x1b");
+			await until(() => h.core.sent("session.shell_result").length === 1);
 			h.send("after question");
 			await until(() => h.core.sent("session.send").length === 2);
 			expect(h.core.sent("session.send")[1]).toMatchObject({ prompt: "after question" });

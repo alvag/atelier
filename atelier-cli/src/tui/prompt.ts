@@ -113,8 +113,16 @@ export class PromptEditor extends Editor {
 		if (this.hidden) return [];
 		const shell = parseShell(this.getText());
 		const notice =
-			shell === undefined ? [] : [this.#paint("yellow", `${SHELL_NOTICE}${shell.exclude ? EXCLUDED_NOTICE : ""}`)];
-		if (!this.#shade.on) return [...super.render(width), ...notice.map((line) => `${INDENT}${line}`)];
+			shell === undefined
+				? []
+				: [
+						truncateToWidth(
+							`${INDENT}${this.#paint("yellow", `${SHELL_NOTICE}${shell.exclude ? EXCLUDED_NOTICE : ""}`)}`,
+							width,
+							"",
+						),
+					];
+		if (!this.#shade.on) return [...super.render(width), ...notice];
 		const lines = super.render(Math.max(1, width - MARK.length));
 		const empty = this.getText() === "";
 		// The band ends at the bottom border; the rows under it are the completions, lined up with the text.
@@ -129,7 +137,7 @@ export class PromptEditor extends Editor {
 			return this.#band(row, width);
 		});
 		// The notice sits right under the band, over the completions.
-		rows.splice(bottom + 1, 0, ...notice.map((line) => `${INDENT}${line}`));
+		rows.splice(bottom + 1, 0, ...notice);
 		return rows;
 	}
 
