@@ -4674,6 +4674,8 @@ describe("TUI and background tasks", { timeout: 20_000 }, () => {
 		await until(() => h.screen.screen().includes("■ task task-1 finished"));
 		await until(() => h.backend.prompts.length === 2);
 		expect(h.backend.prompts[1]).toMatch(/^Background task task-1 \(explorer, "find"\) finished after \d+s/);
+		// Typed while the woken turn runs, /exit would only be queued as a steer: it ends first, with its cost.
+		await until(() => h.screen.screen().includes("$1.00"));
 		h.screen.type("/exit");
 		h.screen.type("\r");
 		expect(await code).toBe(0);
