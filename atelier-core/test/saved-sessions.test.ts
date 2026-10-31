@@ -412,6 +412,20 @@ describe("reading a session", () => {
 		});
 		await writeSession("renamed", [header("other-id"), config]);
 		await expect(store.load(cwd, "renamed")).rejects.toMatchObject({ code: "corrupt" });
+		await writeSession("noturn", [header("noturn"), config, { type: "response" }]);
+		await expect(store.load(cwd, "noturn")).rejects.toMatchObject({
+			code: "corrupt",
+			message: expect.stringContaining("response lacks its turn"),
+		});
+	});
+
+	it("keeps where a further response of the main agent starts in a turn", async () => {
+		const entries = [
+			{ type: "prompt", turnId: "t", text: "x" },
+			{ type: "response", turnId: "t" },
+		];
+		await writeSession("responses", [header("responses"), config, ...entries]);
+		expect((await new SessionStore(home).load(cwd, "responses")).entries).toEqual([config, ...entries]);
 	});
 
 	it("lists a file with an unknown version and does not resume it, leaving it as it is", async () => {
@@ -663,6 +677,33 @@ describe("who can read a session file", () => {
 
 describe("a write that fails", () => {
 	const user = (value: string) => ({ role: "user", content: value });
+
+	it("reports the text before a shell result like any other write, not with the result", async () => {
+		const record = new SessionStore(home).create(cwd);
+		const result = {
+			executionId: "after-text",
+			command: "true",
+			output: "",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			excludeFromContext: false,
+		};
+		record.prompt("t", "work");
+		await record.flush();
+		await chmod(record.path, 0o400);
+		record.event({ type: "text_delta", turnId: "t", seq: 1, text: "Before the shell." });
+		await expect(record.shellResult(result)).rejects.toThrow();
+		expect(record.takeFailure()).toEqual(expect.any(String));
+		await chmod(record.path, 0o600);
+		await record.shellResult({ ...result, executionId: "after-recovery" });
+		const saved = await linesOf(record.path);
+		// Neither the text nor the refused result reached the file; the order of what did is kept.
+		expect(saved.slice(1).map((line) => [line.type, (line.result as typeof result | undefined)?.executionId])).toEqual([
+			["prompt", undefined],
+			["shell_result", "after-recovery"],
+		]);
+	});
 
 	it("leaves the history to be written in full at the next turn", async () => {
 		const store = new SessionStore(home);

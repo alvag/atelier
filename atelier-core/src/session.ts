@@ -128,7 +128,10 @@ import {
 } from "./tools/types.ts";
 import { UserQuestions } from "./user-questions.ts";
 
-type TurnEvent = AtelierEventBody & SubagentTag;
+/** Marks, in the turn's stream, where a further backend response of the main agent starts; only the saved session gets it. */
+const RESPONSE_STARTED = { type: "response_started" } as const;
+type TurnBody = AtelierEventBody & SubagentTag;
+type TurnEvent = TurnBody | typeof RESPONSE_STARTED;
 
 /** Errors a backend reports when its credentials are missing or refused. */
 const CREDENTIAL_ERRORS: ReadonlySet<string> = new Set(["not_logged_in", "authentication_error"]);
@@ -1131,7 +1134,7 @@ export class Session {
 		) => Promise<Extract<AtelierEventBody, { type: "turn_finished" }>>,
 	): AsyncGenerator<AtelierEvent> {
 		let seq = 0;
-		const stamp = (body: TurnEvent): AtelierEvent => ({ ...body, seq: ++seq, turnId });
+		const stamp = (body: TurnBody): AtelierEvent => ({ ...body, seq: ++seq, turnId });
 
 		const opening = this.#backendSession;
 		if (this.#closed || !opening) {
@@ -1217,6 +1220,10 @@ export class Session {
 
 		try {
 			for await (const body of turn) {
+				if (body.type === RESPONSE_STARTED.type) {
+					this.#options.record?.response(turnId);
+					continue;
+				}
 				if (body.type === "compaction_finished" && body.ok && body.parentCallId === undefined)
 					this.#contextWarned = undefined;
 				// Only the main agent's context: a subagent's turn neither warns, nor rearms, nor uses up the warning.
@@ -1265,7 +1272,7 @@ export class Session {
 		return { type: "context_warning", tokens, window, compactAt };
 	}
 
-	#imageHistoryWarning(body: TurnEvent): AtelierEventBody | undefined {
+	#imageHistoryWarning(body: TurnBody): AtelierEventBody | undefined {
 		if (!this.#promptImages || body.parentCallId !== undefined) return;
 		if (body.type === "compaction_finished" && body.ok)
 			return errorEvent(
@@ -1692,6 +1699,8 @@ export class Session {
 				let requests: number | undefined;
 				let ok = false;
 				let failed = false;
+				// Its text is not the text before it: the backend's end of the earlier response is not in the stream.
+				turn.push(RESPONSE_STARTED);
 				try {
 					for await (const event of backendSession.send(message)) {
 						if (event.type === "turn_finished") {

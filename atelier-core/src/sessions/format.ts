@@ -37,6 +37,8 @@ export interface SavedConfig {
  * the messages of `anthropic-api` (`replace`: they are the whole history, otherwise they follow the ones before).
  * A `prompt`'s optional `shellResults` are the execution ids of the user's shell results its turn carried to the
  * model; `shell_result` is a finished one as the client reported it (written when it arrives, even during a turn).
+ * `response` says that a further backend response of the main agent starts in that turn (a step of the automatic
+ * review: the risk declaration or a correction), so its text is not read as the earlier response's.
  * Files saved before these existed read as before, and an Atelier that does not know them skips the entry.
  * A state's optional `yoloTold` says whether the model was last told it runs in yolo (`null`: unknown, after a note
  * the backend failed on), written when that changes; a state without it keeps what an earlier one said.
@@ -45,6 +47,7 @@ export type SavedEntry =
 	| ({ type: "config" } & SavedConfig)
 	| { type: "prompt"; turnId: string; text: string; imageCount?: number; shellResults?: string[] }
 	| { type: "shell_result"; result: ShellResult }
+	| { type: "response"; turnId: string }
 	| { type: "text"; turnId: string; text: string; agent?: string; parentCallId?: string }
 	| { type: "event"; event: AtelierEvent }
 	| { type: "name"; name: string }
@@ -183,6 +186,7 @@ const KNOWN_ENTRIES: ReadonlySet<string> = new Set([
 	"name",
 	"state",
 	"shell_result",
+	"response",
 ]);
 
 const isString = (value: unknown): value is string => typeof value === "string";
@@ -218,6 +222,8 @@ function entryProblem(value: unknown): string | undefined {
 			const problem = shellResultProblem(value.result);
 			return problem === undefined ? undefined : `shell_result: ${problem}`;
 		}
+		case "response":
+			return isString(value.turnId) ? undefined : "response lacks its turn";
 		case "text":
 			return isString(value.turnId) && isString(value.text) ? undefined : "text lacks its turn or its text";
 		case "event":
