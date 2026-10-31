@@ -195,6 +195,7 @@ export {
 	type StatsRow,
 	type StatsSpend,
 } from "./sessions/index.ts";
+export { type ShellResult, shellResultText } from "./shell-result.ts";
 export {
 	type LoadedSkills,
 	loadSkills,

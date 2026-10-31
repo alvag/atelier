@@ -3,6 +3,7 @@ import type { ImageAttachment } from "../images.ts";
 import type { PermissionRuleScope } from "../permission-rules.ts";
 import type { ReviewConsentAnswer } from "../review/session-review.ts";
 import type { PermissionMode } from "../session.ts";
+import type { ShellResult } from "../shell-result.ts";
 import type { ThinkingLevel } from "../thinking.ts";
 import type { UserAnswer, UserQuestionCapabilities } from "../tools/ask-user.ts";
 
@@ -60,6 +61,19 @@ export type ClientCommand =
 	| { command: "profiles.list"; cwd?: string }
 	| { command: "session.send"; sessionId: string; prompt: string; images?: ImageAttachment[] }
 	| { command: "session.interrupt"; sessionId: string }
+	/**
+	 * Reports a shell command the user ran outside the sandbox (the client's `!` and `!!`) once it ended; the client
+	 * runs it and shows its live output, the core never does. The payload is nested under `result`: `executionId`
+	 * (the client's id, 1 to 200 characters; a repeated one is ignored), `command`, `excludeFromContext` (`!!`),
+	 * `output` (at most 50 KiB and 2000 lines), `exitCode` (an integer, or null when `cancelled`, killed by a
+	 * `signal` or not started because of an `error`), `cancelled`, `truncated`, and optionally `signal`,
+	 * `fullOutputPath` (never read) and `error`. Answers `{ duplicate }`. The result is saved and shown again by
+	 * `session.resume`; unless excluded, it starts no turn and reaches the model at the beginning of the next
+	 * `session.send` prompt (also while a turn runs: it waits for the next one). Fails with `unknown_session` (a
+	 * closed session is unknown too); a malformed result is `invalid_command`. A result that could not be saved fails with the
+	 * reason and may be sent again.
+	 */
+	| { command: "session.shell_result"; sessionId: string; result: ShellResult }
 	/**
 	 * Queues a message while a turn runs: a `steer` enters the running turn with its next tool result, a `follow_up`
 	 * runs as a turn of its own after it (see `queue_update` and `queued_message`). Answers `{ id }`; when no turn runs,

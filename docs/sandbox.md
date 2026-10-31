@@ -24,6 +24,8 @@ Not covered:
 - The `read`, `edit`, `write` and `grep` tools are not run by the sandbox; code decides what they open, which is a separate mechanism. `edit` and `write` leave `--cwd` only with the user's approval, file by file. `read` and `grep` may leave it but refuse the same secret directories and `denyRead` entries the sandbox hides from `bash`, whether or not the sandbox is running.
 - `bash` also runs without `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `OPENCODE_API_KEY`; that filters its environment and is not isolation.
 
+A command the user types themselves (`!`, `!!`) runs in the client outside this sandbox, and the core never executes it: it only receives the finished result through `session.shell_result` (see [Architecture](architecture.md)) and, unless the result is excluded with `!!`, tells the model in the next normal prompt that the command ran outside Atelier's sandbox.
+
 ## What you see
 
 At the start of a session (in its first turn) the core emits `{ type: "sandbox_status", sandboxed: boolean, mechanism?: string, reason?: string }`, computed without running a command. The CLI prints `bash: sandboxed (macOS seatbelt)` on stdout, or `bash: not sandboxed (<reason>): every command asks for approval in normal mode, and goes to the classifier in auto mode` on stderr. The desktop shows `bash: sandboxed (macOS seatbelt)` in the status bar, or `bash: not sandboxed` in the warning style with the reason as its tooltip. Subagents do not repeat it.
