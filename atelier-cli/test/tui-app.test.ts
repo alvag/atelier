@@ -755,7 +755,7 @@ describe("TUI", { timeout: 20_000 }, () => {
 			expect(await code).toBe(0);
 		});
 
-		it("counts unfiltered changes without running fsmonitor or clean filters or writing the index", async () => {
+		it("counts unfiltered changed lines without running fsmonitor or clean filters or writing the index", async () => {
 			const git = (...args: string[]) => execFileSync("git", args, { cwd });
 			git("init", "-q", "-b", "main");
 			await writeFile(join(cwd, "tracked"), "original\n");
@@ -779,13 +779,13 @@ describe("TUI", { timeout: 20_000 }, () => {
 			const h = harness([[{ event: started }, { event: finished }]], { columns: 120 });
 			const code = run(["--no-session", "--no-review"], h.io, () => h.backend);
 			try {
-				await until(() => h.screen.frame()[0]?.includes("main ±3 ·") === true);
+				await until(() => h.screen.frame()[0]?.includes("main +3 −1 ·") === true);
 				await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
 				expect(await readFile(join(cwd, ".git", "index"))).toEqual(index);
 				await rm(join(cwd, "new", "two"));
 				h.screen.type("refresh");
 				h.screen.type("\r");
-				await until(() => h.screen.frame()[0]?.includes("main ±2 ·") === true);
+				await until(() => h.screen.frame()[0]?.includes("main +2 −1 ·") === true);
 				await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
 			} finally {
 				h.screen.type("\x04");

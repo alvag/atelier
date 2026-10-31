@@ -1,6 +1,7 @@
 import { styleText } from "node:util";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import type { GitChanges } from "../src/tui/git-branch.ts";
 import { Header, StatusBar, type StatusBarState } from "../src/tui/header.ts";
 import { painter } from "../src/tui/style.ts";
 
@@ -8,7 +9,7 @@ const state = {
 	cwd: "/home/me/code/app",
 	home: "/home/me",
 	branch: "feature/fixed-status-bar",
-	changes: 3,
+	git: { lines: { added: 12, removed: 4 }, commits: { ahead: 2, behind: 1 } },
 	model: "claude-opus-5-5",
 	effort: "high",
 	profile: "claude",
@@ -24,15 +25,15 @@ const bar = (value: StatusBarState = state, color = false) =>
 
 describe("status bar", () => {
 	it("shows the full home-relative path and right-aligns the context and cost at 120 columns", () => {
-		const left = "~/code/app feature/fixed-status-bar ±3 · claude-opus-5-5 high · profile claude";
+		const left = "~/code/app feature/fixed-status-bar +12 −4 ↑2 ↓1 · claude-opus-5-5 high · profile claude";
 		expect(bar().render(120)).toEqual([left + " ".repeat(120 - left.length - right.length) + right]);
 	});
 
 	it("shortens the path before the branch, then cuts the branch before other fields", () => {
-		const left = "app feature/fixed-status-bar ±3 · claude-opus-5-5 high · profile claude";
+		const left = "app feature/fixed-status-bar +12 −4 ↑2 ↓1 · claude-opus-5-5 high · profile claude";
 		expect(bar().render(left.length + right.length + 1)).toEqual([`${left} ${right}`]);
-		expect(bar().render(80).map(stripTerminalSequences)).toEqual([
-			`app fe… ±3 · claude-opus-5-5 high · profile claude ${right}`,
+		expect(bar().render(98).map(stripTerminalSequences)).toEqual([
+			`app feature/fi… +12 −4 ↑2 ↓1 · claude-opus-5-5 high · profile claude ${right}`,
 		]);
 	});
 
@@ -74,10 +75,19 @@ describe("status bar", () => {
 		);
 	});
 
-	it("omits the counter for clean or unknown status", () => {
-		expect(bar({ ...state, changes: 0 }).render(120)[0]).not.toContain("±");
-		const { changes: _changes, ...unknown } = state;
-		expect(bar(unknown).render(120)[0]).not.toContain("±");
+	it("omits each zero or unknown counter, never showing it as zero", () => {
+		const counters = (git: GitChanges) => {
+			const line = bar({ ...state, git }).render(120)[0] ?? "";
+			return line.slice(line.indexOf("bar") + 3, line.indexOf(" · "));
+		};
+		expect(counters({ lines: { added: 0, removed: 0 }, commits: { ahead: 0, behind: 0 } })).toBe("");
+		expect(counters({ lines: { added: 0, removed: 4 }, commits: { ahead: 0, behind: 1 } })).toBe(" −4 ↓1");
+		expect(counters({ lines: { added: 12, removed: 0 }, commits: { ahead: 2, behind: 0 } })).toBe(" +12 ↑2");
+		expect(counters({ commits: { ahead: 2, behind: 1 } })).toBe(" ↑2 ↓1");
+		expect(counters({ lines: { added: 12, removed: 4 } })).toBe(" +12 −4");
+		expect(counters({})).toBe("");
+		const { git: _git, ...unknown } = state;
+		expect(bar(unknown).render(120)[0]).toContain("feature/fixed-status-bar · ");
 	});
 
 	it("preserves the scrolling header outside fullscreen", () => {
