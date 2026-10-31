@@ -1810,13 +1810,18 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			tui.requestRender();
 			return { consume: true };
 		}
-		// Esc stops a running command first, without touching the turn or a question; then it clears a shell draft.
-		if (matchesKey(data, "escape") && shell !== undefined) {
+		// Questions take Esc first; otherwise it stops a running command, then clears a shell draft.
+		if (matchesKey(data, "escape") && questions.length === 0 && shell !== undefined) {
 			shell.abort.abort();
 			tui.requestRender();
 			return { consume: true };
 		}
-		if (matchesKey(data, "escape") && parseShell(editor.getText()) !== undefined && !editor.isShowingAutocomplete()) {
+		if (
+			matchesKey(data, "escape") &&
+			questions.length === 0 &&
+			parseShell(editor.getText()) !== undefined &&
+			!editor.isShowingAutocomplete()
+		) {
 			editor.setText("");
 			tui.requestRender();
 			return { consume: true };
