@@ -26,9 +26,20 @@ const reads = vi.hoisted(() => {
 		failOpen: undefined as { name: string; code: string } | undefined,
 		/** Runs as an untracked file's `lstat` starts. */
 		onLstat: undefined as (() => void) | undefined,
+		/** Runs before each `lstat`, `realpath` or `read` of a path, numbered from 1 per kind and path; a code it gives fails it. */
+		fault: undefined as ((kind: string, path: string, call: number) => Promise<string | undefined>) | undefined,
+		calls: new Map<string, number>(),
 	};
 	return state;
 });
+/** Fails `kind` on `path` with the code `reads.fault` gives, after it ran. */
+async function faultOf(kind: string, path: string) {
+	const key = `${kind} ${path}`;
+	const call = (reads.calls.get(key) ?? 0) + 1;
+	reads.calls.set(key, call);
+	const code = await reads.fault?.(kind, path, call);
+	if (code !== undefined) throw Object.assign(new Error(code), { code });
+}
 vi.mock("node:fs/promises", async (original) => {
 	const fs = await original<typeof import("node:fs/promises")>();
 	const open: typeof fs.open = async (...args) => {
@@ -41,6 +52,7 @@ vi.mock("node:fs/promises", async (original) => {
 			read: async (...rest: unknown[]) => {
 				reads.begin();
 				await reads.held;
+				await faultOf("read", String(args[0]));
 				return read(...rest);
 			},
 		});
@@ -48,9 +60,13 @@ vi.mock("node:fs/promises", async (original) => {
 	};
 	const lstat = ((...args: Parameters<typeof fs.lstat>) => {
 		reads.onLstat?.();
-		return fs.lstat(...args);
+		return faultOf("lstat", String(args[0])).then(() => fs.lstat(...args));
 	}) as typeof fs.lstat;
-	return { ...fs, default: { ...fs, open, lstat }, open, lstat };
+	const realpath = (async (...args: Parameters<typeof fs.realpath>) => {
+		await faultOf("realpath", String(args[0]));
+		return fs.realpath(...args);
+	}) as typeof fs.realpath;
+	return { ...fs, default: { ...fs, open, lstat, realpath }, open, lstat, realpath };
 });
 
 let base: string;
@@ -64,6 +80,8 @@ beforeEach(async () => {
 afterEach(async () => {
 	reads.failOpen = undefined;
 	reads.onLstat = undefined;
+	reads.fault = undefined;
+	reads.calls.clear();
 	reads.release();
 	await rm(base, { recursive: true, force: true });
 });
@@ -121,5 +139,53 @@ describe("reading untracked files", () => {
 		} finally {
 			process.off("unhandledRejection", onRejection);
 		}
+	});
+
+	/** The lines git itself counts for the untracked files left, once added with intent. */
+	const gitLines = () => {
+		git("add", "-N", ".");
+		const added = execFileSync("git", ["diff", "--numstat", "HEAD"], { cwd: base })
+			.toString()
+			.split("\n")
+			.filter(Boolean)
+			.reduce((sum, line) => sum + Number.parseInt(line, 10), 0);
+		return { added, removed: 0 };
+	};
+
+	// The checks after it opens and before a byte is read (the second lstat and realpath), the read, and the checks after it.
+	it.each([
+		["lstat", 2],
+		["realpath", 2],
+		["read", 1],
+		["lstat", 3],
+		["realpath", 3],
+	] as const)("skips a file gone at its %s #%i, as git no longer sees it", async (kind, at) => {
+		reads.release();
+		git("commit", "-q", "--allow-empty", "-m", "base");
+		await writeFile(join(base, "other"), "three\n");
+		let gone = false;
+		reads.fault = async (current, path, call) => {
+			if (current !== kind || call !== at || !path.endsWith("/untracked")) return undefined;
+			gone = true;
+			await rm(path);
+			// A read keeps the open file: only the fault can say it is gone.
+			return current === "read" ? "ENOENT" : undefined;
+		};
+		const changes = await readGitChanges(base, undefined, { timeoutMs: 30_000 });
+		expect(gone).toBe(true);
+		expect(changes).toEqual({ lines: gitLines() });
+	});
+
+	it.each([
+		["lstat", 2],
+		["realpath", 2],
+		["read", 1],
+		["lstat", 3],
+	] as const)("omits the lines when the %s #%i of a file fails for another reason", async (kind, at) => {
+		reads.release();
+		await writeFile(join(base, "other"), "three\n");
+		reads.fault = async (current, path, call) =>
+			current === kind && call === at && path.endsWith("/untracked") ? "EACCES" : undefined;
+		expect(await readGitChanges(base, undefined, { timeoutMs: 30_000 })).toEqual({});
 	});
 });
