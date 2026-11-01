@@ -115,6 +115,8 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                                        |
 | PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.                         |
 
+In the TUI, Up in an empty editor recalls the latest prompt from this project, including earlier sessions. While a recalled prompt is unedited, Up/Down browse only on its first/last visual line, including wrapped lines; elsewhere they move the cursor. Editing ends recall, and Down past the newest entry returns to an empty editor. Ordinary drafts keep the arrows for cursor movement. Each worktree or subdirectory has its own history; see [prompt history and privacy](docs/cli.md#prompt-history).
+
 ### Shell commands
 
 Type `!` and a command to run it yourself, outside the agent and its sandbox, even while a model turn runs (but not while a slash command is still running); `!!` runs it too but keeps the result out of the model's context:

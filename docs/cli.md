@@ -140,6 +140,10 @@ The TUI keeps the latest 100 distinct prompts per project across sessions, inclu
 
 Up in an empty editor recalls the latest submission, from this TUI or an earlier launch. `/new` and `/resume` keep the same recall list; it is not rebuilt from session transcripts. Ordinary prompts, queued text, and the shell and slash commands the editor remembers share this list. Recall only inserts text: a recalled command does not run until you submit it.
 
+Up starts recall only in an empty editor. Within an unedited recalled prompt, Up browses older entries only from its first visual line and Down browses newer ones only from its last visual line. Soft-wrapped rows count as lines: elsewhere the arrows move the cursor. At the oldest entry Up leaves both text and cursor alone; Down past the newest entry returns to an empty editor.
+
+Moving the cursor keeps recall active. Any edit ends it, even if that edit is later undone; ordinary drafts never enter recall. Autocomplete menus and open questions keep their existing key handling.
+
 Outer whitespace is trimmed, internal newlines are preserved, blank prompts are ignored, and an exact duplicate moves to the newest position. A prompt over 64 KiB of UTF-8 is sent normally but is not persisted. The stored text is expanded, not a large-paste placeholder. Image-bearing drafts and attachment bytes are not recorded. Accepted `!command` and `!!command` lines are stored in plain text, like shell history: `!!` does not make them private.
 
 The history directories are private (`0700`) and records are `0600`. Storage directories are checked for symlinks at startup and before later disk operations. Prompts are **not encrypted**: other processes running as you can read them. Avoid secrets in prompts and shell commands. To clear a project's history, close its TUI instances and delete its hash directory; to clear all projects, delete `prompt-history/`. This does not delete saved session transcripts or long-term memory.
