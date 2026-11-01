@@ -190,6 +190,24 @@ describe("the end-of-turn review of a turn that ran a tool that may change files
 		expect(s.main.prompts).toEqual(["echo", ASK]);
 	});
 
+	it("assesses a feature-only turn that creates a worktree file", async () => {
+		const feature = call("feature", {
+			action: "start",
+			name: "audit",
+			title: "Audit",
+			header: "Document work",
+			specs: ["Preserve review"],
+			tasks: [{ title: "Audit", specs: ["S1"], route: "inline" }],
+		});
+		const s = await start([[feature, { event: finished }]], { odd: true }, await cleanRepo());
+
+		const events = await s.send("track this work");
+
+		expect(s.main.toolResults[0]?.ok).toBe(true);
+		expect(execFileSync("git", ["status", "--porcelain"], { cwd: s.cwd, encoding: "utf8" })).toContain("?? odd/");
+		expect(assessed(events)).toHaveLength(1);
+	});
+
 	it("assesses a turn whose subagent wrote in the session's folder", async () => {
 		const child = new FakeBackend([[text("report"), { event: finished }]]);
 		const turn = [call("task", { agent: "worker", prompt: "change it" }), text("done"), { event: finished }];
