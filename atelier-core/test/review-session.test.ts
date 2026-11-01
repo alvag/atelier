@@ -99,12 +99,12 @@ const commit = (message = "work"): FakeStep[] => [
 ];
 
 /** A git repo with one commit and a clean worktree. */
-async function repo(): Promise<string> {
+async function repo(...initArgs: string[]): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), "atelier-review-session-"));
 	dirs.push(root);
 	const git = (...args: string[]) =>
 		execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
-	git("init", "-q");
+	git("init", "-q", ...initArgs);
 	await writeFile(join(root, "a.ts"), "base\n");
 	git("add", "-A");
 	git("commit", "-qm", "init");
@@ -1967,7 +1967,7 @@ if (split === "split") {
 				["a single", ""],
 				["a split", "--split=no-merge"],
 			])("does not skip a new commit hidden by %s forged commit-graph", async (_name, mode) => {
-				const cwd = await repo();
+				const cwd = await repo("--object-format=sha1");
 				ident(cwd);
 				const script = join(await mkdtemp(join(tmpdir(), "atelier-forge-")), "forge.cjs");
 				dirs.push(dirname(script));
