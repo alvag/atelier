@@ -62,6 +62,35 @@ it("refuses a symlinked Atelier base without writing through it", async () => {
 	expect(await readdir(elsewhere)).toEqual([]);
 });
 
+it("does not let a failed warning callback break startup", async () => {
+	await writeFile(join(home, ".atelier"), "not a directory");
+	const history = await PromptHistory.open(home, cwd, () => {
+		throw new Error("renderer unavailable");
+	});
+	await expect(history.add("still usable")).resolves.toBeUndefined();
+	expect(history.entries).toEqual(["still usable"]);
+});
+
+it.each(["base", "root", "project"])("refuses a %s directory replaced by a symlink after open", async (level) => {
+	const warnings: string[] = [];
+	const history = await open(cwd, warnings);
+	const [project] = await readdir(root());
+	const path = level === "base" ? join(home, ".atelier") : level === "root" ? root() : join(root(), project as string);
+	const elsewhere = join(home, "elsewhere");
+	const target = join(
+		elsewhere,
+		level === "base" ? "prompt-history" : "",
+		level === "project" ? "" : (project as string),
+	);
+	await mkdir(target, { recursive: true });
+	await rm(path, { recursive: true });
+	await symlink(elsewhere, path);
+	await history.add("must stay private");
+	expect(warnings).toHaveLength(1);
+	expect(history.entries).toEqual(["must stay private"]);
+	expect(await readdir(target)).toEqual([]);
+});
+
 it("keeps the latest occurrence of a repeated prompt and drops its older files", async () => {
 	const history = await open();
 	for (const text of ["a", "b", " a"]) await history.add(text);

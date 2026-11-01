@@ -84,6 +84,7 @@ import { createScreen, keepDocument, mount } from "./layout.ts";
 import { preparePastedImages } from "./pasted-images.ts";
 import { ProgramStatusReporter } from "./program-status.ts";
 import { PromptEditor, parseShell } from "./prompt.ts";
+import { PromptHistory } from "./prompt-history.ts";
 import { type ImageDraft, PromptImages } from "./prompt-images.ts";
 import { QueuePanel } from "./queue-panel.ts";
 import {
@@ -597,6 +598,17 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const questionOpen = () => questions.length > 0;
 	const queue = new QueuePanel(paint, questionOpen);
 	const editor = new PromptEditor(tui, editorTheme(paint), paint, shade, questionOpen);
+	const history = await PromptHistory.open(options.home ?? homedir(), args.cwd, (warning) => {
+		conversation.note(`warning: ${warning}`, true);
+		tui.requestRender();
+	});
+	for (const text of history.entries) editor.addToHistory(text);
+	let historyWrites = Promise.resolve();
+	/** All callers pass submitted, expanded text, never the editor's display-only paste or image markers. */
+	const remember = (text: string) => {
+		editor.addToHistory(text);
+		historyWrites = historyWrites.then(() => history.add(text));
+	};
 	/** What `options.list` answered last, or is answering: the models `/model ` completes. */
 	let listed: Promise<Options | undefined> = Promise.resolve(undefined);
 	/** `/model ` lists the models of the providers signed in to, as `options.list` answered them last. */
@@ -1063,7 +1075,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			editor.setText(line);
 			return conversation.note(COMMAND_WAITS);
 		}
-		editor.addToHistory(line);
+		remember(line);
 		editor.setText("");
 		void queueLine(line, kind);
 	};
@@ -1635,7 +1647,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			editor.setText(line);
 			return conversation.note(SHELL_BUSY, true);
 		}
-		editor.addToHistory(line);
+		remember(line);
 		editor.setText("");
 		runShellCommand(typed.command, typed.exclude);
 		tui.requestRender();
@@ -1669,7 +1681,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 		// It only reads the saved sessions, so it runs at any time, a turn or a command running or not.
 		if (isStatsCommand(text)) {
-			editor.addToHistory(line);
+			remember(line);
 			editor.setText("");
 			conversation.prompt(line);
 			runStats(text.split(/\s+/).slice(1));
@@ -1677,7 +1689,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 		if (busy && !commanding) return enqueue(line, "steer");
 		if (text === "" || busy || commanding) return;
-		editor.addToHistory(line);
+		remember(line);
 		editor.setText("");
 		if (text === "/exit") return quit(EXIT_OK);
 		conversation.prompt(line);
@@ -2017,6 +2029,6 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		await Promise.race([Promise.all(saving.keys()), gaveUp]);
 		await Promise.race([link.request({ command: "session.close", sessionId }).catch(() => {}), gaveUp]);
 		clearTimeout(timer);
-		await Promise.all([link.close(), released]);
+		await Promise.all([link.close(), released, historyWrites]);
 	}
 }

@@ -106,7 +106,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Alt+Enter         | While a turn runs, queue a follow-up, which runs as a turn of its own after it.                                |
 | Shift+Up          | Take the queued messages back into the editor, to edit them and send them again (also Alt+Up).                 |
 | Esc               | Cancel an open question or list; otherwise cancel a `!` command, clear a `!` draft, or interrupt the turn.     |
-| Up / Down         | Prompt history; move in lists and questions.                                                                   |
+| Up / Down         | Per-project prompt history across sessions; move in lists and questions.                                       |
 | Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit; in a question or a list, as Esc.              |
 | Ctrl+D            | Quit, on an empty editor; in a question or a list, as Esc.                                                     |
 | Ctrl+O            | Expand or fold the blocks of calls and every card, or the whole command of an approval.                        |

@@ -346,6 +346,50 @@ function harness(
 }
 
 describe("TUI", { timeout: 20_000 }, () => {
+	it.each([
+		["typed text", "a prompt from the previous TUI"],
+		["an expanded large paste", "line of pasted text\n".repeat(300).trim()],
+	])("recalls %s across TUI launches, without a saved session", async (_kind, text) => {
+		for (const launch of [0, 1]) {
+			const h = harness([[{ event: started }, { event: finished }]]);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			try {
+				await until(h.screen.started);
+				if (launch === 1) h.screen.type("\x1b[A");
+				else if (text.includes("\n")) {
+					h.screen.type(`\x1b[200~${text}\x1b[201~`);
+					await until(() => h.screen.screen().includes("[paste #"));
+				} else h.screen.type(text);
+				h.screen.type("\r");
+				await until(() => h.backend.prompts.length === 1);
+				expect(h.backend.prompts).toEqual([text]);
+				await until(() => h.screen.screen().includes("$0.50"));
+				h.screen.type("\x04");
+				expect(await code).toBe(0);
+			} finally {
+				h.terminate(15);
+				await code;
+			}
+		}
+	});
+
+	it("recalls the latest current-session submission with Up in the empty editor", async () => {
+		const h = harness([[{ event: started }, { event: finished }], [{ event: finished }]]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type("latest current-session prompt");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("\x1b[A");
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 2);
+		expect(h.backend.prompts).toEqual(["latest current-session prompt", "latest current-session prompt"]);
+		await until(() => h.screen.screen().includes("$1.00"));
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+	});
+
 	it("sends the prompt typed in the editor and shows the answer, the tool card and the footer", async () => {
 		const h = harness([
 			[
@@ -841,7 +885,7 @@ else if (process.argv.includes('status')) {
 			expect(await first).toBe(0);
 			expect(flag.screen.raw()).not.toContain(ALT_ON);
 
-			await mkdir(join(home, ".atelier"));
+			await mkdir(join(home, ".atelier"), { recursive: true });
 			await writeFile(
 				join(home, ".atelier", "settings.json"),
 				JSON.stringify({ kind: "atelier.settings", version: 1, tui: { fullscreen: false } }),

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /** How many distinct prompts a project keeps. */
 export const PROMPT_HISTORY_LIMIT = 100;
@@ -18,11 +18,15 @@ interface StoredPrompt {
 	text: string;
 }
 
+async function requireDir(path: string): Promise<void> {
+	if (!(await lstat(path)).isDirectory()) throw new Error(`${path} is not a directory (symbolic links are refused)`);
+}
+
 async function privateDir(path: string): Promise<void> {
 	await mkdir(path, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
 		if (error.code !== "EEXIST") throw error;
 	});
-	if (!(await lstat(path)).isDirectory()) throw new Error(`${path} is not a directory (symbolic links are refused)`);
+	await requireDir(path);
 	await chmod(path, 0o700);
 }
 
@@ -77,8 +81,7 @@ export class PromptHistory {
 			const real = await realpath(cwd);
 			const base = join(home, ".atelier");
 			await mkdir(base, { recursive: true, mode: 0o700 });
-			if (!(await lstat(base)).isDirectory())
-				throw new Error(`${base} is not a directory (symbolic links are refused)`);
+			await requireDir(base);
 			const root = join(base, "prompt-history");
 			await privateDir(root);
 			const dir = join(root, createHash("sha256").update(real).digest("hex"));
@@ -104,6 +107,7 @@ export class PromptHistory {
 		this.#entries = [...this.#entries.filter((entry) => entry !== trimmed), trimmed].slice(-PROMPT_HISTORY_LIMIT);
 		if (this.#dir === undefined) return;
 		try {
+			await this.#directory();
 			// Strictly increasing within this process, so records written in one millisecond keep their order.
 			const createdAt = Math.max(Date.now(), this.#last + 1);
 			this.#last = createdAt;
@@ -120,9 +124,16 @@ export class PromptHistory {
 		}
 	}
 
+	/** Recheck ancestors before each operation: an opened store must not follow a later replacement link. */
+	async #directory(): Promise<string> {
+		const dir = this.#dir as string;
+		for (const path of [dirname(dirname(dir)), dirname(dir), dir]) await requireDir(path);
+		return dir;
+	}
+
 	/** Read the records, delete the old and repeated ones, and return the kept texts oldest first. */
 	async #prune(): Promise<string[]> {
-		const dir = this.#dir as string;
+		const dir = await this.#directory();
 		const names = (await readdir(dir)).filter((name) => RECORD.test(name));
 		const read = await Promise.all(names.map((name) => readRecord(dir, name)));
 		const records = read.filter((record): record is StoredPrompt => record !== undefined);
@@ -142,6 +153,10 @@ export class PromptHistory {
 		if (this.#warned) return;
 		this.#warned = true;
 		const reason = error instanceof Error ? error.message : String(error);
-		this.#onWarning?.(`prompt history is not saved: ${reason}`);
+		try {
+			this.#onWarning?.(`prompt history is not saved: ${reason}`);
+		} catch {
+			// Reporting unavailable history must never make it a startup or submission failure.
+		}
 	}
 }
