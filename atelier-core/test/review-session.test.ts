@@ -1883,6 +1883,73 @@ describe("a turn after an approved review whose commit was rewritten", () => {
 			expectReviewOfRevision(s, events);
 			expect(ofType(events, "review_assessed")[0]).toMatchObject({ since: target.slice(0, 7) });
 		});
+
+		describe("a history faked by the turn's own replace refs or grafts", () => {
+			/**
+			 * N has REVISED auth. A checkout fake lets start seem the merge of start^ and N; a rebase fake follows an amend and has N child of the amended commit, and
+			 * lets the other pre-turn branch `side` seem to descend from N, so N seems old and N..start is empty.
+			 */
+			const fakeHistory = (graph: "replace" | "grafts", kind: "checkout" | "rebase") => {
+				const [at, parents, moves] =
+					kind === "checkout"
+						? ["$S", "$S $P $N", [`git update-ref -m 'checkout: moving from topic to own' HEAD $N`]]
+						: [
+								"$Q",
+								"$Q $N",
+								[
+									`git update-ref -m "rebase (start): checkout $N" HEAD $N`,
+									`git update-ref -m 'rebase (finish): returning to refs/heads/x' HEAD $N`,
+								],
+							];
+				const tree = kind === "checkout" ? "$S" : "$Q";
+				const links = kind === "checkout" ? "-p $P -p $N" : "-p $N";
+				return [
+					`S=$(git rev-parse HEAD) && P=$(git rev-parse HEAD^) && Q=$(git rev-parse side)`,
+					`N=$(git commit-tree "$(git write-tree)" -p ${kind === "checkout" ? "$P" : "$S"} -m new)`,
+					graph === "replace"
+						? `git replace -f ${at} $(git commit-tree "${tree}^{tree}" ${links} -m fake)`
+						: `G=$(git rev-parse --git-path info/grafts) && mkdir -p "$(dirname "$G")" && echo "${parents}" >> "$G"`,
+					...moves,
+				].join(" && ");
+			};
+
+			it.each([
+				["replace", "checkout"],
+				["grafts", "checkout"],
+				["replace", "rebase"],
+				["grafts", "rebase"],
+			] as const)("does not silently skip a %s fake of a %s to a new commit", async (graph, kind) => {
+				const cwd = await repo();
+				ident(cwd);
+				gitIn(cwd, "branch", "side");
+				gitIn(cwd, "checkout", "-q", "side");
+				gitIn(cwd, "commit", "-q", "--allow-empty", "-m", "side");
+				gitIn(cwd, "checkout", "-q", "-");
+				gitIn(cwd, "config", "alias.fake", `!${fakeHistory(graph, kind)}`);
+				const own = kind === "rebase" ? amend : [change("src/auth.ts", REVISED), git("add", "-A")];
+				const s = await approvedThen([...own, git("fake")], cwd);
+				expectStartBaseOrUnavailable(s, await revise(s));
+			});
+
+			it("gives the reviewers the committed blob, not a replacement of it", async () => {
+				const cwd = await repo();
+				ident(cwd);
+				const swap = [
+					`B=$(printf 'REPLACEMENT_MARKER\\n' | git hash-object -w --stdin)`,
+					`git replace $(git rev-parse HEAD:src/auth.ts) $B`,
+					`git replace $(git rev-parse HEAD~1:src/auth.ts) $B`,
+				].join(" && ");
+				gitIn(cwd, "config", "alias.swap", `!${swap}`);
+				const real = `${REVISED}// REAL_COMMITTED_MARKER\n`;
+				const s = await approvedThen([change("src/auth.ts", real), ...commit("revise"), git("swap")], cwd);
+				const events = await s.send("revise");
+				expect(ofType(events, "tool_call_finished").filter((event) => !event.ok)).toEqual([]);
+				expect(ofType(events, "review_status").filter((event) => !event.available)).toEqual([]);
+				expect(ofType(events, "review_assessed")).toHaveLength(1);
+				expect(s.roles.roles.some((role) => role.prompt.includes("REAL_COMMITTED_MARKER"))).toBe(true);
+				expect(s.roles.roles.some((role) => role.prompt.includes("REPLACEMENT_MARKER"))).toBe(false);
+			});
+		});
 	});
 });
 

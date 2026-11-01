@@ -8,6 +8,8 @@ Review with receipts (M7, Receipt-Driven Development): at the end of a turn that
 
 ### Rewritten commits
 
+All review Git commands ignore replace refs and grafts, so base selection, frozen candidates, reviewer reads and undo use the real committed objects and parents.
+
 Before the agent's tools run, the session captures the starting commit, all ref tips with `git for-each-ref` (local branches, remote-tracking refs, tags and stash), and a boundary in that worktree's HEAD reflog, located with `git rev-parse --git-path logs/HEAD` (not the common gitdir in a linked worktree). When the starting commit is no longer an ancestor of HEAD:
 - Commits and amends made during the turn retain the starting commit's tree as the base. A reset to an ancestor followed by a new commit also retains that tree: the turn's replacement, including deletions, is reviewed rather than disappearing against HEAD.
 - A reset alone uses the final HEAD as the base, so removed history is not a candidate. Edits left uncommitted after the reset are still included.
