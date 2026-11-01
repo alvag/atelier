@@ -16,10 +16,39 @@ const scratch = () => {
 	return dir;
 };
 
-/** Waits for what the test needs, never a fixed delay. */
-const until = async (condition: () => boolean) => {
-	for (let i = 0; i < 1000 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+/** Waits for what the test needs, never a fixed delay; `tries` bounds the wait (about 5 ms each). */
+const until = async (condition: () => boolean, tries = 1000) => {
+	for (let i = 0; i < tries && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
 	expect(condition()).toBe(true);
+};
+
+type Kill = (pid: number, signal: number) => unknown;
+
+const errorCode = (error: unknown) => (error as NodeJS.ErrnoException).code;
+
+/**
+ * Whether the process group `leader` names still exists, probed with signal 0. While a group is torn down (its
+ * members exiting or not reaped yet) macOS may answer EPERM instead of ESRCH: it is not gone yet. Any other error is
+ * thrown.
+ */
+const groupAlive = (leader: number, kill: Kill = (pid, signal) => process.kill(pid, signal)) => {
+	try {
+		kill(-leader, 0);
+		return true;
+	} catch (error) {
+		if (errorCode(error) === "EPERM") return true;
+		if (errorCode(error) === "ESRCH") return false;
+		throw error;
+	}
+};
+
+/** Kills the process group `leader` names; one still being torn down may refuse the signal or be gone by now. */
+const killGroup = (leader: number) => {
+	try {
+		process.kill(-leader, "SIGKILL");
+	} catch (error) {
+		if (errorCode(error) !== "EPERM" && errorCode(error) !== "ESRCH") throw error;
+	}
 };
 
 const run = (command: string, options: Partial<Parameters<typeof runUserShell>[1]> = {}) => {
@@ -215,33 +244,49 @@ describe("runUserShell", () => {
 			cwd: dir,
 			signal: controller.signal,
 		});
-		const groupAlive = () => {
-			try {
-				process.kill(-leader, 0);
-				return true;
-			} catch (error) {
-				expect(error).toMatchObject({ code: "ESRCH" });
-				return false;
-			}
-		};
 		let leader = 0;
 		try {
 			await until(() => live.join("").includes("ready") && existsSync(pidFile));
 			// The shell is the group leader, so its own pid names the group the runner must signal.
 			leader = Number(live.join("").split("\n")[0]);
 			expect(leader).toBeGreaterThan(1);
-			expect(groupAlive()).toBe(true);
+			expect(groupAlive(leader)).toBe(true);
 			controller.abort();
 			const done = await result;
 			expect(done.cancelled).toBe(true);
 			expect(done.signal).toBe("SIGTERM");
-			await until(() => !groupAlive());
+			await until(() => !groupAlive(leader));
 		} finally {
 			controller.abort();
 			// Only the group this test started is addressed; it is normally gone already.
-			if (leader > 1 && groupAlive()) process.kill(-leader, "SIGKILL");
+			if (leader > 1 && groupAlive(leader)) killGroup(leader);
 			await result;
 		}
+	});
+
+	describe("waiting for a cancelled process group to go", () => {
+		/** A kill that fails with each code in turn, and with the last one from then on. */
+		const failing = (...codes: string[]): Kill => {
+			let calls = 0;
+			return () => {
+				const code = codes[Math.min(calls++, codes.length - 1)];
+				throw Object.assign(new Error(`kill ${code}`), { code });
+			};
+		};
+
+		it("keeps waiting while the dying group answers EPERM", async () => {
+			const kill = failing("EPERM", "EPERM", "ESRCH");
+			await until(() => !groupAlive(4242, kill));
+		});
+
+		it("fails when the group never goes", async () => {
+			const kill = failing("EPERM");
+			await expect(until(() => !groupAlive(4242, kill), 3)).rejects.toThrow();
+		});
+
+		it("fails at once on an unexpected error code", () => {
+			expect(() => groupAlive(4242, failing("EINVAL"))).toThrow("EINVAL");
+		});
 	});
 
 	it.each([false, true])(

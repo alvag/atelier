@@ -9,12 +9,16 @@ interface SavedAsk {
 	outcome?: AskOutcome;
 }
 
-/** One answered prompt of a saved session: what the user asked, what they steered with, and the main agent's last text of the turn. */
+/**
+ * One answered prompt of a saved session: what the user asked, what they steered with, and the main agent's last text
+ * of each backend response in the turn (the main one, then each review step's): `answered` holds the finished ones.
+ */
 interface SavedTurn {
 	turnId: string;
 	prompt: string;
 	steers: string[];
 	asked: SavedAsk[];
+	answered: string[];
 	answer?: string;
 }
 
@@ -74,7 +78,16 @@ function turnsOf(entries: readonly SavedEntry[]) {
 				prompt: promptWithImages(entry.text, entry.imageCount),
 				steers: [],
 				asked: [],
+				answered: [],
 			});
+		} else if (entry.type === "response") {
+			const turn = turns.at(-1);
+			if (turn?.turnId !== entry.turnId) continue;
+			// A review step's response: what came before is the earlier response's answer, never joined to its text.
+			if (turn.answer !== undefined) turn.answered.push(turn.answer);
+			delete turn.answer;
+			joinAnswer = false;
+			hasAnswerSegment = false;
 		} else if (entry.type === "text" && entry.agent === undefined && entry.parentCallId === undefined) {
 			const turn = turns.at(-1);
 			if (turn?.turnId === entry.turnId) {
@@ -133,7 +146,10 @@ export function savedParts(id: string, name: string | undefined, entries: readon
 			parts.push({ questions, outcome });
 			out = "";
 		}
-		if (turn.answer !== undefined) out += `${visibleText(turn.answer).text.trimEnd()}\n`;
+		const answers = turn.answer === undefined ? turn.answered : [...turn.answered, turn.answer];
+		// A response whose visible text is empty adds neither a paragraph nor a separator.
+		const shown = answers.map((answer) => visibleText(answer).text.trimEnd()).filter((answer) => answer.trim() !== "");
+		if (answers.length > 0) out += `${shown.join("\n\n")}\n`;
 		ran(index + 1);
 	}
 	if (out !== "") parts.push({ text: out });
