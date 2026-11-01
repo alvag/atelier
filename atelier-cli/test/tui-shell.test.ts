@@ -274,6 +274,23 @@ describe("TUI shell commands", { timeout: 20_000 }, () => {
 		expect(await h.code).toBe(0);
 	});
 
+	it.each(["!", "!!"])("recalls a %s command in a later TUI without running it at startup", async (marker) => {
+		for (const launch of [0, 1]) {
+			const h = open();
+			await until(h.screen.started);
+			expect(h.runner.calls).toHaveLength(0);
+			if (launch === 0) h.screen.type(`${marker}echo again`);
+			else h.screen.type("\x1b[A");
+			h.screen.type("\r");
+			await until(() => h.runner.calls.length === 1);
+			expect(h.runner.calls[0]?.command).toBe("echo again");
+			h.runner.calls[0]?.finish(done);
+			await until(() => h.core.sent("session.shell_result").length === 1);
+			h.screen.type("\x04");
+			expect(await h.code).toBe(0);
+		}
+	});
+
 	it("sends a bare ! or !! as an ordinary prompt", async () => {
 		const h = open();
 		await until(h.screen.started);
