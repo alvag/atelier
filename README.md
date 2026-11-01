@@ -168,6 +168,7 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 | `mcp-auth.json`            | OAuth sign-ins of MCP servers (`0600`), written by `atelier mcp login`.                                                                                 |
 | `auth.json`                | API keys and OpenAI sign-ins stored by `atelier login` (`0600`); the agent cannot read it.                                                              |
 | `device-id`                | This installation's id for Sign in with ChatGPT (`0600`).                                                                                               |
+| `prompt-history/`          | Per-project TUI prompt history in plain text (`0700` directories, `0600` files), including `!` commands ([history](docs/cli.md#prompt-history)).        |
 | `sessions/`                | Saved sessions ([saved sessions](docs/sessions.md)).                                                                                                    |
 
 A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent reads `AGENTS.md` (or `CLAUDE.md`) from the working directory and its parents, and `~/.agents/AGENTS.md`. It also lists the skills in `.agents/skills/` (from the working directory up to the repository root) and in `~/.agents/skills/`, each a folder with a `SKILL.md`, and reads one when a task matches it; the first turn says which skills were loaded.
