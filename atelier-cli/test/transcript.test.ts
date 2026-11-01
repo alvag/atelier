@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type AtelierEvent,
+	createWriteTool,
 	FakeBackend,
 	type FakeStep,
 	type SavedEntry,
@@ -197,7 +198,12 @@ describe("a resumed turn whose review asked for the risk declaration", () => {
 		};
 		const backend = new FakeBackend(
 			[
-				[{ run: () => writeFile(join(cwd, "a.ts"), "base\nmore\n") }, say("Done."), finished],
+				// The turn changes the file with a call of its own: only such a turn is reviewed.
+				[
+					{ toolCall: { tool: "write", input: { path: "a.ts", content: "base\nmore\n" }, callId: "c-write" } },
+					say("Done."),
+					finished,
+				],
 				[...(shellDuring ? [shell] : []), ...declaration, finished],
 			],
 			"claude-code",
@@ -205,7 +211,7 @@ describe("a resumed turn whose review asked for the risk declaration", () => {
 		session = await Session.start({
 			backend,
 			cwd,
-			tools: [],
+			tools: [createWriteTool({ home: await scratch("writer-home") })],
 			record,
 			review: { createBackend: () => new FakeBackend([]) },
 		});
