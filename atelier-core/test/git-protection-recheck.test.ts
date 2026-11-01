@@ -9,7 +9,11 @@ import { gitConfigFixture } from "./support/git-config-cases.ts";
 
 const gitFault = vi.hoisted(() => ({
 	failRevParse: false,
+	// Production gives each git 5 s, which a loaded machine can exceed; the tools then take their fallback path and the pinned counts fail for no defect.
+	timeoutMs: 30_000,
 	revParses: [] as { args: readonly string[]; status: number | null; code: string | undefined; elapsedMs: number }[],
+	/** Every real git stopped before it exited: by this test's git timeout, or by Node at its output buffer. */
+	stopped: [] as { args: readonly string[]; elapsedMs: number; code: "ETIMEDOUT" | "ENOBUFS" }[],
 }));
 vi.mock("node:child_process", async (original) => {
 	const cp = await original<typeof import("node:child_process")>();
@@ -28,13 +32,19 @@ vi.mock("node:child_process", async (original) => {
 							signal: "SIGTERM",
 							error: Object.assign(new Error("controlled Git timeout"), { code: "ETIMEDOUT" }),
 						}
-					: cp.spawnSync(command, args, options);
+					: cp.spawnSync(command, args, command === "git" ? { ...options, timeout: gitFault.timeoutMs } : options);
+			const elapsedMs = Math.round(performance.now() - start);
+			const injected = gitFault.failRevParse && args[0] === "rev-parse";
+			const code = (run.error as NodeJS.ErrnoException | undefined)?.code;
+			// ENOBUFS with status 0 means git exited before Node could kill it, which the tools accept.
+			if (command === "git" && !injected && (code === "ETIMEDOUT" || (code === "ENOBUFS" && run.status === null)))
+				gitFault.stopped.push({ args, elapsedMs, code });
 			if (command === "git" && args[0] === "rev-parse")
 				gitFault.revParses.push({
 					args,
 					status: run.status,
-					code: (run.error as NodeJS.ErrnoException | undefined)?.code,
-					elapsedMs: Math.round(performance.now() - start),
+					code,
+					elapsedMs,
 				});
 			return run;
 		},
@@ -54,6 +64,7 @@ const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "u
 
 beforeEach(async () => {
 	gitFault.revParses.length = 0;
+	gitFault.stopped.length = 0;
 	base = await realpath(await mkdtemp(join(tmpdir(), "atelier-git-recheck-")));
 	cwd = join(base, "repo");
 	home = join(base, "home");
@@ -88,12 +99,15 @@ async function session(turns: FakeStep[][], approve: () => Promise<boolean> = as
 	return backend.toolResults;
 }
 
+/** Each test runs git several times; under load that takes far longer than the default 5 s. */
+const gitHeavy = { timeout: 90_000 };
+
 const refusal = (path: string) => ({
 	ok: false,
 	output: `${path} is git state that runs code: the agent does not write it.`,
 });
 
-describe("edit and write look at the git places again where they can have changed", () => {
+describe("edit and write look at the git places again where they can have changed", gitHeavy, () => {
 	it("between the question and the write: a core.hooksPath set while the user is asked is refused", async () => {
 		const hooks = join(base, "outside-hooks");
 		await mkdir(hooks);
@@ -130,7 +144,7 @@ describe("edit and write look at the git places again where they can have change
 	});
 });
 
-describe.skipIf(process.platform === "win32")("how many git processes one edit or write runs", () => {
+describe.skipIf(process.platform === "win32")("how many git processes one edit or write runs", gitHeavy, () => {
 	let bin: string;
 	let log: string;
 	const path = process.env.PATH;
@@ -150,7 +164,20 @@ describe.skipIf(process.platform === "win32")("how many git processes one edit o
 		await rm(bin, { recursive: true, force: true });
 	});
 
+	/** Runs first: a git stopped before it answered changes the path the tools take, which is not a wrong count. */
+	function expectNoStoppedGit() {
+		const message = gitFault.stopped
+			.map(({ args, elapsedMs, code }) =>
+				code === "ETIMEDOUT"
+					? `git ${args.join(" ")} was stopped by this test's ${gitFault.timeoutMs} ms git timeout after ${elapsedMs} ms: the machine was too slow, this is not a wrong count`
+					: `git ${args.join(" ")} was killed by Node at its output buffer after ${elapsedMs} ms, before it could exit: it lost that race, this is not a wrong count`,
+			)
+			.join("; ");
+		expect(gitFault.stopped, message).toEqual([]);
+	}
+
 	function expectRevParseResults(forceRevParse: boolean) {
+		expectNoStoppedGit();
 		expect(gitFault.revParses.length).toBeGreaterThan(0);
 		for (const run of gitFault.revParses) {
 			const message = forceRevParse
@@ -188,6 +215,7 @@ describe.skipIf(process.platform === "win32")("how many git processes one edit o
 				for (const phase of ["gate", "execute"] as const) {
 					await writeFile(log, "");
 					gitFault.revParses.length = 0;
+					gitFault.stopped.length = 0;
 					const result = phase === "gate" ? await tool.gate?.(input, { cwd }) : await tool.execute(input, { cwd });
 					expectRevParseResults(forceRevParse);
 					if (phase === "gate")
@@ -201,7 +229,6 @@ describe.skipIf(process.platform === "win32")("how many git processes one edit o
 					expect(gitFault.revParses.filter((run) => run.args.includes("--absolute-git-dir"))).toHaveLength(1);
 				}
 			},
-			90_000,
 		);
 
 	for (const forceRevParse of [false, true])
@@ -220,6 +247,7 @@ describe.skipIf(process.platform === "win32")("how many git processes one edit o
 					}
 					await writeFile(log, "");
 					gitFault.revParses.length = 0;
+					gitFault.stopped.length = 0;
 					const results = await session([[{ toolCall: { tool, callId: "c", input } }]]);
 					expectRevParseResults(forceRevParse);
 					expect(results[0]?.ok).toBe(true);
