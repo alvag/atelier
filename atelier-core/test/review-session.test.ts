@@ -1884,7 +1884,7 @@ describe("a turn after an approved review whose commit was rewritten", () => {
 			expect(ofType(events, "review_assessed")[0]).toMatchObject({ since: target.slice(0, 7) });
 		});
 
-		describe("a history faked by the turn's own replace refs or grafts", () => {
+		describe("a history faked by the turn's own Git metadata", () => {
 			/**
 			 * N has REVISED auth. A checkout fake lets start seem the merge of start^ and N; a rebase fake follows an amend and has N child of the amended commit, and
 			 * lets the other pre-turn branch `side` seem to descend from N, so N seems old and N..start is empty.
@@ -1929,6 +1929,67 @@ describe("a turn after an approved review whose commit was rewritten", () => {
 				const own = kind === "rebase" ? amend : [change("src/auth.ts", REVISED), git("add", "-A")];
 				const s = await approvedThen([...own, git("fake")], cwd);
 				expectStartBaseOrUnavailable(s, await revise(s));
+			});
+
+			/** Rewrites the commit-graph so S seems to have the new commit N as its second parent, hiding N from `rev-list N --not S`. */
+			const FORGE_GRAPH = `
+const { readFileSync, writeFileSync, chmodSync, renameSync, readdirSync, rmSync } = require("node:fs");
+const { createHash } = require("node:crypto");
+const { join } = require("node:path");
+const [objects, S, P, N, split] = process.argv.slice(2);
+const dir = split === "split" ? join(objects, "info", "commit-graphs") : join(objects, "info");
+const file = split === "split" ? readdirSync(dir).find((name) => name.endsWith(".graph")) : "commit-graph";
+const path = join(dir, file);
+const b = readFileSync(path);
+const chunks = {};
+for (let i = 0; i < b[6]; i++) chunks[b.toString("latin1", 8 + i * 12, 12 + i * 12)] = Number(b.readBigUInt64BE(12 + i * 12));
+const count = b.readUInt32BE(chunks.OIDF + 255 * 4);
+const ids = [];
+for (let i = 0; i < count; i++) ids.push(b.toString("hex", chunks.OIDL + i * 20, chunks.OIDL + i * 20 + 20));
+const rec = (oid) => chunks.CDAT + ids.indexOf(oid) * 36;
+const [s, n] = [rec(S), rec(N)];
+b.writeUInt32BE(ids.indexOf(P), s + 20);
+b.writeUInt32BE(ids.indexOf(N), s + 24);
+const word = b.readUInt32BE(s + 28);
+b.writeUInt32BE((((b.readUInt32BE(n + 28) >>> 2) + 1) << 2 | (word & 3)) >>> 0, s + 28);
+const sum = createHash("sha1").update(b.subarray(0, b.length - 20)).digest();
+sum.copy(b, b.length - 20);
+chmodSync(path, 0o644);
+writeFileSync(path, b);
+if (split === "split") {
+	renameSync(path, join(dir, "graph-" + sum.toString("hex") + ".graph"));
+	rmSync(join(dir, "commit-graph-chain"));
+	writeFileSync(join(dir, "commit-graph-chain"), sum.toString("hex") + "\\n");
+}
+`;
+
+			it.each([
+				["a single", ""],
+				["a split", "--split=no-merge"],
+			])("does not skip a new commit hidden by %s forged commit-graph", async (_name, mode) => {
+				const cwd = await repo();
+				ident(cwd);
+				const script = join(await mkdtemp(join(tmpdir(), "atelier-forge-")), "forge.cjs");
+				dirs.push(dirname(script));
+				await writeFile(script, FORGE_GRAPH);
+				const forge = [
+					`S=$(git rev-parse HEAD) && P=$(git rev-parse HEAD^)`,
+					`N=$(git commit-tree "$(git write-tree)" -p $P -m new)`,
+					`git update-ref refs/heads/include-new $N`,
+					`git -c commitGraph.generationVersion=1 commit-graph write --reachable ${mode}`,
+					`git update-ref -d refs/heads/include-new`,
+					`"${process.execPath}" "${script}" "$(git rev-parse --git-path objects)" $S $P $N ${mode ? "split" : "single"}`,
+					`git update-ref -m 'checkout: moving from topic to own' HEAD $N`,
+				].join(" && ");
+				gitIn(cwd, "config", "alias.forge", `!${forge}`);
+				const s = await approvedThen([change("src/auth.ts", REVISED), git("add", "-A"), git("forge")], cwd);
+				const events = await revise(s);
+				const n = gitIn(cwd, "rev-parse", "HEAD").trim();
+				const reach = (flag: string) =>
+					gitIn(cwd, "-c", `core.commitGraph=${flag}`, "rev-list", n, "--not", s.approved);
+				expect(reach("true").trim()).toBe("");
+				expect(reach("false").trim()).toBe(n);
+				expectStartBaseOrUnavailable(s, events);
 			});
 
 			it("gives the reviewers the committed blob, not a replacement of it", async () => {

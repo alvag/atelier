@@ -28,6 +28,7 @@ const STDERR_LIMIT = 16 * 1024;
 export function gitEnv(extra: Readonly<Record<string, string>> | undefined): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(process.env)) if (!key.startsWith("GIT_")) env[key] = value;
+	const configCount = Number(extra?.GIT_CONFIG_COUNT ?? 0);
 	return {
 		...env,
 		GIT_TERMINAL_PROMPT: "0",
@@ -35,6 +36,10 @@ export function gitEnv(extra: Readonly<Record<string, string>> | undefined): Nod
 		GIT_NO_REPLACE_OBJECTS: "1",
 		GIT_GRAFT_FILE: "/dev/null",
 		...extra,
+		// Append after caller config so writable commit-graphs never supply parents.
+		GIT_CONFIG_COUNT: String(configCount + 1),
+		[`GIT_CONFIG_KEY_${configCount}`]: "core.commitGraph",
+		[`GIT_CONFIG_VALUE_${configCount}`]: "false",
 	};
 }
 
