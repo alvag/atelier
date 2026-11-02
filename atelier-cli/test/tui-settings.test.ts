@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -172,6 +172,17 @@ describe("saving the side panel's choice", () => {
 			version: 1,
 			tui: { sidePanel: false },
 		});
+	});
+
+	it("keeps the file's permissions, and makes a new one as before", async () => {
+		await save(file({}));
+		await chmod(path(), 0o600);
+		await saveSidePanel(home, false);
+		expect((await stat(path())).mode & 0o777).toBe(0o600);
+		expect(JSON.parse(await readFile(path(), "utf8")).tui).toEqual({ sidePanel: false });
+		await rm(path());
+		await saveSidePanel(home, true);
+		expect((await stat(path())).mode & 0o777).toBe(0o666 & ~process.umask());
 	});
 
 	it("saves overlapping choices one after the other, the last one asked for winning", async () => {
