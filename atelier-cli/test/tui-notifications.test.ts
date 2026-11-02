@@ -1,6 +1,7 @@
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { detectHost } from "@atelier/core";
 import { describe, expect, it } from "vitest";
 import { channelFor, Notifier, onPath, type Surroundings } from "../src/tui/notifications.ts";
 
@@ -50,6 +51,23 @@ describe("channelFor", () => {
 		expect(channelFor("auto", at({}, "linux", ["notify-send"]))).toBe("notify-send");
 		expect(channelFor("auto", at({}, "linux"))).toBe("bell");
 		expect(channelFor("auto", at({}, "win32"))).toBe("bell");
+	});
+
+	it("follows the nearest host when the environment carries several", () => {
+		const orca = { ORCA_PANE_KEY: "tab:1" };
+		const core = { HC_TERMINAL_ID: "t1" };
+		const herdr = { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_SOCKET_PATH: "/tmp/herdr.sock" };
+		// An Orca pane opened from a herdr-core terminal or a herdr pane keeps their variables.
+		expect(channelFor("auto", at({ ...orca, ...core, TERM_PROGRAM: "Orca" }))).toBe("bell");
+		expect(channelFor("auto", at({ ...orca, ...herdr, TERM_PROGRAM: "Orca" }))).toBe("bell");
+		// herdr-core's terminals inherit Orca's variables from a core started in Orca.
+		expect(channelFor("auto", at({ ...orca, ...core, TERM_PROGRAM: "ghostty" }))).toBe("none");
+		expect(channelFor("auto", at({ ...orca, ...herdr, TERM_PROGRAM: "herdr" }))).toBe("none");
+	});
+
+	it("takes the host it is given over the environment", () => {
+		const host = detectHost({ ORCA_PANE_KEY: "tab:1" });
+		expect(channelFor("auto", { ...at({ HERDR_ENV: "1", TERM_PROGRAM: "ghostty" }), host })).toBe("bell");
 	});
 
 	it("takes the channel asked for, wherever the TUI runs", () => {

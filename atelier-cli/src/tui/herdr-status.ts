@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
+import { detectHost, type Host } from "@atelier/core";
 import { type ProgramStatus, visibleWidth } from "@earendil-works/pi-tui";
 
 const AGENT = "atelier";
@@ -159,14 +160,18 @@ export class HerdrStatusReporter {
 		this.#refreshMs = refreshMs;
 	}
 
-	/** A reporter for the Herdr pane the TUI runs in; none outside Herdr or when an Atelier already reports the pane. */
+	/**
+	 * A reporter for the Herdr pane the TUI runs in; none unless herdr is the host (`options.host`, else the one `env`
+	 * says), or when an Atelier already reports the pane.
+	 */
 	static fromEnv(
 		env: Record<string, string | undefined>,
-		options: { refreshMs?: number } = {},
+		options: { refreshMs?: number; host?: Host } = {},
 	): HerdrStatusReporter | undefined {
-		const paneId = env.HERDR_PANE_ID?.trim();
-		const socketPath = env.HERDR_SOCKET_PATH;
-		if (env.HERDR_ENV !== "1" || !paneId || !socketPath || env[PANE_MARKER] === paneId) return undefined;
+		const host = options.host ?? detectHost(env);
+		const paneId = host.herdr?.paneId?.trim();
+		const socketPath = host.herdr?.socketPath;
+		if (!host.supports.herdrPanes || !paneId || !socketPath || env[PANE_MARKER] === paneId) return undefined;
 		try {
 			if (!statSync(socketPath).isSocket()) return undefined;
 		} catch {

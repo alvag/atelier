@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import type { Host } from "@atelier/core";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { channelFor, Notifier, onPath, spawnDetached } from "./notifications.ts";
 import type { NotificationSettings } from "./settings.ts";
@@ -31,6 +32,8 @@ export interface AttentionOptions {
 	terminal: Terminal;
 	cwd: string;
 	env?: Record<string, string | undefined>;
+	/** The host told at start; without it, the one `env` says. */
+	host?: Host;
 	platform?: NodeJS.Platform;
 	spawn?: (command: string, args: string[]) => void;
 }
@@ -52,6 +55,7 @@ export class Attention {
 		const platform = options.platform ?? process.platform;
 		const channel = channelFor(settings.via, {
 			env,
+			...(options.host === undefined ? {} : { host: options.host }),
 			platform,
 			hasCommand: (name) => onPath(name, env.PATH ?? process.env.PATH),
 		});

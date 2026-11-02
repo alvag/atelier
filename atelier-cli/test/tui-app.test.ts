@@ -4022,6 +4022,27 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(h.err()).toBe("");
 		});
 
+		it("reports from a herdr pane inside herdr-app, not from herdr-app's terminal that inherited herdr's variables", async () => {
+			const herdr = await fakeHerdr();
+			// herdr writes TERM_PROGRAM=herdr in its panes, and herdr-core turns it into ghostty in its terminals.
+			for (const [TERM_PROGRAM, reports] of [
+				["ghostty", false],
+				["herdr", true],
+			] as const) {
+				const h = harness([[{ event: finished }]]);
+				h.io = { ...h.io, env: { ...herdrEnv(herdr.path), HC_TERMINAL_ID: "t1", TERM_PROGRAM } } as typeof h.io;
+				const code = run(["--no-session"], h.io, () => h.backend);
+				await until(h.screen.started);
+				if (reports) await until(() => herdr.calls.some((call) => call.params.state === "idle"));
+				h.screen.type("/exit");
+				h.screen.type("\r");
+				expect(await code).toBe(0);
+				expect(h.core.envs).toEqual(reports ? [{ ATELIER_HERDR_PANE: "w1:p1" }] : [{}]);
+				if (!reports) expect(herdr.calls).toEqual([]);
+			}
+			await herdr.close();
+		});
+
 		it("gives a saved session the command that resumes it, again after a move to another provider", async () => {
 			const herdr = await fakeHerdr();
 			const h = harness([]);
