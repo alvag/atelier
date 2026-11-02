@@ -3751,6 +3751,58 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 					: ["<root clear>"],
 			);
 		});
+
+		it.each([true, false])("reports background jobs by their lifecycle, past the root turn: %s", async (answers) => {
+			const h = harness([]);
+			const stub = stubCore();
+			const terminal = h.screen.terminal;
+			const root = terminal.setProgramStatus.bind(terminal);
+			terminal.setProgramStatus = (status) => {
+				if (status.state === "clear") terminal.write("<root clear>");
+				root(status);
+			};
+			const input = new PassThrough();
+			h.io.tui.terminal = observeProgramStatus(terminal, input);
+			h.io.tui.connect = async () => stub.link;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			if (answers) input.write("\x1b]7501;?\x1b\\");
+			const job = { agent: "w", label: "L", outputPath: "/o" };
+			const start = (n: number) => stub.emit({ type: "task_started", taskId: `b${n}`, ...job, running: 1 });
+			for (const [n, status] of (["finished", "failed", "stopped"] as const).entries()) {
+				start(n);
+				stub.emit(finished);
+				const end = { notified: true, running: 0, waiting: 0, durationMs: 1 };
+				stub.emit({ type: "task_finished", taskId: `b${n}`, ...job, status, ...end });
+			}
+			start(3);
+			stub.emit(finished);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: capture the child OSC body and the root-clear marker
+			const records = [...h.screen.raw().matchAll(/\x1b\]7501;([^\x1b]*id=[^\x1b]*)\x1b\\|(<root clear>)/g)].map(
+				(match) => match[1] ?? match[2],
+			);
+			const t = (n: number) => `id=task${n}:title=TA==`;
+			expect(records).toEqual(
+				answers
+					? [
+							`state=working:${t(1)}`,
+							`state=done:${t(1)}`,
+							`state=working:${t(2)}`,
+							`state=error:${t(2)}`,
+							`state=working:${t(3)}`,
+							"state=clear:id=task3",
+							`state=working:${t(4)}`,
+							"state=clear:id=task4",
+							"state=clear:id=task2",
+							"state=clear:id=task1",
+							"<root clear>",
+						]
+					: ["<root clear>"],
+			);
+		});
 	});
 
 	describe("notifications", () => {

@@ -13,6 +13,12 @@ export type SendChild = (record: ChildRecord) => void;
 /** The longest title handed to the sender, in UTF-8 bytes (the sender encodes it). */
 export const MAX_TITLE_BYTES = 192;
 const MAX_SEGMENTS = 8;
+const MAX_SEGMENT_LENGTH = 32;
+const MAX_ID_LENGTH = 128;
+/** The most records known at once (live and finished): the terminal's limit. */
+export const MAX_RECORDS = 256;
+/** How often live children are told again: a quarter of the terminal's 20 minute hold lapse. */
+export const REFRESH_MS = 5 * 60_000;
 const ELLIPSIS = "…";
 type Family = "task" | "review" | "verify";
 type Blocker = NonNullable<ChildRecord["kind"]>;
@@ -21,6 +27,8 @@ interface Child {
 	family: Family;
 	parentCallId: string;
 	id: string;
+	key: string;
+	background: boolean;
 	parent: Child | undefined;
 	title: string;
 	open: boolean;
@@ -51,7 +59,9 @@ const settled = (reason: string | undefined): ChildRecord["state"] =>
 
 /**
  * Follows the child agents of one TUI session (tasks, review roles, the verifier) from the tagged events of the
- * turn and tells each change of state to `send`, once. Background tasks are not followed.
+ * turn and tells each change of state to `send`, once. Background tasks are followed from `task_started` to
+ * `task_finished`, whatever the root turn does. While a child is live, all of them are told again every
+ * `REFRESH_MS` so the terminal does not let their records lapse.
  */
 export class ChildProgramStatus {
 	private readonly send: SendChild;
@@ -62,6 +72,13 @@ export class ChildProgramStatus {
 	/** What a root `task` call said, by call id: its title, kept until its first tagged event. */
 	private calls = new Map<string, string>();
 	private background = new Set<string>();
+	/** Background tasks running, by the task id (never told). */
+	private tasks = new Map<string, Child>();
+	/** Children that ended, oldest first: the ones to take off the terminal first. */
+	private ended: Child[] = [];
+	private timer: ReturnType<typeof setInterval> | undefined;
+	/** Changes at every reset, so a callback of an earlier life tells nothing. */
+	private epoch = 0;
 	/** A tagged `task` call is the parent of the children that name its id. */
 	private nested = new Map<string, Child>();
 
@@ -71,10 +88,13 @@ export class ChildProgramStatus {
 
 	handle(event: AtelierEvent) {
 		const { parentCallId, agent } = event;
+		if (event.type === "task_started") return this.taskStarted(event.taskId, event.label || event.agent);
+		if (event.type === "task_finished") return this.taskFinished(event.taskId, event.status);
 		if (event.type === "tool_call_started" && event.tool === "task") return this.taskCall(event, agent !== undefined);
 		if (event.type === "tool_call_finished") this.closeTask(event.callId, event.ok);
 		if (parentCallId !== undefined && agent !== undefined) return this.tagged(event, parentCallId, agent);
-		if (event.type === "review_finished") this.closeGroup(event.reviewId);
+		if (event.type === "session_started") this.sweep();
+		else if (event.type === "review_finished") this.closeGroup(event.reviewId);
 		else if (event.type === "verification_finished") this.closeGroup(event.verifyId);
 		else if (event.type === "turn_finished") this.closeAll(event.stopReason);
 		else if (event.type === "error") this.closeAll("error");
@@ -87,7 +107,11 @@ export class ChildProgramStatus {
 
 	/** Forgets every child without telling anything. */
 	reset() {
+		this.epoch++;
+		this.idle(true);
 		this.children.clear();
+		this.tasks.clear();
+		this.ended = [];
 		this.told = [];
 		this.calls.clear();
 		this.background.clear();
@@ -96,6 +120,7 @@ export class ChildProgramStatus {
 
 	/** Takes every child told off the terminal, the newest (children) first, and forgets them. */
 	stop() {
+		this.idle(true);
 		for (const child of this.told.reverse()) {
 			if (child.sent !== "clear") this.tell(child, "clear");
 		}
@@ -125,6 +150,7 @@ export class ChildProgramStatus {
 		if (child === undefined) {
 			if (event.type === "turn_finished" || event.type === "tool_call_finished") return;
 			child = this.start(key, parentCallId, agent);
+			if (child === undefined) return;
 		}
 		if (event.type === "approval_requested") child.blockers.set(event.callId, "permission");
 		else if (event.type === "user_question_requested") child.blockers.set(event.callId, "question");
@@ -137,17 +163,72 @@ export class ChildProgramStatus {
 		this.refresh(child);
 	}
 
-	private start(key: string, parentCallId: string, agent: string): Child {
+	private taskStarted(taskId: string, label: string) {
+		if (this.tasks.has(taskId)) return;
+		const child = this.start(`\0background\0${taskId}`, "", "", true, childTitle(label) || "task");
+		if (child === undefined) return;
+		this.tasks.set(taskId, child);
+		this.refresh(child);
+	}
+
+	private taskFinished(taskId: string, status: "finished" | "failed" | "stopped") {
+		const child = this.tasks.get(taskId);
+		if (child === undefined) return;
+		this.tasks.delete(taskId);
+		this.end(child, status === "finished" ? "done" : status === "failed" ? "error" : "clear");
+		if (status === "stopped") this.forget(child);
+	}
+
+	/** At a new root turn: takes the finished children off the terminal; the running ones stay. */
+	private sweep() {
+		for (const child of [...this.ended]) this.retire(child);
+	}
+
+	private retire(child: Child) {
+		if (child.sent !== "clear") this.tell(child, "clear");
+		this.forget(child);
+	}
+
+	private forget(child: Child) {
+		if (this.children.get(child.key) === child) this.children.delete(child.key);
+		this.told = this.told.filter((other) => other !== child);
+		this.ended = this.ended.filter((other) => other !== child);
+		for (const [callId, owner] of this.nested) if (owner === child) this.nested.delete(callId);
+	}
+
+	/** Starts or stops the one timer, by whether a child is live. */
+	private idle(stop = this.told.length === this.ended.length) {
+		if (stop) {
+			clearInterval(this.timer);
+			this.timer = undefined;
+		} else if (this.timer === undefined) {
+			const epoch = this.epoch;
+			this.timer = setInterval(() => {
+				if (epoch !== this.epoch) return;
+				for (const child of [...this.children.values()]) this.refresh(child, true);
+			}, REFRESH_MS);
+			this.timer.unref();
+		}
+	}
+
+	private start(key: string, parentCallId: string, agent: string, background = false, name = ""): Child | undefined {
+		if (this.told.length - this.ended.length >= MAX_RECORDS) return undefined;
 		const family = familyOf(agent);
 		const parent = this.nested.get(parentCallId);
-		const nests = parent?.open === true && parent.id.split("/").length < MAX_SEGMENTS;
 		const segment = `${family}${(++this.serial).toString(36)}`;
+		const nests =
+			parent?.open === true &&
+			parent.id.split("/").length < MAX_SEGMENTS &&
+			segment.length <= MAX_SEGMENT_LENGTH &&
+			parent.id.length + 1 + segment.length <= MAX_ID_LENGTH;
 		const child: Child = {
 			family,
 			parentCallId,
+			key,
+			background,
 			id: nests ? `${parent.id}/${segment}` : segment,
 			parent: nests ? parent : undefined,
-			title: (family === "task" ? this.calls.get(parentCallId) : undefined) || childTitle(agent) || family,
+			title: name || (family === "task" ? this.calls.get(parentCallId) : undefined) || childTitle(agent) || family,
 			open: true,
 			stopReason: undefined,
 			blockers: new Map(),
@@ -155,6 +236,8 @@ export class ChildProgramStatus {
 		};
 		this.children.set(key, child);
 		this.told.push(child);
+		while (this.told.length > MAX_RECORDS && this.ended[0] !== undefined) this.retire(this.ended[0]);
+		this.idle(false);
 		return child;
 	}
 
@@ -168,6 +251,7 @@ export class ChildProgramStatus {
 	/** The outer `task` call is the authority on a foreground task: a child's own turn end is not. */
 	private closeTask(callId: string, ok: boolean) {
 		this.calls.delete(callId);
+		this.nested.delete(callId);
 		this.background.delete(callId);
 		for (const child of this.open(callId, "task")) {
 			const own = settled(child.stopReason === undefined ? "end_turn" : child.stopReason);
@@ -180,7 +264,10 @@ export class ChildProgramStatus {
 	}
 
 	private closeAll(rootReason: string) {
-		for (const child of [...this.children.values()]) if (child.open) this.end(child, settled(rootReason));
+		this.calls.clear();
+		this.nested.clear();
+		for (const child of [...this.children.values()])
+			if (child.open && !child.background) this.end(child, settled(rootReason));
 	}
 
 	/** Ends a child and, with it, the children it started that are still open. */
@@ -190,16 +277,19 @@ export class ChildProgramStatus {
 		child.blockers.clear();
 		for (const other of this.children.values()) if (other.parent === child) this.end(other, state);
 		this.tell(child, state);
+		this.ended.push(child);
+		this.idle();
 	}
 
-	private refresh(child: Child) {
+	/** `again`: tell the state even if it was told already. */
+	private refresh(child: Child, again = false) {
 		if (!child.open) return;
 		const kinds = [...child.blockers.values()];
 		const kind = kinds.at(-1);
-		this.tell(child, kind === undefined ? "working" : "blocked", kind);
+		this.tell(child, kind === undefined ? "working" : "blocked", kind, again);
 	}
 
-	private tell(child: Child, state: ChildRecord["state"], kind?: Blocker) {
+	private tell(child: Child, state: ChildRecord["state"], kind?: Blocker, again = false) {
 		const record: ChildRecord = {
 			state,
 			id: child.id,
@@ -207,7 +297,7 @@ export class ChildProgramStatus {
 			...(kind === undefined ? {} : { kind }),
 		};
 		const key = JSON.stringify(record);
-		if (key === child.sent) return;
+		if (key === child.sent && !again) return;
 		child.sent = state === "clear" ? "clear" : key;
 		this.send(record);
 	}

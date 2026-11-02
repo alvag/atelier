@@ -1,6 +1,6 @@
 import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
-import { describe, expect, it } from "vitest";
-import { ChildProgramStatus, type ChildRecord } from "../src/tui/program-status-children.ts";
+import { describe, expect, it, vi } from "vitest";
+import { ChildProgramStatus, type ChildRecord, REFRESH_MS } from "../src/tui/program-status-children.ts";
 
 let seq = 0;
 const ev = (body: AtelierEventBody, tag: { parentCallId?: string; agent?: string } = {}) =>
@@ -98,6 +98,14 @@ describe("ChildProgramStatus", () => {
 		expect(records).toHaveLength(count + 1);
 	});
 
+	it("closes what remains when the root turn is interrupted or fails", () => {
+		const { feed, states } = setup();
+		feed(taskCall("p1", { agent: "worker", prompt: "x" }), note("p1", "worker"), turn("interrupted"));
+		feed(taskCall("p2", { agent: "worker", prompt: "x" }), note("p2", "worker"));
+		feed(ev({ type: "error", code: "x", message: "y", recoverable: false }));
+		expect(states()).toEqual(["working", "clear", "working", "error"]);
+	});
+
 	it("bounds a multibyte label in UTF-8 bytes and strips controls", () => {
 		const { records, feed } = setup();
 		feed(taskCall("p1", { agent: "worker", prompt: `‮${"漢".repeat(200)}\u0007` }), note("p1", "worker"));
@@ -128,5 +136,59 @@ describe("ChildProgramStatus", () => {
 		]);
 		status.stop();
 		expect(records).toHaveLength(before + 2);
+	});
+
+	it("keeps a restarted role of the same key live through the sweep of its old generation", () => {
+		vi.useFakeTimers();
+		try {
+			const { records, feed } = setup();
+			const tag = { parentCallId: "r1", agent: "review:refuter" };
+			feed(note(tag.parentCallId, tag.agent), turn("end_turn", tag));
+			feed(
+				ev({ type: "session_started" } as unknown as AtelierEventBody, tag),
+				ev({ type: "session_started" } as unknown as AtelierEventBody),
+			);
+			const before = records.length;
+			vi.advanceTimersByTime(REFRESH_MS);
+			expect(records.slice(before)).toMatchObject([{ state: "working" }]);
+			feed(turn("end_turn", tag));
+			expect(records.at(-1)?.state).toBe("done");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("forgets the title of a task call that never delivered its result at the root turn end", () => {
+		const { records, feed } = setup();
+		feed(taskCall("p1", { agent: "worker", prompt: "stale" }), turn("end_turn"));
+		feed(note("p1", "worker"));
+		expect(records.at(-1)?.title).toBe("worker");
+	});
+
+	it("caps nested ids at eight segments and 128 characters", () => {
+		const { records, feed } = setup();
+		feed(taskCall("c0", { agent: "a", prompt: "x" }), note("c0", "a"));
+		for (let level = 1; level <= 9; level++) {
+			const tag = { parentCallId: `c${level - 1}`, agent: "a" };
+			feed(
+				ev({ type: "tool_call_started", callId: `c${level}`, tool: "task", input: { agent: "a", prompt: "x" } }, tag),
+			);
+			feed(note(`c${level}`, "a"));
+		}
+		const ids = records.map((record) => record.id);
+		expect(ids.length).toBeGreaterThanOrEqual(9);
+		for (const id of ids) {
+			expect(id.split("/").length).toBeLessThanOrEqual(8);
+			expect(id.length).toBeLessThanOrEqual(128);
+			for (const part of id.split("/")) expect(part.length).toBeLessThanOrEqual(32);
+		}
+	});
+
+	it("reset forgets records without telling anything", () => {
+		const { records, status, feed } = setup();
+		feed(taskCall("p1", { agent: "worker", prompt: "x" }), note("p1", "worker"));
+		status.reset();
+		status.stop();
+		expect(records).toHaveLength(1);
 	});
 });
