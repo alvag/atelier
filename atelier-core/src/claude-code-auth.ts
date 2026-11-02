@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { AuthStore, authFile } from "./auth-store.ts";
 import { CodexAccess, codexVariantFrom } from "./backends/openai-codex/access.ts";
+import { spawnApart } from "./claude-apart.ts";
 import {
 	apiKeySource,
 	MISSING_API_KEY_MESSAGE,
@@ -29,6 +30,8 @@ export interface ClaudeCodeRunOptions {
 	/** The binary; defaults to the one of the Agent SDK that Atelier installs, the one the `claude-code` backend runs. */
 	executable?: string;
 	env?: Record<string, string | undefined>;
+	/** Runs the binary in a process group of its own (`spawnApart`): inside a Herdr pane, where it is told to. */
+	apart?: boolean;
 }
 
 const STATUS_TIMEOUT_MS = 15_000;
@@ -76,24 +79,48 @@ function envOf(options: ClaudeCodeRunOptions): Record<string, string | undefined
 }
 
 /** Asks the binary which account it is logged in with; it answers from its own files, without the network. */
-export function claudeCodeAuthStatus(options: ClaudeCodeRunOptions = {}): Promise<ClaudeCodeAuthStatus> {
+export async function claudeCodeAuthStatus(options: ClaudeCodeRunOptions = {}): Promise<ClaudeCodeAuthStatus> {
 	const executable = executableOf(options);
+	const args = ["auth", "status", "--json"];
+	const stdout = await (options.apart === true ? outputApart : output)(executable, args, envOf(options));
+	const status = parseStatus(stdout);
+	if (status === undefined) throw new ClaudeCodeAuthError("Claude Code's auth status could not be read.");
+	return status;
+}
+
+/** What the binary prints, whatever its exit code: not logged in exits with 1 and still prints the status. */
+function output(executable: string, args: string[], env: Record<string, string | undefined>): Promise<string> {
 	return new Promise((resolve, reject) => {
-		execFile(
-			executable,
-			["auth", "status", "--json"],
-			{ env: envOf(options), timeout: STATUS_TIMEOUT_MS },
-			(error, stdout) => {
-				// Not logged in exits with 1 and still prints the status.
-				if (error !== null && typeof error.code !== "number") {
-					reject(runError(executable, error));
-					return;
-				}
-				const status = parseStatus(stdout);
-				if (status === undefined) reject(new ClaudeCodeAuthError("Claude Code's auth status could not be read."));
-				else resolve(status);
-			},
-		);
+		execFile(executable, args, { env, timeout: STATUS_TIMEOUT_MS }, (error, stdout) => {
+			if (error !== null && typeof error.code !== "number") reject(runError(executable, error));
+			else resolve(stdout);
+		});
+	});
+}
+
+/** As `output`, with the binary in a process group of its own. */
+function outputApart(executable: string, args: string[], env: Record<string, string | undefined>): Promise<string> {
+	// The shell that becomes the binary cannot say ENOENT as execFile does: a path that is not there is told first.
+	if (executable.includes("/") && !existsSync(executable)) return Promise.reject(new ClaudeCodeAuthError(NOT_FOUND));
+	return new Promise((resolve, reject) => {
+		const child = spawnApart(executable, args, { env, stdio: ["ignore", "pipe", "ignore"] });
+		let stdout = "";
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout += chunk.toString();
+		});
+		const timer = setTimeout(() => child.kill(), STATUS_TIMEOUT_MS);
+		child.on("error", (error) => {
+			clearTimeout(timer);
+			reject(runError(executable, error));
+		});
+		child.on("close", (code) => {
+			clearTimeout(timer);
+			// It exits with 127 when there is no such command, with 126 when it cannot run it.
+			if (code === 127) reject(new ClaudeCodeAuthError(NOT_FOUND));
+			else if (code === 126 || code === null)
+				reject(new ClaudeCodeAuthError(`Claude Code could not be run (${executable})`));
+			else resolve(stdout);
+		});
 	});
 }
 

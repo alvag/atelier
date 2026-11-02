@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,7 @@ import {
 	signedInBackends,
 } from "../src/claude-code-auth.ts";
 import { MISSING_API_KEY_MESSAGE, MISSING_OPENCODE_GO_KEY_MESSAGE } from "../src/credentials.ts";
+import { isInsideSandbox } from "../src/tools/sandbox.ts";
 import { requireIsolatedHome } from "./support/login-isolation.ts";
 
 requireIsolatedHome();
@@ -22,9 +24,9 @@ let dir: string;
 let fake: string;
 
 /**
- * A stand-in for the Claude Code binary: it logs its arguments and whether it got ANTHROPIC_API_KEY, prints
- * `$dir/status.json` for `auth status --json` (exit 1 when not logged in, as Claude Code does), and `auth login`
- * writes `$dir/after-login.json` over it.
+ * A stand-in for the Claude Code binary: it logs its arguments and whether it got ANTHROPIC_API_KEY, and its process
+ * group in `$dir/pgid`, prints `$dir/status.json` for `auth status --json` (exit 1 when not logged in, as Claude Code
+ * does), and `auth login` writes `$dir/after-login.json` over it.
  */
 async function writeFake(): Promise<void> {
 	fake = join(dir, "claude");
@@ -32,6 +34,7 @@ async function writeFake(): Promise<void> {
 		fake,
 		`#!/bin/sh
 echo "$* key=\${ANTHROPIC_API_KEY:-none}" >> "${dir}/calls.log"
+/bin/ps -o pgid= -p $$ > "${dir}/pgid" 2>/dev/null
 case "$1 $2" in
 "auth status") cat "${dir}/status.json"; grep -q '"loggedIn": *true' "${dir}/status.json" ;;
 "auth login") cp "${dir}/after-login.json" "${dir}/status.json"; exit "\${FAKE_EXIT:-0}" ;;
@@ -44,6 +47,12 @@ esac
 
 const status = (value: object) => writeFile(join(dir, "status.json"), JSON.stringify(value));
 const calls = async () => (await readFile(join(dir, "calls.log"), "utf8")).trim().split("\n");
+/** The process group the fake ran in last, and the tests' own. */
+const fakeGroup = async () => Number((await readFile(join(dir, "pgid"), "utf8")).trim());
+const ownGroup = () =>
+	Number(spawnSync("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).stdout.trim());
+/** Process groups are read with `ps`, which a sandbox around the tests refuses. */
+const canListProcesses = process.platform !== "darwin" || !isInsideSandbox();
 
 beforeEach(async () => {
 	dir = await mkdtemp(join(tmpdir(), "atelier-claude-auth-"));
@@ -93,6 +102,42 @@ it("fails with a message when the binary is missing or answers something else", 
 	expect(garbled).toBeInstanceOf(ClaudeCodeAuthError);
 	expect(garbled.message).toBe("Claude Code's auth status could not be read.");
 });
+
+it.skipIf(!canListProcesses)(
+	"asks the binary in a process group of its own only when told to, inside a Herdr pane",
+	async () => {
+		await status({ loggedIn: true, authMethod: "claude.ai" });
+		const loggedIn = { loggedIn: true, authMethod: "claude.ai" };
+		expect(
+			await claudeCodeAuthStatus({ executable: fake, env: { ANTHROPIC_API_KEY: "sk-secret" }, apart: true }),
+		).toEqual(loggedIn);
+		const apart = await fakeGroup();
+		expect(apart).not.toBe(ownGroup());
+		// Outside Herdr it runs as it always did, in the group of the process that asks.
+		expect(await claudeCodeAuthStatus({ executable: fake, env: {} })).toEqual(loggedIn);
+		expect(await fakeGroup()).toBe(ownGroup());
+		await status({ loggedIn: false, authMethod: "none" });
+		expect(await claudeCodeAuthStatus({ executable: fake, env: {}, apart: true })).toEqual({
+			loggedIn: false,
+			authMethod: "none",
+		});
+		const store = new AuthStore(join(dir, "auth.json"));
+		expect(await signedInBackends({ executable: fake, env: {}, apart: true, store, platform: "linux" })).toEqual([]);
+		expect(await fakeGroup()).not.toBe(ownGroup());
+		expect(await calls()).toEqual([
+			"auth status --json key=none",
+			"auth status --json key=none",
+			"auth status --json key=none",
+			"auth status --json key=none",
+		]);
+		const missing = await claudeCodeAuthStatus({ executable: join(dir, "nope"), env: {}, apart: true }).catch((e) => e);
+		expect(missing).toBeInstanceOf(ClaudeCodeAuthError);
+		expect(missing.message).toBe("Claude Code binary not found (reinstall Atelier)");
+		await writeFile(join(dir, "status.json"), "not json");
+		const garbled = await claudeCodeAuthStatus({ executable: fake, env: {}, apart: true }).catch((error) => error);
+		expect(garbled.message).toBe("Claude Code's auth status could not be read.");
+	},
+);
 
 it("runs Claude Code's own login for a Claude subscription and says how it ended", async () => {
 	await status({ loggedIn: false, authMethod: "none" });

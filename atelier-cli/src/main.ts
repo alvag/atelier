@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
 	connectMemory,
 	describeError,
+	inHerdrPane,
 	loginWarning,
 	MemoryUnavailableError,
 	memoryPromptsEnabled,
@@ -15,6 +16,7 @@ import { RpcClient } from "@atelier/core/client";
 import { ProcessTerminal } from "@earendil-works/pi-tui";
 import { cliBackends } from "./backends.ts";
 import { run } from "./run.ts";
+import { herdrPane, PANE_MARKER } from "./tui/herdr-status.ts";
 
 let compactAt: number | undefined;
 try {
@@ -58,8 +60,14 @@ const exitCode = await run(
 		env: process.env,
 		...(process.getuid ? { uid: process.getuid() } : {}),
 		home: homedir(),
-		// ATELIER_LOGIN_CHECK=off skips asking Claude Code or the Keychain at start.
-		...(process.env.ATELIER_LOGIN_CHECK === "off" ? {} : { checkLogin: (backend: string) => loginWarning(backend) }),
+		// ATELIER_LOGIN_CHECK=off skips asking Claude Code or the Keychain at start. Inside a Herdr pane Claude Code is asked
+		// apart, or Herdr takes this TUI for Claude Code and forgets how to resume it.
+		...(process.env.ATELIER_LOGIN_CHECK === "off"
+			? {}
+			: {
+					checkLogin: (backend: string) =>
+						loginWarning(backend, { apart: inHerdrPane({ [PANE_MARKER]: herdrPane(process.env) }) }),
+				}),
 		color: Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined,
 		...(process.stdin.isTTY && process.stdout.isTTY
 			? { setRawMode: (on: boolean) => void process.stdin.setRawMode(on) }
