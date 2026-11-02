@@ -15,6 +15,11 @@ export interface LineReader {
 	redraw(): void;
 	/** Whether the line last returned had pasted text in it: a paste can fill in a form but never answer a question. */
 	pasted(): boolean;
+	/**
+	 * Whether the line last returned had a bracketed paste that began with `<hc` after any whitespace: a note from
+	 * another agent, whatever was typed before it on the line. Absent where nothing can tell a paste.
+	 */
+	notePasted?(): boolean;
 	/** Drops the lines typed so far, the one being typed included, and says how many. */
 	discardTyped(): number;
 	/** Stops reading the input, which another program then reads (Claude Code's sign-in); `resume` reads it again. */
@@ -46,7 +51,7 @@ const CTRL_W = "\x17";
  */
 export function createTerminalReader({ stdin, write, onInterrupt }: TerminalReaderOptions): LineReader {
 	/** Lines entered before anyone asked for them: type-ahead for the next prompt. */
-	const typed: { text: string; pasted: boolean }[] = [];
+	const typed: { text: string; pasted: boolean; note: boolean }[] = [];
 	/** The line being typed. */
 	let buffer = "";
 	/**
@@ -56,6 +61,11 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 	let bufferPasted = false;
 	/** The line handed out last had pasted text in it. */
 	let handedPasted = false;
+	/** Like `bufferPasted`, for a paste starting with `<hc`; cleared when the line is emptied or replaced. */
+	let bufferNote = false;
+	let handedNote = false;
+	/** The start of the paste in progress, kept until it shows whether it begins with `<hc`; undefined once decided. */
+	let pasteHead: string | undefined;
 	/** The last pasted text ended in "\r", so a "\n" starting the next read is the other half of one line break. */
 	let afterCR = false;
 	/** The last key was an Enter sent as "\r", so a "\n" right after it, even in the next read, is the same Enter. */
@@ -95,15 +105,18 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 	const enter = () => {
 		const line = buffer;
 		const wasPasted = bufferPasted;
+		const wasNote = bufferNote;
 		buffer = "";
 		bufferPasted = false;
+		bufferNote = false;
 		const resolve = waiting;
 		waiting = undefined;
 		if (resolve) {
 			handed = line;
 			handedPasted = wasPasted;
+			handedNote = wasNote;
 			resolve(line);
-		} else typed.push({ text: line, pasted: wasPasted });
+		} else typed.push({ text: line, pasted: wasPasted, note: wasNote });
 	};
 	const insert = (text: string) => {
 		buffer += text;
@@ -114,16 +127,19 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 		const last = chars.pop();
 		if (last === undefined) return;
 		buffer = chars.join("");
+		if (buffer === "") bufferNote = false;
 		if (last !== "\n") return echo("\b \b");
 		const all = lines();
 		echo(`\x1b[A\x1b[${startOf(all.length - 1) + width(all.at(-1) ?? "") + 1}G`);
 	};
 	const eraseLine = () => {
 		buffer = buffer.slice(0, buffer.lastIndexOf("\n") + 1);
+		if (buffer === "") bufferNote = false;
 		redrawLastLine();
 	};
 	const eraseWord = () => {
 		buffer = buffer.replace(/\S*[^\S\n]*$/, "");
+		if (buffer === "") bufferNote = false;
 		redrawLastLine();
 	};
 	const pasted = (text: string) => {
@@ -136,6 +152,11 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 			.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 		if (droppingPaste || clean === "") return;
 		bufferPasted = true;
+		if (pasteHead !== undefined) {
+			const head = (pasteHead + clean).trimStart();
+			pasteHead = head.length < 3 ? head : undefined;
+			if (head.startsWith("<hc")) bufferNote = true;
+		}
 		insert(clean);
 	};
 
@@ -151,6 +172,7 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 			if (data.slice(i, j + 1) === PASTE_START) {
 				pasting = true;
 				afterCR = false;
+				pasteHead = "";
 			}
 			return j + 1;
 		}
@@ -203,6 +225,7 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 				if (buffer === "") finish();
 			} else if (char === CTRL_C) {
 				buffer = "";
+				bufferNote = false;
 				onInterrupt();
 			} else if (char === "\t" || char >= " ") {
 				// A surrogate pair arrives whole within a chunk read as UTF-8.
@@ -231,6 +254,7 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 			const early = typed.shift();
 			if (early !== undefined) {
 				handedPasted = early.pasted;
+				handedNote = early.note;
 				write(early.text);
 				return Promise.resolve(early.text);
 			}
@@ -243,11 +267,13 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 		},
 		abandon() {
 			// A line can arrive in the same tick as the cancel: it belongs to the next caller.
-			if (waiting === undefined && handed !== undefined) typed.unshift({ text: handed, pasted: handedPasted });
+			if (waiting === undefined && handed !== undefined)
+				typed.unshift({ text: handed, pasted: handedPasted, note: handedNote });
 			waiting = undefined;
 			handed = undefined;
 		},
 		pasted: () => handedPasted,
+		notePasted: () => handedNote,
 		redraw() {
 			echo(buffer);
 		},
@@ -255,6 +281,7 @@ export function createTerminalReader({ stdin, write, onInterrupt }: TerminalRead
 			this.open();
 			const count = typed.splice(0).length + (buffer !== "" || pasting ? 1 : 0);
 			buffer = "";
+			bufferNote = false;
 			// Half an escape sequence could finish as a paste start after the question, and its rest would read as
 			// typed; in a paste, the tail is its end. Either way the answer line starts marked as not typed.
 			bufferPasted = pasting || pending !== "";
