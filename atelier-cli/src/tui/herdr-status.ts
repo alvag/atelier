@@ -41,6 +41,11 @@ const BIDI = /[؜‎‏‪-‮⁦-⁩]/g;
 /** The text without control or bidi characters, its spaces collapsed. */
 export const plain = (text: string) => text.replace(BIDI, "").replace(CONTROL, " ").replace(/\s+/g, " ").trim();
 
+/** Interlinear annotation characters (#65), which hide the text between them and `plain` keeps. */
+const ANNOTATION = /[￹-￻]/g;
+/** The terminal's line for Herdr, cut to `max` characters: also without annotation characters, taken as spaces. */
+const herdrLine = (text: string, max?: number) => oneLine(text.replace(ANNOTATION, " "), max);
+
 const ELLIPSIS = "…";
 
 /**
@@ -191,7 +196,7 @@ export class HerdrStatusReporter {
 	 * asked is also the label of `blocked`, and a failed turn labels `done` and `idle` as `error`.
 	 */
 	report(state: State, line?: string) {
-		const message = state === "blocked" || state === "error" ? oneLine(line ?? "") : "";
+		const message = state === "blocked" || state === "error" ? herdrLine(line ?? "") : "";
 		const params = {
 			state: state === "working" || state === "blocked" ? state : "idle",
 			...(message === "" ? {} : { message }),
@@ -201,7 +206,7 @@ export class HerdrStatusReporter {
 			this.#asked = key;
 			this.#enqueue({ key: "state", method: "pane.report_agent", params });
 		}
-		if (state === "blocked" && message !== "") this.#label({ blocked: oneLine(message, TOKEN_CHARS) });
+		if (state === "blocked" && message !== "") this.#label({ blocked: herdrLine(message, TOKEN_CHARS) });
 		else this.#label(state === "error" ? { done: ERROR_LABEL, idle: ERROR_LABEL } : undefined);
 		const running = state === "working" || state === "blocked";
 		if (running === this.#running) return;
