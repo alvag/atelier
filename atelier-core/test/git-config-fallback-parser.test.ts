@@ -67,12 +67,12 @@ describe("a git config git rejects is read with git's value syntax", () => {
 		// Git skips a UTF-8 byte order mark at the start of a file.
 		await writeFile(
 			join(cwd, ".git", "config"),
-			"﻿[include]\n\tpath = ../bom.cfg\n [core]\n\thooksPath = nbsp-hooks\n[invalid\n",
+			"\uFEFF[include]\n\tpath = ../bom.cfg\n\u00A0[core]\n\thooksPath\u00A0=\u00A0nbsp-hooks\n[invalid\n",
 		);
 		const protectedPaths = [
 			join(cwd, "bom.cfg"),
 			// Git keeps a no-break space in a value; the earlier line parser trimmed it.
-			join(cwd, " nbsp-hooks", "pre-commit"),
+			join(cwd, "\u00A0nbsp-hooks", "pre-commit"),
 			join(cwd, "nbsp-hooks", "pre-commit"),
 		];
 		expect(await refusals(protectedPaths)).toEqual(protectedPaths.map(refused));
