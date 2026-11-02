@@ -132,9 +132,8 @@ export async function gitConfigFixture(base: string, kind: (typeof gitConfigCase
 			break;
 		case "individual output exceeds the old buffer":
 			await add(`[include]\n${'path = "../team#cfg"\n'.repeat(100_000)}`);
-			await writeFile(join(cwd, "team#cfg"), "# included\n");
-			// The old get-all exceeds 1 MiB too, so preserve its fallback parser's paths.
-			protectedPaths.push(join(dirname(config), '"../team'));
+			// The old get-all exceeds 1 MiB too and is cut; the fallback parser keeps the quoted '#'.
+			await include("../team#cfg");
 			break;
 		case "valueless entries":
 			await add('[include]\npath\n[includeIf "gitdir:/never/"]\npath\n[core]\nhooksPath = unused\nhooksPath\n');
