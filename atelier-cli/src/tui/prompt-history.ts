@@ -175,7 +175,7 @@ export class PromptHistory {
 			else stale.push(record.name);
 		}
 		if (!this.#readOnly)
-			await Promise.all(stale.map((name) => rm(join(dir, name), { force: true }).catch(() => undefined)));
+			await Promise.all(stale.map((name) => rm(join(dir, name), { force: true }).catch((error) => this.#warn(error))));
 		return [...kept].reverse();
 	}
 
