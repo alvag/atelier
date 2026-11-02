@@ -13,6 +13,7 @@ import {
 	includedConfigFiles,
 	libraryProtectedPaths,
 	nestedGitPattern,
+	type ParsedConfigs,
 	packageCacheDirectories,
 	secretFilePatterns,
 	secretReadPaths,
@@ -208,18 +209,20 @@ export function gitProtectedPaths(cwd: string, home: string = homedir()): string
 		{ cwd, encoding: "utf8", timeout: 5000 },
 	);
 	const [top, gitDir, commonDir, hooks] = found.status === 0 ? found.stdout.trim().split("\n") : [];
+	// What the fallback parser read, so this check parses each configuration file once.
+	const parsed: ParsedConfigs = new Map();
 	if (found.status === 0 && [top, gitDir, commonDir, hooks].every((path) => path?.startsWith("/")))
-		return repositoryPaths(top as string, gitDir as string, commonDir as string, [hooks as string], home, cwd);
+		return repositoryPaths(top as string, gitDir as string, commonDir as string, [hooks as string], home, cwd, parsed);
 	const repository = repositoryFromFiles(cwd);
 	if (repository === undefined) return [];
 	const { top: root, gitDir: dir, commonDir: common } = repository;
 	const hooksPaths = [dir, common]
 		.flatMap((d) => [join(d, "config"), join(d, "config.worktree")])
 		// A file git cannot read lists its own directory's config among its includes: it is not read twice.
-		.flatMap((file) => [file, ...includedConfigFiles([file], home).filter((path) => path !== file)])
-		.flatMap((file) => configFilePaths(file).hooksPaths)
+		.flatMap((file) => [file, ...includedConfigFiles([file], home, parsed).filter((path) => path !== file)])
+		.flatMap((file) => configFilePaths(file, parsed).hooksPaths)
 		.map((value) => configPath(value, root, home));
-	return repositoryPaths(root, dir, common, hooksPaths, home, cwd);
+	return repositoryPaths(root, dir, common, hooksPaths, home, cwd, parsed);
 }
 
 function repositoryPaths(
@@ -229,6 +232,7 @@ function repositoryPaths(
 	hooks: string[],
 	home: string,
 	cwd: string,
+	parsed: ParsedConfigs,
 ): string[] {
 	// Outside a linked worktree the git directory is the shared one: its files are read once.
 	const configs = [
@@ -241,7 +245,7 @@ function repositoryPaths(
 		// The local profile pin: the user's choice of profile, not the agent's.
 		join(commonDir, "atelier"),
 		...configs,
-		...includedConfigFiles(configs, home),
+		...includedConfigFiles(configs, home, parsed),
 		...operationStatePaths(gitDir),
 		// A link to the git directory is not the directory: protecting it whole would be more than a plain `.git` gets.
 		...(isRegularFile(join(top, ".git")) ? [join(top, ".git")] : []),

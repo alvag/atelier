@@ -146,9 +146,10 @@ function configRecords(run: SpawnSyncReturns<Buffer>): { records: Buffer[]; comp
  * read by git itself, alone and without following includes, so a broken file
  * elsewhere does not matter and git's whole syntax (quotes, escapes,
  * continuation lines) is honored. A missing file names nothing. When git cannot
- * read the file or does not finish, its own parser answers too and `malformed` is set.
+ * read the file or does not finish, its own parser answers too and `malformed` is set; `parsed` keeps what it
+ * read, so one check parses each file once however often git reads it.
  */
-export function configFilePaths(file: string): ConfigFile {
+export function configFilePaths(file: string, parsed: ParsedConfigs = new Map()): ConfigFile {
 	if (!existsSync(file)) return { hooksPaths: [], includes: [], malformed: false };
 	const run = gitConfig(
 		file,
@@ -156,9 +157,10 @@ export function configFilePaths(file: string): ConfigFile {
 		COMBINED_CONFIG_BUFFER_LIMIT,
 	);
 	// Even status 0 with ENOBUFS can leave truncated combined records; only the old queries decide their results.
-	if ((run.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS") return separateConfigFilePaths(file);
+	if ((run.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS")
+		return separateConfigFilePaths(file, parsed);
 	const read = configRecords(run);
-	if (read === undefined) return fallbackConfigFile(file);
+	if (read === undefined) return fallbackConfigFile(file, parsed);
 	const plain: string[] = [];
 	const conditional: string[] = [];
 	let hooksPath: string | undefined;
@@ -182,9 +184,10 @@ export function configFilePaths(file: string): ConfigFile {
 		}
 	}
 	// A later core.hooksPath may be past the cut.
-	if (!read.complete) return fallbackConfigFile(file, [...plain, ...conditional]);
+	if (!read.complete) return fallbackConfigFile(file, parsed, [...plain, ...conditional]);
 	// Above the old buffer bound the original queries answer, as before; one Node cuts is read as cut.
-	if (Math.max(plainBytes, conditionalBytes, hooksBytes) > CONFIG_BUFFER_LIMIT) return separateConfigFilePaths(file);
+	if (Math.max(plainBytes, conditionalBytes, hooksBytes) > CONFIG_BUFFER_LIMIT)
+		return separateConfigFilePaths(file, parsed);
 	return {
 		hooksPaths: hooksPath === undefined ? [] : [hooksPath],
 		includes: [...plain, ...conditional],
@@ -193,18 +196,18 @@ export function configFilePaths(file: string): ConfigFile {
 }
 
 /** The original three queries, for large individual query outputs; when one is cut, `fallbackConfigFile` answers. */
-function separateConfigFilePaths(file: string): ConfigFile {
+function separateConfigFilePaths(file: string, parsed: ParsedConfigs): ConfigFile {
 	const plain = configRecords(gitConfig(file, ["--get-all", "include.path"]));
 	const conditional = configRecords(gitConfig(file, ["--get-regexp", "^includeif\\..*\\.path$"]));
 	const hooks = configRecords(gitConfig(file, ["--get", "core.hooksPath"]));
-	if (plain === undefined || conditional === undefined || hooks === undefined) return fallbackConfigFile(file);
+	if (plain === undefined || conditional === undefined || hooks === undefined) return fallbackConfigFile(file, parsed);
 	const includes = [
 		...plain.records.map((record) => record.toString("utf8")),
 		...conditional.records.map((record) => record.subarray(record.indexOf(10) + 1).toString("utf8")),
 	];
 	const hooksPath = hooks.records[0]?.toString("utf8");
 	if (!plain.complete || !conditional.complete || !hooks.complete)
-		return fallbackConfigFile(file, includes, hooks.complete ? hooksPath : undefined);
+		return fallbackConfigFile(file, parsed, includes, hooks.complete ? hooksPath : undefined);
 	return { hooksPaths: hooksPath === undefined ? [] : [hooksPath], includes, malformed: false };
 }
 
@@ -213,20 +216,35 @@ function separateConfigFilePaths(file: string): ConfigFile {
  * path only when its answer is whole) and everything the fallback parser reads in the file. So a cut read protects
  * at least what git would have reported; `malformed` protects the file's directory's places too.
  */
-function fallbackConfigFile(file: string, includes: string[] = [], hooksPath?: string): ConfigFile {
-	const parsed = parseConfigFile(file);
+function fallbackConfigFile(
+	file: string,
+	parsed: ParsedConfigs,
+	includes: string[] = [],
+	hooksPath?: string,
+): ConfigFile {
+	let config = parsed.get(file);
+	if (config === undefined) {
+		config = parseConfigFile(file);
+		parsed.set(file, config);
+	}
 	return {
-		hooksPaths: [...new Set([...(hooksPath === undefined ? [] : [hooksPath]), ...parsed.hooksPaths])],
-		includes: [...includes, ...parsed.includes],
+		hooksPaths: [...new Set([...(hooksPath === undefined ? [] : [hooksPath]), ...config.hooksPaths])],
+		includes: [...includes, ...config.includes],
 		malformed: true,
 	};
 }
+
+/** What the fallback parser read in each file during one check, by path. */
+export type ParsedConfigs = Map<string, { hooksPaths: string[]; includes: string[] }>;
 
 // Space around a header or a key is any space but a newline, a byte order mark included, as the line parser trimmed it.
 const HEADER = /\[[^\S\n]*([A-Za-z0-9.-]+)(?:[^\S\n]+"((?:[^"\\\n]|\\.)*)")?[^\S\n]*\]/y;
 const BROKEN_HEADER = /\[[^\S\n]*([A-Za-z0-9.-]*)/y;
 const KEY = /([A-Za-z][A-Za-z0-9-]*)[^\S\n]*(=?)/y;
 const ESCAPES: Record<string, string> = { "\\": "\\", '"': '"', n: "\n", t: "\t", b: "\b" };
+// One run of a value: plain text, space, a quote, an escape (empty last in the file), or a comment's start.
+const VALUE_TOKEN = /([^\n"\\#; \t\r]+)|([ \t\r]+)|(")|\\([\s\S]?)|([#;])/y;
+const SPACE = /\s+/y;
 
 function matchAt(pattern: RegExp, text: string, index: number): RegExpExecArray | null {
 	pattern.lastIndex = index;
@@ -245,38 +263,37 @@ function lineEnd(text: string, index: number): number {
  * read on to the end of the line; `end` is where its last line ends.
  */
 function readValue(text: string, start: number): { value: string; malformed: boolean; end: number } {
-	let value = "";
+	// Runs of text, not characters: the parts are joined once.
+	const parts: string[] = [];
 	let quoted = false;
-	let comment = false;
 	let malformed = false;
-	// Where the unquoted space at the end began, or -1.
+	// How many parts there were when the unquoted space at the end began, or -1.
 	let trim = -1;
 	let index = start;
-	for (; index < text.length && text[index] !== "\n"; index++) {
-		const char = text[index] as string;
-		if (comment) continue;
-		if (!quoted && (char === " " || char === "\t" || char === "\r")) {
-			if (trim === -1) trim = value.length;
-			if (value !== "") value += char;
+	for (let token = matchAt(VALUE_TOKEN, text, index); token !== null; token = matchAt(VALUE_TOKEN, text, index)) {
+		index = VALUE_TOKEN.lastIndex;
+		const [run, plain, space, quote, escaped, comment] = token;
+		if (space !== undefined && !quoted) {
+			if (trim === -1) trim = parts.length;
+			if (parts.length > 0) parts.push(space);
 			continue;
 		}
-		if (!quoted && (char === "#" || char === ";")) {
-			comment = true;
-			continue;
+		if (comment !== undefined && !quoted) {
+			index = lineEnd(text, index);
+			break;
 		}
 		trim = -1;
-		if (char === "\\") {
-			const next = text[index + 1];
-			if (next === undefined) continue;
-			index++;
-			if (next === "\n") continue;
-			const escaped = ESCAPES[next];
-			if (escaped === undefined) malformed = true;
-			value += escaped ?? next;
-		} else if (char === '"') quoted = !quoted;
-		else value += char;
+		if (quote !== undefined) quoted = !quoted;
+		else if (escaped === undefined) parts.push(plain ?? space ?? comment ?? run);
+		// A backslash last in the file or before a newline adds nothing.
+		else if (escaped !== "" && escaped !== "\n") {
+			const meaning = ESCAPES[escaped];
+			if (meaning === undefined) malformed = true;
+			parts.push(meaning ?? escaped);
+		}
 	}
-	return { value: trim === -1 ? value : value.slice(0, trim), malformed: malformed || quoted, end: index };
+	if (trim !== -1) parts.length = trim;
+	return { value: parts.join(""), malformed: malformed || quoted, end: index };
 }
 
 /**
@@ -307,9 +324,15 @@ function parseConfigFile(file: string): { hooksPaths: string[]; includes: string
 	const syntax = parseConfigText(text.replaceAll("\r\n", "\n"));
 	const lines = parseConfigLines(text);
 	return {
-		hooksPaths: [...new Set([...syntax.hooksPaths, ...lines.hooksPaths])],
-		includes: [...new Set([...syntax.includes, ...lines.includes])],
+		hooksPaths: union(syntax.hooksPaths, lines.hooksPaths),
+		includes: union(syntax.includes, lines.includes),
 	};
+}
+
+function union(first: string[], second: string[]): string[] {
+	const all = new Set(first);
+	for (const value of second) all.add(value);
+	return [...all];
 }
 
 /**
@@ -325,7 +348,7 @@ function parseConfigText(text: string): { hooksPaths: string[]; includes: string
 	let subsection: string | undefined;
 	for (let index = 0; index < text.length; ) {
 		const char = text[index] as string;
-		if (/\s/.test(char)) index++;
+		if (matchAt(SPACE, text, index)) index = SPACE.lastIndex;
 		else if (char === "#" || char === ";") index = lineEnd(text, index);
 		else if (char === "[") {
 			const header = matchAt(HEADER, text, index);
@@ -395,7 +418,7 @@ const MAX_INCLUDE_DEPTH = 10;
  * configuration does (`core.hooksPath`, `core.fsmonitor`), so they are listed
  * whether they exist or not.
  */
-export function includedConfigFiles(files: string[], home: string): string[] {
+export function includedConfigFiles(files: string[], home: string, parsed: ParsedConfigs = new Map()): string[] {
 	const found = new Set<string>();
 	// Read breadth first, each file once at the least depth it is included at, so what is followed does not depend
 	// on the order git or the fallback parser lists the includes in.
@@ -404,11 +427,12 @@ export function includedConfigFiles(files: string[], home: string): string[] {
 	for (let depth = 0; depth <= MAX_INCLUDE_DEPTH && level.length > 0; depth++) {
 		const next: string[] = [];
 		for (const file of level) {
-			const config = configFilePaths(file);
+			const config = configFilePaths(file, parsed);
 			// A file git cannot read may be hiding anything: its directory's conventional places are protected too.
 			if (config.malformed)
 				for (const name of ["hooks", "config", "config.worktree"]) found.add(join(dirname(file), name));
-			for (const include of config.includes) {
+			// Each value once: a file can name the same include many times, and git and the parser can both report it.
+			for (const include of new Set(config.includes)) {
 				const path = configPath(include, dirname(file), home);
 				found.add(path);
 				if (queued.has(path)) continue;
