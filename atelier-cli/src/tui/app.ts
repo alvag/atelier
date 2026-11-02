@@ -177,6 +177,8 @@ const EXIT_FAILED = 1;
 const EXIT_INTERRUPTED = 130;
 const SIGNAL_EXIT = 128;
 const CLOSE_TIMEOUT_MS = 3000;
+/** How long quitting waits for the temporary files of the settings saves it gave up to be removed. */
+const ABANDON_TIMEOUT_MS = 250;
 const ANSWER_GUARD_MS = 400;
 /** How long the terminal has to say its colors; the shade starts as the palette's until then, and stays so after. */
 const COLOR_QUERY_MS = 500;
@@ -2119,8 +2121,16 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			timer = setTimeout(resolve, options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS);
 		});
 		await Promise.race([Promise.all([...saving.keys(), panelSaves]), gaveUp]);
-		// A save the disk did not finish in time is given up, its temporary file removed.
-		await abandonSidePanelSaves();
+		// A save the disk did not finish in time is given up, its temporary file removed: for a short while at most, so
+		// a disk that does not answer that either cannot keep the session and the link from closing.
+		let cleanup: NodeJS.Timeout | undefined;
+		await Promise.race([
+			abandonSidePanelSaves(),
+			new Promise<void>((resolve) => {
+				cleanup = setTimeout(resolve, ABANDON_TIMEOUT_MS);
+			}),
+		]);
+		clearTimeout(cleanup);
 		await Promise.race([link.request({ command: "session.close", sessionId }).catch(() => {}), gaveUp]);
 		clearTimeout(timer);
 		await Promise.all([link.close(), released, historyWrites]);

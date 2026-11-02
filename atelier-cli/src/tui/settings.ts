@@ -105,12 +105,15 @@ const inFlight = new Set<{ partial?: string; abandoned: boolean }>();
 
 /**
  * Gives up the saves not over yet, as the TUI quits without waiting longer for a disk that does not answer: their
- * temporary files are removed, and none of them writes or moves anything after. Later saves are not affected.
+ * temporary files are removed, and none of them writes or moves anything after. Later saves are not affected. It
+ * never fails: a file the disk does not remove is left, and the caller bounds how long it waits.
  */
 export async function abandonSidePanelSaves(): Promise<void> {
 	const left = [...inFlight];
 	for (const save of left) save.abandoned = true;
-	await Promise.all(left.map((save) => (save.partial === undefined ? undefined : rm(save.partial, { force: true }))));
+	await Promise.all(
+		left.map((save) => (save.partial === undefined ? undefined : rm(save.partial, { force: true }).catch(() => {}))),
+	);
 }
 
 /**
