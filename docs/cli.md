@@ -110,6 +110,8 @@ rows = [
 ]
 ```
 
+Inside a herdr-core terminal (Herdr 2, herdr-core with herdr-app; the terminal has `HC_TERMINAL_ID`), herdr-app reads the agent's state only from the OSC 7501 report above, which needs no setup: the socket reporting and the pane metadata of the two paragraphs above are Herdr 1's, and herdr-core sets none of `HERDR_ENV`, `HERDR_PANE_ID` or `HERDR_SOCKET_PATH`. herdr-app shows a toast and plays a sound of its own when an agent becomes `blocked` or `error` and when it finishes while nobody is looking, so `auto` sends no notification there (see [Notifications](#notifications)). On macOS, herdr-core after 0.1.16 (not released yet) starts the core through a one-shot launchd job, so quitting herdr-app no longer ends its terminals: an Atelier session keeps running and the window finds it again when it reopens; if launchd fails, the core falls back to a child of the app, says so in herdr-core's `core.log`, and may then end with the app. With herdr-core 0.1.16, quitting herdr-app on macOS can end the agents running in it.
+
 ### Fullscreen header
 
 Fixed at the top in fullscreen only, the header has two rows in three blocks, between vertical rules and closed by a horizontal rule: Atelier and its version; the working directory (under the home as `~`) over the branch (or the short commit of a detached `HEAD`) and its Git counters; the model, its level and the profile over the context gauge, the window and the session's cost:
@@ -199,6 +201,7 @@ The TUI notifies when a main turn ends (`Turn finished`, or `Turn failed` when i
 | Where                                               | `auto` sends                                          |
 | --------------------------------------------------- | ----------------------------------------------------- |
 | A Herdr pane (`HERDR_ENV=1`)                        | Nothing: Herdr notifies `blocked` and `done` itself   |
+| A herdr-core terminal (`HC_TERMINAL_ID`, Herdr 2)   | Nothing: herdr-app shows its own toast and sound      |
 | An Orca terminal (`ORCA_PANE_KEY`)                  | The bell, which Orca turns into its own notification  |
 | iTerm2, Ghostty, WezTerm or kitty, not through tmux | An OSC 9 notification, shown by the terminal          |
 | Elsewhere on macOS                                  | `osascript` (`display notification`)                  |
