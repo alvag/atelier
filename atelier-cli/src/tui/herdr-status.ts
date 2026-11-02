@@ -156,12 +156,13 @@ export class HerdrStatusReporter {
 	#seq = Date.now();
 	#requests = 0;
 	#queue: Pending[] = [];
+	/** Whether the queue is being sent, and the sending to wait for when it waits on Herdr. */
+	#flushing = false;
 	#flight: Promise<void> | undefined;
-	/** The state asked for last, and what Herdr was sent last of the state and of the labels. */
-	#asked: string | undefined;
-	readonly #sent = new Map<string, string>();
-	/** The labels asked for last; none yet, so the first report clears what an Atelier before may have left. */
-	#labeled: string | undefined;
+	/** What Herdr took last of the state and of the labels: none yet, so the first labels, a clearing, go. */
+	readonly #taken = new Map<string, string>();
+	/** Whether a state was reported: the first one goes before its labels, to hold the pane. */
+	#reported = false;
 	#released = false;
 	/** The task in progress, whether a turn runs, and whether the sidebar was last asked to show it. */
 	#activity: Activity | undefined;
@@ -191,9 +192,9 @@ export class HerdrStatusReporter {
 	}
 
 	/**
-	 * Reports the state, unless it is the one asked for last; done and error are idle to Herdr. `line` is the terminal's
-	 * line for the state: Herdr gets it, as one plain line, only for what is asked while blocked and the error. What is
-	 * asked is also the label of `blocked`, and a failed turn labels `done` and `idle` as `error`.
+	 * Reports the state, unless Herdr has it; done and error are idle to Herdr. `line` is the terminal's line for the
+	 * state: Herdr gets it, as one plain line, only for what is asked while blocked and the error. What is asked is also
+	 * the label of `blocked`, and a failed turn labels `done` and `idle` as `error`.
 	 */
 	report(state: State, line?: string) {
 		const message = state === "blocked" || state === "error" ? herdrLine(line ?? "") : "";
@@ -209,13 +210,10 @@ export class HerdrStatusReporter {
 					: undefined;
 		// The labels before the state, so a script that waits for it reads its labels, not the last turn's; but the first
 		// state goes first, to hold the pane, and the labels an Atelier before may have left are cleared after it.
-		const first = this.#asked === undefined;
+		const first = !this.#reported;
+		this.#reported = true;
 		if (!first) this.#label(labels);
-		const key = JSON.stringify(params);
-		if (key !== this.#asked) {
-			this.#asked = key;
-			this.#enqueue({ key: "state", method: "pane.report_agent", params });
-		}
+		this.#enqueue({ key: "state", method: "pane.report_agent", params });
 		if (first) this.#label(labels);
 		const running = state === "working" || state === "blocked";
 		if (running === this.#running) return;
@@ -254,11 +252,8 @@ export class HerdrStatusReporter {
 		this.#enqueue({ key: "activity", method: "pane.report_metadata", params, source: ACTIVITY_SOURCE });
 	}
 
-	/** Shows `labels` for the state Herdr has, within its 80 characters, or clears the ones shown; once each. */
+	/** Shows `labels` for the state Herdr has, within its 80 characters, or clears the ones shown. */
 	#label(labels: Labels | undefined) {
-		const key = JSON.stringify(labels ?? null);
-		if (key === this.#labeled) return;
-		this.#labeled = key;
 		this.#enqueue({
 			key: "labels",
 			method: "pane.report_metadata",
@@ -305,7 +300,11 @@ export class HerdrStatusReporter {
 			if (waiting === -1) this.#queue.push(request);
 			else this.#queue[waiting] = request;
 		}
-		this.#flight ??= this.#flush();
+		if (this.#flushing) return;
+		this.#flushing = true;
+		const flight = this.#flush();
+		// A flush that only skipped what Herdr has is over already: it is not waited for.
+		if (this.#flushing) this.#flight = flight;
 	}
 
 	async #drained() {
@@ -314,16 +313,18 @@ export class HerdrStatusReporter {
 
 	async #flush() {
 		for (let next = this.#queue.shift(); next; next = this.#queue.shift()) {
+			// The only check against sending twice: a state or labels Herdr took last are not sent again. One in flight does
+			// not count until Herdr takes it, so the same one waiting behind it goes if it fails.
 			const deduplicated = next.key === "state" || next.key === "labels";
 			const said = JSON.stringify(next.params);
-			if (deduplicated) {
-				// A state or labels Herdr already has, because newer ones replaced them while they waited, are not sent again.
-				if (said === this.#sent.get(next.key)) continue;
-				this.#sent.set(next.key, said);
-			}
-			// What Herdr did not take, refused or never reached, it does not have: the same request goes again next time.
-			if (!(await this.#send(next)) && deduplicated) this.#sent.delete(next.key);
+			if (deduplicated && said === this.#taken.get(next.key)) continue;
+			const taken = await this.#send(next);
+			if (!deduplicated) continue;
+			// What Herdr did not take, refused or never reached, may not be what it has: until it takes one, nothing counts.
+			if (taken) this.#taken.set(next.key, said);
+			else this.#taken.delete(next.key);
 		}
+		this.#flushing = false;
 		this.#flight = undefined;
 	}
 

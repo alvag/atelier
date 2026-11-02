@@ -4484,7 +4484,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const calls: HerdrCall[] = [];
 			const refused: HerdrCall[] = [];
 			const holders = new Set<unknown>();
-			const held: (() => void)[] = [];
+			const held: { reply: () => void; socket: Socket }[] = [];
 			const sockets = new Set<Socket>();
 			/** How many of the next requests are cut off without an answer, as a connection reset would. */
 			let dropping = 0;
@@ -4519,7 +4519,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 								}
 							: { id: call.id, result: {} };
 						const reply = () => socket.end(`${JSON.stringify(answered)}\n`);
-						if (options.hold) held.push(reply);
+						if (options.hold) held.push({ reply, socket });
 						else reply();
 					}
 				});
@@ -4531,12 +4531,16 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 					server.close(() => resolve());
 				});
 			const answer = () => {
-				for (const reply of held.splice(0)) reply();
+				for (const { reply } of held.splice(0)) reply();
 			};
 			const drop = (count: number) => {
 				dropping = count;
 			};
-			return { path, calls, refused, close, answer, drop };
+			/** Cuts off the requests held so far, without an answer. */
+			const cut = () => {
+				for (const { socket } of held.splice(0)) socket.destroy();
+			};
+			return { path, calls, refused, close, answer, drop, cut };
 		}
 
 		const herdrEnv = (socket: string) => ({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_SOCKET_PATH: socket });
@@ -4929,6 +4933,69 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				unlabeled,
 				working,
 				unlabeled,
+				{ method: "pane.release_agent" },
+			]);
+		});
+
+		it("sends again a cut off report when the same one comes right after it", async () => {
+			const herdr = await fakeHerdr();
+			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
+			reporter?.report("idle");
+			await until(() => herdr.calls.length === 2);
+			// Both tries of the labels and of the end of a failed turn are cut off; then the same report again.
+			herdr.drop(4);
+			reporter?.report("error", "boom");
+			await until(() => herdr.calls.length === 6);
+			reporter?.report("error", "boom");
+			await until(() => herdr.calls.length === 8);
+			// The same with the clearing and the working of the next turn.
+			herdr.drop(4);
+			reporter?.report("working");
+			await until(() => herdr.calls.length === 12);
+			reporter?.report("working");
+			await until(() => herdr.calls.length === 14);
+			await reporter?.release();
+			await herdr.close();
+			const boom = { method: "pane.report_agent", state: "idle", message: "boom" };
+			const working = { method: "pane.report_agent", state: "working" };
+			expect(herdr.calls.map(said)).toEqual([
+				{ method: "pane.report_agent", state: "idle" },
+				unlabeled,
+				...[failed, failed, boom, boom, failed, boom],
+				...[unlabeled, unlabeled, working, working, unlabeled, working],
+				{ method: "pane.release_agent" },
+			]);
+		});
+
+		it("sends a report that waited behind the same one in flight only when that one failed", async () => {
+			const herdr = await fakeHerdr({ hold: true });
+			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
+			const answered = async (count: number) => {
+				await until(() => herdr.calls.length === count);
+				herdr.answer();
+			};
+			reporter?.report("idle");
+			await answered(1);
+			await answered(2);
+			// Both tries of the working in flight are cut off, and the same working waits behind it: it goes.
+			reporter?.report("working");
+			await until(() => herdr.calls.length === 3);
+			reporter?.report("working");
+			herdr.drop(1);
+			herdr.cut();
+			await until(() => herdr.calls.length === 5);
+			// The same working again behind the one in flight, which Herdr takes: it does not go.
+			reporter?.report("working");
+			herdr.answer();
+			const released = reporter?.release();
+			await answered(6);
+			await released;
+			await herdr.close();
+			const working = { method: "pane.report_agent", state: "working" };
+			expect(herdr.calls.map(said)).toEqual([
+				{ method: "pane.report_agent", state: "idle" },
+				unlabeled,
+				...[working, working, working],
 				{ method: "pane.release_agent" },
 			]);
 		});
