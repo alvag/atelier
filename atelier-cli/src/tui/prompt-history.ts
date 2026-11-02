@@ -31,7 +31,7 @@ async function privateDir(path: string): Promise<void> {
 }
 
 /** The record in `name`, or undefined when it is missing, not a plain file, or not a version 1 record within bounds. */
-async function readRecord(dir: string, name: string): Promise<StoredPrompt | undefined> {
+async function readRecord(dir: string, name: string, readOnly: boolean): Promise<StoredPrompt | undefined> {
 	const file = await open(join(dir, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(
 		() => undefined,
 	);
@@ -39,7 +39,7 @@ async function readRecord(dir: string, name: string): Promise<StoredPrompt | und
 	try {
 		const info = await file.stat();
 		if (!info.isFile() || info.size > MAX_RECORD_BYTES) return undefined;
-		await file.chmod(0o600);
+		if (!readOnly) await file.chmod(0o600);
 		const data: unknown = JSON.parse(await file.readFile("utf8"));
 		if (typeof data !== "object" || data === null) return undefined;
 		const { version, createdAt, text } = data as { version?: unknown; createdAt?: unknown; text?: unknown };
@@ -59,40 +59,69 @@ async function readRecord(dir: string, name: string): Promise<StoredPrompt | und
  * as one immutable file per prompt. Nothing is locked or rewritten: writers publish unique files by rename, and a
  * prune deletes only the records it read that are old or repeated. The caller passes the final expanded text of a
  * prompt (pasted text and file references already in), never a placeholder; attachments are not stored.
+ * A read-only store (for `--no-session`) reads what exists but never creates, chmods, prunes or writes anything.
  * Every failure is non-fatal: the history carries on in memory and `onWarning` hears of the first one.
  */
 export class PromptHistory {
 	readonly #dir: string | undefined;
 	readonly #onWarning: ((message: string) => void) | undefined;
+	readonly #readOnly: boolean;
 	#warned = false;
 	#last = 0;
 	#entries: string[];
 
-	private constructor(dir: string | undefined, entries: string[], onWarning?: (message: string) => void) {
+	private constructor(
+		dir: string | undefined,
+		entries: string[],
+		onWarning?: (message: string) => void,
+		readOnly = false,
+	) {
 		this.#dir = dir;
+		this.#readOnly = readOnly;
 		this.#entries = entries;
 		this.#onWarning = onWarning;
 	}
 
 	/** Open the history of `cwd` under `home`, the same home a `SessionStore` takes. Never rejects. */
-	static async open(home: string, cwd: string, onWarning?: (message: string) => void): Promise<PromptHistory> {
-		const history = new PromptHistory(undefined, [], onWarning);
+	static async open(
+		home: string,
+		cwd: string,
+		onWarning?: (message: string) => void,
+		options: { readOnly?: boolean } = {},
+	): Promise<PromptHistory> {
+		const readOnly = options.readOnly === true;
+		const history = new PromptHistory(undefined, [], onWarning, readOnly);
 		try {
 			const real = await realpath(cwd);
 			const base = join(home, ".atelier");
+			if (readOnly) return await PromptHistory.#openReadOnly(base, real, onWarning);
 			await mkdir(base, { recursive: true, mode: 0o700 });
 			await requireDir(base);
 			const root = join(base, "prompt-history");
 			await privateDir(root);
 			const dir = join(root, createHash("sha256").update(real).digest("hex"));
 			await privateDir(dir);
-			const opened = new PromptHistory(dir, [], onWarning);
-			opened.#entries = await opened.#prune();
+			const opened = new PromptHistory(dir, [], onWarning, false);
+			opened.#entries = await opened.#load();
 			return opened;
 		} catch (error) {
 			history.#warn(error);
 			return history;
 		}
+	}
+
+	/** Load the records of `real` under `base` without touching the disk; missing storage is just an empty history. */
+	static async #openReadOnly(base: string, real: string, onWarning?: (message: string) => void) {
+		const dir = join(base, "prompt-history", createHash("sha256").update(real).digest("hex"));
+		const history = new PromptHistory(dir, [], onWarning, true);
+		try {
+			await history.#directory();
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return new PromptHistory(undefined, [], onWarning, true);
+			throw error;
+		}
+		history.#entries = await history.#load();
+		return history;
 	}
 
 	/** The remembered prompts, oldest first. */
@@ -105,7 +134,7 @@ export class PromptHistory {
 		const trimmed = text.trim();
 		if (trimmed === "" || Buffer.byteLength(trimmed) > PROMPT_HISTORY_MAX_BYTES) return;
 		this.#entries = [...this.#entries.filter((entry) => entry !== trimmed), trimmed].slice(-PROMPT_HISTORY_LIMIT);
-		if (this.#dir === undefined) return;
+		if (this.#dir === undefined || this.#readOnly) return;
 		try {
 			await this.#directory();
 			// Strictly increasing within this process, so records written in one millisecond keep their order.
@@ -118,7 +147,7 @@ export class PromptHistory {
 				await rm(temp, { force: true });
 				throw error;
 			});
-			this.#entries = await this.#prune();
+			this.#entries = await this.#load();
 		} catch (error) {
 			this.#warn(error);
 		}
@@ -131,11 +160,11 @@ export class PromptHistory {
 		return dir;
 	}
 
-	/** Read the records, delete the old and repeated ones, and return the kept texts oldest first. */
-	async #prune(): Promise<string[]> {
+	/** The kept texts oldest first; unless read-only, it also deletes the old and repeated records. */
+	async #load(): Promise<string[]> {
 		const dir = await this.#directory();
 		const names = (await readdir(dir)).filter((name) => RECORD.test(name));
-		const read = await Promise.all(names.map((name) => readRecord(dir, name)));
+		const read = await Promise.all(names.map((name) => readRecord(dir, name, this.#readOnly)));
 		const records = read.filter((record): record is StoredPrompt => record !== undefined);
 		records.sort((a, b) => b.createdAt - a.createdAt || (a.name < b.name ? 1 : -1));
 		this.#last = Math.max(this.#last, records[0]?.createdAt ?? 0);
@@ -145,7 +174,8 @@ export class PromptHistory {
 			if (kept.size < PROMPT_HISTORY_LIMIT && !kept.has(record.text)) kept.add(record.text);
 			else stale.push(record.name);
 		}
-		await Promise.all(stale.map((name) => rm(join(dir, name), { force: true }).catch(() => undefined)));
+		if (!this.#readOnly)
+			await Promise.all(stale.map((name) => rm(join(dir, name), { force: true }).catch(() => undefined)));
 		return [...kept].reverse();
 	}
 

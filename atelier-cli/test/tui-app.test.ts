@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, delimiter, join } from "node:path";
@@ -29,6 +29,7 @@ import { requireIsolatedHome } from "../../atelier-core/test/support/login-isola
 import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
 import { HerdrStatusReporter } from "../src/tui/herdr-status.ts";
+import { PromptHistory } from "../src/tui/prompt-history.ts";
 import { png } from "./support/png.ts";
 import { PRINTABLE_KEYS } from "./support/printable-keys.ts";
 import { tiff } from "./support/tiff.ts";
@@ -349,10 +350,10 @@ describe("TUI", { timeout: 20_000 }, () => {
 	it.each([
 		["typed text", "a prompt from the previous TUI"],
 		["an expanded large paste", "line of pasted text\n".repeat(300).trim()],
-	])("recalls %s across TUI launches, without a saved session", async (_kind, text) => {
+	])("recalls %s across TUI launches", async (_kind, text) => {
 		for (const launch of [0, 1]) {
 			const h = harness([[{ event: started }, { event: finished }]]);
-			const code = run(["--no-session"], h.io, () => h.backend);
+			const code = run([], h.io, () => h.backend);
 			try {
 				await until(h.screen.started);
 				if (launch === 1) h.screen.type("\x1b[A");
@@ -371,6 +372,71 @@ describe("TUI", { timeout: 20_000 }, () => {
 				await code;
 			}
 		}
+	});
+
+	describe("with --no-session", () => {
+		const historyRoot = () => join(home, ".atelier", "prompt-history");
+		/** Every path under the history tree with its mode, mtime and content: any write changes it. */
+		const snapshot = async (): Promise<string[]> => {
+			const lines: string[] = [];
+			const walk = async (dir: string) => {
+				for (const name of (await readdir(dir)).sort()) {
+					const path = join(dir, name);
+					const info = await stat(path);
+					const content = info.isFile() ? await readFile(path, "utf8") : "";
+					lines.push(`${path} ${info.mode} ${info.mtimeMs} ${content}`);
+					if (info.isDirectory()) await walk(path);
+				}
+			};
+			await walk(historyRoot()).catch(() => undefined);
+			return lines;
+		};
+		/** Launches the TUI, submits each prompt (a key sequence) after the previous turn ends, and quits. */
+		const launch = async (args: string[], prompts: string[][]) => {
+			const h = harness([[{ event: started }, { event: finished }], [{ event: finished }]]);
+			const code = run(args, h.io, () => h.backend);
+			try {
+				await until(h.screen.started);
+				for (const [index, keys] of prompts.entries()) {
+					for (const key of keys) h.screen.type(key);
+					await until(() => h.backend.prompts.length === index + 1);
+					await until(() => h.screen.screen().includes(`$${((index + 1) / 2).toFixed(2)}`));
+				}
+				h.screen.type("\x04");
+				expect(await code).toBe(0);
+				return h;
+			} finally {
+				h.terminate(15);
+				await code;
+			}
+		};
+
+		it("reads the existing history without modifying it, and leaves its own prompts out", async () => {
+			await (await PromptHistory.open(home, cwd)).add("seeded prompt");
+			const before = await snapshot();
+			expect(before).not.toEqual([]);
+			const h = await launch(["--no-session"], [["\x1b[A", "\r"]]);
+			expect(h.backend.prompts).toEqual(["seeded prompt"]);
+			const second = await launch(
+				["--no-session"],
+				[
+					["private prompt", "\r"],
+					["\x1b[A", "\r"],
+				],
+			);
+			expect(second.backend.prompts).toEqual(["private prompt", "private prompt"]);
+			expect(await snapshot()).toEqual(before);
+			const later = await launch([], [["\x1b[A", "\r"]]);
+			expect(later.backend.prompts).toEqual(["seeded prompt"]);
+		});
+
+		it("creates no history storage and shows no warning when there is none", async () => {
+			const h = await launch(["--no-session"], [["private prompt", "\r"]]);
+			expect(h.backend.prompts).toEqual(["private prompt"]);
+			expect(h.screen.screen()).not.toContain("prompt history is not saved");
+			expect(h.err()).not.toContain("prompt history");
+			await expect(stat(join(home, ".atelier", "prompt-history"))).rejects.toMatchObject({ code: "ENOENT" });
+		});
 	});
 
 	it("recalls the latest current-session submission with Up in the empty editor", async () => {

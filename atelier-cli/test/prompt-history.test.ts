@@ -240,3 +240,37 @@ for (let i = 0; i < Number(count); i++) await history.add(tag + i);
 	},
 	30000,
 );
+
+it("opens read-only without creating, chmodding or pruning anything", async () => {
+	const warnings: string[] = [];
+	const missing = await PromptHistory.open(home, cwd, (m) => warnings.push(m), { readOnly: true });
+	expect(missing.entries).toEqual([]);
+	expect(warnings).toEqual([]);
+	await expect(stat(join(home, ".atelier"))).rejects.toMatchObject({ code: "ENOENT" });
+
+	const writer = await open();
+	await writer.add("old");
+	await writer.add("kept");
+	const [project] = await readdir(root());
+	const dir = join(root(), project as string);
+	const [oldest] = await files();
+	await writeFile(join(dir, "999999999999999-00000000-0000-0000-0000-000000000000.json"), "{}", { mode: 0o644 });
+	await writeFile(
+		join(dir, "000000000000000-00000000-0000-0000-0000-000000000000.json"),
+		JSON.stringify({ version: 1, createdAt: 0, text: "old" }),
+	);
+	await chmod(join(dir, oldest as string), 0o644);
+	await chmod(root(), 0o755);
+	await chmod(dir, 0o755);
+	const before = await files();
+	const reader = await PromptHistory.open(home, cwd, (m) => warnings.push(m), { readOnly: true });
+	expect(reader.entries).toEqual(["old", "kept"]);
+	await reader.add("private");
+	expect(reader.entries).toEqual(["old", "kept", "private"]);
+	expect(await files()).toEqual(before);
+	expect((await stat(join(dir, oldest as string))).mode & 0o777).toBe(0o644);
+	expect((await stat(dir)).mode & 0o777).toBe(0o755);
+	expect((await stat(root())).mode & 0o777).toBe(0o755);
+	expect(warnings).toEqual([]);
+	expect([...(await open()).entries]).toEqual(["old", "kept"]);
+});

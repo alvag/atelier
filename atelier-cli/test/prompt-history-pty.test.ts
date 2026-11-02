@@ -105,7 +105,7 @@ const connect = async () => {
 		async close() {},
 	};
 };
-const code = await run(["--no-session"], {
+const code = await run([], {
 	stdin: process.stdin, isTTY: true, cwd: ${JSON.stringify(cwd)}, home: ${JSON.stringify(home)}, env: {}, color: false, tools: [],
 	claudeCode: ${JSON.stringify(join(folder, "no-claude"))}, runSecurity: async () => ({ code: 44, stdout: "", stderr: "" }),
 	checkLogin: async () => undefined,
