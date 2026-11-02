@@ -208,16 +208,59 @@ it.each(["open", "stat", "chmod", "readFile", "close"])(
 	},
 );
 
-it("labels an initial listing failure as access and keeps subsequent submissions in memory", async () => {
-	faults.scan = true;
-	const warnings: string[] = [];
-	const history = await PromptHistory.open(home, cwd, (message) => warnings.push(message));
-	expect(warnings).toEqual(["prompt history storage is unavailable: EACCES: scan refused"]);
-	faults.scan = false;
-	await history.add("memory only");
-	expect(history.entries).toEqual(["memory only"]);
-	expect(await readdir(dir)).toEqual([]);
-});
+it.each([false, true])(
+	"reports unsaved submissions after initial access failure unless readOnly=%s",
+	async (readOnly) => {
+		faults.scan = true;
+		const warnings: string[] = [];
+		const history = await PromptHistory.open(home, cwd, (message) => warnings.push(message), { readOnly });
+		expect(warnings).toEqual(["prompt history storage is unavailable: EACCES: scan refused"]);
+		faults.scan = false;
+		await history.add("memory only");
+		expect(warnings).toHaveLength(readOnly ? 1 : 2);
+		await history.add("again");
+		expect(history.entries).toEqual(["memory only", "again"]);
+		expect(warnings).toEqual([
+			"prompt history storage is unavailable: EACCES: scan refused",
+			...(readOnly ? [] : ["prompt history is not saved: EACCES: scan refused"]),
+		]);
+		expect(await readdir(dir)).toEqual([]);
+	},
+);
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0).each([false, true])(
+	"reports an unpublished prompt after a rejected directory, with previous access warning=%s",
+	async (previousAccess) => {
+		await (await PromptHistory.open(home, cwd)).add("seed");
+		const [name] = await readdir(dir);
+		const path = join(dir, name as string);
+		const warnings: string[] = [];
+		if (previousAccess) await chmod(path, 0o000);
+		let history: PromptHistory;
+		try {
+			history = await PromptHistory.open(home, cwd, (message) => warnings.push(message));
+		} finally {
+			await chmod(path, 0o600);
+		}
+		expect(warnings).toHaveLength(previousAccess ? 1 : 0);
+		const real = `${dir}.real`;
+		await rename(dir, real);
+		await symlink(real, dir);
+		await history.add("lost prompt");
+		expect(warnings).toHaveLength(2);
+		expect(warnings[1]).toContain(`prompt history is not saved: ${dir} is not a directory`);
+		await history.add("another lost prompt");
+		expect(history.entries).toContain("lost prompt");
+		expect(history.entries).toContain("another lost prompt");
+		expect(warnings).toHaveLength(2);
+		expect(warnings[0]).toMatch(/^prompt history storage is unavailable:/);
+		expect(warnings[0]).not.toMatch(/not saved|could not delete|delete them manually/);
+		if (previousAccess) expect(warnings[0]).toMatch(/EACCES.*open/);
+		expect(warnings[1]).toContain(`prompt history is not saved: ${dir} is not a directory`);
+		expect(await readdir(real)).toEqual([name]);
+		expect(JSON.parse(await readFile(join(real, name as string), "utf8")).text).toBe("seed");
+	},
+);
 
 it("reports a post-publication readdir failure as storage access, without deletion advice", async () => {
 	const warnings: string[] = [];
