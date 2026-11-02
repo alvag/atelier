@@ -59,7 +59,7 @@ export type ClientCommand =
 	  }
 	/** The profiles in `~/.atelier/profiles.json`, its `active`, and with `cwd`, the profile a session there would take without a choice. */
 	| { command: "profiles.list"; cwd?: string }
-	| { command: "session.send"; sessionId: string; prompt: string; images?: ImageAttachment[] }
+	| { command: "session.send"; sessionId: string; prompt: string; images?: ImageAttachment[]; source?: "agent-note" }
 	| { command: "session.interrupt"; sessionId: string }
 	/**
 	 * Reports a shell command the user ran outside the sandbox (the client's `!` and `!!`) once it ended; the client
