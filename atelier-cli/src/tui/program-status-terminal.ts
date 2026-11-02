@@ -17,11 +17,23 @@ const SEGMENT_PATTERN = /^[A-Za-z0-9_.+-]+$/;
 
 /** What the terminal answered to the query pi-tui sent, held where a wrapping proxy forwards it. */
 const CAPABILITY = Symbol("atelier.programStatus");
-type Capability = { supported: boolean; direct?: DirectStatus | undefined };
+type Capability = { supported: boolean; direct?: DirectStatus | undefined; ready: Set<() => void> };
 
 /** Whether the terminal answered the program status query since the last start. */
 export function supportsProgramStatus(terminal: Terminal): boolean {
 	return (terminal as unknown as { [CAPABILITY]?: Capability })[CAPABILITY]?.supported === true;
+}
+
+/**
+ * Calls `listener` at each answer to the query, after the root is told again; it stays through restarts of the
+ * terminal. Returns the way to stop listening. A terminal that is not observed never answers, so this does nothing.
+ */
+export function onProgramStatusReady(terminal: Terminal, listener: () => void): () => void {
+	const ready = (terminal as unknown as { [CAPABILITY]?: Capability })[CAPABILITY]?.ready;
+	ready?.add(listener);
+	return () => {
+		ready?.delete(listener);
+	};
 }
 
 /** Listens to the input beside the terminal for the answer to the query; it never touches what the terminal reads. */
@@ -71,9 +83,14 @@ function watch(capability: Capability, input: NodeJS.ReadableStream, replay: () 
  * reads the input beside the terminal; everything else goes to the terminal as it is.
  */
 export function observeProgramStatus(target: Terminal, input: NodeJS.ReadableStream = process.stdin): Terminal {
-	const capability: Capability = { supported: false };
+	const capability: Capability = { supported: false, ready: new Set() };
 	const observer = watch(capability, input, () => {
 		if (capability.direct) target.write(serialize(capability.direct));
+		for (const listener of [...capability.ready]) {
+			try {
+				listener();
+			} catch {}
+		}
 	});
 	return new Proxy(target, {
 		get(_, property) {

@@ -85,7 +85,7 @@ import { createScreen, keepDocument, mount } from "./layout.ts";
 import { preparePastedImages } from "./pasted-images.ts";
 import { ProgramStatusReporter } from "./program-status.ts";
 import { ChildProgramStatus } from "./program-status-children.ts";
-import { writeProgramStatus } from "./program-status-terminal.ts";
+import { onProgramStatusReady, writeProgramStatus } from "./program-status-terminal.ts";
 import { PromptEditor, parseShell } from "./prompt.ts";
 import { PromptHistory } from "./prompt-history.ts";
 import { type ImageDraft, PromptImages } from "./prompt-images.ts";
@@ -691,6 +691,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const spot = () => JSON.stringify([editor.getText(), editor.getCursor()]);
 	const programStatus = new ProgramStatusReporter(options.terminal, options.statusIntervalMs);
 	const childStatus = new ChildProgramStatus((record) => writeProgramStatus(options.terminal, record));
+	const removeProbeListener = onProgramStatusReady(options.terminal, () => childStatus.refreshLive());
 	/** What the main agent is doing, the terminal's line for it. */
 	let line = new StatusLine();
 	/** Tells the terminal, and Herdr when the TUI runs in one of its panes, what the TUI is doing. */
@@ -2039,6 +2040,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		removeTerminate?.();
 		placeRead?.abort();
 		loader.stop();
+		removeProbeListener();
 		childStatus.stop();
 		programStatus.clear();
 		// The editor and the footer stay behind; the transcript is printed where the terminal was.
