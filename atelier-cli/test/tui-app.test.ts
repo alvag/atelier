@@ -29,6 +29,7 @@ import { requireIsolatedHome } from "../../atelier-core/test/support/login-isola
 import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
 import { HerdrStatusReporter } from "../src/tui/herdr-status.ts";
+import { observeProgramStatus } from "../src/tui/program-status-terminal.ts";
 import { png } from "./support/png.ts";
 import { PRINTABLE_KEYS } from "./support/printable-keys.ts";
 import { tiff } from "./support/tiff.ts";
@@ -3683,6 +3684,182 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("yolo"));
 			expect(h.screen.statuses).toEqual([atelier("idle")]);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it.each([true, false])("reports child lifecycles only after a probe reply: %s", async (answers) => {
+			const h = harness([]);
+			const stub = stubCore();
+			const terminal = h.screen.terminal;
+			const root = terminal.setProgramStatus.bind(terminal);
+			terminal.setProgramStatus = (status) => {
+				if (status.state === "clear") terminal.write("<root clear>");
+				root(status);
+			};
+			const input = new PassThrough();
+			h.io.tui.terminal = observeProgramStatus(terminal, input);
+			h.io.tui.connect = async () => stub.link;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			if (answers) input.write("\x1b]7501;?\x1b\\");
+			const tag = { parentCallId: "t1", agent: "w" };
+			stub.emit(callStarted("t1", "task", { label: "L" }));
+			stub.emit({ ...callStarted("r1", "read", {}), ...tag });
+			stub.emit({ type: "approval_requested", tool: "bash", callId: "a1", command: "ls", ...tag });
+			await until(() => h.screen.screen().includes("Run this command?"));
+			h.screen.type("\r");
+			await until(() => stub.log.commands.some((command) => command.command === "session.approve"));
+			stub.emit(callFinished("t1"));
+			tag.parentCallId = "t2";
+			stub.emit(callStarted("t2", "task", { label: "L" }));
+			stub.emit({ ...callStarted("r2", "read", {}), ...tag });
+			stub.emit({ ...callFinished("t2"), ok: false });
+			tag.parentCallId = "t3";
+			stub.emit(callStarted("t3", "task", { label: "L" }));
+			stub.emit({ ...callStarted("r3", "read", {}), ...tag });
+			stub.emit({ ...finished, stopReason: "interrupted", ...tag });
+			stub.emit({ ...callFinished("t3"), ok: false });
+			tag.parentCallId = "t4";
+			stub.emit(callStarted("t4", "task", { label: "L" }));
+			stub.emit({ ...callStarted("r4", "read", {}), ...tag });
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: capture the child OSC body and the root-clear marker
+			const records = [...h.screen.raw().matchAll(/\x1b\]7501;([^\x1b]*id=[^\x1b]*)\x1b\\|(<root clear>)/g)].map(
+				(match) => match[1] ?? match[2],
+			);
+			expect(records).toEqual(
+				answers
+					? [
+							"state=working:id=task1:title=TA==",
+							"state=blocked:kind=permission:id=task1:title=TA==",
+							"state=working:id=task1:title=TA==",
+							"state=done:id=task1:title=TA==",
+							"state=working:id=task2:title=TA==",
+							"state=error:id=task2:title=TA==",
+							"state=working:id=task3:title=TA==",
+							"state=clear:id=task3",
+							"state=working:id=task4:title=TA==",
+							"state=clear:id=task4",
+							"state=clear:id=task2",
+							"state=clear:id=task1",
+							"<root clear>",
+						]
+					: ["<root clear>"],
+			);
+		});
+
+		it.each([true, false])("reports background jobs by their lifecycle, past the root turn: %s", async (answers) => {
+			const h = harness([]);
+			const stub = stubCore();
+			const terminal = h.screen.terminal;
+			const root = terminal.setProgramStatus.bind(terminal);
+			terminal.setProgramStatus = (status) => {
+				if (status.state === "clear") terminal.write("<root clear>");
+				root(status);
+			};
+			const input = new PassThrough();
+			h.io.tui.terminal = observeProgramStatus(terminal, input);
+			h.io.tui.connect = async () => stub.link;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			if (answers) input.write("\x1b]7501;?\x1b\\");
+			const job = { agent: "w", label: "L", outputPath: "/o" };
+			const start = (n: number) => stub.emit({ type: "task_started", taskId: `b${n}`, ...job, running: 1 });
+			for (const [n, status] of (["finished", "failed", "stopped"] as const).entries()) {
+				start(n);
+				stub.emit(finished);
+				const end = { notified: true, running: 0, waiting: 0, durationMs: 1 };
+				stub.emit({ type: "task_finished", taskId: `b${n}`, ...job, status, ...end });
+			}
+			start(3);
+			stub.emit(finished);
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: capture the child OSC body and the root-clear marker
+			const records = [...h.screen.raw().matchAll(/\x1b\]7501;([^\x1b]*id=[^\x1b]*)\x1b\\|(<root clear>)/g)].map(
+				(match) => match[1] ?? match[2],
+			);
+			const t = (n: number) => `id=task${n}:title=TA==`;
+			expect(records).toEqual(
+				answers
+					? [
+							`state=working:${t(1)}`,
+							`state=done:${t(1)}`,
+							`state=working:${t(2)}`,
+							`state=error:${t(2)}`,
+							`state=working:${t(3)}`,
+							"state=clear:id=task3",
+							`state=working:${t(4)}`,
+							"state=clear:id=task4",
+							"state=clear:id=task2",
+							"state=clear:id=task1",
+							"<root clear>",
+						]
+					: ["<root clear>"],
+			);
+		});
+
+		it("reports the main agent's feature progress, never a subagent's, and drops it with the session", async () => {
+			const h = harness([]);
+			let sessions = 0;
+			const stub = stubCore({
+				answer: (command) => (command.command === "session.start" ? { sessionId: `s${++sessions}` } : undefined),
+			});
+			const input = new PassThrough();
+			const terminal = observeProgramStatus(h.screen.terminal, input);
+			h.io.tui = { terminal, connect: async () => stub.link, statusIntervalMs: 0 } as typeof h.io.tui;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			input.write("\x1b]7501;?\x1b\\");
+			// Only root records with progress are written raw; plain ones reach the fake's statuses.
+			const frames = () =>
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: capture the OSC bodies
+				[...h.screen.raw().matchAll(/\x1b\]7501;([^\x1b]*)\x1b\\/g)]
+					.map((m) => m[1])
+					.filter((b) => !b?.includes("id="));
+			const tasks = (done: number, pending: number, dropped = 0) =>
+				[...Array(done).fill("done"), ...Array(pending).fill("pending"), ...Array(dropped).fill("dropped")].map(
+					(status, i) => ({ id: `T${i}`, title: "t", specs: [], status }),
+				);
+			const feature = (list: ReturnType<typeof tasks>, tag = {}) =>
+				stub.emit({ ...taskInProgress("T0", "t"), tasks: list, ...tag });
+			h.screen.type("go");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.at(-1)?.state === "working");
+			for (const [done, pending, dropped, count] of [
+				[3, 5, 0, 1],
+				[4, 4, 0, 2],
+				[4, 3, 1, 3],
+			] as const) {
+				feature(tasks(done, pending, dropped));
+				await until(() => frames().length === count);
+			}
+			feature(tasks(8, 0), { parentCallId: "t1", agent: "w" });
+			feature([]);
+			await until(() => h.screen.statuses.at(-1)?.state === "working" && h.screen.statuses.length > 2);
+			const progress = (percent: number) => `state=working:app=atelier:progress=${percent}`;
+			expect(frames()).toEqual([progress(37), progress(50), progress(57)]);
+			expect(h.screen.statuses.at(-1)).toEqual(atelier("working"));
+			feature(tasks(8, 0));
+			await until(() => frames().length === 4);
+			expect(frames().at(-1)).toBe(progress(100));
+			stub.emit({ type: "turn_finished", stopReason: "end_turn", usage });
+			await until(() => h.screen.statuses.at(-1)?.state === "done");
+			expect(h.screen.statuses.at(-1)).toEqual(atelier("done"));
+			h.screen.type("/new");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("── new session ──"));
+			await until(() => stub.log.commands.filter((c) => c.command === "session.start").length === 2);
+			h.screen.type("next");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.at(-1)?.state === "working");
+			expect(frames()).toHaveLength(4);
+			expect(h.screen.statuses.at(-1)).toEqual(atelier("working"));
 			h.screen.type("\x03");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
