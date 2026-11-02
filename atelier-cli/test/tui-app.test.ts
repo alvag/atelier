@@ -4079,11 +4079,18 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		}
 
 		const herdrEnv = (socket: string) => ({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_SOCKET_PATH: socket });
+		/** The source of the labels Herdr shows in place of its state names, and what clears them. */
+		const LABELS = "atelier:state";
+		const unlabeled = { method: "pane.report_metadata", clear_state_labels: true };
+		const labeled = (state_labels: Record<string, string>) => ({ method: "pane.report_metadata", state_labels });
+		const failed = labeled({ done: "error", idle: "error" });
 		/** What a call says, without what every call carries. */
 		const said = ({ method, params }: HerdrCall): Record<string, unknown> => {
 			const { pane_id: _pane, source: _source, agent: _agent, seq: _seq, ...rest } = params;
 			return { method, ...rest };
 		};
+		/** What the labels' calls say. */
+		const labels = (calls: HerdrCall[]) => calls.filter((call) => call.params.source === LABELS).map(said);
 
 		it("reports the session, its states and the release to the pane, with a growing seq", async () => {
 			const herdr = await fakeHerdr();
@@ -4097,6 +4104,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("Run this command?"));
 			await until(() => herdr.calls.some((call) => call.params.state === "blocked"));
+			await until(() => herdr.calls.some((call) => call.params.state_labels !== undefined));
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("$0.50"));
 			h.screen.type("/new");
@@ -4111,7 +4119,10 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				.filter((command) => command.command === "session.close")
 				.map((command) => (command as { sessionId: string }).sessionId);
 			// A state that a newer one replaces before Herdr answers the one in flight is never sent: a working may be missing.
-			const reported = herdr.calls.map(said).filter((call) => call.state !== "working");
+			const reported = herdr.calls
+				.filter((call) => call.params.source !== LABELS)
+				.map(said)
+				.filter((call) => call.state !== "working");
 			const states = herdr.calls.map((call) => call.params.state).filter((state) => state !== undefined);
 			expect(states.filter((state, at) => state === states[at - 1])).toEqual([]);
 			expect(reported).toEqual([
@@ -4122,8 +4133,14 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				{ method: "pane.report_agent_session", agent_session_id: second },
 				{ method: "pane.release_agent" },
 			]);
+			// The question shows in place of Herdr's `blocked` while it is asked; an Atelier before may have left labels.
+			expect(labels(herdr.calls)).toEqual([unlabeled, labeled({ blocked: "Run this command?" }), unlabeled]);
 			for (const call of herdr.calls)
-				expect(call.params).toMatchObject({ pane_id: "w1:p1", source: "atelier", agent: "atelier" });
+				expect(call.params).toMatchObject({
+					pane_id: "w1:p1",
+					source: call.params.source === LABELS ? LABELS : "atelier",
+					agent: "atelier",
+				});
 			const seqs = herdr.calls.map((call) => call.params.seq as number);
 			expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
 			expect(new Set(seqs).size).toBe(seqs.length);
@@ -4205,7 +4222,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(h.screen.started);
 			stub.emit({ type: "review_consent_requested", reviewId: "r1", level: "high", reasons: [], lenses: [] });
 			await until(() => herdr.calls.some((call) => call.params.state === "blocked"));
-			expect(said(herdr.calls.at(-1) as HerdrCall)).toEqual({
+			expect(said(herdr.calls.filter((call) => call.method === "pane.report_agent").at(-1) as HerdrCall)).toEqual({
 				method: "pane.report_agent",
 				state: "blocked",
 				message: "Review this high-risk change?",
@@ -4234,7 +4251,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			};
 			stub.emit({ type: "user_question_requested", callId: "u1", questions: [question] });
 			await until(() => herdr.calls.some((call) => call.params.state === "blocked"));
-			expect(said(herdr.calls.at(-1) as HerdrCall)).toEqual({
+			expect(said(herdr.calls.filter((call) => call.method === "pane.report_agent").at(-1) as HerdrCall)).toEqual({
 				method: "pane.report_agent",
 				state: "blocked",
 				message: "Questions from the agent",
@@ -4264,6 +4281,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("again");
 			h.screen.type("\r");
 			await until(() => herdr.calls.some((call) => call.params.message !== undefined));
+			await until(() => labels(herdr.calls).length === 2);
 			h.screen.type("last");
 			h.screen.type("\r");
 			await until(() => h.screen.screen().includes("$0.50"));
@@ -4282,6 +4300,25 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				{ method: "pane.report_agent", state: "idle" },
 			]);
 			expect(states.filter((call) => call.state === "working" && call.message !== undefined)).toEqual([]);
+			// Herdr shows `error` in place of `done` and `idle` until the next turn starts.
+			expect(labels(herdr.calls)).toEqual([unlabeled, failed, unlabeled]);
+		});
+
+		it("cuts the question to Herdr's 80 characters for its label, and clears the labels it shows on exit", async () => {
+			const herdr = await fakeHerdr();
+			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
+			reporter?.report("blocked", `Run\x07 this‮ command? ${"x".repeat(100)}\nmore`);
+			await until(() => labels(herdr.calls).length === 1);
+			reporter?.report("error", "boom");
+			await until(() => labels(herdr.calls).length === 2);
+			await reporter?.release();
+			await herdr.close();
+			expect(labels(herdr.calls)).toEqual([
+				labeled({ blocked: `Run this command? ${"x".repeat(61)}…` }),
+				failed,
+				unlabeled,
+			]);
+			expect(herdr.calls.at(-1)?.method).toBe("pane.release_agent");
 		});
 
 		it.each([
@@ -4323,7 +4360,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.io = { ...h.io, env: herdrEnv(herdr.path) } as typeof h.io;
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
-			await until(() => herdr.calls.length === 2);
+			await until(() => herdr.calls.some((call) => call.method === "pane.report_agent_session"));
 			await herdr.close();
 			h.screen.type("one");
 			h.screen.type("\r");
@@ -4349,13 +4386,18 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			reporter?.report("blocked", "Run this command?");
 			herdr.answer();
 			const released = reporter?.release();
-			await until(() => herdr.calls.length === 3);
-			herdr.answer();
+			for (const count of [3, 4, 5]) {
+				await until(() => herdr.calls.length === count);
+				herdr.answer();
+			}
 			await released;
 			await herdr.close();
+			// The labels wait their own turn: the newest replaces the one waiting, where it waited.
 			expect(herdr.calls.map(said)).toEqual([
 				{ method: "pane.report_agent", state: "working" },
+				labeled({ blocked: "Run this command?" }),
 				{ method: "pane.report_agent", state: "blocked", message: "Run this command?" },
+				unlabeled,
 				{ method: "pane.release_agent" },
 			]);
 		});
@@ -4378,7 +4420,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
-			const metadata = () => herdr.calls.filter((call) => call.method === "pane.report_metadata");
+			const metadata = () => herdr.calls.filter((call) => call.params.source === "atelier:activity");
 			const long = "Show\nthe active‮ task in Herdr's\x07 sidebar, cut to its width";
 			stub.emit(featureChanged([{ id: "T2", title: long, status: "in_progress" }]));
 			h.screen.type("go");
@@ -4424,7 +4466,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
 			reporter?.activity({ id: "T1", title });
 			reporter?.report("working");
-			const metadata = () => herdr.calls.find((call) => call.method === "pane.report_metadata");
+			const metadata = () => herdr.calls.find((call) => call.params.source === "atelier:activity");
 			await until(() => metadata() !== undefined);
 			await reporter?.release();
 			await herdr.close();
@@ -4443,7 +4485,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
 			reporter?.activity({ id: "T1", title: "x".repeat(60) });
 			reporter?.report("working");
-			const metadata = () => herdr.calls.find((call) => call.method === "pane.report_metadata");
+			const metadata = () => herdr.calls.find((call) => call.params.source === "atelier:activity");
 			await until(() => metadata() !== undefined);
 			await reporter?.release();
 			await herdr.close();
@@ -4456,7 +4498,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		it("refreshes the summary while the turn runs, 24 columns wide without Herdr's session file", async () => {
 			const herdr = await fakeHerdr();
 			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path), { refreshMs: 20 });
-			const metadata = () => herdr.calls.filter((call) => call.method === "pane.report_metadata").map(said);
+			const metadata = () => herdr.calls.filter((call) => call.params.source === "atelier:activity").map(said);
 			reporter?.activity({ id: "T1", title: "abcdefghij klmnopqrst uvwxyz" });
 			reporter?.report("working");
 			await until(() => metadata().length === 3);

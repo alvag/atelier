@@ -9,6 +9,10 @@ const AGENT = "atelier";
 const SOURCE = "atelier";
 /** The sidebar's summary is reported apart from the state, as Herdr's own bridges do. */
 const ACTIVITY_SOURCE = "atelier:activity";
+/** The labels Herdr shows in place of its state names: what a blocked pane asks, and `error` after a failed turn. */
+const LABELS_SOURCE = "atelier:state";
+const ERROR_LABEL = "error";
+type Labels = { blocked: string } | { done: string; idle: string };
 /** The variable the TUI gives the core, and so its tools' commands: an Atelier started by one finds its pane taken. */
 export const PANE_MARKER = HERDR_PANE_VARIABLE;
 
@@ -151,6 +155,8 @@ export class HerdrStatusReporter {
 	/** The state asked for last, and the one Herdr was sent last. */
 	#asked: string | undefined;
 	#sent: string | undefined;
+	/** The labels asked for last; none yet, so the first report clears what an Atelier before may have left. */
+	#labeled: string | undefined;
 	#released = false;
 	/** The task in progress, whether a turn runs, and whether the sidebar was last asked to show it. */
 	#activity: Activity | undefined;
@@ -181,7 +187,8 @@ export class HerdrStatusReporter {
 
 	/**
 	 * Reports the state, unless it is the one asked for last; done and error are idle to Herdr. `line` is the terminal's
-	 * line for the state: Herdr gets it, as one plain line, only for what is asked while blocked and the error.
+	 * line for the state: Herdr gets it, as one plain line, only for what is asked while blocked and the error. What is
+	 * asked is also the label of `blocked`, and a failed turn labels `done` and `idle` as `error`.
 	 */
 	report(state: State, line?: string) {
 		const message = state === "blocked" || state === "error" ? oneLine(line ?? "") : "";
@@ -190,9 +197,12 @@ export class HerdrStatusReporter {
 			...(message === "" ? {} : { message }),
 		};
 		const key = JSON.stringify(params);
-		if (key === this.#asked) return;
-		this.#asked = key;
-		this.#enqueue({ key: "state", method: "pane.report_agent", params });
+		if (key !== this.#asked) {
+			this.#asked = key;
+			this.#enqueue({ key: "state", method: "pane.report_agent", params });
+		}
+		if (state === "blocked" && message !== "") this.#label({ blocked: oneLine(message, TOKEN_CHARS) });
+		else this.#label(state === "error" ? { done: ERROR_LABEL, idle: ERROR_LABEL } : undefined);
 		const running = state === "working" || state === "blocked";
 		if (running === this.#running) return;
 		this.#running = running;
@@ -230,6 +240,19 @@ export class HerdrStatusReporter {
 		this.#enqueue({ key: "activity", method: "pane.report_metadata", params, source: ACTIVITY_SOURCE });
 	}
 
+	/** Shows `labels` for the state Herdr has, within its 80 characters, or clears the ones shown; once each. */
+	#label(labels: Labels | undefined) {
+		const key = JSON.stringify(labels ?? null);
+		if (key === this.#labeled) return;
+		this.#labeled = key;
+		this.#enqueue({
+			key: "labels",
+			method: "pane.report_metadata",
+			params: labels === undefined ? { clear_state_labels: true } : { state_labels: labels },
+			source: LABELS_SOURCE,
+		});
+	}
+
 	/** Reports the session the TUI runs; a saved one comes with the command that resumes it. */
 	session(id: string, saved: boolean) {
 		this.#enqueue({
@@ -244,6 +267,7 @@ export class HerdrStatusReporter {
 		if (this.#released) return;
 		this.#running = false;
 		this.#summarize();
+		this.#label(undefined);
 		this.#enqueue({ key: "release", method: "pane.release_agent", params: {} });
 		this.#released = true;
 		let timer: NodeJS.Timeout | undefined;
