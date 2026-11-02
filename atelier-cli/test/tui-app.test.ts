@@ -4486,6 +4486,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const holders = new Set<unknown>();
 			const held: (() => void)[] = [];
 			const sockets = new Set<Socket>();
+			/** How many of the next requests are cut off without an answer, as a connection reset would. */
+			let dropping = 0;
 			const server = createServer((socket) => {
 				sockets.add(socket);
 				socket.on("close", () => sockets.delete(socket));
@@ -4497,6 +4499,11 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 					for (const line of lines) {
 						const call = JSON.parse(line) as HerdrCall;
 						calls.push(call);
+						if (dropping > 0) {
+							dropping--;
+							socket.destroy();
+							return;
+						}
 						const { source } = call.params;
 						if (call.method === "pane.report_agent") holders.add(source);
 						if (call.method === "pane.release_agent") holders.delete(source);
@@ -4526,7 +4533,10 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const answer = () => {
 				for (const reply of held.splice(0)) reply();
 			};
-			return { path, calls, refused, close, answer };
+			const drop = (count: number) => {
+				dropping = count;
+			};
+			return { path, calls, refused, close, answer, drop };
 		}
 
 		const herdrEnv = (socket: string) => ({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_SOCKET_PATH: socket });
@@ -4869,6 +4879,56 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				labeled({ blocked: "Run this command?" }),
 				unlabeled,
 				{ method: "pane.report_agent", state: "blocked", message: "Run this command?" },
+				{ method: "pane.release_agent" },
+			]);
+		});
+
+		it("sends labels again that Herdr never got, after its socket failed them", async () => {
+			const herdr = await fakeHerdr({ hold: true });
+			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
+			const answered = async (count: number) => {
+				await until(() => herdr.calls.length === count);
+				herdr.answer();
+			};
+			reporter?.report("idle");
+			await answered(1);
+			await answered(2);
+			reporter?.report("working");
+			await answered(3);
+			// Both tries of the failed turn's labels are cut off; its end gets through and is held.
+			herdr.drop(2);
+			reporter?.report("error", "boom");
+			await until(() => herdr.calls.length === 6);
+			// Another failed turn while it is held: the same labels again, which Herdr does not have.
+			reporter?.report("working");
+			reporter?.report("error", "boom");
+			await answered(6);
+			await answered(7);
+			// The clearing of the next turn is cut off too, and the same clearing comes back while its working is held.
+			herdr.drop(2);
+			reporter?.report("working");
+			await until(() => herdr.calls.length === 10);
+			reporter?.report("error", "new boom");
+			reporter?.report("working");
+			await answered(10);
+			await answered(11);
+			const released = reporter?.release();
+			await answered(12);
+			await released;
+			await herdr.close();
+			const working = { method: "pane.report_agent", state: "working" };
+			expect(herdr.calls.map(said)).toEqual([
+				{ method: "pane.report_agent", state: "idle" },
+				unlabeled,
+				working,
+				failed,
+				failed,
+				{ method: "pane.report_agent", state: "idle", message: "boom" },
+				failed,
+				unlabeled,
+				unlabeled,
+				working,
+				unlabeled,
 				{ method: "pane.release_agent" },
 			]);
 		});
