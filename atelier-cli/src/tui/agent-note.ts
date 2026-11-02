@@ -1,8 +1,8 @@
 import { visibleText } from "@atelier/core";
 
 const FROM = /\bfrom\s*=\s*(?:"([^"]*)"|'([^']*)')/;
-/** The opening tag of a note, up to its first `>`. */
-const TAG = /^\s*<hc((?:\s[^>]*)?)>/;
+/** The first opening tag of a note, up to its `>`: a draft may carry the user's own text before it. */
+const TAG = /<hc((?:\s[^>]*)?)>/;
 
 /** Whether `text` begins like a note from another agent: `<hc` after any whitespace, whatever follows. */
 export const startsNote = (text: string): boolean => text.trimStart().startsWith("<hc");

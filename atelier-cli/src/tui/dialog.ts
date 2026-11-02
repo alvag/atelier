@@ -40,8 +40,19 @@ export class PasteFilter {
 	pasting = false;
 	/** The end of a chunk that may be the start of a marker, kept until the next chunk says. */
 	#pending = "";
-	/** What the open paste holds so far, when it is kept. */
+	/** What the open paste holds so far, when it is kept or may be intercepted. */
 	#kept: string | undefined;
+	/** Whether the open paste is the reader's to keep. */
+	#keep = false;
+	/** The Enter that follows an intercepted paste is dropped, unless another key comes first. */
+	#skipEnter = false;
+
+	/** With `intercept`, a finished paste is offered to it first, kept or not; when it takes it, the reader never sees it nor the Enter after it. */
+	readonly #intercept: ((paste: string) => boolean) | undefined;
+
+	constructor(intercept?: (paste: string) => boolean) {
+		this.#intercept = intercept;
+	}
 
 	/** The keys in `data`, without what was pasted. */
 	feed(data: string): string {
@@ -58,6 +69,14 @@ export class PasteFilter {
 
 	/** `data`'s keys and pastes, each given to `parts` as it comes; a paste is given once it ends, if it was kept. */
 	read(data: string, parts: InputParts): void {
+		const keys = (text: string) => {
+			if (this.#skipEnter) {
+				this.#skipEnter = false;
+				const enter = ["\r\n", "\r", "\n", "\x1b[13u"].find((key) => text.startsWith(key));
+				if (enter !== undefined) text = text.slice(enter.length);
+			}
+			if (text !== "") parts.keys(text);
+		};
 		let rest = this.#pending + data;
 		this.#pending = "";
 		while (rest !== "") {
@@ -74,21 +93,24 @@ export class PasteFilter {
 				this.#kept = undefined;
 				rest = rest.slice(end + PASTE_END.length);
 				this.pasting = false;
-				if (kept !== undefined) parts.pasted(kept);
+				if (kept === undefined) continue;
+				if (this.#intercept?.(kept) === true) this.#skipEnter = true;
+				else if (this.#keep) parts.pasted(kept);
 				continue;
 			}
 			const start = rest.indexOf(PASTE_START);
 			if (start === -1) {
 				// A lone Esc is the key, not a cut marker: only "ESC [" and longer wait for the rest.
 				const cut = partialMarker(rest, PASTE_START, 2);
-				if (rest.length > cut) parts.keys(rest.slice(0, rest.length - cut));
+				if (rest.length > cut) keys(rest.slice(0, rest.length - cut));
 				this.#pending = rest.slice(rest.length - cut);
 				break;
 			}
-			if (start > 0) parts.keys(rest.slice(0, start));
+			if (start > 0) keys(rest.slice(0, start));
 			rest = rest.slice(start + PASTE_START.length);
 			this.pasting = true;
-			this.#kept = parts.keep() ? "" : undefined;
+			this.#keep = parts.keep();
+			this.#kept = this.#keep || this.#intercept !== undefined ? "" : undefined;
 		}
 	}
 }

@@ -119,7 +119,7 @@ In the TUI, Up in an empty editor recalls the latest prompt from this project, i
 
 Failed history writes remove their own temporary files. On a normal launch, abandoned temporaries are cleaned only after 24 hours and only when their owner PID is confirmed gone; live, uncertain and legacy ownerless temporaries are left alone. `--no-session` never cleans them. See the history reference above for safe manual clearing.
 
-Inside herdr-app, input beginning with `<hc`, or a draft containing a paste beginning that way, is sent whole as another agent's note, never run as a command or saved as your prompt. This applies to the TUI and line mode; see [agent notes](docs/cli.md).
+Inside herdr-app, input beginning with `<hc`, or a draft containing a paste beginning that way, is sent whole as another agent's note, never run as a command or saved as your prompt. Notes never answer questions for you. This applies to the TUI and line mode; see [agent notes](docs/cli.md).
 
 ### Shell commands
 

@@ -236,8 +236,8 @@ export class Conversation extends Container {
 				this.agentNote(event.text);
 				return;
 			case "queued_message":
-				// A queued note is shown by its own `agent_note` event, not as a prompt (`source` comes with the core's queue source).
-				if ((event as { source?: string }).source !== "agent-note") this.prompt(event.text);
+				// A queued note is shown by its own `agent_note` event, not as a prompt.
+				if (event.source !== "agent-note") this.prompt(event.text);
 				return;
 			case "review_assessed": {
 				const block = new ReviewBlock(this.view, this.#paint, this.#cwd);
