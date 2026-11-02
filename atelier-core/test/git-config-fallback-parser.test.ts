@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFile, mkdtemp, realpath, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -59,6 +59,22 @@ describe("a git config git rejects is read with git's value syntax", () => {
 			"cond;cfg",
 			join("hooks#dir", "pre-commit"),
 		].map((path) => join(cwd, path));
+		expect(await refusals(protectedPaths)).toEqual(protectedPaths.map(refused));
+		expect(await refusals([join(cwd, "ordinary.cfg")])).toEqual([undefined]);
+	});
+
+	it("skips a byte order mark and other space before a header or key, and keeps what the line parser read", async () => {
+		// Git skips a UTF-8 byte order mark at the start of a file.
+		await writeFile(
+			join(cwd, ".git", "config"),
+			"﻿[include]\n\tpath = ../bom.cfg\n [core]\n\thooksPath = nbsp-hooks\n[invalid\n",
+		);
+		const protectedPaths = [
+			join(cwd, "bom.cfg"),
+			// Git keeps a no-break space in a value; the earlier line parser trimmed it.
+			join(cwd, " nbsp-hooks", "pre-commit"),
+			join(cwd, "nbsp-hooks", "pre-commit"),
+		];
 		expect(await refusals(protectedPaths)).toEqual(protectedPaths.map(refused));
 		expect(await refusals([join(cwd, "ordinary.cfg")])).toEqual([undefined]);
 	});

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeBackend, type FakeStep, Session } from "../src/index.ts";
 import { createEditTool, createWriteTool } from "../src/tools/index.ts";
+import { projectRefusal } from "../src/tools/protection.ts";
 import { gitConfigFixture } from "./support/git-config-cases.ts";
 
 const gitFault = vi.hoisted(() => ({
@@ -17,6 +18,8 @@ const gitFault = vi.hoisted(() => ({
 	/** Cuts the nth `--get-all` at its buffer as Node does, with the exit status Node can report for it. */
 	cutGetAll: undefined as { read: number; status: 0 | null } | undefined,
 	getAlls: 0,
+	/** Stops every git config before it answers anything, as Node does at a buffer or a timeout. */
+	stopConfig: undefined as "ENOBUFS" | "ETIMEDOUT" | undefined,
 }));
 vi.mock("node:child_process", async (original) => {
 	const cp = await original<typeof import("node:child_process")>();
@@ -47,7 +50,15 @@ vi.mock("node:child_process", async (original) => {
 					signal: cut.status === null ? "SIGTERM" : null,
 					error: Object.assign(new Error("spawnSync git ENOBUFS"), { code: "ENOBUFS" }),
 				});
-			const injected = (gitFault.failRevParse && args[0] === "rev-parse") || cutHere;
+			const stopHere = gitFault.stopConfig !== undefined && command === "git" && args[0] === "config";
+			if (stopHere)
+				Object.assign(run, {
+					stdout: Buffer.alloc(0),
+					status: null,
+					signal: "SIGTERM",
+					error: Object.assign(new Error(`spawnSync git ${gitFault.stopConfig}`), { code: gitFault.stopConfig }),
+				});
+			const injected = (gitFault.failRevParse && args[0] === "rev-parse") || cutHere || stopHere;
 			const code = (run.error as NodeJS.ErrnoException | undefined)?.code;
 			// ENOBUFS with status 0 means git exited before Node could kill it, which the tools accept.
 			if (command === "git" && !injected && (code === "ETIMEDOUT" || (code === "ENOBUFS" && run.status === null)))
@@ -90,6 +101,7 @@ beforeEach(async () => {
 afterEach(async () => {
 	gitFault.failRevParse = false;
 	gitFault.cutGetAll = undefined;
+	gitFault.stopConfig = undefined;
 	await rm(base, { recursive: true, force: true });
 });
 
@@ -116,9 +128,11 @@ async function session(turns: FakeStep[][], approve: () => Promise<boolean> = as
 /** Each test runs git several times; under load that takes far longer than the default 5 s. */
 const gitHeavy = { timeout: 90_000 };
 
+const refused = (path: string) => `${path} is git state that runs code: the agent does not write it.`;
+
 const refusal = (path: string) => ({
 	ok: false,
-	output: `${path} is git state that runs code: the agent does not write it.`,
+	output: refused(path),
 });
 
 describe("edit and write look at the git places again where they can have changed", gitHeavy, () => {
@@ -156,6 +170,26 @@ describe("edit and write look at the git places again where they can have change
 		expect(results[0]?.ok).toBe(true);
 		expect(results[1]).toEqual(refusal(".hooks/pre-commit"));
 	});
+});
+
+describe("a git config read git does not finish keeps the protection", gitHeavy, () => {
+	it.each(["ENOBUFS", "ETIMEDOUT"] as const)(
+		"of a config that starts with a byte order mark: stopped by %s",
+		async (code) => {
+			await writeFile(join(cwd, ".git", "config"), "﻿[include]\npath = ../bom-target.cfg\n");
+			const target = join(cwd, "bom-target.cfg");
+			await writeFile(target, "# included\n");
+			gitFault.stopConfig = code;
+			const input = { path: "bom-target.cfg", content: "[core]\nhooksPath = attacker-hooks\n" };
+			const tool = createWriteTool({ home });
+			expect(await projectRefusal("write", cwd, target, target, home)).toBe(refused(target));
+			expect(await tool.gate?.(input, { cwd })).toEqual({
+				refusal: { output: refusal("bom-target.cfg").output, summary: refusal("bom-target.cfg").output },
+			});
+			expect(await tool.execute(input, { cwd })).toMatchObject(refusal("bom-target.cfg"));
+			expect(await readFile(target, "utf8")).toBe("# included\n");
+		},
+	);
 });
 
 describe.skipIf(process.platform === "win32")("how many git processes one edit or write runs", gitHeavy, () => {
