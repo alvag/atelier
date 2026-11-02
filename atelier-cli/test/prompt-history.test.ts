@@ -59,6 +59,8 @@ it("refuses a symlinked Atelier base without writing through it", async () => {
 	const warnings: string[] = [];
 	await (await open(cwd, warnings)).add("private");
 	expect(warnings).toHaveLength(1);
+	expect(warnings[0]).toMatch(/^prompt history storage is unavailable:/);
+	expect(warnings[0]).not.toContain("not saved");
 	expect(await readdir(elsewhere)).toEqual([]);
 });
 
@@ -87,6 +89,8 @@ it.each(["base", "root", "project"])("refuses a %s directory replaced by a symli
 	await symlink(elsewhere, path);
 	await history.add("must stay private");
 	expect(warnings).toHaveLength(1);
+	expect(warnings[0]).toMatch(/^prompt history storage is unavailable:/);
+	expect(warnings[0]).not.toContain("not saved");
 	expect(history.entries).toEqual(["must stay private"]);
 	expect(await readdir(target)).toEqual([]);
 });
