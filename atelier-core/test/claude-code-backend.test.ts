@@ -261,6 +261,27 @@ describe("ClaudeCodeBackend inside a Herdr pane", () => {
 		abort.abort();
 		await until(() => inGroup(Number(pgid)).length === 0);
 	});
+
+	it("never leaves Claude Code waiting on stderr, which nothing reads", async () => {
+		const at = mkdtempSync(join(tmpdir(), "atelier-claude-spawn-"));
+		dir = at;
+		// More than a pipe holds goes to stderr before Claude Code gets on with its work.
+		const claude = join(at, "claude");
+		writeFileSync(claude, `#!/bin/sh\nhead -c 2097152 /dev/zero >&2\necho ready > "${at}/ready"\nexec cat\n`);
+		chmodSync(claude, 0o755);
+		const { query, calls } = fakeQuery([], []);
+		await new ClaudeCodeBackend({ query, env: {}, apart: true }).start(plainStart);
+		const abort = new AbortController();
+		calls.options.spawnClaudeCodeProcess?.({
+			command: claude,
+			args: [],
+			cwd: at,
+			env: { PATH: "/usr/bin:/bin" },
+			signal: abort.signal,
+		});
+		await until(() => existsSync(join(at, "ready")));
+		abort.abort();
+	});
 });
 
 describe("ClaudeCodeBackend options", () => {
