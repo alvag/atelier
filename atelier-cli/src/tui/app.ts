@@ -702,7 +702,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 				? { message }
 				: { kind: blocked.kind === "permission" ? "permission" : "question", message: blocked.message },
 		);
-		herdr?.report(state, blocked);
+		herdr?.report(state, blocked?.message ?? message);
 	};
 	/** Tells Herdr which session the TUI runs. */
 	const reportSession = () => herdr?.session(savedId ?? sessionId, savedId !== undefined);

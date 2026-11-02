@@ -4538,7 +4538,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 
 		it("reports the session, its states and the release to the pane, with a growing seq", async () => {
 			const herdr = await fakeHerdr();
-			const h = harness([[{ toolCall: { tool: "bash", input: { command: "echo secret" } } }, { event: finished }]]);
+			const command = "export DEMO_TOKEN=not-a-real-value && echo secret";
+			const h = harness([[{ toolCall: { tool: "bash", input: { command } } }, { event: finished }]]);
 			h.io = { ...h.io, env: herdrEnv(herdr.path) } as typeof h.io;
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
@@ -4567,7 +4568,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(reported).toEqual([
 				{ method: "pane.report_agent", state: "idle" },
 				{ method: "pane.report_agent_session", agent_session_id: first },
-				{ method: "pane.report_agent", state: "blocked", message: "Approval awaiting input" },
+				{ method: "pane.report_agent", state: "blocked", message: "Run this command?" },
 				{ method: "pane.report_agent", state: "idle" },
 				{ method: "pane.report_agent_session", agent_session_id: second },
 				{ method: "pane.release_agent" },
@@ -4577,7 +4578,9 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const seqs = herdr.calls.map((call) => call.params.seq as number);
 			expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
 			expect(new Set(seqs).size).toBe(seqs.length);
+			// The question goes to Herdr, never the command it asks about.
 			expect(JSON.stringify(herdr.calls)).not.toContain("secret");
+			expect(JSON.stringify(herdr.calls)).not.toContain("not-a-real-value");
 			// A nested Atelier started by a tool finds the pane taken.
 			expect(h.core.envs).toEqual([{ ATELIER_HERDR_PANE: "w1:p1" }]);
 			expect(h.err()).toBe("");
@@ -4643,7 +4646,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(herdr.refused).toEqual([]);
 		});
 
-		it("reports a review consent as blocked with a generic message", async () => {
+		it("reports a review consent as blocked with its question", async () => {
 			const herdr = await fakeHerdr();
 			const h = harness([]);
 			const stub = stubCore();
@@ -4656,12 +4659,80 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(said(herdr.calls.at(-1) as HerdrCall)).toEqual({
 				method: "pane.report_agent",
 				state: "blocked",
-				message: "Review consent awaiting input",
+				message: "Review this high-risk change?",
 			});
 			h.screen.type("\x03");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 			await herdr.close();
+		});
+
+		it("reports a structured question as blocked with the line the terminal gets", async () => {
+			const herdr = await fakeHerdr();
+			const h = harness([]);
+			const stub = stubCore();
+			h.io = { ...h.io, env: herdrEnv(herdr.path) } as typeof h.io;
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			const question = {
+				id: "lang",
+				question: "Which language, given DEMO_TOKEN=not-a-real-value?",
+				options: [
+					{ id: "en", label: "English" },
+					{ id: "es", label: "Spanish" },
+				],
+			};
+			stub.emit({ type: "user_question_requested", callId: "u1", questions: [question] });
+			await until(() => herdr.calls.some((call) => call.params.state === "blocked"));
+			expect(said(herdr.calls.at(-1) as HerdrCall)).toEqual({
+				method: "pane.report_agent",
+				state: "blocked",
+				message: "Questions from the agent",
+			});
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			await herdr.close();
+			expect(JSON.stringify(herdr.calls)).not.toContain("not-a-real-value");
+		});
+
+		it("reports the error that ended a turn with its idle, and nothing after an interrupted or finished one", async () => {
+			const herdr = await fakeHerdr();
+			const h = harness([
+				[{ event: { type: "text_delta", text: "working" } }, { waitForInterrupt: true }],
+				[{ throw: `\n  the\x07 provider\u202e refused\u2066 it ${"x".repeat(300)}\nat line two` }],
+				[{ event: { type: "text_delta", text: "All done." } }, { event: finished }],
+			]);
+			h.io = { ...h.io, env: herdrEnv(herdr.path) } as typeof h.io;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("long job");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("working"));
+			h.screen.type("\x1b");
+			await until(() => h.screen.screen().includes("interrupted"));
+			h.screen.type("again");
+			h.screen.type("\r");
+			await until(() => herdr.calls.some((call) => call.params.message !== undefined));
+			h.screen.type("last");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("$0.50"));
+			h.screen.type("/exit");
+			h.screen.type("\r");
+			expect(await code).toBe(0);
+			await herdr.close();
+
+			// The terminal's line for the error: its first line with text, plain, cut to 200 characters.
+			const error = `the provider refused it ${"x".repeat(175)}…`;
+			const states = herdr.calls.filter((call) => call.method === "pane.report_agent").map(said);
+			expect(states.filter((call) => call.state !== "working")).toEqual([
+				{ method: "pane.report_agent", state: "idle" },
+				{ method: "pane.report_agent", state: "idle" },
+				{ method: "pane.report_agent", state: "idle", message: error },
+				{ method: "pane.report_agent", state: "idle" },
+			]);
+			expect(states.filter((call) => call.state === "working" && call.message !== undefined)).toEqual([]);
 		});
 
 		it.each([
@@ -4722,11 +4793,11 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => herdr.calls.length === 1);
 			reporter?.report("idle");
 			reporter?.report("working");
-			reporter?.report("blocked", { kind: "permission", message: "Run this command?" });
+			reporter?.report("blocked", "Run this command?");
 			herdr.answer();
 			await until(() => herdr.calls.length === 2);
 			reporter?.report("idle");
-			reporter?.report("blocked", { kind: "permission", message: "Run this command?" });
+			reporter?.report("blocked", "Run this command?");
 			herdr.answer();
 			const released = reporter?.release();
 			await until(() => herdr.calls.length === 3);
@@ -4735,7 +4806,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await herdr.close();
 			expect(herdr.calls.map(said)).toEqual([
 				{ method: "pane.report_agent", state: "working" },
-				{ method: "pane.report_agent", state: "blocked", message: "Approval awaiting input" },
+				{ method: "pane.report_agent", state: "blocked", message: "Run this command?" },
 				{ method: "pane.release_agent" },
 			]);
 		});
