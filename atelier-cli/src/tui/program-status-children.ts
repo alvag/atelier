@@ -105,6 +105,11 @@ export class ChildProgramStatus {
 		for (const child of this.children.values()) if (child.blockers.delete(callId)) this.refresh(child);
 	}
 
+	/** Retires finished children at the first event of each root turn, regardless of backend or trigger. */
+	beginTurn() {
+		this.sweep();
+	}
+
 	/** Forgets every child without telling anything. */
 	reset() {
 		this.epoch++;
