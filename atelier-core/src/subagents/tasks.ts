@@ -1,6 +1,7 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BackgroundNotice } from "../background-notices.ts";
+import type { Usage } from "../events.ts";
 import { formatElapsed } from "../tools/jobs.ts";
 import { boundReport, MAX_BACKGROUND_TASKS, type SubagentResult } from "./definitions.ts";
 
@@ -18,12 +19,16 @@ export interface TaskInfo {
 	id: string;
 	agent: string;
 	label: string;
+	/** The model its subagent starts with, when known. */
+	model?: string;
 	status: TaskStatus;
 	/** Why it failed, for `failed`. */
 	error?: string;
 	durationMs: number;
 	/** The subagent's activity as it runs, then its whole report. */
 	outputPath: string;
+	/** The tokens its subagent used, once it ended. */
+	usage?: Usage;
 	/** What its subagent cost, when its backend says. */
 	costUsd?: number;
 	/** The last lines of its report, for the clients, once it finished. */
@@ -42,6 +47,8 @@ export interface TaskRequest {
 	agent: string;
 	/** A short name for the task; the prompt's first line without it. */
 	label?: string;
+	/** The model its subagent starts with, when known. */
+	model?: string;
 	prompt: string;
 	/** Runs the subagent until it ends or `signal` aborts; `log` adds a line to the task's file. */
 	run: (signal: AbortSignal, log: (line: string) => void) => Promise<TaskResult>;
@@ -164,7 +171,15 @@ export class BackgroundTasks {
 		const label = labelOf(request.label ?? request.prompt);
 		// The file is best effort: a task whose file cannot be written still runs and reports.
 		quietly(() => writeFileSync(outputPath, `# ${id} (${request.agent}): ${label}\n\n## Activity\n\n`));
-		const info: TaskInfo = { id, agent: request.agent, label, status: "running", durationMs: 0, outputPath };
+		const info: TaskInfo = {
+			id,
+			agent: request.agent,
+			label,
+			...(request.model === undefined ? {} : { model: request.model }),
+			status: "running",
+			durationMs: 0,
+			outputPath,
+		};
 		const entry: Entry = { info, startedAt: Date.now(), abort: new AbortController(), done: Promise.resolve() };
 		this.#entries.set(id, entry);
 		const log = (line: string) => quietly(() => appendFileSync(outputPath, `${line}\n`));
@@ -184,6 +199,7 @@ export class BackgroundTasks {
 		const { info } = entry;
 		info.durationMs = Date.now() - entry.startedAt;
 		entry.endOrder = ++this.#ends;
+		if (result.usage !== undefined) info.usage = result.usage;
 		if (result.costUsd !== undefined) info.costUsd = result.costUsd;
 		if (entry.abort.signal.aborted) info.status = "stopped";
 		else if (result.ok) info.status = "finished";

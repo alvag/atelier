@@ -31,6 +31,7 @@ import {
 	type QueueKind,
 	type SessionProfile,
 	type SubagentTag,
+	type Usage,
 	ZERO_USAGE,
 } from "./events.ts";
 import { imageInputProblem } from "./image-support.ts";
@@ -92,7 +93,7 @@ import type { SavedConfig, ShellHistory } from "./sessions/format.ts";
 import type { SessionRecorder } from "./sessions/recorder.ts";
 import { pickShellResult, type ShellResult, shellResultsText } from "./shell-result.ts";
 import { type LoadedSkills, loadSkills, skillsPrompt } from "./skills.ts";
-import { addPhaseSpent, addPhases, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
+import { addPhaseSpent, addPhases, addUsage, onePhase, phaseAgent, withEffectiveEffort } from "./spent.ts";
 import {
 	boundReport,
 	createTaskTool,
@@ -2375,9 +2376,11 @@ export class Session {
 		const tree = worktree;
 		let task: TaskInfo;
 		try {
+			const model = running.configuration().model;
 			task = place.start({
 				agent: agent.name,
 				...(label === undefined ? {} : { label }),
+				...(model === undefined ? {} : { model }),
 				prompt,
 				run: async (signal, log): Promise<TaskResult> => {
 					// A backend that does not end its turn on the interrupt is closed after a grace.
@@ -2565,6 +2568,7 @@ export class Session {
 		// The parent model never sees the child's compaction rows: a failed one goes with the failure.
 		let compactionFailure: string | undefined;
 		let stopReason = "incomplete";
+		let usage: Usage | undefined;
 		let costUsd: number | undefined;
 		for await (const event of child.send(prompt)) {
 			// The child's `bash` is the parent's: the status was already said. The context warning is the main agent's.
@@ -2577,10 +2581,11 @@ export class Session {
 			else if (event.type === "compaction_finished" && !event.ok) compactionFailure = event.error ?? "no reason given";
 			else if (event.type === "turn_finished") {
 				stopReason = event.stopReason;
+				usage = usage === undefined ? event.usage : addUsage(usage, event.usage);
 				costUsd = event.costUsd;
 			}
 		}
-		const cost = costUsd === undefined ? {} : { costUsd };
+		const cost = { ...(usage === undefined ? {} : { usage }), ...(costUsd === undefined ? {} : { costUsd }) };
 		if (stopReason === "error" || stopReason === "interrupted" || failure !== undefined) {
 			const compaction = compactionFailure === undefined ? "" : `; its compaction failed: ${compactionFailure}`;
 			const on = settings.backend === undefined ? "" : ` on ${settings.backend}`;
@@ -2601,6 +2606,7 @@ export class Session {
 			taskId: task.id,
 			agent: task.agent,
 			label: task.label,
+			...(task.model === undefined ? {} : { model: task.model }),
 			outputPath: task.outputPath,
 			running: this.#runningBackground(),
 		});
@@ -2617,6 +2623,7 @@ export class Session {
 			...(task.error === undefined ? {} : { error: task.error }),
 			durationMs: task.durationMs,
 			outputPath: task.outputPath,
+			...(task.usage === undefined ? {} : { usage: task.usage }),
 			...(task.costUsd === undefined ? {} : { costUsd: task.costUsd }),
 			...(task.reportTail === undefined ? {} : { reportTail: task.reportTail }),
 			notified: notice !== undefined,

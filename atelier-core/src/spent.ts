@@ -87,7 +87,7 @@ function sameAgent(a: PhaseAgent, b: PhaseAgent): boolean {
 	);
 }
 
-function addUsage(a: Usage, b: Usage): Usage {
+export function addUsage(a: Usage, b: Usage): Usage {
 	return {
 		input: a.input + b.input,
 		output: a.output + b.output,

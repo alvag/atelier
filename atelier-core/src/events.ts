@@ -420,13 +420,23 @@ export type AtelierEventBody =
 	  }
 	/**
 	 * A subagent started in the background (`task` with `background`). `outputPath`: its activity, then its whole report.
-	 * `running`: the session's background work running now (jobs and tasks), this one included.
+	 * `running`: the session's background work running now (jobs and tasks), this one included. `model`: the model the
+	 * subagent starts with, when the session knows it (absent when its backend picks its default).
 	 */
-	| { type: "task_started"; taskId: string; agent: string; label: string; outputPath: string; running: number }
+	| {
+			type: "task_started";
+			taskId: string;
+			agent: string;
+			label: string;
+			model?: string;
+			outputPath: string;
+			running: number;
+	  }
 	/**
 	 * A background task ended: `finished` with a report, `failed` without one (`error` says why), `stopped` by `job_stop`
 	 * or the session's close. `reportTail`: the report's last lines, at most 400 characters (the whole report is in
-	 * `outputPath`). `notified`, `running` and `waiting` as in `job_finished`; said as `job_finished` is.
+	 * `outputPath`). `usage`: the tokens its turns used, when it had any. `notified`, `running` and `waiting` as in
+	 * `job_finished`; said as `job_finished` is.
 	 */
 	| {
 			type: "task_finished";
@@ -437,6 +447,7 @@ export type AtelierEventBody =
 			error?: string;
 			durationMs: number;
 			outputPath: string;
+			usage?: Usage;
 			costUsd?: number;
 			reportTail?: string;
 			notified: boolean;
