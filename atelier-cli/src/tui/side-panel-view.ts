@@ -21,6 +21,23 @@ export const SIDE_PANEL_MIN_COLUMNS = 120;
 /** How often a running job's or agent's time moves on. */
 const TICK_MS = 1000;
 
+/**
+ * The panel's scroll: after each layout, once it knows the rows it holds, it may move to keep a row in view; the
+ * mouse wheel says the user took over.
+ */
+class PanelScroll extends ScrollView {
+	afterLayout: () => void = () => {};
+	onWheel: () => void = () => {};
+	override updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void): void {
+		super.updateLayout(contentHeight, viewportHeight, requestRender);
+		this.afterLayout();
+	}
+	override scrollBy(lines: number): number {
+		this.onWheel();
+		return super.scrollBy(lines);
+	}
+}
+
 /** What the panel shows that its events do not say. */
 export interface SidePanelContext {
 	name?: string | undefined;
@@ -51,16 +68,17 @@ export class SidePanel {
 	readonly #paint: Paint;
 	readonly #options: SidePanelOptions;
 	readonly #now: () => number;
-	readonly #scroll: ScrollView;
+	readonly #scroll: PanelScroll;
 	#state: SidePanelState = emptySidePanel();
 	#startedAt: number;
 	readonly #folded = new Set<Section>();
 	#rendered: PanelLines = { lines: [], headers: new Map() };
-	#width = SIDE_PANEL_WIDTH;
 	#indicator = false;
 	#ticker: NodeJS.Timeout | undefined;
-	/** The task in progress the panel last scrolled to. */
+	/** The task in progress the panel keeps in view. */
 	#current: string | undefined;
+	/** Whether it keeps that task in view: until the user scrolls the panel, and again once another task starts. */
+	#following = true;
 
 	constructor(tui: TUI, ink: Ink, paint: Paint, options: SidePanelOptions) {
 		this.#tui = tui;
@@ -75,7 +93,11 @@ export class SidePanel {
 			invalidate: () => {},
 			handleMouse: (event) => this.#click(event),
 		};
-		this.#scroll = new ScrollView(content, { follow: "none", overscroll: "contain", scrollbar: "hidden" });
+		this.#scroll = new PanelScroll(content, { follow: "none", overscroll: "contain", scrollbar: "hidden" });
+		this.#scroll.afterLayout = () => this.#keepTaskInView();
+		this.#scroll.onWheel = () => {
+			this.#following = false;
+		};
 		const rule: Component = {
 			// As tall as any terminal: the layout cuts it to the panel's height.
 			render: () => Array.from({ length: Math.max(1, this.#tui.terminal.rows) }, () => this.#ink.fg("separator", "│")),
@@ -111,9 +133,12 @@ export class SidePanel {
 	}
 
 	event(event: AtelierEvent): void {
-		const before = this.#state.feature;
 		this.#state = sidePanelAfter(this.#state, event, this.#now());
-		if (this.#state.feature !== before) this.#followTask();
+		const current = this.#state.feature?.tasks.find((task) => task.status === "in_progress")?.id;
+		if (current !== this.#current) {
+			this.#current = current;
+			this.#following = true;
+		}
 		this.#tick();
 	}
 
@@ -122,6 +147,7 @@ export class SidePanel {
 		this.#state = saved === undefined ? emptySidePanel() : sidePanelResumed(saved);
 		this.#startedAt = this.#now();
 		this.#current = undefined;
+		this.#following = true;
 		this.#scroll.scrollToStart();
 		this.#tick();
 	}
@@ -129,6 +155,8 @@ export class SidePanel {
 	fold(section: Section): void {
 		if (this.#folded.has(section)) this.#folded.delete(section);
 		else this.#folded.add(section);
+		// Opened again, the Todos show the task in progress.
+		if (section === "todos") this.#following = true;
 	}
 
 	/** Stops the clock of the running rows, once the TUI stops. */
@@ -138,7 +166,6 @@ export class SidePanel {
 	}
 
 	#render(width: number): PanelLines {
-		this.#width = width;
 		const context = this.#options.context();
 		this.#rendered = sidePanelLines(
 			{
@@ -183,17 +210,17 @@ export class SidePanel {
 		return this.#ink.fg("textSecondary", `↑↓ ${top + 1}–${bottom}/${total}`);
 	}
 
-	/** When another task is in progress, its rows come into view. */
-	#followTask(): void {
-		const id = this.#state.feature?.tasks.find((task) => task.status === "in_progress")?.id;
-		if (id === this.#current) return;
-		this.#current = id;
-		const { current } = this.#render(this.#width);
+	/**
+	 * The rows of the task in progress come into view, after the layout measured the rows this render holds (a scroll
+	 * before would stop at the end of the rows held before).
+	 */
+	#keepTaskInView(): void {
+		const { current } = this.#rendered;
 		const height = this.#scroll.viewportHeight;
-		if (current === undefined || height <= 0) return;
+		if (!this.#following || current === undefined || height <= 0) return;
 		const top = this.#scroll.scrollTop;
 		if (current.start < top) this.#scroll.scrollTo(current.start);
-		else if (current.end >= top + height) this.#scroll.scrollTo(current.end - height + 1);
+		else if (current.end >= top + height) this.#scroll.scrollTo(Math.min(current.start, current.end - height + 1));
 	}
 
 	/** One render a second while a job or an agent runs and the panel is on screen; none otherwise. */
