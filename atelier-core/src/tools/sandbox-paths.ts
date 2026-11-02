@@ -314,35 +314,46 @@ function parseConfigFile(file: string): { hooksPaths: string[]; includes: string
 
 /**
  * A parser of git's syntax: sections and subsections, comments, an entry on its header's line, and values as
- * `readValue` reads them. An include counts in any `include` or `includeIf` section; `core.hooksPath` only in
- * `[core]` itself, as git reads it. A header git rejects counts as its name without a subsection.
+ * `readValue` reads them, the old `[section.subsection]` headers, and a valueless entry as git reports it. An
+ * include counts in any `include` or `includeIf` section; `core.hooksPath` only in `[core]` itself, as git reads it.
+ * A header git rejects counts as its name without a subsection.
  */
 function parseConfigText(text: string): { hooksPaths: string[]; includes: string[] } {
 	const found: { hooksPaths: string[]; includes: string[] } = { hooksPaths: [], includes: [] };
 	let section = "";
-	let subsection = false;
+	// The subsection as git prints it in a key, undefined for none.
+	let subsection: string | undefined;
 	for (let index = 0; index < text.length; ) {
 		const char = text[index] as string;
 		if (/\s/.test(char)) index++;
 		else if (char === "#" || char === ";") index = lineEnd(text, index);
 		else if (char === "[") {
 			const header = matchAt(HEADER, text, index);
-			const name = header ?? matchAt(BROKEN_HEADER, text, index);
-			section = (name?.[1] ?? "").toLowerCase();
-			subsection = header?.[2] !== undefined;
+			const name = (header ?? matchAt(BROKEN_HEADER, text, index))?.[1]?.toLowerCase() ?? "";
+			// The old `[section.subsection]` syntax names the same keys, lowercased.
+			const dot = name.indexOf(".");
+			section = dot === -1 ? name : name.slice(0, dot);
+			subsection = header?.[2]?.replace(/\\(.)/g, "$1") ?? (dot === -1 ? undefined : name.slice(dot + 1));
 			index = header ? HEADER.lastIndex : lineEnd(text, index);
 		} else {
 			const entry = matchAt(KEY, text, index);
-			if (entry?.[2] !== "=") {
-				// A key without a value names no path; anything else is a line git rejects.
+			const key = entry?.[1]?.toLowerCase();
+			let readings: string[];
+			if (entry?.[2] === "=") {
+				const read = valueReadings(text, KEY.lastIndex);
+				readings = read.readings;
+				index = read.end;
+			} else if (entry && /^[^\S\n]*(?:[#;].*)?$/.test(text.slice(KEY.lastIndex, lineEnd(text, index)))) {
+				// A valueless entry, as git reports it: an empty value, or a conditional include's own key.
+				readings = [section === "includeif" && key === "path" ? `includeif.${subsection ?? ""}.path` : ""];
+				index = lineEnd(text, index);
+			} else {
+				// A line git rejects.
 				index = lineEnd(text, index);
 				continue;
 			}
-			const key = (entry[1] ?? "").toLowerCase();
-			const { readings, end } = valueReadings(text, KEY.lastIndex);
 			if (key === "path" && (section === "include" || section === "includeif")) found.includes.push(...readings);
-			else if (key === "hookspath" && section === "core" && !subsection) found.hooksPaths = readings;
-			index = end;
+			else if (key === "hookspath" && section === "core" && subsection === undefined) found.hooksPaths = readings;
 		}
 	}
 	return found;
