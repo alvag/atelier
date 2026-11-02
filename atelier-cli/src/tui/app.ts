@@ -542,6 +542,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	let side: SidePanel | undefined;
 	/** The name the user gave the session with `/rename`, which the side panel shows. */
 	let sessionName: string | undefined;
+	/** The side panel's choices on their way to the settings: quitting waits for them, as long as it waits for the core. */
+	let panelSaves: Promise<unknown> = Promise.resolve();
 	const footer = new Footer(
 		paint,
 		fullscreen ? settings.statusLine.filter((item) => FULLSCREEN_FOOTER_ITEMS.includes(item)) : settings.statusLine,
@@ -1349,7 +1351,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			return conversation.note(`the side panel needs a terminal of ${SIDE_PANEL_MIN_COLUMNS} columns or more`);
 		panel.open = !panel.open;
 		if (options.home === undefined) return;
-		void saveSidePanel(options.home, panel.open).then((warning) => {
+		// Each save follows the ones before it, so this one settles after them all.
+		panelSaves = saveSidePanel(options.home, panel.open).then((warning) => {
 			if (warning === undefined) return;
 			conversation.note(`warning: ${warning}`, true);
 			tui.requestRender();
@@ -2115,7 +2118,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const gaveUp = new Promise<void>((resolve) => {
 			timer = setTimeout(resolve, options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS);
 		});
-		await Promise.race([Promise.all(saving.keys()), gaveUp]);
+		await Promise.race([Promise.all([...saving.keys(), panelSaves]), gaveUp]);
 		await Promise.race([link.request({ command: "session.close", sessionId }).catch(() => {}), gaveUp]);
 		clearTimeout(timer);
 		await Promise.all([link.close(), released, historyWrites]);

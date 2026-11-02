@@ -2151,6 +2151,20 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("finishes saving the last Ctrl+P before it quits", async () => {
+			const h = harness([], { columns: 140 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			// Saves wait for the ones before them: quitting right away still has some to wait for.
+			for (let i = 0; i < 41; i++) h.screen.type("\x10");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			expect((await saved()).tui.sidePanel).toBe(false);
+			expect(await readdir(join(home, ".atelier"))).toEqual(["settings.json"]);
+		});
+
 		it("keeps the task in progress in view when the panel's rows do not fit", async () => {
 			const h = harness([], { columns: 140, rows: 16 });
 			const stub = stubCore();
