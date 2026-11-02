@@ -935,8 +935,10 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		line.event(event);
 		childStatus.handle(event);
 		// The main agent's task in progress, the footer's, goes to Herdr's sidebar.
-		if (event.type === "feature_changed" && event.parentCallId === undefined)
+		if (event.type === "feature_changed" && event.parentCallId === undefined) {
 			herdr?.activity(event.tasks.find((task) => task.status === "in_progress"));
+			programStatus.feature(event.tasks);
+		}
 		// A subagent asks the same user through the same session: its questions are asked like the main agent's.
 		if (event.type === "approval_requested") {
 			const asked = sessionId;
@@ -1246,6 +1248,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const switchTo = (next: Opened, shownIn: Conversation) => {
 		const previous = sessionId;
 		childStatus.stop();
+		programStatus.feature(undefined);
 		sessionId = next.sessionId;
 		savedId = next.savedId;
 		pasted.reset();
