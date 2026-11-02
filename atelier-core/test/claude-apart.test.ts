@@ -109,6 +109,28 @@ describe("spawnApart", () => {
 			expect(claudeLog(dir)).toEqual(["term", "done"]);
 		});
 
+	it.skipIf(!canListProcesses)("gives the whole group the grace, though the command itself ends at TERM", async () => {
+		const dir = tempDir();
+		const claude = join(dir, "claude");
+		// The command leaves at TERM; a child of its group takes half a second to finish what it writes.
+		writeFileSync(
+			claude,
+			[
+				"#!/bin/sh",
+				`( trap 'echo term >> "${dir}/claude.log"; sleep 0.5; echo done >> "${dir}/claude.log"; exit 0' TERM; echo $(sh -c 'echo $PPID') > "${dir}/worker.pid"; while :; do sleep 0.1; done ) &`,
+				`echo $$ > "${dir}/claude.pid"`,
+				"while :; do sleep 0.1; done",
+			].join("\n"),
+		);
+		chmodSync(claude, 0o755);
+		const core = fakeCore(dir, claude);
+		await until(() => existsSync(join(dir, "claude.pid")) && existsSync(join(dir, "worker.pid")));
+		const pid = claudePid(dir);
+		core.kill("SIGKILL");
+		await until(() => inGroup(pid).length === 0);
+		expect(claudeLog(dir)).toEqual(["term", "done"]);
+	});
+
 	it.skipIf(!canListProcesses)("kills a command that ignores TERM after a short grace", async () => {
 		const dir = tempDir();
 		const core = fakeCore(dir, fakeClaude(dir, false));
