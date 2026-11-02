@@ -148,7 +148,7 @@ describe("saving the side panel's choice", () => {
 			extra: "kept",
 		};
 		await save(before);
-		expect(await saveSidePanel(home, false)).toBeUndefined();
+		expect(saveSidePanel(home, false)).toBeUndefined();
 		expect(JSON.parse(await readFile(path(), "utf8"))).toEqual({ ...before, tui: { ...before.tui, sidePanel: false } });
 		expect(Object.keys(JSON.parse(await readFile(path(), "utf8")))).toEqual(Object.keys(before));
 		expect(await readTuiSettings(home)).toMatchObject({ sidePanel: false, statusLine: ["model", "jobs"] });
@@ -156,7 +156,7 @@ describe("saving the side panel's choice", () => {
 
 	it("adds a tui section to a file without one", async () => {
 		await save({ kind: "atelier.settings", version: 1, other: true });
-		await saveSidePanel(home, false);
+		saveSidePanel(home, false);
 		expect(JSON.parse(await readFile(path(), "utf8"))).toEqual({
 			kind: "atelier.settings",
 			version: 1,
@@ -166,7 +166,7 @@ describe("saving the side panel's choice", () => {
 	});
 
 	it("creates the file with only that setting when there is none", async () => {
-		expect(await saveSidePanel(home, false)).toBeUndefined();
+		expect(saveSidePanel(home, false)).toBeUndefined();
 		expect(JSON.parse(await readFile(path(), "utf8"))).toEqual({
 			kind: "atelier.settings",
 			version: 1,
@@ -177,11 +177,11 @@ describe("saving the side panel's choice", () => {
 	it("keeps the file's permissions, and makes a new one as before", async () => {
 		await save(file({}));
 		await chmod(path(), 0o600);
-		await saveSidePanel(home, false);
+		saveSidePanel(home, false);
 		expect((await stat(path())).mode & 0o777).toBe(0o600);
 		expect(JSON.parse(await readFile(path(), "utf8")).tui).toEqual({ sidePanel: false });
 		await rm(path());
-		await saveSidePanel(home, true);
+		saveSidePanel(home, true);
 		expect((await stat(path())).mode & 0o777).toBe(0o666 & ~process.umask());
 	});
 
@@ -192,7 +192,7 @@ describe("saving the side panel's choice", () => {
 		await chmod(join(dotfiles, "settings.json"), 0o600);
 		await mkdir(join(home, ".atelier"));
 		await symlink(join("..", "dotfiles", "settings.json"), path());
-		expect(await saveSidePanel(home, false)).toBeUndefined();
+		expect(saveSidePanel(home, false)).toBeUndefined();
 		expect((await lstat(path())).isSymbolicLink()).toBe(true);
 		expect(JSON.parse(await readFile(join(dotfiles, "settings.json"), "utf8")).tui).toEqual({
 			hideThinking: true,
@@ -203,9 +203,9 @@ describe("saving the side panel's choice", () => {
 		expect(await readdir(join(home, ".atelier"))).toEqual(["settings.json"]);
 	});
 
-	it("saves overlapping choices one after the other, the last one asked for winning", async () => {
+	it("keeps the last of quick choices, with no temporary file left", async () => {
 		await save(file({ statusLine: ["model"] }));
-		const answers = await Promise.all(Array.from({ length: 20 }, (_, i) => saveSidePanel(home, i % 2 === 0)));
+		const answers = Array.from({ length: 20 }, (_, i) => saveSidePanel(home, i % 2 === 0));
 		expect(answers.every((answer) => answer === undefined)).toBe(true);
 		expect(JSON.parse(await readFile(path(), "utf8")).tui).toEqual({ statusLine: ["model"], sidePanel: false });
 		expect(await readdir(join(home, ".atelier"))).toEqual(["settings.json"]);
@@ -214,7 +214,7 @@ describe("saving the side panel's choice", () => {
 	it("leaves a file it cannot read as settings untouched, and says why", async () => {
 		for (const content of ["{ nope", JSON.stringify({ tui: {} }), JSON.stringify(file("panel"))]) {
 			await save(content);
-			expect(await saveSidePanel(home, false)).toMatch(/^.+settings\.json: .+; the side panel's choice was not saved$/);
+			expect(saveSidePanel(home, false)).toMatch(/^.+settings\.json: .+; the side panel's choice was not saved$/);
 			expect(await readFile(path(), "utf8")).toBe(content);
 		}
 	});

@@ -1,4 +1,17 @@
-import { chmod, lstat, mkdir, readFile, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readFileSync,
+	readlinkSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { DEFAULT_STATUS_LINE, isStatusItem, type StatusItem } from "./footer.ts";
 import { NOTIFY_VIAS, type NotifyVia } from "./notifications.ts";
@@ -96,57 +109,19 @@ export async function readTuiSettings(home: string | undefined): Promise<TuiSett
 	return settings;
 }
 
-/** The saves of each settings file, one after the other: a later choice is written after an earlier one. */
-const saves = new Map<string, Promise<unknown>>();
 /** Each save's own temporary file. */
 let saveCount = 0;
-/** The saves asked for and not over yet, with their temporary file once they have one. */
-const inFlight = new Set<{ partial?: string; abandoned: boolean }>();
 
 /**
- * Gives up the saves not over yet, as the TUI quits without waiting longer for a disk that does not answer: their
- * temporary files are removed, and none of them writes or moves anything after. Later saves are not affected. It
- * never fails: a file the disk does not remove is left, and the caller bounds how long it waits.
+ * Saves whether the side panel shows as `tui.sidePanel`, at once, the rest of the file kept as it was (a missing file
+ * is made with that setting alone). A file that cannot be read as settings is left untouched: the answer says why.
  */
-export async function abandonSidePanelSaves(): Promise<void> {
-	const left = [...inFlight];
-	for (const save of left) save.abandoned = true;
-	await Promise.all(
-		left.map((save) => (save.partial === undefined ? undefined : rm(save.partial, { force: true }).catch(() => {}))),
-	);
-}
-
-/**
- * Saves whether the side panel shows as `tui.sidePanel`, the rest of the file kept as it was (a missing file is made
- * with that setting alone). A file that cannot be read as settings is left untouched: the answer says why. Saves of
- * the same file run in the order they were asked for, so the last choice is the one kept.
- */
-export function saveSidePanel(home: string, shown: boolean): Promise<string | undefined> {
+export function saveSidePanel(home: string, shown: boolean): string | undefined {
 	const path = settingsPath(home);
-	const save = { abandoned: false };
-	inFlight.add(save);
-	const saved = (saves.get(path) ?? Promise.resolve())
-		.then(() => writeSidePanel(path, shown, save))
-		.finally(() => inFlight.delete(save));
-	const done = saved.catch(() => {});
-	saves.set(path, done);
-	void done.then(() => {
-		if (saves.get(path) === done) saves.delete(path);
-	});
-	return saved;
-}
-
-async function writeSidePanel(
-	path: string,
-	shown: boolean,
-	save: { partial?: string; abandoned: boolean },
-): Promise<string | undefined> {
 	const refused = (why: string) => `${path}: ${why}; the side panel's choice was not saved`;
-	const quit = () => refused("the TUI quit before it was written");
-	if (save.abandoned) return quit();
 	let raw: unknown = { kind: KIND, version: VERSION };
 	try {
-		raw = JSON.parse(await readFile(path, "utf8"));
+		raw = JSON.parse(readFileSync(path, "utf8"));
 	} catch (error) {
 		if (error instanceof SyntaxError) return refused("not valid JSON");
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT")
@@ -159,41 +134,31 @@ async function writeSidePanel(
 	let partial: string | undefined;
 	try {
 		// A link (to dotfiles, say) stays a link: the file it leads to is the one replaced.
-		const target = await linkTarget(path);
+		const target = linkTarget(path);
 		// Written beside it and moved over it, so the file is never left half written.
 		partial = `${target}.${process.pid}.${++saveCount}.tmp`;
-		save.partial = partial;
-		await mkdir(dirname(target), { recursive: true });
+		mkdirSync(dirname(target), { recursive: true });
 		// The file keeps its permissions (a private one stays private); a new one gets the usual ones.
-		const mode = await stat(target).then(
-			(found) => found.mode & 0o7777,
-			() => undefined,
-		);
-		await writeFile(partial, `${JSON.stringify(next, null, 2)}\n`, mode === undefined ? {} : { mode });
-		if (mode !== undefined) await chmod(partial, mode);
-		// Given up while it was written: its file goes, and the settings stay as they were.
-		if (save.abandoned) {
-			await rm(partial, { force: true });
-			return quit();
-		}
-		await rename(partial, target);
+		const mode = existsSync(target) ? statSync(target).mode & 0o7777 : undefined;
+		writeFileSync(partial, `${JSON.stringify(next, null, 2)}\n`, mode === undefined ? {} : { mode });
+		if (mode !== undefined) chmodSync(partial, mode);
+		renameSync(partial, target);
 		return undefined;
 	} catch (error) {
-		if (partial !== undefined) await rm(partial, { force: true }).catch(() => {});
+		if (partial !== undefined) rmSync(partial, { force: true });
 		return refused(`cannot write it: ${(error as Error).message}`);
 	}
 }
 
 /** The file `path` leads to through its links, also when the last one leads to a file not made yet. */
-async function linkTarget(path: string): Promise<string> {
+function linkTarget(path: string): string {
 	try {
-		return await realpath(path);
+		return realpathSync(path);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
-	const found = await lstat(path).catch(() => undefined);
-	if (found?.isSymbolicLink()) return linkTarget(resolve(dirname(path), await readlink(path)));
-	return path;
+	const link = lstatSync(path, { throwIfNoEntry: false });
+	return link?.isSymbolicLink() ? linkTarget(resolve(dirname(path), readlinkSync(path))) : path;
 }
 
 /** The notices' settings, each wrong field left at its default with a warning. */

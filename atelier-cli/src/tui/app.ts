@@ -100,7 +100,7 @@ import {
 	profileChoices,
 	sessionChoices,
 } from "./selectors.ts";
-import { abandonSidePanelSaves, readTuiSettings, saveSidePanel } from "./settings.ts";
+import { readTuiSettings, saveSidePanel } from "./settings.ts";
 import { SIDE_PANEL_MIN_COLUMNS, SIDE_PANEL_WIDTH, SidePanel } from "./side-panel-view.ts";
 import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
 import { StatusLine, terminalTitle } from "./status-line.ts";
@@ -177,8 +177,6 @@ const EXIT_FAILED = 1;
 const EXIT_INTERRUPTED = 130;
 const SIGNAL_EXIT = 128;
 const CLOSE_TIMEOUT_MS = 3000;
-/** How long quitting waits for the temporary files of the settings saves it gave up to be removed. */
-const ABANDON_TIMEOUT_MS = 250;
 const ANSWER_GUARD_MS = 400;
 /** How long the terminal has to say its colors; the shade starts as the palette's until then, and stays so after. */
 const COLOR_QUERY_MS = 500;
@@ -544,8 +542,6 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	let side: SidePanel | undefined;
 	/** The name the user gave the session with `/rename`, which the side panel shows. */
 	let sessionName: string | undefined;
-	/** The side panel's choices on their way to the settings: quitting waits for them, as long as it waits for the core. */
-	let panelSaves: Promise<unknown> = Promise.resolve();
 	const footer = new Footer(
 		paint,
 		fullscreen ? settings.statusLine.filter((item) => FULLSCREEN_FOOTER_ITEMS.includes(item)) : settings.statusLine,
@@ -1353,12 +1349,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			return conversation.note(`the side panel needs a terminal of ${SIDE_PANEL_MIN_COLUMNS} columns or more`);
 		panel.open = !panel.open;
 		if (options.home === undefined) return;
-		// Each save follows the ones before it, so this one settles after them all.
-		panelSaves = saveSidePanel(options.home, panel.open).then((warning) => {
-			if (warning === undefined) return;
-			conversation.note(`warning: ${warning}`, true);
-			tui.requestRender();
-		});
+		// Written at once: a small file, so the last choice is the one kept, also when the TUI quits right after.
+		const warning = saveSidePanel(options.home, panel.open);
+		if (warning !== undefined) conversation.note(`warning: ${warning}`, true);
 	};
 
 	/** `/mcp` prints the session's MCP servers as the core has them now; `/mcp login|logout <server>` signs one in or out first. */
@@ -2120,17 +2113,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const gaveUp = new Promise<void>((resolve) => {
 			timer = setTimeout(resolve, options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS);
 		});
-		await Promise.race([Promise.all([...saving.keys(), panelSaves]), gaveUp]);
-		// A save the disk did not finish in time is given up, its temporary file removed: for a short while at most, so
-		// a disk that does not answer that either cannot keep the session and the link from closing.
-		let cleanup: NodeJS.Timeout | undefined;
-		await Promise.race([
-			abandonSidePanelSaves(),
-			new Promise<void>((resolve) => {
-				cleanup = setTimeout(resolve, ABANDON_TIMEOUT_MS);
-			}),
-		]);
-		clearTimeout(cleanup);
+		await Promise.race([Promise.all(saving.keys()), gaveUp]);
 		await Promise.race([link.request({ command: "session.close", sessionId }).catch(() => {}), gaveUp]);
 		clearTimeout(timer);
 		await Promise.all([link.close(), released, historyWrites]);
