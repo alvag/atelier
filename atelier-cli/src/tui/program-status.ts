@@ -1,24 +1,14 @@
+import type { FeatureTask } from "@atelier/core";
 import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
-import { plain } from "./herdr-status.ts";
+import { featureTaskProgress } from "./program-status-progress.ts";
+import { type DirectStatus, supportsProgramStatus, writeProgramStatus } from "./program-status-terminal.ts";
+import { MAX_LINE_CHARS, oneLine } from "./program-status-text.ts";
 
 const APP = "atelier";
 /** The live line of a running turn changes at most this often; a change of state is told at once. */
 export const STATUS_INTERVAL_MS = 500;
 
-/** The longest line told to the terminal, far under the 2048 bytes OSC 7501 takes. */
-export const MAX_LINE_CHARS = 200;
-const ELLIPSIS = "…";
-
-/** The first line of `text` with words, one line without control or bidi characters, cut to `max` characters. */
-export function oneLine(text: string, max = MAX_LINE_CHARS): string {
-	const first = plain(text.split("\n").find((line) => plain(line) !== "") ?? "");
-	const characters = [...first];
-	if (characters.length <= max) return first;
-	return `${characters
-		.slice(0, max - 1)
-		.join("")
-		.trimEnd()}${ELLIPSIS}`;
-}
+export { MAX_LINE_CHARS, oneLine };
 
 type State = Exclude<ProgramStatus["state"], "clear">;
 /** What goes with a state: what a blocked TUI waits for, and the line the terminal shows. */
@@ -37,7 +27,9 @@ export class ProgramStatusReporter {
 	private lastState: ProgramStatus["state"] | undefined;
 	private sentAt = 0;
 	/** The newest working line held back until the interval since the last report has passed. */
-	private pending: ProgramStatus | undefined;
+	private pending: { status: ProgramStatus; progress: number | undefined } | undefined;
+	/** The feature progress in whole percent, told with a working or blocked state when the terminal takes it. */
+	private progress: number | undefined;
 	private timer: NodeJS.Timeout | undefined;
 	private readonly terminal: Terminal;
 	private readonly intervalMs: number;
@@ -45,6 +37,11 @@ export class ProgramStatusReporter {
 	constructor(terminal: Terminal, intervalMs = STATUS_INTERVAL_MS) {
 		this.terminal = terminal;
 		this.intervalMs = intervalMs;
+	}
+
+	/** Keeps the progress of the feature's tasks for the next report; it tells the terminal nothing by itself. */
+	feature(tasks: readonly FeatureTask[] | undefined) {
+		this.progress = featureTaskProgress(tasks);
 	}
 
 	/**
@@ -59,13 +56,14 @@ export class ProgramStatusReporter {
 			...(kind === undefined ? {} : { kind }),
 			...(line === "" ? {} : { message: line }),
 		};
+		const progress = state === "working" || state === "blocked" ? this.progress : undefined;
 		const wait = this.sentAt + this.intervalMs - Date.now();
-		if (state !== "working" || this.lastState !== "working" || wait <= 0) return this.send(status);
-		this.pending = status;
+		if (state !== "working" || this.lastState !== "working" || wait <= 0) return this.send(status, progress);
+		this.pending = { status, progress };
 		this.timer ??= setTimeout(() => {
 			this.timer = undefined;
 			const held = this.pending;
-			if (held !== undefined) this.send(held);
+			if (held !== undefined) this.send(held.status, held.progress);
 		}, wait);
 		this.timer.unref?.();
 	}
@@ -75,15 +73,18 @@ export class ProgramStatusReporter {
 		this.send({ state: "clear", app: APP });
 	}
 
-	private send(status: ProgramStatus) {
+	/** The progress goes only when the terminal answers the query now, so a held report falls back to a plain root. */
+	private send(status: ProgramStatus, progress?: number) {
 		clearTimeout(this.timer);
 		this.timer = undefined;
 		this.pending = undefined;
-		const key = JSON.stringify(status);
+		const record: DirectStatus =
+			progress !== undefined && supportsProgramStatus(this.terminal) ? { ...status, progress } : status;
+		const key = JSON.stringify(record);
 		if (key === this.last) return;
 		this.last = key;
 		this.lastState = status.state;
 		this.sentAt = Date.now();
-		this.terminal.setProgramStatus(status);
+		writeProgramStatus(this.terminal, record);
 	}
 }

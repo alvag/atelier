@@ -1,5 +1,5 @@
 import { type ProgramStatus, StdinBuffer, type Terminal } from "@earendil-works/pi-tui";
-import { oneLine } from "./program-status.ts";
+import { oneLine } from "./program-status-text.ts";
 
 /** A status record with the fields of a child or a direct write; without them it is a root record. */
 export type DirectStatus = ProgramStatus & { id?: string; title?: string; progress?: number };
@@ -17,7 +17,7 @@ const SEGMENT_PATTERN = /^[A-Za-z0-9_.+-]+$/;
 
 /** What the terminal answered to the query pi-tui sent, held where a wrapping proxy forwards it. */
 const CAPABILITY = Symbol("atelier.programStatus");
-type Capability = { supported: boolean };
+type Capability = { supported: boolean; direct?: DirectStatus | undefined };
 
 /** Whether the terminal answered the program status query since the last start. */
 export function supportsProgramStatus(terminal: Terminal): boolean {
@@ -25,7 +25,7 @@ export function supportsProgramStatus(terminal: Terminal): boolean {
 }
 
 /** Listens to the input beside the terminal for the answer to the query; it never touches what the terminal reads. */
-function watch(capability: Capability, input: NodeJS.ReadableStream) {
+function watch(capability: Capability, input: NodeJS.ReadableStream, replay: () => void) {
 	let detach = () => {};
 	const stop = () => {
 		capability.supported = false;
@@ -51,7 +51,10 @@ function watch(capability: Capability, input: NodeJS.ReadableStream) {
 			buffer.destroy();
 		};
 		buffer.on("data", (sequence: string) => {
-			if (pending && isReply(sequence)) capability.supported = true;
+			if (pending && isReply(sequence)) {
+				capability.supported = true;
+				replay();
+			}
 			if (isReply(sequence) || isDeviceAttributes(sequence)) pending = false;
 		});
 		try {
@@ -67,11 +70,13 @@ function watch(capability: Capability, input: NodeJS.ReadableStream) {
  * The terminal, watched for the answer to the program status query pi-tui already sends. The watcher sends nothing and
  * reads the input beside the terminal; everything else goes to the terminal as it is.
  */
-export function observeProgramStatus(terminal: Terminal, input: NodeJS.ReadableStream = process.stdin): Terminal {
+export function observeProgramStatus(target: Terminal, input: NodeJS.ReadableStream = process.stdin): Terminal {
 	const capability: Capability = { supported: false };
-	const observer = watch(capability, input);
-	return new Proxy(terminal, {
-		get(target, property) {
+	const observer = watch(capability, input, () => {
+		if (capability.direct) target.write(serialize(capability.direct));
+	});
+	return new Proxy(target, {
+		get(_, property) {
 			if (property === CAPABILITY) return capability;
 			if (property === "start") {
 				return (...args: Parameters<Terminal["start"]>) => {
@@ -87,10 +92,21 @@ export function observeProgramStatus(terminal: Terminal, input: NodeJS.ReadableS
 			if (property === "stop") {
 				return () => {
 					try {
-						target.stop();
+						// The terminal keeps an older plain root to tell again; empty it so it cannot come back after a restart.
+						if (capability.supported && capability.direct) target.setProgramStatus({ state: "clear" });
 					} finally {
-						observer.stop();
+						try {
+							target.stop();
+						} finally {
+							observer.stop();
+						}
 					}
+				};
+			}
+			if (property === "setProgramStatus") {
+				return (status: ProgramStatus) => {
+					capability.direct = undefined;
+					target.setProgramStatus(status);
 				};
 			}
 			const value = Reflect.get(target, property, target);
@@ -149,5 +165,9 @@ export function writeProgramStatus(terminal: Terminal, record: DirectStatus): vo
 		return;
 	}
 	if (!supportsProgramStatus(terminal) || (id !== undefined && !validId(id))) return;
+	if (id === undefined) {
+		const capability = (terminal as unknown as { [CAPABILITY]?: Capability })[CAPABILITY];
+		if (capability) capability.direct = record;
+	}
 	terminal.write(serialize(record));
 }
