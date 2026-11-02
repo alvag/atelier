@@ -3752,6 +3752,55 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			);
 		});
 
+		it("ends background tasks whose end comes on the idle session channel after an interrupted root", async () => {
+			vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+			try {
+				const h = harness([]);
+				const stub = stubCore();
+				const idle = new Set<(sessionId: string, event: AtelierEventBody) => void>();
+				stub.link.onSessionEvent = (listener) => {
+					idle.add(listener);
+					return () => idle.delete(listener);
+				};
+				const input = new PassThrough();
+				h.io.tui.terminal = observeProgramStatus(h.screen.terminal, input);
+				h.io.tui.connect = async () => stub.link;
+				const code = run(["--no-session"], h.io, () => h.backend);
+				await until(h.screen.started);
+				input.write("\x1b]7501;?\x1b\\");
+				const job = { agent: "w", label: "L", outputPath: "/o" };
+				const end = { notified: true, running: 0, waiting: 0, durationMs: 1 };
+				for (const [n, status] of (["finished", "failed", "stopped"] as const).entries()) {
+					stub.emit({ type: "task_started", taskId: `b${n}`, ...job, running: 1 });
+					stub.emit({ ...finished, stopReason: "interrupted" });
+					for (const listener of idle)
+						listener("s1", { type: "task_finished", taskId: `b${n}`, ...job, status, ...end });
+					expect(vi.getTimerCount()).toBe(0);
+				}
+				vi.advanceTimersByTime(5 * 60_000);
+				h.screen.type("\x03");
+				h.screen.type("\x03");
+				expect(await code).toBe(130);
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: capture the child OSC body
+				const records = [...h.screen.raw().matchAll(/\x1b\]7501;([^\x1b]*id=[^\x1b]*)\x1b\\/g)].map(
+					(match) => match[1],
+				);
+				const t = (n: number) => `id=task${n}:title=TA==`;
+				expect(records).toEqual([
+					`state=working:${t(1)}`,
+					`state=done:${t(1)}`,
+					`state=working:${t(2)}`,
+					`state=error:${t(2)}`,
+					`state=working:${t(3)}`,
+					"state=clear:id=task3",
+					"state=clear:id=task2",
+					"state=clear:id=task1",
+				]);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
 		it.each([true, false])("reports background jobs by their lifecycle, past the root turn: %s", async (answers) => {
 			const h = harness([]);
 			const stub = stubCore();
