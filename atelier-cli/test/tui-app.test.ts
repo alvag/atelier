@@ -4863,12 +4863,48 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			}
 			await released;
 			await herdr.close();
-			// The labels wait their own turn: the newest replaces the one waiting, where it waited.
+			// The labels go before the state they come with; neither is sent again while Herdr has it.
 			expect(herdr.calls.map(said)).toEqual([
 				{ method: "pane.report_agent", state: "working" },
 				labeled({ blocked: "Run this command?" }),
-				{ method: "pane.report_agent", state: "blocked", message: "Run this command?" },
 				unlabeled,
+				{ method: "pane.report_agent", state: "blocked", message: "Run this command?" },
+				{ method: "pane.release_agent" },
+			]);
+		});
+
+		it("gives Herdr a failed turn's labels before its end, and clears them before the next turn starts", async () => {
+			const herdr = await fakeHerdr({ hold: true });
+			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
+			/** Answers the request Herdr holds once the `count`th has come. */
+			const answered = async (count: number) => {
+				await until(() => herdr.calls.length === count);
+				herdr.answer();
+			};
+			reporter?.report("idle");
+			await answered(1);
+			await answered(2);
+			reporter?.report("working");
+			await until(() => herdr.calls.length === 3);
+			// The turn fails while Herdr still holds its working: the end waits behind it.
+			reporter?.report("error", "boom");
+			for (const count of [3, 4, 5]) await answered(count);
+			// The next turn ends before its working leaves: the end takes the working's place.
+			reporter?.report("working");
+			reporter?.report("done", "All done.");
+			const released = reporter?.release();
+			for (const count of [6, 7, 8]) await answered(count);
+			await released;
+			await herdr.close();
+			const idle = { method: "pane.report_agent", state: "idle" };
+			expect(herdr.calls.map(said)).toEqual([
+				idle,
+				unlabeled,
+				{ method: "pane.report_agent", state: "working" },
+				failed,
+				{ ...idle, message: "boom" },
+				unlabeled,
+				idle,
 				{ method: "pane.release_agent" },
 			]);
 		});
