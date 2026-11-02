@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -2141,23 +2141,19 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => panel(h).some((row) => row.includes("⧗ pnpm check")));
 			for (let i = 0; i < 21; i++) h.screen.type("\x10");
 			await until(() => panel(h).length === 0);
-			const file = join(home, ".atelier", "settings.json");
-			await until(() => existsSync(file) && readFileSync(file, "utf8").includes('"sidePanel": false'));
-			// Every save is over once the file stops changing; none of them lost the last choice.
-			await new Promise((resolve) => setTimeout(resolve, 200));
 			expect((await saved()).tui.sidePanel).toBe(false);
 			expect(h.screen.screen()).not.toContain("was not saved");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
 
-		it("finishes saving the last Ctrl+P before it quits", async () => {
+		it("keeps the last Ctrl+P when it quits right after", async () => {
 			const h = harness([], { columns: 140 });
 			const stub = stubCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
-			// Saves wait for the ones before them: quitting right away still has some to wait for.
+			// Each press is saved as it comes: quitting right after keeps the last one.
 			for (let i = 0; i < 41; i++) h.screen.type("\x10");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
