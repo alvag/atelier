@@ -190,4 +190,67 @@ describe("terminal reader", () => {
 		expect(await line).toBeUndefined();
 		expect(await t.reader.next(2)).toBeUndefined();
 	});
+	describe("a pasted note", () => {
+		const NOTE = "<hc from=peer>go</hc>";
+		const read = async (t: ReturnType<typeof terminal>, keys: string) => {
+			const line = t.reader.next();
+			await t.type(keys);
+			return { line: await line, note: t.reader.notePasted?.() };
+		};
+
+		it("marks the whole line when a paste begins <hc after whitespace, a typed draft before it included", async () => {
+			const t = terminal();
+			expect(await read(t, `draft ${PASTE_START} \n${NOTE}${PASTE_END}\r`)).toEqual({
+				line: `draft  \n${NOTE}`,
+				note: true,
+			});
+		});
+
+		it("finds the marker across split chunks and in a large paste", async () => {
+			const t = terminal();
+			const line = t.reader.next();
+			await t.type(PASTE_START.slice(0, 3));
+			await t.type(`${PASTE_START.slice(3)}  <`);
+			await t.type("hc>");
+			await t.type(`${"y".repeat(100_000)}${PASTE_END.slice(0, 2)}`);
+			await t.type(`${PASTE_END.slice(2)}\r`);
+			expect((await line)?.length).toBe(100_000 + 6);
+			expect(t.reader.notePasted?.()).toBe(true);
+		});
+
+		it("does not mark typed <hc or a paste with it later; a second paste starting with it does", async () => {
+			const t = terminal();
+			expect((await read(t, `${NOTE}\r`)).note).toBe(false);
+			expect((await read(t, `${PASTE_START}hi ${NOTE}${PASTE_END}\r`)).note).toBe(false);
+			expect((await read(t, `${PASTE_START}hi${PASTE_END}${PASTE_START}${NOTE}${PASTE_END}\r`)).note).toBe(true);
+		});
+
+		it("keeps the mark per typed-ahead line and through abandon", async () => {
+			const t = terminal();
+			await t.type(`${PASTE_START}${NOTE}${PASTE_END}\rplain\r`);
+			expect((await read(t, "")).note).toBe(true);
+			expect((await read(t, "")).note).toBe(false);
+			const delivered = t.reader.next();
+			await t.type(`${PASTE_START}  <hcX${PASTE_END}\r`);
+			await delivered;
+			t.reader.abandon();
+			expect((await read(t, "")).note).toBe(true);
+		});
+
+		it("clears the mark when the draft is emptied, Ctrl+C or discarded, but not when only edited", async () => {
+			const t = terminal();
+			expect((await read(t, `${PASTE_START}${NOTE}${PASTE_END}\x7f\r`)).note).toBe(true);
+			expect((await read(t, `${PASTE_START}${NOTE}${PASTE_END}\x15typed\r`)).note).toBe(false);
+			expect((await read(t, `${PASTE_START}${NOTE}${PASTE_END}\x03ok\r`)).note).toBe(false);
+			await t.type(`${PASTE_START}${NOTE}${PASTE_END}`);
+			t.reader.discardTyped();
+			expect((await read(t, "z\r")).note).toBe(false);
+		});
+
+		it("does not weaken pasted()", async () => {
+			const t = terminal();
+			await read(t, `${PASTE_START}${NOTE}${PASTE_END}\r`);
+			expect(t.reader.pasted()).toBe(true);
+		});
+	});
 });

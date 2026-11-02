@@ -14,6 +14,7 @@ import {
 	coreTools,
 	createBackend as createNamedBackend,
 	describeError,
+	detectHost,
 	freezeProfile,
 	type LoadedSession,
 	loadSandboxAdditions,
@@ -58,6 +59,7 @@ import { Renderer } from "./render.ts";
 import { runStats } from "./stats.ts";
 import { createTerminalReader, type LineReader } from "./terminal-input.ts";
 import { savedTranscript } from "./transcript.ts";
+import { startsNote } from "./tui/agent-note.ts";
 import { runTui, type TuiOptions } from "./tui/app.ts";
 import { runUpdate } from "./update.ts";
 
@@ -398,25 +400,41 @@ export async function run(
 		if (signal.aborted) return undefined;
 		const early = lines.discardTyped();
 		if (early > 0) renderer.write(`ignored ${early} ${early === 1 ? "line" : "lines"} typed before this question\n`);
-		renderer.write(prompt);
-		let stop = () => {};
-		const cancelled = new Promise<undefined>((resolve) => {
-			stop = () => resolve(undefined);
-			cancelApproval = stop;
-			signal.addEventListener("abort", stop, { once: true });
-		});
-		const answer = await Promise.race([lines.next(prompt.length).then((line) => ({ line })), cancelled]);
-		signal.removeEventListener("abort", stop);
-		if (cancelApproval === stop) cancelApproval = undefined;
-		if (answer === undefined || answer.line === undefined) {
-			if (answer === undefined) lines.abandon();
+		for (;;) {
+			if (signal.aborted) return undefined;
+			renderer.write(prompt);
+			let stop = () => {};
+			const cancelled = new Promise<undefined>((resolve) => {
+				stop = () => resolve(undefined);
+				cancelApproval = stop;
+				signal.addEventListener("abort", stop, { once: true });
+			});
+			const answer = await Promise.race([lines.next(prompt.length).then((line) => ({ line })), cancelled]);
+			signal.removeEventListener("abort", stop);
+			if (cancelApproval === stop) cancelApproval = undefined;
+			if (answer === undefined || answer.line === undefined) {
+				if (answer === undefined) lines.abandon();
+				renderer.write("\n");
+				return undefined;
+			}
 			renderer.write("\n");
-			return undefined;
+			// Another agent's note neither answers nor supersedes the question: it waits in the queue, which the session
+			// reads once the question is resolved, and the question is asked again.
+			if (inHerdrCore && (isNote(answer.line) || lines.notePasted?.() === true)) {
+				try {
+					liveSession?.queue("steer", answer.line, "agent-note");
+				} catch {
+					// The turn already ended: the note stays unsent.
+				}
+				continue;
+			}
+			return { text: answer.line, pasted: lines.pasted() };
 		}
-		renderer.write("\n");
-		return { text: answer.line, pasted: lines.pasted() };
 	};
 	let liveSession: Session | undefined;
+	/** Inside herdr-core, a prompt starting `<hc` (even a malformed tag) is another agent's note, not the user's words. */
+	const inHerdrCore = detectHost(io.env ?? process.env).seen.includes("herdr-app");
+	const isNote = (text: string) => inHerdrCore && startsNote(text);
 	const askUser: AskUser = async (questions, context) => {
 		renderer.endLine();
 		if (!io.isTTY) {
@@ -429,7 +447,7 @@ export async function run(
 			read: readUserLine,
 			supersede: (text) => {
 				try {
-					liveSession?.queue("steer", text);
+					liveSession?.queue("steer", text, isNote(text) ? "agent-note" : undefined);
 				} catch {
 					// The turn already ended: the text stays unsent.
 				}
@@ -765,7 +783,7 @@ export async function run(
 
 	try {
 		if (args.prompt !== undefined) {
-			await runTurn(session.send(args.prompt));
+			await runTurn(session.send(args.prompt, undefined, undefined, isNote(args.prompt) ? "agent-note" : undefined));
 			if (quitting) return quitCode;
 			if (interrupted) return EXIT_INTERRUPTED;
 			// A failed turn ends the run: the notices it leaves wait for a prompt that does not come, and closing stops the jobs.
@@ -812,6 +830,15 @@ export async function run(
 			// A raw terminal does not echo Enter: end the prompt line here.
 			if (rawMode) renderer.endLine();
 			if (quitting) return quitCode;
+			// Before any command: a note's text is never one.
+			if (line !== undefined && (isNote(line) || (inHerdrCore && lines.notePasted?.() === true))) {
+				await runTurn(session.send(line, undefined, undefined, "agent-note"));
+				if (quitting) return quitCode;
+				await runWoken();
+				if (quitting) return quitCode;
+				sayWaiting();
+				continue;
+			}
 			if (line === undefined || line.trim() === "/exit") break;
 			if (line.trim() === "") continue;
 			const mcpWords = line.trim().split(/\s+/);

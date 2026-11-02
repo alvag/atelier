@@ -15,6 +15,7 @@ import {
 	visibleText,
 } from "@atelier/core";
 import { MEMORY_TOOL, memoryCallText, memoryOutcome, SUMMARY_WARNING, summaryCall } from "./memory-call.ts";
+import { agentNoteText } from "./tui/agent-note.ts";
 
 export interface RendererOptions {
 	stdout: (text: string) => void;
@@ -493,6 +494,9 @@ export class Renderer {
 				return;
 			case "text_delta":
 				this.write(event.text);
+				return;
+			case "agent_note":
+				this.#line(this.#style("dim", agentNoteText(event.text)));
 				return;
 			case "job_started":
 				this.#line(`${this.#style("cyan", "⧗")} ${jobLine(event)}`);
