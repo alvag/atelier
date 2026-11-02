@@ -598,16 +598,21 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const questionOpen = () => questions.length > 0;
 	const queue = new QueuePanel(paint, questionOpen);
 	const editor = new PromptEditor(tui, editorTheme(paint), paint, shade, questionOpen);
-	const history = await PromptHistory.open(options.home ?? homedir(), args.cwd, (warning) => {
-		conversation.note(`warning: ${warning}`, true);
-		tui.requestRender();
-	});
+	const history = await PromptHistory.open(
+		options.home ?? homedir(),
+		args.cwd,
+		(warning) => {
+			conversation.note(`warning: ${warning}`, true);
+			tui.requestRender();
+		},
+		{ readOnly: args.noSession === true },
+	);
 	for (const text of history.entries) editor.addToHistory(text);
 	let historyWrites = Promise.resolve();
 	/** All callers pass submitted, expanded text, never the editor's display-only paste or image markers. */
-	const remember = (text: string) => {
+	const remember = (text: string, persist = true) => {
 		editor.addToHistory(text);
-		historyWrites = historyWrites.then(() => history.add(text));
+		if (persist) historyWrites = historyWrites.then(() => history.add(text));
 	};
 	/** What `options.list` answered last, or is answering: the models `/model ` completes. */
 	let listed: Promise<Options | undefined> = Promise.resolve(undefined);
@@ -1647,7 +1652,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			editor.setText(line);
 			return conversation.note(SHELL_BUSY, true);
 		}
-		remember(line);
+		// `!!` stays recallable in this editor but never reaches the disk, where the agent can read it.
+		remember(line, !typed.exclude);
 		editor.setText("");
 		runShellCommand(typed.command, typed.exclude);
 		tui.requestRender();

@@ -136,7 +136,7 @@ Three queries run in the repository itself, before the isolated view exists, and
 
 ### Prompt history
 
-The TUI keeps the latest 100 distinct prompts per project across sessions, including with `--no-session`. It uses the same home directory as the session store. Under that home's `.atelier/prompt-history/<project hash>/`, each entry is an immutable JSON file (`version`, `createdAt`, `text`); the hash is SHA-256 of `realpath(cwd)`. Symlink aliases share history; each worktree or subdirectory used as the working directory has its own history. Desktop and line mode do not use this history.
+The TUI keeps the latest 100 distinct prompts per project across sessions. It uses the same home directory as the session store. Under that home's `.atelier/prompt-history/<project hash>/`, each entry is an immutable JSON file (`version`, `createdAt`, `text`); the hash is SHA-256 of `realpath(cwd)`. Symlink aliases share history; each worktree or subdirectory used as the working directory has its own history. Desktop and line mode do not use this history.
 
 Up in an empty editor recalls the latest submission, from this TUI or an earlier launch. `/new` and `/resume` keep the same recall list; it is not rebuilt from session transcripts. Ordinary prompts, queued text, and the shell and slash commands the editor remembers share this list. Recall only inserts text: a recalled command does not run until you submit it.
 
@@ -144,7 +144,9 @@ Up starts recall only in an empty editor. Within an unedited recalled prompt, Up
 
 Moving the cursor keeps recall active. Any edit ends it, even if that edit is later undone; ordinary drafts never enter recall. Autocomplete menus and open questions keep their existing key handling.
 
-Outer whitespace is trimmed, internal newlines are preserved, blank prompts are ignored, and an exact duplicate moves to the newest position. A prompt over 64 KiB of UTF-8 is sent normally but is not persisted. The stored text is expanded, not a large-paste placeholder. Image-bearing drafts and attachment bytes are not recorded. Accepted `!command` and `!!command` lines are stored in plain text, like shell history: `!!` does not make them private.
+Outer whitespace is trimmed, internal newlines are preserved, blank prompts are ignored, and an exact duplicate moves to the newest position. A prompt over 64 KiB of UTF-8 is sent normally but is not persisted. The stored text is expanded, not a large-paste placeholder. Image-bearing drafts and attachment bytes are not recorded. Accepted `!command` lines are stored in plain text, like shell history. `!!command` lines stay in that editor's recall (Up) while it runs but are never written to disk.
+
+The agent can read `~/.atelier/prompt-history` just like saved session transcripts, so two exceptions keep material out of it. With `--no-session` the TUI only reads the existing history: it creates, changes, prunes and deletes nothing, and the prompts of that run are recalled in it but never saved. A `!!` command is never saved in any mode. Prompts, expanded large pastes and `!` commands of a normal session are saved.
 
 The history directories are private (`0700`) and records are `0600`. Storage directories are checked for symlinks at startup and before later disk operations. Prompts are **not encrypted**: other processes running as you can read them. Avoid secrets in prompts and shell commands. To clear a project's history, close its TUI instances and delete its hash directory; to clear all projects, delete `prompt-history/`. This does not delete saved session transcripts or long-term memory.
 
