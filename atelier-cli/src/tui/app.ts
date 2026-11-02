@@ -55,6 +55,7 @@ import {
 	type ShownRule,
 } from "../permission-text.ts";
 import { savedParts } from "../transcript.ts";
+import { DraftOrigin, startsNote } from "./agent-note.ts";
 import { type AskAnswer, AskDialog } from "./ask-dialog.ts";
 import { Attention } from "./attention.ts";
 import { readClipboardImage } from "./clipboard-image.ts";
@@ -416,6 +417,7 @@ async function resumeSession(
 	for (const part of savedParts(savedId, resumed.name, entries))
 		if ("text" in part) conversation.plain(part.text);
 		else if ("shell" in part) conversation.shellResult(part.shell);
+		else if ("agentNote" in part) conversation.agentNote(part.agentNote);
 		else conversation.answered(part.questions, part.outcome);
 	const name = resumed.name ?? sentTexts(entries).find(namesSession);
 	return {
@@ -699,6 +701,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	});
 	/** Follows every chunk of input, the editor's and the questions', so a paste stays one across them. */
 	const input = new PasteFilter();
+	const hc = host.seen.includes("herdr-app");
+	const origin = new DraftOrigin();
+	/** Takes the draft's mark, so it is read once; a draft is a note when marked, or when it begins like one under herdr-app. */
+	// `QueuedMessage.source` arrives with the core's queue source; until then it is read through a cast.
+	const isNoteMessage = (message: object) => (message as { source?: string }).source === "agent-note";
+	const isNote = (line: string) => origin.take() || (hc && startsNote(line));
 	/** The images pasted into the editor. */
 	const pasted = new PromptImages();
 	type ReadSource = "pasted file" | "clipboard image";
@@ -966,10 +974,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			interrupted = false;
 			setBusy(true);
 		}
-		// A queued message entering the conversation may be the session's first prompt.
-		if (event.type === "queued_message" && event.parentCallId === undefined) titleWith(event.text);
-		// Every event comes in a turn: a job's or a task's end with none running starts the turn its notice woke.
-		if ((event.type === "job_finished" || event.type === "task_finished") && !busy) {
+		// A queued message entering the conversation may be the session's first prompt; a note is not.
+		if (event.type === "queued_message" && event.parentCallId === undefined && !isNoteMessage(event))
+			titleWith(event.text);
+		// Every event comes in a turn: a job's or a task's end with none running starts the turn its notice woke, as does a note.
+		if ((event.type === "job_finished" || event.type === "task_finished" || event.type === "agent_note") && !busy) {
 			interrupted = false;
 			setBusy(true);
 		}
@@ -1086,6 +1095,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		} catch (error) {
 			const refused = error instanceof RpcError && error.code === "busy";
 			if (!refused) conversation.note(`error: ${describeError(error)}`, true);
+			// A refused note comes back to the editor still a note.
+			if (!refused && command.command === "session.send" && command.source === "agent-note") {
+				giveBack([line]);
+				origin.restore(true);
+			}
 			if (!refused || heard === heardBefore) {
 				setBusy(false);
 				reportState("idle");
@@ -1099,7 +1113,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const turnRefused = (command: ClientCommand, line: string) => {
 		if (command.command === "session.send" && command.images?.length) return conversation.note(IMAGES_BUSY, true);
 		if (command.command === "session.send")
-			return void queueLine(line, "steer").then((taken) => {
+			return void queueLine(line, "steer", command.source === "agent-note").then((taken) => {
 				if (!taken) return;
 				conversation.note("a turn started meanwhile; the prompt was queued as a steer");
 				tui.requestRender();
@@ -1110,6 +1124,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	/** Puts queued messages back in the editor, before what it holds, each apart from the next by a blank line. */
 	const giveBack = (messages: readonly (QueuedMessage | string)[]) => {
 		const back = messages.map((message) => (typeof message === "string" ? message : message.text));
+		// A queued note keeps its origin when it comes back to be edited.
+		origin.restore(messages.some((m) => typeof m !== "string" && isNoteMessage(m)));
 		const texts = [...back, editor.getText()].filter((text) => text.trim() !== "");
 		if (texts.length > 0) editor.setText(texts.join("\n\n"));
 	};
@@ -1131,12 +1147,21 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		void queueLine(line, kind);
 	};
 	/** Queues `line`; answers whether the core took it. */
-	const queueLine = (line: string, kind: QueueKind) => {
+	const queueLine = (line: string, kind: QueueKind, note = false) => {
 		const asked = sessionId;
-		return request({ command: "session.queue", sessionId, kind, text: line }).then((answer) => {
+		// The core's queue source is merged next; until then the field is outside `ClientCommand`.
+		const command = {
+			command: "session.queue",
+			sessionId,
+			kind,
+			text: line,
+			...(note ? { source: "agent-note" } : {}),
+		};
+		return request(command as ClientCommand).then((answer) => {
 			// Not taken, it goes back before whatever was typed meanwhile.
 			if (answer !== undefined || asked !== sessionId) return answer !== undefined;
 			giveBack([line]);
+			origin.restore(note);
 			tui.requestRender();
 			return false;
 		});
@@ -1611,9 +1636,9 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	 * Sends a draft with images as a prompt. The editor is emptied here, as Enter has done and Alt+Enter has not, so
 	 * whatever is typed meanwhile stays, and a draft the core does not take comes back before it.
 	 */
-	const sendImages = async (line: string) => {
+	const sendImages = async (line: string, note = false) => {
 		editor.setText("");
-		if (line.trim().startsWith("/")) {
+		if (!note && line.trim().startsWith("/")) {
 			editor.setText(line);
 			return conversation.note("error: images can only be sent with a prompt, not a command", true);
 		}
@@ -1626,13 +1651,22 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 		if (draft === undefined) return giveBack([line]);
 		const asked = sessionId;
-		conversation.prompt(line);
-		if (draft.prompt.trim() !== "") titleWith(draft.prompt.trim());
+		// A note is shown by the core's event, not as a prompt, and names no session.
+		if (!note) {
+			conversation.prompt(line);
+			if (draft.prompt.trim() !== "") titleWith(draft.prompt.trim());
+		}
 		commanding = true;
 		editor.disableSubmit = true;
 		try {
 			const taken = await startTurn(
-				{ command: "session.send", sessionId, prompt: draft.prompt, images: draft.images },
+				{
+					command: "session.send",
+					sessionId,
+					prompt: draft.prompt,
+					images: draft.images,
+					...(note ? { source: "agent-note" as const } : {}),
+				},
 				line,
 			);
 			// The session it was for is gone, and its images with it.
@@ -1640,6 +1674,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			if (taken) return pasted.release(draft);
 			pasted.keep(draft);
 			giveBack([line]);
+			origin.restore(note);
 			tui.requestRender();
 		} finally {
 			commanding = false;
@@ -1722,7 +1757,22 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		runShellCommand(typed.command, typed.exclude);
 		tui.requestRender();
 	};
-	const submit = async (line: string): Promise<void> => {
+	/** A draft of another agent's note goes whole as a note: no command, no prompt, no history, but a turn like any other. */
+	const sendNote = async (line: string, kind: QueueKind): Promise<void> => {
+		if (commanding) return origin.restore(true);
+		if (line.trim() === "") return;
+		if (pasted.has(line)) {
+			if (!busy) return sendImages(line, true);
+			editor.setText(line);
+			origin.restore(true);
+			return conversation.note(IMAGES_BUSY, true);
+		}
+		editor.setText("");
+		if (busy) return void (await queueLine(line, kind, true));
+		await startTurn({ command: "session.send", sessionId, prompt: line, source: "agent-note" }, line);
+	};
+	const submit = async (line: string, note = false): Promise<void> => {
+		if (note) return sendNote(line, "steer");
 		const typed = parseShell(line);
 		if (typed !== undefined) return submitShell(line, typed);
 		const text = line.trim();
@@ -1832,6 +1882,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 	editor.onSubmit = (line) => {
 		const raw = editor.untrimmed;
+		if (isNote(line)) return void submit(line, true);
 		submitTyped(raw.trim() === line ? raw : line);
 	};
 	/**
@@ -1877,7 +1928,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		});
 	};
 	const readPaste = (text: string) => {
-		const plain = () => editor.handleInput(`${PASTE_START}${text}${PASTE_END}`);
+		const plain = () => {
+			origin.edited(editor.getText());
+			editor.handleInput(`${PASTE_START}${text}${PASTE_END}`);
+			if (hc) origin.pasted(text);
+		};
 		const mayBeFile = text.length <= PATH_PASTE_CHARS && /[\\/]|\.\w+['"]?(\s|$)/.test(text.trim());
 		// Text that cannot name a file goes in at once, unless a read is ahead of it.
 		if (pendingReads.length === 0 && !mayBeFile) return plain();
@@ -1971,7 +2026,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		// Alt+Enter queues a follow-up while a turn runs, and sends like Enter when none does.
 		if (matchesKey(data, "alt+enter") && questions.length === 0) {
 			const line = editor.getExpandedText();
-			if (busy && !commanding && parseShell(line) === undefined) enqueue(line, "follow_up");
+			if (isNote(line)) void sendNote(line, "follow_up");
+			else if (busy && !commanding && parseShell(line) === undefined) enqueue(line, "follow_up");
 			else void submit(line);
 			tui.requestRender();
 			return { consume: true };
@@ -2017,6 +2073,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const removeKeys = tui.addInputListener((data) => {
 		// While a question is open, it reads the input through the same filter: a paste begun before it stays a paste.
 		if (questions.length !== 0) return handleKey(data);
+		origin.edited(editor.getText());
 		const wasPasting = input.pasting;
 		const parts: (string | { paste: string })[] = [];
 		input.read(data, { keys: (keys) => parts.push(keys), keep: () => true, pasted: (paste) => parts.push({ paste }) });

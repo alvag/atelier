@@ -25,7 +25,12 @@ export class QueuePanel implements Component {
 	render(width: number): string[] {
 		if (this.messages.length === 0) return [];
 		const lines = this.messages.slice(0, SHOWN).map((message) => {
-			const kind = message.kind === "steer" ? "steer" : "follow-up";
+			const kind =
+				(message as { source?: string }).source === "agent-note"
+					? "agent note"
+					: message.kind === "steer"
+						? "steer"
+						: "follow-up";
 			// One line: the message's own lines run together.
 			const text = visibleText(message.text.replace(/\s+/g, " ").trim()).text;
 			return `↳ ${kind}: ${text}`;

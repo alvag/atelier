@@ -1,4 +1,5 @@
 import { type SavedEntry, type UserQuestion, visibleText } from "@atelier/core";
+import { agentNoteText } from "./tui/agent-note.ts";
 import { type AskOutcome, finishedOutcome, questionsOf } from "./tui/answered-block.ts";
 import { type ShellRecord, savedShellText } from "./tui/shell-block.ts";
 
@@ -15,8 +16,10 @@ interface SavedAsk {
  */
 interface SavedTurn {
 	turnId: string;
-	prompt: string;
-	steers: string[];
+	/** The user's prompt; none for a turn that a note from another agent started. */
+	prompt?: string;
+	/** What the user steered with, and the notes steered in, in order. */
+	steers: { text: string; note?: true }[];
 	asked: SavedAsk[];
 	answered: string[];
 	answer?: string;
@@ -58,6 +61,14 @@ function promptWithImages(text: string, count = 0): string {
 	return `${text}${text !== "" && !/\s$/.test(text) ? " " : ""}${missing.join(" ")}`;
 }
 
+/** The text of a note from another agent: an `agent_note` event, or a queued message that carries one. */
+function noteOf(event: Extract<SavedEntry, { type: "event" }>["event"]): string | undefined {
+	if (event.type === "agent_note") return event.text;
+	// `QueuedMessage.source` comes with the core's queue source.
+	if (event.type === "queued_message" && (event as { source?: string }).source === "agent-note") return event.text;
+	return undefined;
+}
+
 /** The prompts of a saved session, each with the final text the main agent wrote in that turn, and the commands the user ran after each. */
 function turnsOf(entries: readonly SavedEntry[]) {
 	const turns: SavedTurn[] = [];
@@ -80,6 +91,18 @@ function turnsOf(entries: readonly SavedEntry[]) {
 				asked: [],
 				answered: [],
 			});
+		} else if (entry.type === "event" && noteOf(entry.event) !== undefined) {
+			const text = noteOf(entry.event) as string;
+			const turn = turns.at(-1);
+			if (turn?.turnId === entry.event.turnId) {
+				// Inside a running turn the note is a steer; the same note told twice is told once.
+				if (turn.steers.at(-1)?.text !== text || turn.steers.at(-1)?.note !== true)
+					turn.steers.push({ text, note: true });
+			} else {
+				joinAnswer = false;
+				hasAnswerSegment = false;
+				turns.push({ turnId: entry.event.turnId, steers: [{ text, note: true }], asked: [], answered: [] });
+			}
 		} else if (entry.type === "response") {
 			const turn = turns.at(-1);
 			if (turn?.turnId !== entry.turnId) continue;
@@ -106,7 +129,7 @@ function turnsOf(entries: readonly SavedEntry[]) {
 				joinAnswer = false;
 				hasAnswerSegment = false;
 			}
-			if (event.type === "queued_message") turn.steers.push(event.text);
+			if (event.type === "queued_message") turn.steers.push({ text: event.text });
 			else asking(turn, event);
 		}
 	}
@@ -117,7 +140,11 @@ function turnsOf(entries: readonly SavedEntry[]) {
 const promptLine = (text: string) => `> ${visibleText(text).text.replace(/\n/g, "\n  ")}\n`;
 
 /** A piece of a resumed session's transcript: text as it is printed, or an `ask_user` batch the TUI shows as a block. */
-export type SavedPart = { text: string } | { questions: UserQuestion[]; outcome: AskOutcome } | { shell: ShellRecord };
+export type SavedPart =
+	| { text: string }
+	| { questions: UserQuestion[]; outcome: AskOutcome }
+	| { shell: ShellRecord }
+	| { agentNote: string };
 
 /**
  * The transcript of a resumed session in pieces: the line saying what was resumed, then each prompt (and what the user
@@ -125,9 +152,10 @@ export type SavedPart = { text: string } | { questions: UserQuestion[]; outcome:
  */
 export function savedParts(id: string, name: string | undefined, entries: readonly SavedEntry[]): SavedPart[] {
 	const { turns, shells } = turnsOf(entries);
+	const humans = turns.filter((turn) => turn.prompt !== undefined).length;
 	const label = name === undefined ? "" : ` "${visibleText(name).text}"`;
 	const parts: SavedPart[] = [];
-	let out = `resumed session ${id}${label}: ${turns.length} ${turns.length === 1 ? "turn" : "turns"}\n`;
+	let out = `resumed session ${id}${label}: ${humans} ${humans === 1 ? "turn" : "turns"}\n`;
 	/** Closes the text so far with the commands the user ran after `count` turns. */
 	const ran = (count: number) => {
 		for (const record of shells.get(count) ?? []) {
@@ -138,8 +166,15 @@ export function savedParts(id: string, name: string | undefined, entries: readon
 	};
 	ran(0);
 	for (const [index, turn] of turns.entries()) {
-		out += promptLine(turn.prompt);
-		for (const steer of turn.steers) out += promptLine(steer);
+		if (turn.prompt !== undefined) out += promptLine(turn.prompt);
+		for (const steer of turn.steers) {
+			if (steer.note !== true) out += promptLine(steer.text);
+			else {
+				if (out !== "") parts.push({ text: out });
+				out = "";
+				parts.push({ agentNote: steer.text });
+			}
+		}
 		for (const { questions, outcome } of turn.asked) {
 			if (outcome === undefined || (questions.length === 0 && outcome.status !== "failed")) continue;
 			parts.push({ text: out });
@@ -164,6 +199,14 @@ export function savedParts(id: string, name: string | undefined, entries: readon
  */
 export function savedTranscript(id: string, name: string | undefined, entries: readonly SavedEntry[]): string {
 	return savedParts(id, name, entries)
-		.map((part) => ("text" in part ? part.text : "shell" in part ? `${savedShellText(part.shell)}\n` : ""))
+		.map((part) =>
+			"text" in part
+				? part.text
+				: "shell" in part
+					? `${savedShellText(part.shell)}\n`
+					: "agentNote" in part
+						? `${agentNoteText(part.agentNote)}\n`
+						: "",
+		)
 		.join("");
 }
