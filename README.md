@@ -117,6 +117,8 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 In the TUI, Up in an empty editor recalls the latest prompt from this project, including earlier sessions. While a recalled prompt is unedited, Up/Down browse only on its first/last visual line, including wrapped lines; elsewhere they move the cursor. Editing ends recall, and Down past the newest entry returns to an empty editor. Ordinary drafts keep the arrows for cursor movement. The agent can read `~/.atelier/prompt-history` like saved session transcripts, so `--no-session` only reads it (nothing from that run is saved) and `!!` commands are never saved. Storage failures, including failure to delete old records, warn once without blocking recall or sending. Each worktree or subdirectory has its own history; see [prompt history and privacy](docs/cli.md#prompt-history).
 
+Failed history writes remove their own temporary files. On a normal launch, abandoned temporaries are cleaned only after 24 hours and only when their owner PID is confirmed gone; live, uncertain and legacy ownerless temporaries are left alone. `--no-session` never cleans them. See the history reference above for safe manual clearing.
+
 ### Shell commands
 
 Type `!` and a command to run it yourself, outside the agent and its sandbox, even while a model turn runs (but not while a slash command is still running); `!!` runs it too but keeps the result out of the model's context:
