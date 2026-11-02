@@ -699,13 +699,21 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const done = new Promise<number>((resolve) => {
 		finish = resolve;
 	});
-	/** Follows every chunk of input, the editor's and the questions', so a paste stays one across them. */
-	const input = new PasteFilter();
 	const hc = host.seen.includes("herdr-app");
+	/** Follows every chunk of input, the editor's and the questions', so a paste stays one across them. */
+	const input = new PasteFilter(
+		hc
+			? (paste) => {
+					// A note pasted at an open question is queued as a steer; the question never reads it.
+					if (questions.length === 0 || !startsNote(paste)) return false;
+					void queueLine(paste, "steer", true);
+					return true;
+				}
+			: undefined,
+	);
 	const origin = new DraftOrigin();
 	/** Takes the draft's mark, so it is read once; a draft is a note when marked, or when it begins like one under herdr-app. */
-	// `QueuedMessage.source` arrives with the core's queue source; until then it is read through a cast.
-	const isNoteMessage = (message: object) => (message as { source?: string }).source === "agent-note";
+	const isNoteMessage = (message: QueuedMessage) => message.source === "agent-note";
 	const isNote = (line: string) => origin.take() || (hc && startsNote(line));
 	/** The images pasted into the editor. */
 	const pasted = new PromptImages();
@@ -975,7 +983,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			setBusy(true);
 		}
 		// A queued message entering the conversation may be the session's first prompt; a note is not.
-		if (event.type === "queued_message" && event.parentCallId === undefined && !isNoteMessage(event))
+		if (event.type === "queued_message" && event.parentCallId === undefined && event.source !== "agent-note")
 			titleWith(event.text);
 		// Every event comes in a turn: a job's or a task's end with none running starts the turn its notice woke, as does a note.
 		if ((event.type === "job_finished" || event.type === "task_finished" || event.type === "agent_note") && !busy) {
@@ -1096,7 +1104,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			const refused = error instanceof RpcError && error.code === "busy";
 			if (!refused) conversation.note(`error: ${describeError(error)}`, true);
 			// A refused note comes back to the editor still a note.
-			if (!refused && command.command === "session.send" && command.source === "agent-note") {
+			// (with images, `sendImages` gives the draft back itself)
+			if (
+				!refused &&
+				command.command === "session.send" &&
+				command.source === "agent-note" &&
+				!command.images?.length
+			) {
 				giveBack([line]);
 				origin.restore(true);
 			}
@@ -1149,15 +1163,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	/** Queues `line`; answers whether the core took it. */
 	const queueLine = (line: string, kind: QueueKind, note = false) => {
 		const asked = sessionId;
-		// The core's queue source is merged next; until then the field is outside `ClientCommand`.
-		const command = {
+		const command: ClientCommand = {
 			command: "session.queue",
 			sessionId,
 			kind,
 			text: line,
-			...(note ? { source: "agent-note" } : {}),
+			...(note ? { source: "agent-note" as const } : {}),
 		};
-		return request(command as ClientCommand).then((answer) => {
+		return request(command).then((answer) => {
 			// Not taken, it goes back before whatever was typed meanwhile.
 			if (answer !== undefined || asked !== sessionId) return answer !== undefined;
 			giveBack([line]);
@@ -1647,9 +1660,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			draft = pasted.attach(line);
 		} catch (error) {
 			editor.setText(line);
+			origin.restore(note);
 			return conversation.note(`error: ${describeError(error)}`, true);
 		}
-		if (draft === undefined) return giveBack([line]);
+		if (draft === undefined) {
+			giveBack([line]);
+			return origin.restore(note);
+		}
 		const asked = sessionId;
 		// A note is shown by the core's event, not as a prompt, and names no session.
 		if (!note) {

@@ -61,14 +61,6 @@ function promptWithImages(text: string, count = 0): string {
 	return `${text}${text !== "" && !/\s$/.test(text) ? " " : ""}${missing.join(" ")}`;
 }
 
-/** The text of a note from another agent: an `agent_note` event, or a queued message that carries one. */
-function noteOf(event: Extract<SavedEntry, { type: "event" }>["event"]): string | undefined {
-	if (event.type === "agent_note") return event.text;
-	// `QueuedMessage.source` comes with the core's queue source.
-	if (event.type === "queued_message" && (event as { source?: string }).source === "agent-note") return event.text;
-	return undefined;
-}
-
 /** The prompts of a saved session, each with the final text the main agent wrote in that turn, and the commands the user ran after each. */
 function turnsOf(entries: readonly SavedEntry[]) {
 	const turns: SavedTurn[] = [];
@@ -91,13 +83,12 @@ function turnsOf(entries: readonly SavedEntry[]) {
 				asked: [],
 				answered: [],
 			});
-		} else if (entry.type === "event" && noteOf(entry.event) !== undefined) {
-			const text = noteOf(entry.event) as string;
+		} else if (entry.type === "event" && entry.event.type === "agent_note") {
+			const text = entry.event.text;
 			const turn = turns.at(-1);
 			if (turn?.turnId === entry.event.turnId) {
-				// Inside a running turn the note is a steer; the same note told twice is told once.
-				if (turn.steers.at(-1)?.text !== text || turn.steers.at(-1)?.note !== true)
-					turn.steers.push({ text, note: true });
+				// Inside a running turn the note is a steer.
+				turn.steers.push({ text, note: true });
 			} else {
 				joinAnswer = false;
 				hasAnswerSegment = false;
