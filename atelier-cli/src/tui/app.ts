@@ -1983,6 +1983,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const event = { ...body, seq: 0, turnId: "" } as AtelierEvent;
 		footer.state = footerAfter(footer.state, event);
 		conversation.event(event);
+		// A background task's end after the root turn closes its child record and stops the refresh.
+		if (event.type === "task_finished") childStatus.handle(event);
 		tui.requestRender();
 	});
 	const removeExit = link.onExit(coreExited);
