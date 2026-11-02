@@ -1,5 +1,5 @@
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, lstat, mkdir, readFile, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { DEFAULT_STATUS_LINE, isStatusItem, type StatusItem } from "./footer.ts";
 import { NOTIFY_VIAS, type NotifyVia } from "./notifications.ts";
 
@@ -131,23 +131,38 @@ async function writeSidePanel(path: string, shown: boolean): Promise<string | un
 		return refused(`expected kind "${KIND}" and version ${VERSION}`);
 	if (raw.tui !== undefined && !isRecord(raw.tui)) return refused(`"tui" must be an object`);
 	const next = { ...raw, tui: { ...(raw.tui ?? {}), sidePanel: shown } };
-	// Written beside it and moved over it, so the file is never left half written.
-	const partial = `${path}.${process.pid}.${++saveCount}.tmp`;
+	let partial: string | undefined;
 	try {
-		await mkdir(dirname(path), { recursive: true });
+		// A link (to dotfiles, say) stays a link: the file it leads to is the one replaced.
+		const target = await linkTarget(path);
+		// Written beside it and moved over it, so the file is never left half written.
+		partial = `${target}.${process.pid}.${++saveCount}.tmp`;
+		await mkdir(dirname(target), { recursive: true });
 		// The file keeps its permissions (a private one stays private); a new one gets the usual ones.
-		const mode = await stat(path).then(
+		const mode = await stat(target).then(
 			(found) => found.mode & 0o7777,
 			() => undefined,
 		);
 		await writeFile(partial, `${JSON.stringify(next, null, 2)}\n`, mode === undefined ? {} : { mode });
 		if (mode !== undefined) await chmod(partial, mode);
-		await rename(partial, path);
+		await rename(partial, target);
 		return undefined;
 	} catch (error) {
-		await rm(partial, { force: true }).catch(() => {});
+		if (partial !== undefined) await rm(partial, { force: true }).catch(() => {});
 		return refused(`cannot write it: ${(error as Error).message}`);
 	}
+}
+
+/** The file `path` leads to through its links, also when the last one leads to a file not made yet. */
+async function linkTarget(path: string): Promise<string> {
+	try {
+		return await realpath(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	const found = await lstat(path).catch(() => undefined);
+	if (found?.isSymbolicLink()) return linkTarget(resolve(dirname(path), await readlink(path)));
+	return path;
 }
 
 /** The notices' settings, each wrong field left at its default with a warning. */

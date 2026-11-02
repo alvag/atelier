@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -183,6 +183,24 @@ describe("saving the side panel's choice", () => {
 		await rm(path());
 		await saveSidePanel(home, true);
 		expect((await stat(path())).mode & 0o777).toBe(0o666 & ~process.umask());
+	});
+
+	it("writes through a symbolic link to the file it leads to, which stays a link", async () => {
+		const dotfiles = join(home, "dotfiles");
+		await mkdir(dotfiles);
+		await writeFile(join(dotfiles, "settings.json"), JSON.stringify(file({ hideThinking: true })));
+		await chmod(join(dotfiles, "settings.json"), 0o600);
+		await mkdir(join(home, ".atelier"));
+		await symlink(join("..", "dotfiles", "settings.json"), path());
+		expect(await saveSidePanel(home, false)).toBeUndefined();
+		expect((await lstat(path())).isSymbolicLink()).toBe(true);
+		expect(JSON.parse(await readFile(join(dotfiles, "settings.json"), "utf8")).tui).toEqual({
+			hideThinking: true,
+			sidePanel: false,
+		});
+		expect((await stat(join(dotfiles, "settings.json"))).mode & 0o777).toBe(0o600);
+		expect(await readdir(dotfiles)).toEqual(["settings.json"]);
+		expect(await readdir(join(home, ".atelier"))).toEqual(["settings.json"]);
 	});
 
 	it("saves overlapping choices one after the other, the last one asked for winning", async () => {
