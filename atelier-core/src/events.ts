@@ -36,6 +36,8 @@ export interface FeatureTask {
 	specs: string[];
 	status?: string;
 	commit?: string;
+	/** The note of its state, such as what a blocked task waits for. */
+	note?: string;
 }
 
 /** A review finding as clients see it (the frozen-tree evidence is a `path:line` reference). */
