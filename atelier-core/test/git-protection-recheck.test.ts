@@ -176,7 +176,7 @@ describe("a git config read git does not finish keeps the protection", gitHeavy,
 	it.each(["ENOBUFS", "ETIMEDOUT"] as const)(
 		"of a config that starts with a byte order mark: stopped by %s",
 		async (code) => {
-			await writeFile(join(cwd, ".git", "config"), "﻿[include]\npath = ../bom-target.cfg\n");
+			await writeFile(join(cwd, ".git", "config"), "\uFEFF[include]\npath = ../bom-target.cfg\n");
 			const target = join(cwd, "bom-target.cfg");
 			await writeFile(target, "# included\n");
 			gitFault.stopConfig = code;
@@ -187,6 +187,40 @@ describe("a git config read git does not finish keeps the protection", gitHeavy,
 				refusal: { output: refusal("bom-target.cfg").output, summary: refusal("bom-target.cfg").output },
 			});
 			expect(await tool.execute(input, { cwd })).toMatchObject(refusal("bom-target.cfg"));
+			expect(await readFile(target, "utf8")).toBe("# included\n");
+		},
+	);
+
+	it.each([
+		{ label: "as git and Node end it", cut: undefined },
+		{ label: "cut with status null", cut: { read: 1, status: null } as const },
+	])(
+		"whatever order the includes are read in: a file reached first by a long chain is followed from a short one ($label)",
+		async ({ cut }) => {
+			// git lists the plain includes first; the parser lists the conditional one first, which leads ten files deep.
+			await appendFile(
+				join(cwd, ".git", "config"),
+				`[includeIf "gitdir:/never/"]\n\tpath = "../deep#cfg"\n[include]\n${"\tpath = ../harmless.cfg\n".repeat(70_000)}\tpath = ../common.cfg\n`,
+			);
+			const chain = ["deep#cfg", ...Array.from({ length: 8 }, (_, i) => `d${i + 2}.cfg`), "common.cfg"];
+			for (const [index, name] of chain.entries())
+				if (index + 1 < chain.length) await writeFile(join(cwd, name), `[include]\n\tpath = ${chain[index + 1]}\n`);
+			await writeFile(join(cwd, "common.cfg"), "[include]\n\tpath = child.cfg\n");
+			await writeFile(join(cwd, "child.cfg"), "[include]\n\tpath = target.cfg\n");
+			const target = join(cwd, "target.cfg");
+			await writeFile(target, "# included\n");
+			gitFault.cutGetAll = cut;
+			const input = { path: "target.cfg", content: "[core]\nhooksPath = attacker-hooks\n" };
+			const tool = createWriteTool({ home });
+			for (const check of ["refusal", "gate", "execute"] as const) {
+				gitFault.getAlls = 0;
+				if (check === "refusal") expect(await projectRefusal("write", cwd, target, target, home)).toBe(refused(target));
+				else if (check === "gate")
+					expect(await tool.gate?.(input, { cwd })).toEqual({
+						refusal: { output: refusal("target.cfg").output, summary: refusal("target.cfg").output },
+					});
+				else expect(await tool.execute(input, { cwd })).toMatchObject(refusal("target.cfg"));
+			}
 			expect(await readFile(target, "utf8")).toBe("# included\n");
 		},
 	);

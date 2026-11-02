@@ -386,19 +386,26 @@ const MAX_INCLUDE_DEPTH = 10;
  */
 export function includedConfigFiles(files: string[], home: string): string[] {
 	const found = new Set<string>();
-	const visit = (file: string, depth: number) => {
-		if (depth > MAX_INCLUDE_DEPTH) return;
-		const config = configFilePaths(file);
-		// A file git cannot read may be hiding anything: its directory's conventional places are protected too.
-		if (config.malformed)
-			for (const name of ["hooks", "config", "config.worktree"]) found.add(join(dirname(file), name));
-		for (const include of config.includes) {
-			const path = configPath(include, dirname(file), home);
-			if (found.has(path)) continue;
-			found.add(path);
-			visit(path, depth + 1);
+	// Read breadth first, each file once at the least depth it is included at, so what is followed does not depend
+	// on the order git or the fallback parser lists the includes in.
+	const queued = new Set(files);
+	let level = [...queued];
+	for (let depth = 0; depth <= MAX_INCLUDE_DEPTH && level.length > 0; depth++) {
+		const next: string[] = [];
+		for (const file of level) {
+			const config = configFilePaths(file);
+			// A file git cannot read may be hiding anything: its directory's conventional places are protected too.
+			if (config.malformed)
+				for (const name of ["hooks", "config", "config.worktree"]) found.add(join(dirname(file), name));
+			for (const include of config.includes) {
+				const path = configPath(include, dirname(file), home);
+				found.add(path);
+				if (queued.has(path)) continue;
+				queued.add(path);
+				next.push(path);
+			}
 		}
-	};
-	for (const file of files) visit(file, 0);
+		level = next;
+	}
 	return [...found];
 }
