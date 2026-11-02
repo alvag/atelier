@@ -101,9 +101,12 @@ export function packageCacheDirectories(home: string): string[] {
 	].map((path) => join(home, path));
 }
 
-/** What one git configuration file names: its `core.hooksPath`, its include paths, and whether git could not read it. */
+/**
+ * What one git configuration file names: its `core.hooksPath` (every reading of it when only the fallback parser
+ * could read it), its include paths, and whether git could not read it.
+ */
 export interface ConfigFile {
-	hooksPath?: string;
+	hooksPaths: string[];
 	includes: string[];
 	malformed: boolean;
 }
@@ -118,18 +121,24 @@ function gitConfig(file: string, args: string[], maxBuffer = CONFIG_BUFFER_LIMIT
 	});
 }
 
-/** Raw NUL-delimited records: decoding first would expand invalid UTF-8 bytes when measuring the old query sizes. */
-function configRecords(run: SpawnSyncReturns<Buffer>): Buffer[] | undefined {
-	if (run.status === 1) return [];
-	// As before, status 0 is accepted even if Node also reports ENOBUFS after git has exited.
-	if (run.status !== 0) return undefined;
+/**
+ * Raw NUL-delimited records (decoding first would expand invalid UTF-8 bytes when measuring the old query sizes), and
+ * whether they are git's whole answer: not when git was stopped or its output overflowed the buffer, even if git had
+ * exited with status 0 by then, since Node may not have read it all. Undefined when git rejected the file.
+ */
+function configRecords(run: SpawnSyncReturns<Buffer>): { records: Buffer[]; complete: boolean } | undefined {
+	const complete = run.status !== null && (run.error as NodeJS.ErrnoException | undefined)?.code !== "ENOBUFS";
+	if (complete && run.status === 1) return { records: [], complete };
+	if (complete && run.status !== 0) return undefined;
+	const stdout = run.stdout ?? Buffer.alloc(0);
 	const records: Buffer[] = [];
 	let start = 0;
-	for (let end = run.stdout.indexOf(0); end !== -1; end = run.stdout.indexOf(0, start)) {
-		records.push(run.stdout.subarray(start, end));
+	// Only terminated records: a cut one is not what git wrote.
+	for (let end = stdout.indexOf(0); end !== -1; end = stdout.indexOf(0, start)) {
+		records.push(stdout.subarray(start, end));
 		start = end + 1;
 	}
-	return records;
+	return { records, complete };
 }
 
 /**
@@ -137,10 +146,10 @@ function configRecords(run: SpawnSyncReturns<Buffer>): Buffer[] | undefined {
  * read by git itself, alone and without following includes, so a broken file
  * elsewhere does not matter and git's whole syntax (quotes, escapes,
  * continuation lines) is honored. A missing file names nothing. When git cannot
- * read the file, its own parser answers instead and `malformed` is set.
+ * read the file or does not finish, its own parser answers too and `malformed` is set.
  */
 export function configFilePaths(file: string): ConfigFile {
-	if (!existsSync(file)) return { includes: [], malformed: false };
+	if (!existsSync(file)) return { hooksPaths: [], includes: [], malformed: false };
 	const run = gitConfig(
 		file,
 		["--get-regexp", "^(include\\.path|includeif\\..*\\.path|core\\.hookspath)$"],
@@ -148,15 +157,15 @@ export function configFilePaths(file: string): ConfigFile {
 	);
 	// Even status 0 with ENOBUFS can leave truncated combined records; only the old queries decide their results.
 	if ((run.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS") return separateConfigFilePaths(file);
-	const records = configRecords(run);
-	if (records === undefined) return { ...parseConfigFile(file), malformed: true };
+	const read = configRecords(run);
+	if (read === undefined) return fallbackConfigFile(file);
 	const plain: string[] = [];
 	const conditional: string[] = [];
 	let hooksPath: string | undefined;
 	let plainBytes = 0;
 	let conditionalBytes = 0;
 	let hooksBytes = 0;
-	for (const record of records) {
+	for (const record of read.records) {
 		const separator = record.indexOf(10);
 		const key = record.subarray(0, separator === -1 ? record.length : separator).toString("utf8");
 		const value = record.subarray(separator === -1 ? record.length : separator + 1);
@@ -172,35 +181,187 @@ export function configFilePaths(file: string): ConfigFile {
 			hooksBytes = value.length + 1;
 		}
 	}
-	// Above the old buffer bound, only the original queries can tell whether git exited before Node could kill it.
+	// A later core.hooksPath may be past the cut.
+	if (!read.complete) return fallbackConfigFile(file, [...plain, ...conditional]);
+	// Above the old buffer bound the original queries answer, as before; one Node cuts is read as cut.
 	if (Math.max(plainBytes, conditionalBytes, hooksBytes) > CONFIG_BUFFER_LIMIT) return separateConfigFilePaths(file);
-	return { includes: [...plain, ...conditional], malformed: false, ...(hooksPath === undefined ? {} : { hooksPath }) };
+	return {
+		hooksPaths: hooksPath === undefined ? [] : [hooksPath],
+		includes: [...plain, ...conditional],
+		malformed: false,
+	};
 }
 
-/** Preserve the original commands and their actual exit/overflow behavior for large individual query outputs. */
+/** The original three queries, for large individual query outputs; when one is cut, `fallbackConfigFile` answers. */
 function separateConfigFilePaths(file: string): ConfigFile {
 	const plain = configRecords(gitConfig(file, ["--get-all", "include.path"]));
 	const conditional = configRecords(gitConfig(file, ["--get-regexp", "^includeif\\..*\\.path$"]));
 	const hooks = configRecords(gitConfig(file, ["--get", "core.hooksPath"]));
-	if (plain === undefined || conditional === undefined || hooks === undefined)
-		return { ...parseConfigFile(file), malformed: true };
+	if (plain === undefined || conditional === undefined || hooks === undefined) return fallbackConfigFile(file);
 	const includes = [
-		...plain.map((record) => record.toString("utf8")),
-		...conditional.map((record) => record.subarray(record.indexOf(10) + 1).toString("utf8")),
+		...plain.records.map((record) => record.toString("utf8")),
+		...conditional.records.map((record) => record.subarray(record.indexOf(10) + 1).toString("utf8")),
 	];
-	const hooksPath = hooks[0]?.toString("utf8");
-	return { includes, malformed: false, ...(hooksPath === undefined ? {} : { hooksPath }) };
+	const hooksPath = hooks.records[0]?.toString("utf8");
+	if (!plain.complete || !conditional.complete || !hooks.complete)
+		return fallbackConfigFile(file, includes, hooks.complete ? hooksPath : undefined);
+	return { hooksPaths: hooksPath === undefined ? [] : [hooksPath], includes, malformed: false };
 }
 
-/** The same answer read with a simple parser, for a file git rejects. */
-function parseConfigFile(file: string): { hooksPath?: string; includes: string[] } {
-	const found: { hooksPath?: string; includes: string[] } = { includes: [] };
+/**
+ * For a file git rejected or did not finish reading: the includes and `core.hooksPath` git did report (the hooks
+ * path only when its answer is whole) and everything the fallback parser reads in the file. So a cut read protects
+ * at least what git would have reported; `malformed` protects the file's directory's places too.
+ */
+function fallbackConfigFile(file: string, includes: string[] = [], hooksPath?: string): ConfigFile {
+	const parsed = parseConfigFile(file);
+	return {
+		hooksPaths: [...new Set([...(hooksPath === undefined ? [] : [hooksPath]), ...parsed.hooksPaths])],
+		includes: [...includes, ...parsed.includes],
+		malformed: true,
+	};
+}
+
+// Space around a header or a key is any space but a newline, a byte order mark included, as the line parser trimmed it.
+const HEADER = /\[[^\S\n]*([A-Za-z0-9.-]+)(?:[^\S\n]+"((?:[^"\\\n]|\\.)*)")?[^\S\n]*\]/y;
+const BROKEN_HEADER = /\[[^\S\n]*([A-Za-z0-9.-]*)/y;
+const KEY = /([A-Za-z][A-Za-z0-9-]*)[^\S\n]*(=?)/y;
+const ESCAPES: Record<string, string> = { "\\": "\\", '"': '"', n: "\n", t: "\t", b: "\b" };
+
+function matchAt(pattern: RegExp, text: string, index: number): RegExpExecArray | null {
+	pattern.lastIndex = index;
+	return pattern.exec(text);
+}
+
+function lineEnd(text: string, index: number): number {
+	const end = text.indexOf("\n", index);
+	return end === -1 ? text.length : end;
+}
+
+/**
+ * The value that starts at `start`, read as git reads it: quotes open and close anywhere, a `#` or `;` outside them
+ * starts a comment, `\"`, `\\`, `\n`, `\t` and `\b` are escapes, a backslash before a newline continues the line, and
+ * unquoted space at either end is dropped. `malformed` when git would reject it (an open quote, an unknown escape),
+ * read on to the end of the line; `end` is where its last line ends.
+ */
+function readValue(text: string, start: number): { value: string; malformed: boolean; end: number } {
+	let value = "";
+	let quoted = false;
+	let comment = false;
+	let malformed = false;
+	// Where the unquoted space at the end began, or -1.
+	let trim = -1;
+	let index = start;
+	for (; index < text.length && text[index] !== "\n"; index++) {
+		const char = text[index] as string;
+		if (comment) continue;
+		if (!quoted && (char === " " || char === "\t" || char === "\r")) {
+			if (trim === -1) trim = value.length;
+			if (value !== "") value += char;
+			continue;
+		}
+		if (!quoted && (char === "#" || char === ";")) {
+			comment = true;
+			continue;
+		}
+		trim = -1;
+		if (char === "\\") {
+			const next = text[index + 1];
+			if (next === undefined) continue;
+			index++;
+			if (next === "\n") continue;
+			const escaped = ESCAPES[next];
+			if (escaped === undefined) malformed = true;
+			value += escaped ?? next;
+		} else if (char === '"') quoted = !quoted;
+		else value += char;
+	}
+	return { value: trim === -1 ? value : value.slice(0, trim), malformed: malformed || quoted, end: index };
+}
+
+/**
+ * Every way the value at `start` can be read: the one git reads, or for a value git rejects, also its text to the
+ * end of the line and cut where a comment would start, each with and without its quotes.
+ */
+function valueReadings(text: string, start: number): { readings: string[]; end: number } {
+	const read = readValue(text, start);
+	if (!read.malformed) return { readings: [read.value], end: read.end };
+	const line = text.slice(start, read.end).trim();
+	const cut = line.replace(/[#;][\s\S]*$/, "").trim();
+	const readings = [read.value, line, cut].flatMap((value) => [value, value.replaceAll('"', "").trim()]);
+	return { readings: [...new Set(readings)].filter((value) => value !== ""), end: read.end };
+}
+
+/**
+ * The same answer read without git, for a file git rejects or does not finish reading: what a parser of git's
+ * syntax reads (`parseConfigText`) and, so the fallback never protects less than it once did, what the earlier
+ * line parser read (`parseConfigLines`).
+ */
+function parseConfigFile(file: string): { hooksPaths: string[]; includes: string[] } {
 	let text: string;
 	try {
 		text = readFileSync(file, "utf8");
 	} catch {
-		return found;
+		return { hooksPaths: [], includes: [] };
 	}
+	const syntax = parseConfigText(text.replaceAll("\r\n", "\n"));
+	const lines = parseConfigLines(text);
+	return {
+		hooksPaths: [...new Set([...syntax.hooksPaths, ...lines.hooksPaths])],
+		includes: [...new Set([...syntax.includes, ...lines.includes])],
+	};
+}
+
+/**
+ * A parser of git's syntax: sections and subsections, comments, an entry on its header's line, and values as
+ * `readValue` reads them, the old `[section.subsection]` headers, and a valueless entry as git reports it. An
+ * include counts in any `include` or `includeIf` section; `core.hooksPath` only in `[core]` itself, as git reads it.
+ * A header git rejects counts as its name without a subsection.
+ */
+function parseConfigText(text: string): { hooksPaths: string[]; includes: string[] } {
+	const found: { hooksPaths: string[]; includes: string[] } = { hooksPaths: [], includes: [] };
+	let section = "";
+	// The subsection as git prints it in a key, undefined for none.
+	let subsection: string | undefined;
+	for (let index = 0; index < text.length; ) {
+		const char = text[index] as string;
+		if (/\s/.test(char)) index++;
+		else if (char === "#" || char === ";") index = lineEnd(text, index);
+		else if (char === "[") {
+			const header = matchAt(HEADER, text, index);
+			const name = (header ?? matchAt(BROKEN_HEADER, text, index))?.[1]?.toLowerCase() ?? "";
+			// The old `[section.subsection]` syntax names the same keys, lowercased.
+			const dot = name.indexOf(".");
+			section = dot === -1 ? name : name.slice(0, dot);
+			subsection = header?.[2]?.replace(/\\(.)/g, "$1") ?? (dot === -1 ? undefined : name.slice(dot + 1));
+			index = header ? HEADER.lastIndex : lineEnd(text, index);
+		} else {
+			const entry = matchAt(KEY, text, index);
+			const key = entry?.[1]?.toLowerCase();
+			let readings: string[];
+			if (entry?.[2] === "=") {
+				const read = valueReadings(text, KEY.lastIndex);
+				readings = read.readings;
+				index = read.end;
+			} else if (entry && /^[^\S\n]*(?:[#;].*)?$/.test(text.slice(KEY.lastIndex, lineEnd(text, index)))) {
+				// A valueless entry, as git reports it: an empty value, or a conditional include's own key.
+				readings = [section === "includeif" && key === "path" ? `includeif.${subsection ?? ""}.path` : ""];
+				index = lineEnd(text, index);
+			} else {
+				// A line git rejects.
+				index = lineEnd(text, index);
+				continue;
+			}
+			if (key === "path" && (section === "include" || section === "includeif")) found.includes.push(...readings);
+			else if (key === "hookspath" && section === "core" && subsection === undefined) found.hooksPaths = readings;
+		}
+	}
+	return found;
+}
+
+/** The earlier line parser: a trailing comment cut first, then one pair of outer quotes; any `core` section. */
+function parseConfigLines(text: string): { hooksPaths: string[]; includes: string[] } {
+	const found: { hooksPaths: string[]; includes: string[] } = { hooksPaths: [], includes: [] };
 	let section = "";
 	for (const raw of text.split("\n")) {
 		const line = raw.trim();
@@ -214,7 +375,7 @@ function parseConfigFile(file: string): { hooksPath?: string; includes: string[]
 		const key = (entry[1] ?? "").toLowerCase();
 		const value = (entry[2] ?? "").replace(/^"(.*)"$/, "$1");
 		if (key === "path" && (section === "include" || section === "includeif")) found.includes.push(value);
-		else if (key === "hookspath" && section === "core") found.hooksPath = value;
+		else if (key === "hookspath" && section === "core") found.hooksPaths = [value];
 	}
 	return found;
 }
@@ -236,19 +397,26 @@ const MAX_INCLUDE_DEPTH = 10;
  */
 export function includedConfigFiles(files: string[], home: string): string[] {
 	const found = new Set<string>();
-	const visit = (file: string, depth: number) => {
-		if (depth > MAX_INCLUDE_DEPTH) return;
-		const config = configFilePaths(file);
-		// A file git cannot read may be hiding anything: its directory's conventional places are protected too.
-		if (config.malformed)
-			for (const name of ["hooks", "config", "config.worktree"]) found.add(join(dirname(file), name));
-		for (const include of config.includes) {
-			const path = configPath(include, dirname(file), home);
-			if (found.has(path)) continue;
-			found.add(path);
-			visit(path, depth + 1);
+	// Read breadth first, each file once at the least depth it is included at, so what is followed does not depend
+	// on the order git or the fallback parser lists the includes in.
+	const queued = new Set(files);
+	let level = [...queued];
+	for (let depth = 0; depth <= MAX_INCLUDE_DEPTH && level.length > 0; depth++) {
+		const next: string[] = [];
+		for (const file of level) {
+			const config = configFilePaths(file);
+			// A file git cannot read may be hiding anything: its directory's conventional places are protected too.
+			if (config.malformed)
+				for (const name of ["hooks", "config", "config.worktree"]) found.add(join(dirname(file), name));
+			for (const include of config.includes) {
+				const path = configPath(include, dirname(file), home);
+				found.add(path);
+				if (queued.has(path)) continue;
+				queued.add(path);
+				next.push(path);
+			}
 		}
-	};
-	for (const file of files) visit(file, 0);
+		level = next;
+	}
 	return [...found];
 }

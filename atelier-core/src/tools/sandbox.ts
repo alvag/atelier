@@ -215,9 +215,10 @@ export function gitProtectedPaths(cwd: string, home: string = homedir()): string
 	const { top: root, gitDir: dir, commonDir: common } = repository;
 	const hooksPaths = [dir, common]
 		.flatMap((d) => [join(d, "config"), join(d, "config.worktree")])
-		.flatMap((file) => [file, ...includedConfigFiles([file], home)])
-		.map((file) => configFilePaths(file).hooksPath)
-		.flatMap((value) => (value === undefined ? [] : [configPath(value, root, home)]));
+		// A file git cannot read lists its own directory's config among its includes: it is not read twice.
+		.flatMap((file) => [file, ...includedConfigFiles([file], home).filter((path) => path !== file)])
+		.flatMap((file) => configFilePaths(file).hooksPaths)
+		.map((value) => configPath(value, root, home));
 	return repositoryPaths(root, dir, common, hooksPaths, home, cwd);
 }
 
