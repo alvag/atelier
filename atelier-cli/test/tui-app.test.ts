@@ -26,7 +26,7 @@ import { type ProgramStatus, resetCapabilitiesCache, type Terminal } from "@eare
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeOpenAiAuth, fakeJwt, fakeRefresh } from "../../atelier-core/test/support/fake-openai-auth.ts";
 import { requireIsolatedHome } from "../../atelier-core/test/support/login-isolation.ts";
-import { run } from "../src/run.ts";
+import { run as runAtelier } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
 import { HerdrStatusReporter } from "../src/tui/herdr-status.ts";
 import { PromptHistory } from "../src/tui/prompt-history.ts";
@@ -126,9 +126,30 @@ afterEach(async () => {
 	await rm(home, { recursive: true, force: true });
 });
 
+/** The runs this test started, each marked once it ends: `until` stops waiting when one ends first. */
+const runs = new Set<{ ended: boolean }>();
+beforeEach(() => runs.clear());
+const run = (...args: Parameters<typeof runAtelier>) => {
+	const code = runAtelier(...args);
+	const one = { ended: false };
+	runs.add(one);
+	const end = () => {
+		one.ended = true;
+	};
+	code.then(end, end);
+	return code;
+};
+
+/** Long enough that a loaded machine does not decide the outcome, and below the 20 s of the describes. */
+const UNTIL_MS = 15_000;
 const until = async (condition: () => boolean) => {
-	for (let i = 0; i < 1000 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
-	expect(condition()).toBe(true);
+	const deadline = performance.now() + UNTIL_MS;
+	const live = [...runs].filter((one) => !one.ended);
+	const ended = () => live.some((one) => one.ended);
+	while (!condition() && !ended() && performance.now() < deadline)
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	const why = ended() ? "Atelier exited before" : `still false after ${UNTIL_MS / 1000} s`;
+	expect(condition(), `${why}: ${condition}`).toBe(true);
 };
 
 /** The core in this process, over the protocol's own encoding: what the TUI sends is what a server receives. */
@@ -1145,7 +1166,8 @@ else if (process.argv.includes('status')) {
 		});
 	});
 
-	it("asks an approval in a dialog that starts on Allow, and denies what is chosen", async () => {
+	// Two turns with real bash processes: room for more than one slow `until` on a loaded machine.
+	it("asks an approval in a dialog that starts on Allow, and denies what is chosen", { timeout: 30_000 }, async () => {
 		const h = harness([
 			[{ toolCall: { tool: "bash", input: { command: "echo first" } } }, { event: finished }],
 			[{ toolCall: { tool: "bash", input: { command: "echo second" } } }, { event: finished }],
@@ -5247,7 +5269,10 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 		await quit(h, code);
 	});
 
-	it("never queues an image draft while a turn runs, and sends it after, with Enter or Alt+Enter", async () => {
+	// Two turns, an interrupt and a dozen waits: room for more than one slow `until` on a loaded machine.
+	it("never queues an image draft while a turn runs, and sends it after, with Enter or Alt+Enter", {
+		timeout: 30_000,
+	}, async () => {
 		const { h, code } = await open([
 			[{ event: started }, { waitForInterrupt: true }],
 			[{ event: started }, { event: finished }],
@@ -5265,6 +5290,8 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 		h.screen.type("\x1b");
 		await shows(h, "interrupting");
 		await until(() => !h.screen.frame().join("\n").includes("esc to interrupt"));
+		// The line goes as the interrupt is sent; Enter before the turn ends is refused as busy.
+		await until(() => h.screen.statuses.at(-1)?.state === "idle");
 		h.screen.type("\r");
 		await until(() => sends(h).length === 2);
 		expect(sends(h)[1]?.images).toHaveLength(1);
