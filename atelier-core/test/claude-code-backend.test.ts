@@ -1,3 +1,7 @@
+import { type ChildProcess, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +23,7 @@ import {
 	type ToolCall,
 } from "../src/index.ts";
 import { ModelData, useModelData } from "../src/model-catalog/index.ts";
+import { isInsideSandbox } from "../src/tools/sandbox.ts";
 
 function msg(value: Record<string, unknown>): SDKMessage {
 	return { uuid: "u", session_id: "s", ...value } as unknown as SDKMessage;
@@ -187,6 +192,76 @@ const SUPPORTED_MODELS = [
 	{ value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus", description: "" },
 	{ value: "claude-fable-5-1", displayName: "Fable 5.1", description: "", supportedEffortLevels: ["low", "max"] },
 ];
+
+describe("ClaudeCodeBackend inside a Herdr pane", () => {
+	/** Process groups are read with `ps`, which a sandbox around the tests refuses. */
+	const canListProcesses = process.platform !== "darwin" || !isInsideSandbox();
+	const ps = (args: string[]) => spawnSync("/bin/ps", args, { encoding: "utf8" }).stdout.trim();
+	const until = async (condition: () => boolean) => {
+		for (let i = 0; i < 600 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(condition()).toBe(true);
+	};
+	/** The pids of the processes in group `pgid` that still run, zombies not counted. */
+	const inGroup = (pgid: number) =>
+		ps(["-A", "-o", "pid=,pgid=,stat="])
+			.split("\n")
+			.map((row) => row.trim().split(/\s+/))
+			.filter(([, group, stat]) => Number(group) === pgid && !stat?.startsWith("Z"));
+
+	let dir: string | undefined;
+	afterEach(() => {
+		if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+		dir = undefined;
+	});
+
+	it("leaves the SDK to start Claude Code itself outside Herdr", async () => {
+		const { query, calls } = fakeQuery([], []);
+		await new ClaudeCodeBackend({ query, env: {} }).start(plainStart);
+		expect(calls.options).not.toHaveProperty("spawnClaudeCodeProcess");
+		const told = fakeQuery([], []);
+		await new ClaudeCodeBackend({ query: told.query, env: {}, apart: false }).start(plainStart);
+		expect(told.calls.options).not.toHaveProperty("spawnClaudeCodeProcess");
+	});
+
+	it.skipIf(!canListProcesses)("starts Claude Code in a process group of its own, which ends with it", async () => {
+		const at = mkdtempSync(join(tmpdir(), "atelier-claude-spawn-"));
+		dir = at;
+		// A stand-in for Claude Code: it says its pid, group, folder and arguments, then echoes its input.
+		const claude = join(at, "claude");
+		writeFileSync(claude, `#!/bin/sh\necho "$$ $(/bin/ps -o pgid= -p $$) $(pwd) $*" > "${at}/spawned"\nexec cat\n`);
+		chmodSync(claude, 0o755);
+		const { query, calls } = fakeQuery([], []);
+		await new ClaudeCodeBackend({ query, env: {}, apart: true }).start(plainStart);
+		const spawnClaude = calls.options.spawnClaudeCodeProcess;
+		expect(spawnClaude).toBeTypeOf("function");
+		const abort = new AbortController();
+		const child = spawnClaude?.({
+			command: claude,
+			args: ["--output-format", "stream-json"],
+			cwd: at,
+			env: { PATH: "/usr/bin:/bin" },
+			signal: abort.signal,
+		});
+		await until(() => existsSync(join(at, "spawned")) && readFileSync(join(at, "spawned"), "utf8").endsWith("\n"));
+		const [pid, pgid, cwd, ...args] = readFileSync(join(at, "spawned"), "utf8").trim().split(/\s+/);
+		// What `spawnApart` gives back is the process itself, so it has the pid the SDK's type leaves out.
+		expect(Number(pid)).toBe((child as unknown as ChildProcess | undefined)?.pid);
+		expect(Number(pgid)).toBe(Number(pid));
+		expect(Number(pgid)).not.toBe(Number(ps(["-o", "pgid=", "-p", String(process.pid)])));
+		expect(cwd?.endsWith(at.split("/").at(-1) as string)).toBe(true);
+		expect(args).toEqual(["--output-format", "stream-json"]);
+		// The SDK talks to it through its stdin and stdout.
+		let echoed = "";
+		child?.stdout.on("data", (chunk: Buffer) => {
+			echoed += chunk.toString();
+		});
+		child?.stdin.write("hello\n");
+		await until(() => echoed === "hello\n");
+		// The SDK's abort ends it, and its group after it.
+		abort.abort();
+		await until(() => inGroup(Number(pgid)).length === 0);
+	});
+});
 
 describe("ClaudeCodeBackend options", () => {
 	it("lends each session's model list to listModels, and asks Claude Code for it only when it is called", async () => {
