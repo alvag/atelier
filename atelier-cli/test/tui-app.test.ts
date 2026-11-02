@@ -4549,7 +4549,7 @@ describe("independent authentication security probes", { timeout: 20_000 }, () =
 				expect((await readFile(join(entry.parentPath, entry.name), "utf8")).includes(canary)).toBe(false);
 		}
 	});
-	it("restarts the TUI after a fake child receives SIGINT without quitting Atelier", async () => {
+	it("restarts the TUI after a fake child receives SIGINT without quitting Atelier", { timeout: 30_000 }, async () => {
 		const h = harness([]);
 		const fake = join(home, "claude.cjs");
 		const startedFile = join(home, "fake-started");
@@ -4587,15 +4587,29 @@ describe("independent authentication security probes", { timeout: 20_000 }, () =
 		h.screen.type("/login account anthropic");
 		h.screen.type("\r");
 		let pid = 0;
-		await vi.waitFor(async () => {
-			pid = Number(await readFile(startedFile, "utf8"));
-			expect(pid > 0).toBe(true);
+		// A loaded machine starts the fake child slowly: wait past the default second, but fail at once if Atelier ends first.
+		const ended = code.then(() => {
+			throw new Error("Atelier exited before the fake claude child started");
 		});
+		ended.catch(() => undefined);
+		await Promise.race([
+			vi.waitFor(
+				async () => {
+					pid = Number(await readFile(startedFile, "utf8"));
+					expect(pid > 0).toBe(true);
+				},
+				{ timeout: 10_000 },
+			),
+			ended,
+		]);
 		expect(stops).toBe(1);
 		expect(starts).toBe(1);
 		interrupt?.();
 		process.kill(pid, "SIGINT");
-		await until(() => h.screen.screen().includes("Claude Code is still not logged in"));
+		// Another real child, `claude auth status`, runs before the TUI says so.
+		await vi.waitFor(() => expect(h.screen.screen()).toContain("Claude Code is still not logged in"), {
+			timeout: 10_000,
+		});
 		expect(starts).toBe(2);
 		h.screen.type("/exit");
 		h.screen.type("\r");
