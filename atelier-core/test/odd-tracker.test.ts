@@ -191,6 +191,23 @@ describe("feature tool", () => {
 		expect(events.filter((e) => e.type === "feature_changed")).toHaveLength(3);
 	});
 
+	it("carries a task's note in feature_changed, such as what a blocked task waits for", async () => {
+		const { session: s, send } = await session([
+			[
+				call("feature", START, "s"),
+				call("feature", { action: "update_task", id: "T2", status: "blocked", note: "waits for the scope" }, "u"),
+				{ event: finished },
+			],
+		]);
+		const events = await send("go");
+		await s.close();
+		const last = events.filter((e) => e.type === "feature_changed").at(-1);
+		expect(last?.type === "feature_changed" ? last.tasks : undefined).toEqual([
+			{ id: "T1", title: "Transliterate accents", status: "pending", specs: ["S1"] },
+			{ id: "T2", title: "Run the tests", status: "blocked", specs: ["S1"], note: "waits for the scope" },
+		]);
+	});
+
 	it.each([
 		["an invalid status", { action: "update_task", id: "T1", status: "finished" }, /status/],
 		["an unknown task", { action: "update_task", id: "T9", status: "done" }, /T9/],

@@ -309,6 +309,7 @@ export class OddTracker {
 				specs: task.specs,
 				...(task.status === undefined ? {} : { status: task.status }),
 				...(task.commit === undefined ? {} : { commit: task.commit }),
+				...(task.note === undefined ? {} : { note: task.note }),
 			})),
 		});
 	}
