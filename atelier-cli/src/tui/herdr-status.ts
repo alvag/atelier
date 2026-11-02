@@ -3,6 +3,7 @@ import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { detectHost, HERDR_PANE_VARIABLE, type Host } from "@atelier/core";
 import { type ProgramStatus, visibleWidth } from "@earendil-works/pi-tui";
+import { oneLine } from "./program-status.ts";
 
 const AGENT = "atelier";
 const SOURCE = "atelier";
@@ -25,15 +26,7 @@ const DEFAULT_ROW_WIDTH = 24;
 const TOKEN_CHARS = 80;
 const TOKEN_BYTES = 128;
 
-/** What the user is asked about while the core waits; Herdr only gets a fixed message for it. */
-const BLOCKED_MESSAGES = {
-	permission: "Approval awaiting input",
-	question: "Review consent awaiting input",
-	user_question: "User answer awaiting input",
-} as const;
-
 type State = Exclude<ProgramStatus["state"], "clear">;
-type Blocked = { kind: keyof typeof BLOCKED_MESSAGES; message: string };
 /** The ODD task in progress. */
 export type Activity = { id: string; title: string };
 
@@ -186,12 +179,16 @@ export class HerdrStatusReporter {
 		return new HerdrStatusReporter(paneId, host.herdr?.socketPath as string, options.refreshMs ?? REFRESH_MS);
 	}
 
-	/** Reports the state, unless it is the one asked for last; done and error are idle to Herdr. */
-	report(state: State, blocked?: Blocked) {
-		const params =
-			state === "blocked" && blocked
-				? { state: "blocked", message: BLOCKED_MESSAGES[blocked.kind] }
-				: { state: state === "working" ? "working" : "idle" };
+	/**
+	 * Reports the state, unless it is the one asked for last; done and error are idle to Herdr. `line` is the terminal's
+	 * line for the state: Herdr gets it, as one plain line, only for what is asked while blocked and the error.
+	 */
+	report(state: State, line?: string) {
+		const message = state === "blocked" || state === "error" ? oneLine(line ?? "") : "";
+		const params = {
+			state: state === "working" || state === "blocked" ? state : "idle",
+			...(message === "" ? {} : { message }),
+		};
 		const key = JSON.stringify(params);
 		if (key === this.#asked) return;
 		this.#asked = key;
