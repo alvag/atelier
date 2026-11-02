@@ -9,6 +9,8 @@ import {
 	type SDKControlGetContextUsageResponse,
 	type SDKMessage,
 	type SDKUserMessage,
+	type SpawnedProcess,
+	type SpawnOptions,
 	query as sdkQuery,
 	tool,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -22,6 +24,7 @@ import type {
 	ToolExecutor,
 } from "../../backend.ts";
 import { Channel } from "../../channel.ts";
+import { spawnApart } from "../../claude-apart.ts";
 import {
 	type AtelierEventBody,
 	describeError,
@@ -76,6 +79,11 @@ export interface ClaudeCodeBackendOptions {
 	/** Keep ANTHROPIC_API_KEY. By default it is removed so the subscription is used instead of billing the API. */
 	keepApiKey?: boolean;
 	pathToClaudeCodeExecutable?: string;
+	/**
+	 * Starts Claude Code in a process group of its own (`spawnApart`): inside a Herdr pane, which would otherwise take
+	 * the TUI for Claude Code. Otherwise the SDK starts it.
+	 */
+	apart?: boolean;
 	/** How long an interrupted turn may take to finish before the SDK query is closed. */
 	interruptGraceMs?: number;
 	/** Receives every raw SDK message; used to record fixtures. */
@@ -209,6 +217,18 @@ export class ClaudeCodeBackend implements AgentBackend {
 				...(this.#options.pathToClaudeCodeExecutable === undefined
 					? {}
 					: { pathToClaudeCodeExecutable: this.#options.pathToClaudeCodeExecutable }),
+				// With the pipes the SDK gives Claude Code when it starts it itself.
+				...(this.#options.apart === true
+					? {
+							spawnClaudeCodeProcess: ({ command, args, cwd, env, signal }: SpawnOptions) =>
+								spawnApart(command, args, {
+									...(cwd === undefined ? {} : { cwd }),
+									env,
+									signal,
+									stdio: ["pipe", "pipe", "pipe"],
+								}) as SpawnedProcess,
+						}
+					: {}),
 			},
 		});
 		const { supportedModels } = query;
