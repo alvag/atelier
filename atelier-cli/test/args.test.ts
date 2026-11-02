@@ -144,6 +144,59 @@ describe("parseCliArgs", () => {
 		);
 	});
 
+	it("reads -i and --prompt-interactive as the first message of an interactive session", () => {
+		for (const argv of [
+			["-i", "fix the tests"],
+			["--prompt-interactive", "fix the tests"],
+			["--prompt-interactive=fix the tests"],
+		]) {
+			const args = parseCliArgs(argv, "/h");
+			expect(args.interactivePrompt).toBe("fix the tests");
+			expect(args.prompt).toBeUndefined();
+		}
+		expect(parseCliArgs(["x"], "/h").interactivePrompt).toBeUndefined();
+		expect(parseCliArgs(["-i", "line one\nline two"], "/h").interactivePrompt).toBe("line one\nline two");
+		expect(parseCliArgs(["--mode", "yolo", "--model", "sonnet", "--continue", "-i", "/model"], "/h")).toMatchObject({
+			mode: "yolo",
+			model: "sonnet",
+			continueSession: true,
+			interactivePrompt: "/model",
+		});
+	});
+
+	it("takes the word after -i as the prompt as it is, even one that starts with a dash", () => {
+		expect(parseCliArgs(["-i", "- one\n- two"], "/h").interactivePrompt).toBe("- one\n- two");
+		expect(parseCliArgs(["--prompt-interactive=--x"], "/h").interactivePrompt).toBe("--x");
+		// The options go before -i: after it, an option is the prompt.
+		const after = parseCliArgs(["-i", "--model"], "/h");
+		expect(after.interactivePrompt).toBe("--model");
+		expect(after.model).toBeUndefined();
+		expect(() => parseCliArgs(["-i", "--model", "sonnet"], "/h")).toThrow(UsageError);
+		// The value of another option is not -i, and after -- it is a word of the prompt.
+		expect(() => parseCliArgs(["--profile", "-i", "x"], "/h")).toThrow("Option '--profile' argument is ambiguous");
+		expect(parseCliArgs(["--", "-i", "x"], "/h")).toMatchObject({ prompt: "-i x" });
+		expect(parseCliArgs(["--", "-i", "x"], "/h").interactivePrompt).toBeUndefined();
+	});
+
+	it.each([
+		[["-i"], "--prompt-interactive needs a prompt."],
+		[["-i", "  "], "The prompt is empty."],
+		[["--prompt-interactive="], "The prompt is empty."],
+		[
+			["-i", "one", "two"],
+			"Give the prompt once: as the value of --prompt-interactive, or alone for one turn. Quote a prompt of several words.",
+		],
+		[["-i", "a", "--prompt-interactive", "b"], "--prompt-interactive can be given only once."],
+		[["update", "-i", "x"], "atelier update takes no session options (--prompt-interactive)."],
+	])("rejects %j", (argv, message) => {
+		expect(() => parseCliArgs(argv, "/h")).toThrow(new UsageError(message));
+	});
+
+	it("documents -i and that the other options go before it", () => {
+		expect(USAGE).toContain("-i, --prompt-interactive <prompt>");
+		expect(USAGE).toContain("options go before it");
+	});
+
 	it("reads --help and --version", () => {
 		expect(parseCliArgs(["--help"], "/h").help).toBe(true);
 		expect(parseCliArgs(["-h"], "/h").help).toBe(true);

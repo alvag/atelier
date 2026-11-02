@@ -229,6 +229,20 @@ describe("run", () => {
 		expect(h.backend.prompts).toEqual(["desktop app is slow"]);
 	});
 
+	it("refuses -i without the terminal interface instead of running one turn", async () => {
+		// No terminal, and a terminal with the interface off (ATELIER_TUI=off): main.ts gives run() no TUI for either.
+		for (const isTTY of [false, true]) {
+			const h = harness([[{ event: started }, { event: finished }]], { isTTY });
+			expect(await run(["-i", "say hi"], h.io, h.createBackend)).toBe(2);
+			expect(h.err()).toBe(
+				"error: --prompt-interactive needs the terminal interface: stdin and stdout must be terminals, and ATELIER_TUI not off.\n",
+			);
+			expect(h.out()).toBe("");
+			expect(h.backend.startOptions).toBeUndefined();
+			expect(h.backend.prompts).toEqual([]);
+		}
+	});
+
 	it("runs one prompt and exits 0", async () => {
 		const h = harness([[{ event: started }, { event: { type: "text_delta", text: "hello" } }, { event: finished }]]);
 		const code = await run(["say hi"], h.io, h.createBackend);

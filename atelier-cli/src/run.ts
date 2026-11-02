@@ -226,6 +226,13 @@ export async function run(
 		return EXIT_USAGE;
 	}
 
+	// The first message is typed into the terminal interface: without it, -i is refused rather than run as one turn.
+	if (args.interactivePrompt !== undefined && (io.tui === undefined || !io.isTTY)) {
+		io.stderr(
+			"error: --prompt-interactive needs the terminal interface: stdin and stdout must be terminals, and ATELIER_TUI not off.\n",
+		);
+		return EXIT_USAGE;
+	}
 	if (args.prompt === undefined && io.tui !== undefined && io.isTTY) {
 		if (args.yes) io.stderr(YES_DEPRECATED);
 		return runTui(args, {
