@@ -314,18 +314,21 @@ export class HerdrStatusReporter {
 
 	async #flush() {
 		for (let next = this.#queue.shift(); next; next = this.#queue.shift()) {
-			if (next.key === "state" || next.key === "labels") {
+			const deduplicated = next.key === "state" || next.key === "labels";
+			const said = JSON.stringify(next.params);
+			if (deduplicated) {
 				// A state or labels Herdr already has, because newer ones replaced them while they waited, are not sent again.
-				const said = JSON.stringify(next.params);
 				if (said === this.#sent.get(next.key)) continue;
 				this.#sent.set(next.key, said);
 			}
-			await this.#send(next);
+			// What Herdr did not take, refused or never reached, it does not have: the same request goes again next time.
+			if (!(await this.#send(next)) && deduplicated) this.#sent.delete(next.key);
 		}
 		this.#flight = undefined;
 	}
 
-	async #send({ method, params, source = SOURCE }: Pending) {
+	/** Sends `request`, trying once more when Herdr does not answer; whether Herdr took it. */
+	async #send({ method, params, source = SOURCE }: Pending): Promise<boolean> {
 		const request = {
 			id: `atelier:${process.pid}:${++this.#requests}`,
 			method,
@@ -333,10 +336,12 @@ export class HerdrStatusReporter {
 		};
 		for (const timeoutMs of ATTEMPT_MS) {
 			try {
-				return await call(this.#socketPath, request, timeoutMs);
+				await call(this.#socketPath, request, timeoutMs);
+				return true;
 			} catch (error) {
-				if (error instanceof Refused) return;
+				if (error instanceof Refused) return false;
 			}
 		}
+		return false;
 	}
 }
