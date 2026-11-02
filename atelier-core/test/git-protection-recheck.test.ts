@@ -1,7 +1,7 @@
 import { execFileSync, type SpawnSyncOptions } from "node:child_process";
 import { appendFile, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeBackend, type FakeStep, Session } from "../src/index.ts";
 import { createEditTool, createWriteTool } from "../src/tools/index.ts";
@@ -224,6 +224,42 @@ describe("a git config read git does not finish keeps the protection", gitHeavy,
 			expect(await readFile(target, "utf8")).toBe("# included\n");
 		},
 	);
+
+	// A broken include makes rev-parse fail, so the hooks path is read from the file too.
+	for (const stop of [undefined, "ENOBUFS", "ETIMEDOUT"] as const)
+		it.each([
+			{ label: "the old [includeIf.foo] syntax", config: "[includeIf.foo]\n\tpath = ../old.cfg\n", path: "old.cfg" },
+			// An empty hooks path is the repository's top, as with every read of the whole file.
+			{
+				label: "a valueless core.hooksPath last",
+				config: "[core]\n\thooksPath = first-hooks\n\thooksPath\n",
+				path: "ordinary.cfg",
+			},
+			{ label: "a valueless include.path", config: "[include]\n\tpath\n", path: join(".git", "description") },
+			// git reports a valueless conditional include by its key.
+			{
+				label: "a valueless includeIf path",
+				config: '[includeIf "gitdir:/Never/"]\n\tpath\n',
+				path: join(".git", "includeif.gitdir:", "Never", ".path"),
+			},
+		])(
+			`protects as git reads it: $label (git config ${stop === undefined ? "answered" : `stopped by ${stop}`})`,
+			async ({ config, path }) => {
+				await appendFile(join(cwd, ".git", "config"), `${config}[include]\n\tpath = ../broken.cfg\n`);
+				await writeFile(join(cwd, "broken.cfg"), "[invalid\n");
+				const target = join(cwd, path);
+				await mkdir(dirname(target), { recursive: true });
+				await writeFile(target, "original\n");
+				gitFault.stopConfig = stop;
+				expect(await projectRefusal("write", cwd, target, target, home)).toBe(refused(target));
+				const input = { path: target, content: "changed\n" };
+				expect(await createWriteTool({ home }).execute(input, { cwd })).toMatchObject({
+					ok: false,
+					output: refused(target),
+				});
+				expect(await readFile(target, "utf8")).toBe("original\n");
+			},
+		);
 });
 
 describe.skipIf(process.platform === "win32")("how many git processes one edit or write runs", gitHeavy, () => {
