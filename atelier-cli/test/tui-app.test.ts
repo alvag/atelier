@@ -4267,7 +4267,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const herdr = await fakeHerdr();
 			const h = harness([
 				[{ event: { type: "text_delta", text: "working" } }, { waitForInterrupt: true }],
-				[{ throw: `\n  the\x07 provider\u202e refused\u2066 it ${"x".repeat(300)}\nat line two` }],
+				[{ throw: `\n  the\x07 provider\u202e refused\u2066\uFFF9 it\uFFFA\uFFFB ${"x".repeat(300)}\nat line two` }],
 				[{ event: { type: "text_delta", text: "All done." } }, { event: finished }],
 			]);
 			h.io = { ...h.io, env: herdrEnv(herdr.path) } as typeof h.io;
@@ -4290,8 +4290,9 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(0);
 			await herdr.close();
 
-			// The terminal's line for the error: its first line with text, plain, cut to 200 characters.
-			const error = `the provider refused it ${"x".repeat(175)}…`;
+			// The terminal's line for the error: its first line with text, plain, cut to 200 characters; Herdr gets it
+			// without the three annotation characters the cut counted.
+			const error = `the provider refused it ${"x".repeat(172)}…`;
 			const states = herdr.calls.filter((call) => call.method === "pane.report_agent").map(said);
 			expect(states.filter((call) => call.state !== "working")).toEqual([
 				{ method: "pane.report_agent", state: "idle" },
@@ -4302,6 +4303,25 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(states.filter((call) => call.state === "working" && call.message !== undefined)).toEqual([]);
 			// Herdr shows `error` in place of `done` and `idle` until the next turn starts.
 			expect(labels(herdr.calls)).toEqual([unlabeled, failed, unlabeled]);
+		});
+
+		it("sends Herdr no interlinear annotation characters, in the message or the label", async () => {
+			const herdr = await fakeHerdr();
+			const reporter = HerdrStatusReporter.fromEnv(herdrEnv(herdr.path));
+			const hidden = "provider￹spoof￺hidden￻ failed";
+			reporter?.report("blocked", hidden);
+			await until(() => labels(herdr.calls).length === 1);
+			reporter?.report("error", hidden);
+			await until(() => labels(herdr.calls).length === 2);
+			await reporter?.release();
+			await herdr.close();
+			const shown = "provider spoof hidden failed";
+			expect(herdr.calls.filter((call) => call.method === "pane.report_agent").map(said)).toEqual([
+				{ method: "pane.report_agent", state: "blocked", message: shown },
+				{ method: "pane.report_agent", state: "idle", message: shown },
+			]);
+			expect(labels(herdr.calls)).toEqual([labeled({ blocked: shown }), failed, unlabeled]);
+			expect(JSON.stringify(herdr.calls)).not.toMatch(/[￹-￻]/);
 		});
 
 		it("cuts the question to Herdr's 80 characters for its label, and clears the labels it shows on exit", async () => {
