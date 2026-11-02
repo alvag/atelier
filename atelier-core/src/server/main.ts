@@ -2,6 +2,8 @@
 import { homedir } from "node:os";
 import process from "node:process";
 import { createBackend as createNamedBackend } from "../backend-factory.ts";
+import type { ClaudeCodeBackendOptions } from "../backends/claude-code/backend.ts";
+import { inHerdrPane } from "../claude-apart.ts";
 import { signedInBackends } from "../claude-code-auth.ts";
 import { parseCompactAt } from "../compaction/compactor.ts";
 import { describeError } from "../events.ts";
@@ -92,19 +94,25 @@ const catalog =
 			});
 void catalog?.start();
 
+// Inside a Herdr pane Claude Code runs apart, or Herdr takes the TUI for Claude Code and forgets how to resume it.
+const claudeApart = inHerdrPane(process.env);
+
+const claudeCode: ClaudeCodeBackendOptions = {
+	...(claudeApart ? { apart: true } : {}),
+	...(catalog === undefined
+		? {}
+		: {
+				listModels: (list) => void catalog.listClaudeCode(list),
+				onContextWindows: (windows) => void catalog.noteClaudeCodeWindows(windows),
+			}),
+};
+
 const createBackend = (name: BackendName) =>
 	process.env.ATELIER_BACKEND === "echo"
 		? new EchoBackend()
 		: createNamedBackend(name, {
 				...(compactAt === undefined ? {} : { compactAt }),
-				...(catalog === undefined
-					? {}
-					: {
-							claudeCode: {
-								listModels: (list) => void catalog.listClaudeCode(list),
-								onContextWindows: (windows) => void catalog.noteClaudeCodeWindows(windows),
-							},
-						}),
+				...(Object.keys(claudeCode).length === 0 ? {} : { claudeCode }),
 			});
 
 // The models options.list offers: the echo backend (tests) has none, ATELIER_LOGIN_CHECK=off asks nothing.
@@ -113,7 +121,7 @@ const signedIn = async (): Promise<readonly BackendName[]> =>
 		? []
 		: process.env.ATELIER_LOGIN_CHECK === "off"
 			? BACKEND_NAMES
-			: signedInBackends();
+			: signedInBackends({ apart: claudeApart });
 
 // The echo backend (tests) and ATELIER_MEMORY=off run without long-term memory.
 const memoryOff = process.env.ATELIER_BACKEND === "echo" || process.env.ATELIER_MEMORY === "off";
@@ -132,6 +140,7 @@ const server = new RpcServer({
 	tools: coreTools,
 	systemPromptAppend: SYSTEM_PROMPT_APPEND,
 	home: homedir(),
+	env: process.env,
 	// The echo backend (tests) leaves nothing behind in the home.
 	sessions: process.env.ATELIER_BACKEND !== "echo",
 	connectMemory: memoryOff

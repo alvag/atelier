@@ -31,6 +31,7 @@ export {
 	type SdkQuery,
 } from "./backends/claude-code/backend.ts";
 export { type MapContext, mapSdkMessage } from "./backends/claude-code/map.ts";
+export { HERDR_PANE_VARIABLE, inHerdrPane } from "./claude-apart.ts";
 export {
 	bundledClaudeCode,
 	ClaudeCodeAuthError,
@@ -71,6 +72,7 @@ export {
 } from "./credentials.ts";
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
+export { detectHost, type Host, type HostKind, type HostSupports } from "./host.ts";
 export { readImageFile } from "./image-files.ts";
 export {
 	MAX_IMAGE_INPUT_BYTES,

@@ -69,7 +69,7 @@ afterEach(async () => {
 });
 
 /** A server over in-memory streams; `backends` are handed out in session order. */
-function harness(turnsPerSession: FakeStep[][][], tools = [shell]) {
+function harness(turnsPerSession: FakeStep[][][], tools = [shell], env?: Record<string, string | undefined>) {
 	const input = new PassThrough();
 	const messages: ServerMessage[] = [];
 	const raw: string[] = [];
@@ -89,6 +89,7 @@ function harness(turnsPerSession: FakeStep[][][], tools = [shell]) {
 		tools,
 		systemPromptAppend: "",
 		home: cwd,
+		...(env === undefined ? {} : { env }),
 		onShutdown: () => {
 			shutdowns++;
 		},
@@ -146,6 +147,24 @@ describe("RpcServer", () => {
 		expect(h.backends[0]?.startOptions?.systemPromptAppend).toContain("<name>notes</name>");
 		expect(h.events(sessionId)).toContainEqual(
 			expect.objectContaining({ type: "skills_loaded", skills: [expect.objectContaining({ name: "notes" })] }),
+		);
+	});
+
+	it("lists herdr-app's guide when the server's environment is a herdr-core terminal", async () => {
+		await mkdir(join(cwd, "herdr-app"), { recursive: true });
+		await writeFile(join(cwd, "herdr-app", "AGENTS.md"), "# Herdr app\n");
+		const h = harness([[[{ event: finished }]]], [shell], {
+			HC_TERMINAL_ID: "t1",
+			HERDR_APP_HOME: join(cwd, "herdr-app"),
+		});
+		const sessionId = await h.start();
+		h.send({ command: "session.send", sessionId, prompt: "hi" });
+		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
+		expect(h.events(sessionId)).toContainEqual(
+			expect.objectContaining({
+				type: "skills_loaded",
+				skills: [{ name: "herdr-app", path: join(cwd, "herdr-app", "AGENTS.md") }],
+			}),
 		);
 	});
 

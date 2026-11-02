@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +16,7 @@ import {
 	signedInBackends,
 } from "../src/claude-code-auth.ts";
 import { MISSING_API_KEY_MESSAGE, MISSING_OPENCODE_GO_KEY_MESSAGE } from "../src/credentials.ts";
+import { isInsideSandbox } from "../src/tools/sandbox.ts";
 import { requireIsolatedHome } from "./support/login-isolation.ts";
 
 requireIsolatedHome();
@@ -22,9 +25,9 @@ let dir: string;
 let fake: string;
 
 /**
- * A stand-in for the Claude Code binary: it logs its arguments and whether it got ANTHROPIC_API_KEY, prints
- * `$dir/status.json` for `auth status --json` (exit 1 when not logged in, as Claude Code does), and `auth login`
- * writes `$dir/after-login.json` over it.
+ * A stand-in for the Claude Code binary: it logs its arguments and whether it got ANTHROPIC_API_KEY, and its process
+ * group in `$dir/pgid`, prints `$dir/status.json` for `auth status --json` (exit 1 when not logged in, as Claude Code
+ * does), and `auth login` writes `$dir/after-login.json` over it.
  */
 async function writeFake(): Promise<void> {
 	fake = join(dir, "claude");
@@ -32,6 +35,7 @@ async function writeFake(): Promise<void> {
 		fake,
 		`#!/bin/sh
 echo "$* key=\${ANTHROPIC_API_KEY:-none}" >> "${dir}/calls.log"
+/bin/ps -o pgid= -p $$ > "${dir}/pgid" 2>/dev/null
 case "$1 $2" in
 "auth status") cat "${dir}/status.json"; grep -q '"loggedIn": *true' "${dir}/status.json" ;;
 "auth login") cp "${dir}/after-login.json" "${dir}/status.json"; exit "\${FAKE_EXIT:-0}" ;;
@@ -44,6 +48,49 @@ esac
 
 const status = (value: object) => writeFile(join(dir, "status.json"), JSON.stringify(value));
 const calls = async () => (await readFile(join(dir, "calls.log"), "utf8")).trim().split("\n");
+/** The process group the fake ran in last, and the tests' own. */
+const fakeGroup = async () => Number((await readFile(join(dir, "pgid"), "utf8")).trim());
+const ownGroup = () =>
+	Number(spawnSync("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).stdout.trim());
+/** Process groups are read with `ps`, which a sandbox around the tests refuses. */
+const canListProcesses = process.platform !== "darwin" || !isInsideSandbox();
+
+const until = async (condition: () => boolean) => {
+	for (let i = 0; i < 600 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+	expect(condition()).toBe(true);
+};
+
+/** Whether a process runs, a zombie not counted: one killed is a zombie until its parent, or launchd, reaps it. */
+function running(pid: number): boolean {
+	const stat = spawnSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+	return stat !== "" && !stat.startsWith("Z");
+}
+
+/**
+ * A binary that answers badly, as FAKE says: `big` prints more than execFile keeps (1 MiB), `split` prints a status
+ * whose `ñ` comes in two writes, `stuck` ignores TERM and never answers; FAKE_STAY keeps it running, TERM ignored,
+ * after what it printed. It writes its pid to `$dir/odd.pid`.
+ */
+async function writeOdd(): Promise<string> {
+	const odd = join(dir, "odd");
+	await writeFile(
+		odd,
+		`#!/bin/sh
+echo $$ > "${dir}/odd.pid"
+stay() { trap '' TERM; while :; do sleep 0.1; done; }
+case "$FAKE" in
+big) head -c 1100000 /dev/zero | tr '\\0' a ;;
+split) printf '{"loggedIn":true,"authMethod":"claude.ai","email":"a\\303'; sleep 0.2; printf '\\261a@example.com"}' ;;
+stuck) stay ;;
+esac
+[ -n "$FAKE_STAY" ] && stay
+exit 0
+`,
+	);
+	await chmod(odd, 0o755);
+	return odd;
+}
+const oddPid = async () => Number((await readFile(join(dir, "odd.pid"), "utf8")).trim());
 
 beforeEach(async () => {
 	dir = await mkdtemp(join(tmpdir(), "atelier-claude-auth-"));
@@ -92,6 +139,86 @@ it("fails with a message when the binary is missing or answers something else", 
 	const garbled = await claudeCodeAuthStatus({ executable: fake, env: {} }).catch((error) => error);
 	expect(garbled).toBeInstanceOf(ClaudeCodeAuthError);
 	expect(garbled.message).toBe("Claude Code's auth status could not be read.");
+});
+
+it.skipIf(!canListProcesses)(
+	"asks the binary in a process group of its own only when told to, inside a Herdr pane",
+	async () => {
+		await status({ loggedIn: true, authMethod: "claude.ai" });
+		const loggedIn = { loggedIn: true, authMethod: "claude.ai" };
+		expect(
+			await claudeCodeAuthStatus({ executable: fake, env: { ANTHROPIC_API_KEY: "sk-secret" }, apart: true }),
+		).toEqual(loggedIn);
+		const apart = await fakeGroup();
+		expect(apart).not.toBe(ownGroup());
+		// Outside Herdr it runs as it always did, in the group of the process that asks.
+		expect(await claudeCodeAuthStatus({ executable: fake, env: {} })).toEqual(loggedIn);
+		expect(await fakeGroup()).toBe(ownGroup());
+		await status({ loggedIn: false, authMethod: "none" });
+		expect(await claudeCodeAuthStatus({ executable: fake, env: {}, apart: true })).toEqual({
+			loggedIn: false,
+			authMethod: "none",
+		});
+		const store = new AuthStore(join(dir, "auth.json"));
+		expect(await signedInBackends({ executable: fake, env: {}, apart: true, store, platform: "linux" })).toEqual([]);
+		expect(await fakeGroup()).not.toBe(ownGroup());
+		expect(await calls()).toEqual([
+			"auth status --json key=none",
+			"auth status --json key=none",
+			"auth status --json key=none",
+			"auth status --json key=none",
+		]);
+		const missing = await claudeCodeAuthStatus({ executable: join(dir, "nope"), env: {}, apart: true }).catch((e) => e);
+		expect(missing).toBeInstanceOf(ClaudeCodeAuthError);
+		expect(missing.message).toBe("Claude Code binary not found (reinstall Atelier)");
+		await writeFile(join(dir, "status.json"), "not json");
+		const garbled = await claudeCodeAuthStatus({ executable: fake, env: {}, apart: true }).catch((error) => error);
+		expect(garbled.message).toBe("Claude Code's auth status could not be read.");
+	},
+);
+
+describe("the status asked apart", () => {
+	it.skipIf(!canListProcesses)("keeps as much of the output as execFile, and fails as it does past that", async () => {
+		const odd = await writeOdd();
+		const today = await claudeCodeAuthStatus({ executable: odd, env: { FAKE: "big" } }).catch((error) => error);
+		expect(today.message).toBe(`Claude Code could not be run (${odd}): stdout maxBuffer length exceeded`);
+		const apart = await claudeCodeAuthStatus({
+			executable: odd,
+			env: { FAKE: "big", FAKE_STAY: "1" },
+			apart: true,
+		}).catch((error) => error);
+		expect(apart).toBeInstanceOf(ClaudeCodeAuthError);
+		expect(apart.message).toBe(today.message);
+		// The binary, which ignores TERM, is gone too: its group ended after the grace.
+		const pid = await oddPid();
+		await until(() => !running(pid));
+	});
+
+	it.skipIf(!canListProcesses)(
+		"gives up on a binary that does not answer in time, and ends its group",
+		async () => {
+			const odd = await writeOdd();
+			const error = await claudeCodeAuthStatus({
+				executable: odd,
+				env: { FAKE: "stuck" },
+				apart: true,
+				statusTimeoutMs: 1000,
+			}).catch((error) => error);
+			expect(error).toBeInstanceOf(ClaudeCodeAuthError);
+			expect(error.message).toBe(`Claude Code could not be run (${odd}): no answer within 1000 ms`);
+			await until(() => existsSync(join(dir, "odd.pid")));
+			const pid = await oddPid();
+			await until(() => !running(pid));
+		},
+		10_000,
+	);
+
+	it.skipIf(!canListProcesses)("reads a character that comes in two writes", async () => {
+		const odd = await writeOdd();
+		const read = { loggedIn: true, authMethod: "claude.ai", email: "aña@example.com" };
+		expect(await claudeCodeAuthStatus({ executable: odd, env: { FAKE: "split" }, apart: true })).toEqual(read);
+		expect(await claudeCodeAuthStatus({ executable: odd, env: { FAKE: "split" } })).toEqual(read);
+	});
 });
 
 it("runs Claude Code's own login for a Claude subscription and says how it ended", async () => {

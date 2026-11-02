@@ -3787,6 +3787,40 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			);
 		});
 
+		it.each([
+			["Herdr 2", { HC_TERMINAL_ID: "t1", TERM_PROGRAM: "ghostty" }, true],
+			["Herdr 2", { HC_TERMINAL_ID: "t1", TERM_PROGRAM: "ghostty" }, false],
+			["Orca", { ORCA_PANE_KEY: "tab:1", TERM_PROGRAM: "Orca" }, true],
+			["Orca", { ORCA_PANE_KEY: "tab:1", TERM_PROGRAM: "Orca" }, false],
+		])("in %s, reports root progress and children only after a probe reply: %s", async (_host, env, answers) => {
+			const h = harness([]);
+			const stub = stubCore();
+			h.io = { ...h.io, env } as typeof h.io;
+			const input = new PassThrough();
+			h.io.tui.terminal = observeProgramStatus(h.screen.terminal, input);
+			h.io.tui.connect = async () => stub.link;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			if (answers) input.write("\x1b]7501;?\x1b\\");
+			h.screen.type("go");
+			h.screen.type("\r");
+			await until(() => h.screen.statuses.at(-1)?.state === "working");
+			const tasks = ["done", "pending"].map((status, i) => ({ id: `T${i}`, title: "t", specs: [], status }));
+			stub.emit({ ...taskInProgress("T0", "t"), tasks });
+			stub.emit(callStarted("t1", "task", { label: "Alpha" }));
+			stub.emit({ ...callStarted("r1", "read", {}), parentCallId: "t1", agent: "w" });
+			stub.emit({ type: "turn_finished", stopReason: "end_turn", usage });
+			await until(() => h.screen.statuses.at(-1)?.state === "done");
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: capture the OSC bodies
+			const bodies = [...h.screen.raw().matchAll(/\x1b\]7501;([^\x1b]*)\x1b\\/g)].map((m) => m[1]);
+			if (!answers) return expect(bodies).toEqual([]);
+			expect(bodies).toContain("state=working:app=atelier:progress=50");
+			expect(bodies).toContain("state=working:id=task1:title=QWxwaGE=");
+		});
+
 		it("ends background tasks whose end comes on the idle session channel after an interrupted root", async () => {
 			vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 			try {
@@ -4415,6 +4449,27 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			// A nested Atelier started by a tool finds the pane taken.
 			expect(h.core.envs).toEqual([{ ATELIER_HERDR_PANE: "w1:p1" }]);
 			expect(h.err()).toBe("");
+		});
+
+		it("reports from a herdr pane inside herdr-app, not from herdr-app's terminal that inherited herdr's variables", async () => {
+			const herdr = await fakeHerdr();
+			// herdr writes TERM_PROGRAM=herdr in its panes, and herdr-core turns it into ghostty in its terminals.
+			for (const [TERM_PROGRAM, reports] of [
+				["ghostty", false],
+				["herdr", true],
+			] as const) {
+				const h = harness([[{ event: finished }]]);
+				h.io = { ...h.io, env: { ...herdrEnv(herdr.path), HC_TERMINAL_ID: "t1", TERM_PROGRAM } } as typeof h.io;
+				const code = run(["--no-session"], h.io, () => h.backend);
+				await until(h.screen.started);
+				if (reports) await until(() => herdr.calls.some((call) => call.params.state === "idle"));
+				h.screen.type("/exit");
+				h.screen.type("\r");
+				expect(await code).toBe(0);
+				expect(h.core.envs).toEqual(reports ? [{ ATELIER_HERDR_PANE: "w1:p1" }] : [{}]);
+				if (!reports) expect(herdr.calls).toEqual([]);
+			}
+			await herdr.close();
 		});
 
 		it("gives a saved session the command that resumes it, again after a move to another provider", async () => {
