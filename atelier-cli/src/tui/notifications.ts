@@ -47,8 +47,9 @@ function systemChannel({ platform, hasCommand }: Surroundings): Channel {
 }
 
 /**
- * The channel for `via`. In `auto`, Herdr notifies by itself and Orca turns the bell into its own notification; a
- * terminal that shows OSC 9 is asked next, unless tmux sits between them; then the system, then the bell.
+ * The channel for `via`. In `auto`, Herdr (1, or herdr-app over a herdr-core terminal) notifies by itself and Orca turns
+ * the bell into its own notification; a terminal that shows OSC 9 is asked next, unless tmux sits between them; then the
+ * system, then the bell.
  */
 export function channelFor(via: NotifyVia, surroundings: Surroundings): Channel {
 	const { env } = surroundings;
@@ -56,6 +57,8 @@ export function channelFor(via: NotifyVia, surroundings: Surroundings): Channel 
 	if (via === "terminal") return "osc9";
 	if (via === "system") return systemChannel(surroundings);
 	if (env.HERDR_ENV === "1") return "none";
+	// herdr-core sets TERM_PROGRAM=ghostty, but herdr-app shows no OSC 9: it has toasts of its own.
+	if (env.HC_TERMINAL_ID) return "none";
 	if (env.ORCA_PANE_KEY) return "bell";
 	if (showsOsc9(env) && !env.TMUX) return "osc9";
 	return systemChannel(surroundings);

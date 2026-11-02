@@ -19,6 +19,16 @@ describe("channelFor", () => {
 		expect(channelFor("auto", at({ HERDR_ENV: "1", TERM_PROGRAM: "ghostty" }))).toBe("none");
 	});
 
+	it("leaves the notices to herdr-app inside a herdr-core terminal, which says ghostty", () => {
+		const core = { HC_TERMINAL_ID: "t1", TERM_PROGRAM: "ghostty" };
+		expect(channelFor("auto", at(core))).toBe("none");
+		expect(channelFor("auto", at(core, "linux", ["notify-send"]))).toBe("none");
+		expect(channelFor("auto", at({ HC_TERMINAL_ID: "", TERM_PROGRAM: "ghostty" }))).toBe("osc9");
+		expect(channelFor("terminal", at(core))).toBe("osc9");
+		expect(channelFor("system", at(core))).toBe("osascript");
+		expect(channelFor("bell", at(core))).toBe("bell");
+	});
+
 	it("rings the bell inside Orca, which turns it into a notification of its own", () => {
 		expect(channelFor("auto", at({ ORCA_PANE_KEY: "tab:1", TERM_PROGRAM: "ghostty" }))).toBe("bell");
 	});
