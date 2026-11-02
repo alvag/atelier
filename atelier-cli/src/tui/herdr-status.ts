@@ -157,9 +157,9 @@ export class HerdrStatusReporter {
 	#requests = 0;
 	#queue: Pending[] = [];
 	#flight: Promise<void> | undefined;
-	/** The state asked for last, and the one Herdr was sent last. */
+	/** The state asked for last, and what Herdr was sent last of the state and of the labels. */
 	#asked: string | undefined;
-	#sent: string | undefined;
+	readonly #sent = new Map<string, string>();
 	/** The labels asked for last; none yet, so the first report clears what an Atelier before may have left. */
 	#labeled: string | undefined;
 	#released = false;
@@ -201,13 +201,22 @@ export class HerdrStatusReporter {
 			state: state === "working" || state === "blocked" ? state : "idle",
 			...(message === "" ? {} : { message }),
 		};
+		const labels: Labels | undefined =
+			state === "blocked" && message !== ""
+				? { blocked: herdrLine(message, TOKEN_CHARS) }
+				: state === "error"
+					? { done: ERROR_LABEL, idle: ERROR_LABEL }
+					: undefined;
+		// The labels before the state, so a script that waits for it reads its labels, not the last turn's; but the first
+		// state goes first, to hold the pane, and the labels an Atelier before may have left are cleared after it.
+		const first = this.#asked === undefined;
+		if (!first) this.#label(labels);
 		const key = JSON.stringify(params);
 		if (key !== this.#asked) {
 			this.#asked = key;
 			this.#enqueue({ key: "state", method: "pane.report_agent", params });
 		}
-		if (state === "blocked" && message !== "") this.#label({ blocked: herdrLine(message, TOKEN_CHARS) });
-		else this.#label(state === "error" ? { done: ERROR_LABEL, idle: ERROR_LABEL } : undefined);
+		if (first) this.#label(labels);
 		const running = state === "working" || state === "blocked";
 		if (running === this.#running) return;
 		this.#running = running;
@@ -283,11 +292,19 @@ export class HerdrStatusReporter {
 		clearTimeout(timer);
 	}
 
+	/** Queues `request` in place of a waiting one of its kind; labels always wait before a waiting state. */
 	#enqueue(request: Pending) {
 		if (this.#released) return;
-		const waiting = this.#queue.findIndex((queued) => queued.key === request.key);
-		if (waiting === -1) this.#queue.push(request);
-		else this.#queue[waiting] = request;
+		if (request.key === "labels") {
+			// A newer state may take a waiting state's place: the labels must not end up behind it.
+			this.#queue = this.#queue.filter((queued) => queued.key !== "labels");
+			const state = this.#queue.findIndex((queued) => queued.key === "state");
+			this.#queue.splice(state === -1 ? this.#queue.length : state, 0, request);
+		} else {
+			const waiting = this.#queue.findIndex((queued) => queued.key === request.key);
+			if (waiting === -1) this.#queue.push(request);
+			else this.#queue[waiting] = request;
+		}
 		this.#flight ??= this.#flush();
 	}
 
@@ -297,11 +314,11 @@ export class HerdrStatusReporter {
 
 	async #flush() {
 		for (let next = this.#queue.shift(); next; next = this.#queue.shift()) {
-			if (next.key === "state") {
-				// A state Herdr already has, because a newer one replaced it while it waited, is not sent again.
-				const state = JSON.stringify(next.params);
-				if (state === this.#sent) continue;
-				this.#sent = state;
+			if (next.key === "state" || next.key === "labels") {
+				// A state or labels Herdr already has, because newer ones replaced them while they waited, are not sent again.
+				const said = JSON.stringify(next.params);
+				if (said === this.#sent.get(next.key)) continue;
+				this.#sent.set(next.key, said);
 			}
 			await this.#send(next);
 		}
