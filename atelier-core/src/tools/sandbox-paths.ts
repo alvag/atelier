@@ -121,18 +121,24 @@ function gitConfig(file: string, args: string[], maxBuffer = CONFIG_BUFFER_LIMIT
 	});
 }
 
-/** Raw NUL-delimited records: decoding first would expand invalid UTF-8 bytes when measuring the old query sizes. */
-function configRecords(run: SpawnSyncReturns<Buffer>): Buffer[] | undefined {
-	if (run.status === 1) return [];
-	// As before, status 0 is accepted even if Node also reports ENOBUFS after git has exited.
-	if (run.status !== 0) return undefined;
+/**
+ * Raw NUL-delimited records (decoding first would expand invalid UTF-8 bytes when measuring the old query sizes), and
+ * whether they are git's whole answer: not when git was stopped or its output overflowed the buffer, even if git had
+ * exited with status 0 by then, since Node may not have read it all. Undefined when git rejected the file.
+ */
+function configRecords(run: SpawnSyncReturns<Buffer>): { records: Buffer[]; complete: boolean } | undefined {
+	const complete = run.status !== null && (run.error as NodeJS.ErrnoException | undefined)?.code !== "ENOBUFS";
+	if (complete && run.status === 1) return { records: [], complete };
+	if (complete && run.status !== 0) return undefined;
+	const stdout = run.stdout ?? Buffer.alloc(0);
 	const records: Buffer[] = [];
 	let start = 0;
-	for (let end = run.stdout.indexOf(0); end !== -1; end = run.stdout.indexOf(0, start)) {
-		records.push(run.stdout.subarray(start, end));
+	// Only terminated records: a cut one is not what git wrote.
+	for (let end = stdout.indexOf(0); end !== -1; end = stdout.indexOf(0, start)) {
+		records.push(stdout.subarray(start, end));
 		start = end + 1;
 	}
-	return records;
+	return { records, complete };
 }
 
 /**
@@ -140,7 +146,7 @@ function configRecords(run: SpawnSyncReturns<Buffer>): Buffer[] | undefined {
  * read by git itself, alone and without following includes, so a broken file
  * elsewhere does not matter and git's whole syntax (quotes, escapes,
  * continuation lines) is honored. A missing file names nothing. When git cannot
- * read the file, its own parser answers instead and `malformed` is set.
+ * read the file or does not finish, its own parser answers too and `malformed` is set.
  */
 export function configFilePaths(file: string): ConfigFile {
 	if (!existsSync(file)) return { hooksPaths: [], includes: [], malformed: false };
@@ -151,15 +157,15 @@ export function configFilePaths(file: string): ConfigFile {
 	);
 	// Even status 0 with ENOBUFS can leave truncated combined records; only the old queries decide their results.
 	if ((run.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS") return separateConfigFilePaths(file);
-	const records = configRecords(run);
-	if (records === undefined) return { ...parseConfigFile(file), malformed: true };
+	const read = configRecords(run);
+	if (read === undefined) return fallbackConfigFile(file);
 	const plain: string[] = [];
 	const conditional: string[] = [];
 	let hooksPath: string | undefined;
 	let plainBytes = 0;
 	let conditionalBytes = 0;
 	let hooksBytes = 0;
-	for (const record of records) {
+	for (const record of read.records) {
 		const separator = record.indexOf(10);
 		const key = record.subarray(0, separator === -1 ? record.length : separator).toString("utf8");
 		const value = record.subarray(separator === -1 ? record.length : separator + 1);
@@ -175,7 +181,9 @@ export function configFilePaths(file: string): ConfigFile {
 			hooksBytes = value.length + 1;
 		}
 	}
-	// Above the old buffer bound, only the original queries can tell whether git exited before Node could kill it.
+	// A later core.hooksPath may be past the cut.
+	if (!read.complete) return fallbackConfigFile(file, [...plain, ...conditional]);
+	// Above the old buffer bound the original queries answer, as before; one Node cuts is read as cut.
 	if (Math.max(plainBytes, conditionalBytes, hooksBytes) > CONFIG_BUFFER_LIMIT) return separateConfigFilePaths(file);
 	return {
 		hooksPaths: hooksPath === undefined ? [] : [hooksPath],
@@ -184,19 +192,34 @@ export function configFilePaths(file: string): ConfigFile {
 	};
 }
 
-/** Preserve the original commands and their actual exit/overflow behavior for large individual query outputs. */
+/** The original three queries, for large individual query outputs; when one is cut, `fallbackConfigFile` answers. */
 function separateConfigFilePaths(file: string): ConfigFile {
 	const plain = configRecords(gitConfig(file, ["--get-all", "include.path"]));
 	const conditional = configRecords(gitConfig(file, ["--get-regexp", "^includeif\\..*\\.path$"]));
 	const hooks = configRecords(gitConfig(file, ["--get", "core.hooksPath"]));
-	if (plain === undefined || conditional === undefined || hooks === undefined)
-		return { ...parseConfigFile(file), malformed: true };
+	if (plain === undefined || conditional === undefined || hooks === undefined) return fallbackConfigFile(file);
 	const includes = [
-		...plain.map((record) => record.toString("utf8")),
-		...conditional.map((record) => record.subarray(record.indexOf(10) + 1).toString("utf8")),
+		...plain.records.map((record) => record.toString("utf8")),
+		...conditional.records.map((record) => record.subarray(record.indexOf(10) + 1).toString("utf8")),
 	];
-	const hooksPath = hooks[0]?.toString("utf8");
+	const hooksPath = hooks.records[0]?.toString("utf8");
+	if (!plain.complete || !conditional.complete || !hooks.complete)
+		return fallbackConfigFile(file, includes, hooks.complete ? hooksPath : undefined);
 	return { hooksPaths: hooksPath === undefined ? [] : [hooksPath], includes, malformed: false };
+}
+
+/**
+ * For a file git rejected or did not finish reading: the includes it did report, everything the fallback parser
+ * reads in the file, and `core.hooksPath` from git when its answer is whole or else from the parser. So a cut read
+ * protects at least what git would have reported; `malformed` protects the file's directory's places too.
+ */
+function fallbackConfigFile(file: string, includes: string[] = [], hooksPath?: string): ConfigFile {
+	const parsed = parseConfigFile(file);
+	return {
+		hooksPaths: hooksPath === undefined ? parsed.hooksPaths : [hooksPath],
+		includes: [...includes, ...parsed.includes],
+		malformed: true,
+	};
 }
 
 const HEADER = /\[[ \t]*([A-Za-z0-9.-]+)(?:[ \t]+"((?:[^"\\\n]|\\.)*)")?[ \t]*\]/y;

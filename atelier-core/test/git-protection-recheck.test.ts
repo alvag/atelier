@@ -1,5 +1,5 @@
 import { execFileSync, type SpawnSyncOptions } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,9 @@ const gitFault = vi.hoisted(() => ({
 	revParses: [] as { args: readonly string[]; status: number | null; code: string | undefined; elapsedMs: number }[],
 	/** Every real git stopped before it exited: by this test's git timeout, or by Node at its output buffer. */
 	stopped: [] as { args: readonly string[]; elapsedMs: number; code: "ETIMEDOUT" | "ENOBUFS" }[],
+	/** Cuts the nth `--get-all` at its buffer as Node does, with the exit status Node can report for it. */
+	cutGetAll: undefined as { read: number; status: 0 | null } | undefined,
+	getAlls: 0,
 }));
 vi.mock("node:child_process", async (original) => {
 	const cp = await original<typeof import("node:child_process")>();
@@ -34,7 +37,17 @@ vi.mock("node:child_process", async (original) => {
 						}
 					: cp.spawnSync(command, args, command === "git" ? { ...options, timeout: gitFault.timeoutMs } : options);
 			const elapsedMs = Math.round(performance.now() - start);
-			const injected = gitFault.failRevParse && args[0] === "rev-parse";
+			const cut = gitFault.cutGetAll;
+			const cutHere =
+				cut !== undefined && command === "git" && args.includes("--get-all") && ++gitFault.getAlls === cut.read;
+			if (cutHere)
+				Object.assign(run, {
+					stdout: (run.stdout as Buffer).subarray(0, options.maxBuffer),
+					status: cut.status,
+					signal: cut.status === null ? "SIGTERM" : null,
+					error: Object.assign(new Error("spawnSync git ENOBUFS"), { code: "ENOBUFS" }),
+				});
+			const injected = (gitFault.failRevParse && args[0] === "rev-parse") || cutHere;
 			const code = (run.error as NodeJS.ErrnoException | undefined)?.code;
 			// ENOBUFS with status 0 means git exited before Node could kill it, which the tools accept.
 			if (command === "git" && !injected && (code === "ETIMEDOUT" || (code === "ENOBUFS" && run.status === null)))
@@ -76,6 +89,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
 	gitFault.failRevParse = false;
+	gitFault.cutGetAll = undefined;
 	await rm(base, { recursive: true, force: true });
 });
 
@@ -164,20 +178,27 @@ describe.skipIf(process.platform === "win32")("how many git processes one edit o
 		await rm(bin, { recursive: true, force: true });
 	});
 
-	/** Runs first: a git stopped before it answered changes the path the tools take, which is not a wrong count. */
-	function expectNoStoppedGit() {
-		const message = gitFault.stopped
+	/**
+	 * Runs first: a git stopped before it answered changes the path the tools take, which is not a wrong count. A
+	 * get-all Node cuts at its buffer is read as cut whether git exited first or not, with the same counts and refusal
+	 * (pinned by the cut test below), so `overflowing` accepts it; a timeout still fails.
+	 */
+	function expectNoStoppedGit(overflowing = false) {
+		const stopped = gitFault.stopped.filter(
+			({ args, code }) => !(overflowing && code === "ENOBUFS" && args.includes("--get-all")),
+		);
+		const message = stopped
 			.map(({ args, elapsedMs, code }) =>
 				code === "ETIMEDOUT"
 					? `git ${args.join(" ")} was stopped by this test's ${gitFault.timeoutMs} ms git timeout after ${elapsedMs} ms: the machine was too slow, this is not a wrong count`
 					: `git ${args.join(" ")} was killed by Node at its output buffer after ${elapsedMs} ms, before it could exit: it lost that race, this is not a wrong count`,
 			)
 			.join("; ");
-		expect(gitFault.stopped, message).toEqual([]);
+		expect(stopped, message).toEqual([]);
 	}
 
-	function expectRevParseResults(forceRevParse: boolean) {
-		expectNoStoppedGit();
+	function expectRevParseResults(forceRevParse: boolean, overflowing = false) {
+		expectNoStoppedGit(overflowing);
 		expect(gitFault.revParses.length).toBeGreaterThan(0);
 		for (const run of gitFault.revParses) {
 			const message = forceRevParse
@@ -217,7 +238,7 @@ describe.skipIf(process.platform === "win32")("how many git processes one edit o
 					gitFault.revParses.length = 0;
 					gitFault.stopped.length = 0;
 					const result = phase === "gate" ? await tool.gate?.(input, { cwd }) : await tool.execute(input, { cwd });
-					expectRevParseResults(forceRevParse);
+					expectRevParseResults(forceRevParse, legacy);
 					if (phase === "gate")
 						expect(result).toEqual({
 							refusal: { output: refusal("team#cfg").output, summary: refusal("team#cfg").output },
@@ -227,6 +248,46 @@ describe.skipIf(process.platform === "win32")("how many git processes one edit o
 					// Five root-config reads per fallback check; invalid UTF-8 still needs no legacy queries.
 					await expectConfigGroups(legacy, (forceRevParse ? 5 : 1) * (legacy ? 4 : 1));
 					expect(gitFault.revParses.filter((run) => run.args.includes("--absolute-git-dir"))).toHaveLength(1);
+				}
+			},
+		);
+
+	for (const forceRevParse of [false, true])
+		it.each([
+			{ label: "as git and Node end it", cut: undefined },
+			...([0, null] as const).flatMap((status) =>
+				(forceRevParse ? [1, 5] : [1]).map((read) => ({
+					label: `read ${read} cut with status ${status}`,
+					cut: { read, status },
+				})),
+			),
+		])(
+			`a get-all over its buffer protects what git would have reported, with the same counts: $label (forced rev-parse failure=${forceRevParse})`,
+			async ({ cut }) => {
+				await gitConfigFixture(base, "get-all just over the old buffer");
+				// The last include sits past the 1 MiB the cut get-all keeps.
+				await appendFile(join(cwd, ".git", "config"), '\tpath = "../last#cfg"\n');
+				await writeFile(join(cwd, "last#cfg"), "# included\n");
+				gitFault.failRevParse = forceRevParse;
+				for (const path of ["team#cfg", "last#cfg"]) {
+					const before = await readFile(join(cwd, path));
+					const input = { path, content: "[core]\nhooksPath = evil-hooks\n" };
+					const tool = createWriteTool({ home });
+					for (const phase of ["gate", "execute"] as const) {
+						await writeFile(log, "");
+						gitFault.revParses.length = 0;
+						gitFault.stopped.length = 0;
+						gitFault.getAlls = 0;
+						gitFault.cutGetAll = cut;
+						const result = phase === "gate" ? await tool.gate?.(input, { cwd }) : await tool.execute(input, { cwd });
+						expectRevParseResults(forceRevParse, true);
+						if (phase === "gate")
+							expect(result).toEqual({ refusal: { output: refusal(path).output, summary: refusal(path).output } });
+						else expect(result).toMatchObject(refusal(path));
+						expect(await readFile(join(cwd, path))).toEqual(before);
+						// The same as a read git finishes: a cut read never reads the root config once more.
+						await expectConfigGroups(true, (forceRevParse ? 5 : 1) * 4);
+					}
 				}
 			},
 		);
