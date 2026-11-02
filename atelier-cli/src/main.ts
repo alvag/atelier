@@ -17,6 +17,7 @@ import { ProcessTerminal } from "@earendil-works/pi-tui";
 import { cliBackends } from "./backends.ts";
 import { run } from "./run.ts";
 import { herdrPane, PANE_MARKER } from "./tui/herdr-status.ts";
+import { observeProgramStatus } from "./tui/program-status-terminal.ts";
 
 let compactAt: number | undefined;
 try {
@@ -39,7 +40,7 @@ const coreServer = fileURLToPath(new URL("src/server/main.ts", import.meta.resol
 const tui =
 	process.stdin.isTTY && process.stdout.isTTY && process.env.ATELIER_TUI !== "off" && recordPath === undefined
 		? {
-				terminal: new ProcessTerminal(),
+				terminal: observeProgramStatus(new ProcessTerminal()),
 				connect: (env: Record<string, string>) =>
 					RpcClient.connect({
 						command: process.execPath,
