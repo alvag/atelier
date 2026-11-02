@@ -547,7 +547,9 @@ export async function run(
 		askUser,
 		// Line mode asks multi-select questions as numbers separated by commas, and prints previews below the options.
 		userQuestions: { multiSelect: true, preview: true },
-		...(io.home === undefined ? {} : { projectInstructions: { home: io.home }, skills: { home: io.home } }),
+		...(io.home === undefined
+			? {}
+			: { projectInstructions: { home: io.home }, skills: { home: io.home, env: io.env ?? {} } }),
 		cwd: args.cwd,
 		...(model === undefined ? {} : { model }),
 		tools: io.tools ?? coreTools,

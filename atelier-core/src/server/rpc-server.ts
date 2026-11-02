@@ -76,6 +76,8 @@ export interface RpcServerOptions {
 	systemPromptAppend: string;
 	/** Where the walk up from a session's folder for AGENTS.md / CLAUDE.md stops (excluded). Without it none are read. */
 	home?: string;
+	/** Where sessions look for herdr-app's guide (`HC_TERMINAL_ID`, `HERDR_APP_HOME`); `serve` passes `process.env`. */
+	env?: Record<string, string | undefined>;
 	/** Sessions may review their changes (RDD). Off unless given; `serve` passes `reviewEnabled(process.env)`. */
 	review?: boolean;
 	/** Every session runs `bash` without the sandbox (`serve` passes `!sandboxEnabled(process.env)`). */
@@ -872,7 +874,10 @@ export class RpcServer {
 				odd: true,
 				...(this.#options.home === undefined
 					? {}
-					: { projectInstructions: { home: this.#options.home }, skills: { home: this.#options.home } }),
+					: {
+							projectInstructions: { home: this.#options.home },
+							skills: { home: this.#options.home, ...(this.#options.env ? { env: this.#options.env } : {}) },
+						}),
 				...(review
 					? {
 							review: {

@@ -309,9 +309,10 @@ export interface SessionOptions {
 	projectInstructions?: { home: string };
 	/**
 	 * Lists the skills of `.agents/skills/` (from `cwd` up to the repo root, then `home`'s) in the system prompt, found
-	 * once at start. Never given to subagents.
+	 * once at start. Never given to subagents. With `env` a herdr-core terminal's (`HC_TERMINAL_ID`), herdr-app's guide
+	 * for agents is listed last, as the skill `herdr-app`.
 	 */
-	skills?: { home: string };
+	skills?: { home: string; env?: Record<string, string | undefined> };
 	/** Turns on RDD: the risk tool, the assessment at the end of each turn and `Session.review`. Never given to subagents. */
 	review?: ReviewOptions;
 	/**
@@ -664,7 +665,7 @@ export class Session {
 			if (instructions.files.length > 0 || instructions.dropped.length > 0) session.#instructions = instructions;
 		}
 		if (options.skills) {
-			const skills = await loadSkills(options.cwd, options.skills.home);
+			const skills = await loadSkills(options.cwd, options.skills.home, options.skills.env);
 			if (skills.skills.length > 0 || skills.warnings.length > 0) session.#skills = skills;
 		}
 		const scratch = await createScratchDir("session");
