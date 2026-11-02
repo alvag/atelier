@@ -83,6 +83,8 @@ import { HerdrStatusReporter, PANE_MARKER } from "./herdr-status.ts";
 import { createScreen, keepDocument, mount } from "./layout.ts";
 import { preparePastedImages } from "./pasted-images.ts";
 import { ProgramStatusReporter } from "./program-status.ts";
+import { ChildProgramStatus } from "./program-status-children.ts";
+import { writeProgramStatus } from "./program-status-terminal.ts";
 import { PromptEditor, parseShell } from "./prompt.ts";
 import { type ImageDraft, PromptImages } from "./prompt-images.ts";
 import { QueuePanel } from "./queue-panel.ts";
@@ -669,6 +671,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 	const spot = () => JSON.stringify([editor.getText(), editor.getCursor()]);
 	const programStatus = new ProgramStatusReporter(options.terminal, options.statusIntervalMs);
+	const childStatus = new ChildProgramStatus((record) => writeProgramStatus(options.terminal, record));
 	/** What the main agent is doing, the terminal's line for it. */
 	let line = new StatusLine();
 	/** Tells the terminal, and Herdr when the TUI runs in one of its panes, what the TUI is doing. */
@@ -791,7 +794,10 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			closed = true;
 			const at = questions.indexOf(entry);
 			if (at !== -1) questions.splice(at, 1);
-			if (asked === sessionId) void request({ command: "session.answer_user", sessionId, callId, answers });
+			if (asked === sessionId) {
+				childStatus.answered(callId);
+				void request({ command: "session.answer_user", sessionId, callId, answers });
+			}
 			showQuestion();
 			reportRunning();
 		};
@@ -927,11 +933,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		conversation.event(event);
 		feature.event(event);
 		line.event(event);
+		childStatus.handle(event);
 		// The main agent's task in progress, the footer's, goes to Herdr's sidebar.
 		if (event.type === "feature_changed" && event.parentCallId === undefined)
 			herdr?.activity(event.tasks.find((task) => task.status === "in_progress"));
 		// A subagent asks the same user through the same session: its questions are asked like the main agent's.
-		if (event.type === "approval_requested")
+		if (event.type === "approval_requested") {
+			const asked = sessionId;
 			ask(
 				{
 					...approvalQuestion(event),
@@ -940,18 +948,20 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 					cancel: "deny",
 					guardMs: options.answerGuardMs ?? ANSWER_GUARD_MS,
 				},
-				(value) =>
+				(value) => {
+					if (asked === sessionId) childStatus.answered(event.callId);
 					void request({
 						command: "session.approve",
 						sessionId,
 						callId: event.callId,
 						approved: value !== "deny",
 						...(value === "session" || value === "project" || value === "always" ? { remember: value } : {}),
-					}),
+					});
+				},
 				false,
 				{ kind: "permission", message: approvalQuestion(event).title },
 			);
-		else if (event.type === "user_question_requested") askUser(event.callId, event.questions);
+		} else if (event.type === "user_question_requested") askUser(event.callId, event.questions);
 		else if (event.type === "user_question_resolved") {
 			// Closed at once, with whatever was typed in it: only this batch, and nothing is sent.
 			const at = questions.findIndex((entry) => entry.userCallId === event.callId);
@@ -1235,6 +1245,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	/** Shows `next` in a conversation of its own and closes the session it replaces. */
 	const switchTo = (next: Opened, shownIn: Conversation) => {
 		const previous = sessionId;
+		childStatus.stop();
 		sessionId = next.sessionId;
 		savedId = next.savedId;
 		pasted.reset();
@@ -2001,6 +2012,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		removeTerminate?.();
 		placeRead?.abort();
 		loader.stop();
+		childStatus.stop();
 		programStatus.clear();
 		// The editor and the footer stay behind; the transcript is printed where the terminal was.
 		keepDocument(tui, document);

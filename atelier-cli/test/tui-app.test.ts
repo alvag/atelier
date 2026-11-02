@@ -29,6 +29,7 @@ import { requireIsolatedHome } from "../../atelier-core/test/support/login-isola
 import { run } from "../src/run.ts";
 import type { CoreLink } from "../src/tui/app.ts";
 import { HerdrStatusReporter } from "../src/tui/herdr-status.ts";
+import { observeProgramStatus } from "../src/tui/program-status-terminal.ts";
 import { png } from "./support/png.ts";
 import { PRINTABLE_KEYS } from "./support/printable-keys.ts";
 import { tiff } from "./support/tiff.ts";
@@ -3686,6 +3687,69 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\x03");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
+		});
+
+		it.each([true, false])("reports child lifecycles only after a probe reply: %s", async (answers) => {
+			const h = harness([]);
+			const stub = stubCore();
+			const terminal = h.screen.terminal;
+			const root = terminal.setProgramStatus.bind(terminal);
+			terminal.setProgramStatus = (status) => {
+				if (status.state === "clear") terminal.write("<root clear>");
+				root(status);
+			};
+			const input = new PassThrough();
+			h.io.tui.terminal = observeProgramStatus(terminal, input);
+			h.io.tui.connect = async () => stub.link;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			if (answers) input.write("\x1b]7501;?\x1b\\");
+			const tag = { parentCallId: "t1", agent: "w" };
+			stub.emit(callStarted("t1", "task", { label: "L" }));
+			stub.emit({ ...callStarted("r1", "read", {}), ...tag });
+			stub.emit({ type: "approval_requested", tool: "bash", callId: "a1", command: "ls", ...tag });
+			await until(() => h.screen.screen().includes("Run this command?"));
+			h.screen.type("\r");
+			await until(() => stub.log.commands.some((command) => command.command === "session.approve"));
+			stub.emit(callFinished("t1"));
+			tag.parentCallId = "t2";
+			stub.emit(callStarted("t2", "task", { label: "L" }));
+			stub.emit({ ...callStarted("r2", "read", {}), ...tag });
+			stub.emit({ ...callFinished("t2"), ok: false });
+			tag.parentCallId = "t3";
+			stub.emit(callStarted("t3", "task", { label: "L" }));
+			stub.emit({ ...callStarted("r3", "read", {}), ...tag });
+			stub.emit({ ...finished, stopReason: "interrupted", ...tag });
+			stub.emit({ ...callFinished("t3"), ok: false });
+			tag.parentCallId = "t4";
+			stub.emit(callStarted("t4", "task", { label: "L" }));
+			stub.emit({ ...callStarted("r4", "read", {}), ...tag });
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: capture the child OSC body and the root-clear marker
+			const records = [...h.screen.raw().matchAll(/\x1b\]7501;([^\x1b]*id=[^\x1b]*)\x1b\\|(<root clear>)/g)].map(
+				(match) => match[1] ?? match[2],
+			);
+			expect(records).toEqual(
+				answers
+					? [
+							"state=working:id=task1:title=TA==",
+							"state=blocked:kind=permission:id=task1:title=TA==",
+							"state=working:id=task1:title=TA==",
+							"state=done:id=task1:title=TA==",
+							"state=working:id=task2:title=TA==",
+							"state=error:id=task2:title=TA==",
+							"state=working:id=task3:title=TA==",
+							"state=clear:id=task3",
+							"state=working:id=task4:title=TA==",
+							"state=clear:id=task4",
+							"state=clear:id=task2",
+							"state=clear:id=task1",
+							"<root clear>",
+						]
+					: ["<root clear>"],
+			);
 		});
 	});
 
