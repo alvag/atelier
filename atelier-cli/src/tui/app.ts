@@ -100,7 +100,8 @@ import {
 	profileChoices,
 	sessionChoices,
 } from "./selectors.ts";
-import { readTuiSettings } from "./settings.ts";
+import { readTuiSettings, saveSidePanel } from "./settings.ts";
+import { SIDE_PANEL_MIN_COLUMNS, SIDE_PANEL_WIDTH, SidePanel } from "./side-panel-view.ts";
 import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
 import { StatusLine, terminalTitle } from "./status-line.ts";
 import { editorTheme, type Paint, painter, Shade, Tones } from "./style.ts";
@@ -290,15 +291,18 @@ class Footer implements Component {
 	place: Pick<FooterState, "cwd" | "branch" | "version"> = {};
 	readonly #paint: Paint;
 	readonly #items: readonly StatusItem[];
-	constructor(paint: Paint, items: readonly StatusItem[]) {
+	/** The items another part lists for now: the footer counts, the side panel lists. */
+	readonly #left: () => readonly StatusItem[];
+	constructor(paint: Paint, items: readonly StatusItem[], left: () => readonly StatusItem[] = () => []) {
 		this.#paint = paint;
 		this.#items = items;
+		this.#left = left;
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		return this.#items.length === 0
-			? []
-			: [footerLine({ ...this.state, ...this.place }, width, this.#paint, this.#items)];
+		const left = this.#left();
+		const items = this.#items.filter((item) => !left.includes(item));
+		return items.length === 0 ? [] : [footerLine({ ...this.state, ...this.place }, width, this.#paint, items)];
 	}
 }
 
@@ -528,9 +532,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const fullscreen = settings.fullscreen && !args.noFullscreen;
 	const attention = new Attention(settings.notifications, { ...options, host, cwd: args.cwd });
 	const tui = createScreen(attention.watch(options.terminal, fullscreen), fullscreen, paint);
+	/** The fullscreen side panel, from the session's events; `side` stays undefined in the main screen. */
+	let side: SidePanel | undefined;
+	/** The name the user gave the session with `/rename`, which the side panel shows. */
+	let sessionName: string | undefined;
 	const footer = new Footer(
 		paint,
 		fullscreen ? settings.statusLine.filter((item) => FULLSCREEN_FOOTER_ITEMS.includes(item)) : settings.statusLine,
+		() => (side?.shown() ? ["task", "jobs"] : []),
 	);
 	const version = options.version === undefined ? {} : { version: options.version };
 	footer.place = { cwd: args.cwd, ...version };
@@ -569,7 +578,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			...(effort === undefined ? {} : { effort }),
 		};
 	};
-	const bar = new StatusBar(ink(activeTheme, options.color, getTerminalColorMode()), () => ({
+	const colors = ink(activeTheme, options.color, getTerminalColorMode());
+	if (fullscreen)
+		side = new SidePanel(tui, colors, paint, {
+			open: settings.sidePanel,
+			columns: () => options.terminal.columns,
+			context: () => ({ name: sessionName, savedId, mode: footer.state.mode, git: changes }),
+		});
+	const bar = new StatusBar(colors, () => ({
 		...footer.state,
 		...footer.place,
 		git: changes,
@@ -647,13 +663,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		document,
 		[
 			{ component: status },
-			{ component: odd },
+			{ component: odd, shown: () => !side?.shown() },
 			{ component: dialogs },
 			{ component: queue },
 			{ component: editor, editor: true, shown: () => !questionOpen() },
 			{ component: footer },
 		],
 		fullscreen ? bar : undefined,
+		side && { component: side.component, width: SIDE_PANEL_WIDTH, shown: (columns) => side?.shown(columns) === true },
 	);
 	tui.setFocus(editor);
 
@@ -793,8 +810,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	 * the header and the transcript's row.
 	 */
 	const questionRows = () => {
-		const width = options.terminal.columns;
-		const others = [status, odd, queue, footer].reduce((rows, part) => rows + part.render(width).length, 0);
+		const width = options.terminal.columns - (side?.shown() ? SIDE_PANEL_WIDTH : 0);
+		const others = [status, ...(side?.shown() ? [] : [odd]), queue, footer].reduce(
+			(rows, part) => rows + part.render(width).length,
+			0,
+		);
 		return options.terminal.rows - others - (fullscreen ? bar.render(width).length + 1 : 0);
 	};
 	/**
@@ -952,6 +972,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		footer.state = footerAfter(footer.state, event);
 		conversation.event(event);
 		feature.event(event);
+		side?.event(event);
 		line.event(event);
 		// Every root turn starts at seq 1, including queued and background-woken turns.
 		if (event.seq === 1 && event.parentCallId === undefined) childStatus.beginTurn();
@@ -1277,6 +1298,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		pasteEpoch++;
 		abortClipboardReads();
 		titleName = next.name;
+		sessionName = undefined;
+		side?.reset();
 		showTitle();
 		conversation = shownIn;
 		queue.messages = [];
@@ -1306,8 +1329,23 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	/** Opens or folds the feature panel; with no feature active there is nothing to show. */
 	const toggleFeature = () => {
-		if (!feature.active) return conversation.note("no ODD feature is active in this session");
-		feature.toggle();
+		if (!(side?.shown() ? side.hasFeature : feature.active))
+			return conversation.note("no ODD feature is active in this session");
+		// With the side panel on screen, its Todos are the feature's tasks.
+		if (side?.shown()) side.fold("todos");
+		else feature.toggle();
+	};
+	/** Ctrl+P shows or hides the side panel, and keeps the choice for the next sessions. */
+	const toggleSidePanel = (panel: SidePanel) => {
+		if (!panel.fits())
+			return conversation.note(`the side panel needs a terminal of ${SIDE_PANEL_MIN_COLUMNS} columns or more`);
+		panel.open = !panel.open;
+		if (options.home === undefined) return;
+		void saveSidePanel(options.home, panel.open).then((warning) => {
+			if (warning === undefined) return;
+			conversation.note(`warning: ${warning}`, true);
+			tui.requestRender();
+		});
 	};
 
 	/** `/mcp` prints the session's MCP servers as the core has them now; `/mcp login|logout <server>` signs one in or out first. */
@@ -1558,6 +1596,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const renamed = await request({ command: "session.rename", sessionId: savedId, cwd: args.cwd, name });
 		if (renamed === undefined) return;
 		titleName = name;
+		sessionName = name;
 		showTitle();
 		conversation.note(`session renamed to ${shown(name).text}`);
 	};
@@ -1962,6 +2001,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			tui.requestRender();
 			return { consume: true };
 		}
+		if (matchesKey(data, "ctrl+p") && side !== undefined) {
+			toggleSidePanel(side);
+			tui.requestRender();
+			return { consume: true };
+		}
 		return undefined;
 	};
 	const removeKeys = tui.addInputListener((data) => {
@@ -1990,6 +2034,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		const event = { ...body, seq: 0, turnId: "" } as AtelierEvent;
 		footer.state = footerAfter(footer.state, event);
 		conversation.event(event);
+		side?.event(event);
 		// A background task's end after the root turn closes its child record and stops the refresh.
 		if (event.type === "task_finished") childStatus.handle(event);
 		tui.requestRender();
@@ -2048,6 +2093,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		loader.stop();
 		removeProbeListener();
 		childStatus.stop();
+		side?.stop();
 		programStatus.clear();
 		// The editor and the footer stay behind; the transcript is printed where the terminal was.
 		keepDocument(tui, document);

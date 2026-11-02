@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_STATUS_LINE } from "../src/tui/footer.ts";
-import { DEFAULT_NOTIFICATIONS, readTuiSettings } from "../src/tui/settings.ts";
+import { DEFAULT_NOTIFICATIONS, readTuiSettings, saveSidePanel } from "../src/tui/settings.ts";
 
 let home: string;
 beforeEach(async () => {
@@ -25,6 +25,7 @@ describe("TUI settings", () => {
 		const defaults = {
 			fullscreen: true,
 			hideThinking: false,
+			sidePanel: true,
 			statusLine: DEFAULT_STATUS_LINE,
 			notifications: DEFAULT_NOTIFICATIONS,
 			warnings: [],
@@ -38,6 +39,7 @@ describe("TUI settings", () => {
 		expect(await readTuiSettings(home)).toEqual({
 			fullscreen: false,
 			hideThinking: true,
+			sidePanel: true,
 			statusLine: ["git-branch", "model", "cost"],
 			notifications: DEFAULT_NOTIFICATIONS,
 			warnings: [],
@@ -49,6 +51,7 @@ describe("TUI settings", () => {
 		expect(await readTuiSettings(home)).toEqual({
 			fullscreen: true,
 			hideThinking: false,
+			sidePanel: true,
 			statusLine: ["model", "mode"],
 			notifications: DEFAULT_NOTIFICATIONS,
 			warnings: [`${path()}: unknown status line item "weather"; skipped`],
@@ -71,6 +74,7 @@ describe("TUI settings", () => {
 		expect(await readTuiSettings(home)).toEqual({
 			fullscreen: true,
 			hideThinking: false,
+			sidePanel: true,
 			statusLine: DEFAULT_STATUS_LINE,
 			notifications: DEFAULT_NOTIFICATIONS,
 			warnings: [
@@ -88,6 +92,7 @@ describe("TUI settings", () => {
 		expect(await readTuiSettings(home)).toEqual({
 			fullscreen: true,
 			hideThinking: false,
+			sidePanel: true,
 			statusLine: DEFAULT_STATUS_LINE,
 			notifications: DEFAULT_NOTIFICATIONS,
 			warnings: [`${path()}: expected kind "atelier.settings" and version 1; using the defaults`],
@@ -120,5 +125,60 @@ describe("TUI settings", () => {
 		expect((await readTuiSettings(home)).warnings).toEqual([
 			`${path()}: "tui.notifications" must be an object; using the defaults`,
 		]);
+	});
+
+	it("read whether the side panel shows, and say so when the value is wrong", async () => {
+		await save(file({ sidePanel: false }));
+		expect(await readTuiSettings(home)).toMatchObject({ sidePanel: false, warnings: [] });
+		await save(file({ sidePanel: "no" }));
+		expect(await readTuiSettings(home)).toMatchObject({
+			sidePanel: true,
+			warnings: [`${path()}: "tui.sidePanel" must be true or false; using the default`],
+		});
+	});
+});
+
+describe("saving the side panel's choice", () => {
+	it("changes only tui.sidePanel, every other key and value as it was", async () => {
+		const before = {
+			kind: "atelier.settings",
+			version: 1,
+			theme: { custom: [1, 2] },
+			tui: { statusLine: ["model", "jobs"], sidePanel: true, notifications: { sound: true } },
+			extra: "kept",
+		};
+		await save(before);
+		expect(await saveSidePanel(home, false)).toBeUndefined();
+		expect(JSON.parse(await readFile(path(), "utf8"))).toEqual({ ...before, tui: { ...before.tui, sidePanel: false } });
+		expect(Object.keys(JSON.parse(await readFile(path(), "utf8")))).toEqual(Object.keys(before));
+		expect(await readTuiSettings(home)).toMatchObject({ sidePanel: false, statusLine: ["model", "jobs"] });
+	});
+
+	it("adds a tui section to a file without one", async () => {
+		await save({ kind: "atelier.settings", version: 1, other: true });
+		await saveSidePanel(home, false);
+		expect(JSON.parse(await readFile(path(), "utf8"))).toEqual({
+			kind: "atelier.settings",
+			version: 1,
+			other: true,
+			tui: { sidePanel: false },
+		});
+	});
+
+	it("creates the file with only that setting when there is none", async () => {
+		expect(await saveSidePanel(home, false)).toBeUndefined();
+		expect(JSON.parse(await readFile(path(), "utf8"))).toEqual({
+			kind: "atelier.settings",
+			version: 1,
+			tui: { sidePanel: false },
+		});
+	});
+
+	it("leaves a file it cannot read as settings untouched, and says why", async () => {
+		for (const content of ["{ nope", JSON.stringify({ tui: {} }), JSON.stringify(file("panel"))]) {
+			await save(content);
+			expect(await saveSidePanel(home, false)).toMatch(/^.+settings\.json: .+; the side panel's choice was not saved$/);
+			expect(await readFile(path(), "utf8")).toBe(content);
+		}
 	});
 });
