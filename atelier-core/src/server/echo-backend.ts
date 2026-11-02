@@ -5,10 +5,15 @@ const BASH_PREFIX = "bash: ";
 
 /**
  * Network-free backend for process tests and the desktop smoke test: echoes
- * the prompt, and a prompt "bash: <command>" calls the bash tool first.
+ * the prompt, and a prompt "bash: <command>" calls the bash tool first. It answers to `id`: a session saved under the
+ * name of a real backend can be resumed.
  */
 export class EchoBackend implements AgentBackend {
-	readonly id = "echo";
+	readonly id: string;
+
+	constructor(id = "echo") {
+		this.id = id;
+	}
 
 	async start(options: BackendStartOptions): Promise<BackendSession> {
 		return {
