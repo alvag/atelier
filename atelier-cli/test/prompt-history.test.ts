@@ -58,7 +58,8 @@ it("refuses a symlinked Atelier base without writing through it", async () => {
 	await symlink(elsewhere, join(home, ".atelier"));
 	const warnings: string[] = [];
 	await (await open(cwd, warnings)).add("private");
-	expect(warnings).toHaveLength(1);
+	expect(warnings).toHaveLength(2);
+	expect(warnings[1]).toMatch(/^prompt history is not saved:/);
 	expect(warnings[0]).toMatch(/^prompt history storage is unavailable:/);
 	expect(warnings[0]).not.toContain("not saved");
 	expect(await readdir(elsewhere)).toEqual([]);
@@ -88,7 +89,8 @@ it.each(["base", "root", "project"])("refuses a %s directory replaced by a symli
 	await rm(path, { recursive: true });
 	await symlink(elsewhere, path);
 	await history.add("must stay private");
-	expect(warnings).toHaveLength(1);
+	expect(warnings).toHaveLength(2);
+	expect(warnings[1]).toMatch(/^prompt history is not saved:/);
 	expect(warnings[0]).toMatch(/^prompt history storage is unavailable:/);
 	expect(warnings[0]).not.toContain("not saved");
 	expect(history.entries).toEqual(["must stay private"]);
@@ -163,7 +165,7 @@ it("skips corrupt, unknown-version and malformed records without failing", async
 	expect(warnings).toEqual([]);
 });
 
-it("falls back to memory and warns once when storage is a symlink or unwritable", async () => {
+it("falls back to memory and warns once per category when storage is a symlink or unwritable", async () => {
 	await mkdir(join(home, ".atelier"));
 	await mkdir(join(home, "elsewhere"));
 	await symlink(join(home, "elsewhere"), root());
@@ -172,7 +174,9 @@ it("falls back to memory and warns once when storage is a symlink or unwritable"
 	await history.add("kept in memory");
 	await history.add("again");
 	expect([...history.entries]).toEqual(["kept in memory", "again"]);
-	expect(warnings).toHaveLength(1);
+	expect(warnings).toHaveLength(2);
+	expect(warnings[0]).toMatch(/^prompt history storage is unavailable:/);
+	expect(warnings[1]).toMatch(/^prompt history is not saved:/);
 	expect(await readdir(join(home, "elsewhere"))).toEqual([]);
 });
 

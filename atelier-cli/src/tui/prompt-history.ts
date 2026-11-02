@@ -93,6 +93,7 @@ export class PromptHistory {
 	readonly #warned = new Set<WarningOperation>();
 	#last = 0;
 	#entries: string[];
+	#openError: unknown = undefined;
 
 	private constructor(
 		dir: string | undefined,
@@ -130,6 +131,7 @@ export class PromptHistory {
 			await opened.#cleanTemporaries();
 			return opened;
 		} catch (error) {
+			history.#openError = error;
 			history.#warn(error, "read");
 			return history;
 		}
@@ -159,11 +161,16 @@ export class PromptHistory {
 		const trimmed = text.trim();
 		if (trimmed === "" || Buffer.byteLength(trimmed) > PROMPT_HISTORY_MAX_BYTES) return;
 		this.#entries = [...this.#entries.filter((entry) => entry !== trimmed), trimmed].slice(-PROMPT_HISTORY_LIMIT);
-		if (this.#dir === undefined || this.#readOnly) return;
+		if (this.#readOnly) return;
+		if (this.#dir === undefined) {
+			this.#warn(this.#openError);
+			return;
+		}
 		try {
 			await this.#directory();
 		} catch (error) {
 			this.#warn(error, "read");
+			this.#warn(error);
 			return;
 		}
 		try {
