@@ -3689,6 +3689,41 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("tells the children running at a probe reply their current state once", async () => {
+			const h = harness([]);
+			const stub = stubCore();
+			const input = new PassThrough();
+			h.io.tui.terminal = observeProgramStatus(h.screen.terminal, input);
+			h.io.tui.connect = async () => stub.link;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			const tag = (parentCallId: string) => ({ parentCallId, agent: "w" });
+			stub.emit(callStarted("t1", "task", { label: "Alpha" }));
+			stub.emit({ ...callStarted("r1", "read", {}), ...tag("t1") });
+			stub.emit({ type: "approval_requested", tool: "bash", callId: "a1", command: "ls", ...tag("t1") });
+			await until(() => h.screen.screen().includes("Run this command?"));
+			stub.emit(callStarted("t2", "task", { label: "Beta" }));
+			stub.emit({ ...callStarted("r2", "read", {}), ...tag("t2") });
+			stub.emit(callStarted("t3", "task", { label: "Gamma" }));
+			stub.emit({ ...callStarted("r3", "read", {}), ...tag("t3") });
+			stub.emit(callFinished("t3"));
+			stub.emit({ ...callFinished("r3"), ...tag("t3") });
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: capture the child OSC bodies
+			const records = () => [...h.screen.raw().matchAll(/\x1b\]7501;([^\x1b]*id=[^\x1b]*)\x1b\\/g)].map((m) => m[1]);
+			expect(records()).toEqual([]);
+			input.write("\x1b]7501;?\x1b\\");
+			input.write("\x1b]7501;?\x1b\\");
+			await until(() => records().length === 2);
+			expect(records()).toEqual([
+				"state=blocked:kind=permission:id=task1:title=QWxwaGE=",
+				"state=working:id=task2:title=QmV0YQ==",
+			]);
+			h.screen.type("\r");
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
 		it.each([true, false])("reports child lifecycles only after a probe reply: %s", async (answers) => {
 			const h = harness([]);
 			const stub = stubCore();

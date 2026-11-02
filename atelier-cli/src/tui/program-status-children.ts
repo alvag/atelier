@@ -110,6 +110,11 @@ export class ChildProgramStatus {
 		this.sweep();
 	}
 
+	/** Tells every open child its current state again, even if told before: for a terminal that was not listening. */
+	refreshLive() {
+		for (const child of [...this.children.values()]) this.refresh(child, true);
+	}
+
 	/** Forgets every child without telling anything. */
 	reset() {
 		this.epoch++;
