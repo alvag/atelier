@@ -71,6 +71,7 @@ export {
 } from "./credentials.ts";
 export * from "./events.ts";
 export { FakeBackend, type FakeStep } from "./fake-backend.ts";
+export { detectHost, type Host, type HostKind, type HostSupports } from "./host.ts";
 export { readImageFile } from "./image-files.ts";
 export {
 	MAX_IMAGE_INPUT_BYTES,
