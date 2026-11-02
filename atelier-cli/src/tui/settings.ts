@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { DEFAULT_STATUS_LINE, isStatusItem, type StatusItem } from "./footer.ts";
 import { NOTIFY_VIAS, type NotifyVia } from "./notifications.ts";
 
@@ -23,6 +23,8 @@ export interface TuiSettings {
 	fullscreen: boolean;
 	/** Whether the model's thinking starts folded to `✻ Thinking…`; Ctrl+R opens it. */
 	hideThinking: boolean;
+	/** Whether the fullscreen side panel shows when the terminal is wide enough; Ctrl+P changes and saves it. */
+	sidePanel: boolean;
 	/** The status line's items, in order. */
 	statusLine: StatusItem[];
 	notifications: NotificationSettings;
@@ -35,6 +37,7 @@ export const settingsPath = (home: string) => join(home, ".atelier", "settings.j
 const defaults = (warnings: string[] = []): TuiSettings => ({
 	fullscreen: true,
 	hideThinking: false,
+	sidePanel: true,
 	statusLine: DEFAULT_STATUS_LINE,
 	notifications: { ...DEFAULT_NOTIFICATIONS },
 	warnings,
@@ -68,13 +71,16 @@ export async function readTuiSettings(home: string | undefined): Promise<TuiSett
 	if (raw.tui === undefined) return defaults();
 	if (!isRecord(raw.tui)) return defaults([`${path}: "tui" must be an object; using the defaults`]);
 	const settings = defaults();
-	const { fullscreen, hideThinking, statusLine, notifications } = raw.tui;
+	const { fullscreen, hideThinking, sidePanel, statusLine, notifications } = raw.tui;
 	if (typeof fullscreen === "boolean") settings.fullscreen = fullscreen;
 	else if (fullscreen !== undefined)
 		settings.warnings.push(`${path}: "tui.fullscreen" must be true or false; using the default`);
 	if (typeof hideThinking === "boolean") settings.hideThinking = hideThinking;
 	else if (hideThinking !== undefined)
 		settings.warnings.push(`${path}: "tui.hideThinking" must be true or false; using the default`);
+	if (typeof sidePanel === "boolean") settings.sidePanel = sidePanel;
+	else if (sidePanel !== undefined)
+		settings.warnings.push(`${path}: "tui.sidePanel" must be true or false; using the default`);
 	if (Array.isArray(statusLine)) {
 		const known = statusLine.filter(isStatusItem);
 		for (const item of statusLine.filter((item) => !isStatusItem(item)))
@@ -88,6 +94,38 @@ export async function readTuiSettings(home: string | undefined): Promise<TuiSett
 	else if (notifications !== undefined)
 		settings.warnings.push(`${path}: "tui.notifications" must be an object; using the defaults`);
 	return settings;
+}
+
+/**
+ * Saves whether the side panel shows as `tui.sidePanel`, the rest of the file kept as it was (a missing file is made
+ * with that setting alone). A file that cannot be read as settings is left untouched: the answer says why.
+ */
+export async function saveSidePanel(home: string, shown: boolean): Promise<string | undefined> {
+	const path = settingsPath(home);
+	const refused = (why: string) => `${path}: ${why}; the side panel's choice was not saved`;
+	let raw: unknown = { kind: KIND, version: VERSION };
+	try {
+		raw = JSON.parse(await readFile(path, "utf8"));
+	} catch (error) {
+		if (error instanceof SyntaxError) return refused("not valid JSON");
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+			return refused(`cannot read it: ${(error as Error).message}`);
+	}
+	if (!isRecord(raw) || raw.kind !== KIND || raw.version !== VERSION)
+		return refused(`expected kind "${KIND}" and version ${VERSION}`);
+	if (raw.tui !== undefined && !isRecord(raw.tui)) return refused(`"tui" must be an object`);
+	const next = { ...raw, tui: { ...(raw.tui ?? {}), sidePanel: shown } };
+	// Written beside it and moved over it, so the file is never left half written.
+	const partial = `${path}.${process.pid}.tmp`;
+	try {
+		await mkdir(dirname(path), { recursive: true });
+		await writeFile(partial, `${JSON.stringify(next, null, 2)}\n`);
+		await rename(partial, path);
+		return undefined;
+	} catch (error) {
+		await rm(partial, { force: true }).catch(() => {});
+		return refused(`cannot write it: ${(error as Error).message}`);
+	}
 }
 
 /** The notices' settings, each wrong field left at its default with a warning. */

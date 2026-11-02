@@ -1977,6 +1977,142 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		expect(await code).toBe(130);
 	});
 
+	describe("side panel", () => {
+		const feature = {
+			type: "feature_changed",
+			name: "m14",
+			path: "odd/tasks/m14.md",
+			title: "M14",
+			tasks: [
+				{ id: "T1", title: "Hot model", specs: [], status: "done" },
+				{ id: "T2", title: "Hot profile", specs: [], status: "in_progress" },
+			],
+		};
+		const job = {
+			type: "job_started",
+			jobId: "job-1",
+			label: "pnpm check",
+			command: "pnpm check",
+			outputPath: "x",
+			running: 1,
+		};
+		/** The panel's rows, from its rule at the 40th column from the right. */
+		const panel = (h: ReturnType<typeof harness>) =>
+			h.screen
+				.frame()
+				.map((row) => row?.slice(h.screen.terminal.columns - 40) ?? "")
+				.filter((row) => row.startsWith("│"));
+		const footerRow = (h: ReturnType<typeof harness>) => h.screen.frame().at(-1) ?? "";
+		const saved = async () => JSON.parse(await readFile(join(home, ".atelier", "settings.json"), "utf8"));
+
+		it("lists the jobs and the feature's tasks at the right, which the footer and the panel over the editor leave to it", async () => {
+			const h = harness([], { columns: 140 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			stub.emit(feature);
+			stub.emit(job);
+			await until(() => panel(h).some((row) => row.includes("⧗ pnpm check")));
+			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ ⧗ Jobs ▾ +1 running$/));
+			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ ◆ Todos ▾ +1\/2 ▰▰▰▱▱▱ {2}ctrl\+t$/));
+			expect(panel(h)).toContain("│ ▸ T2 Hot profile");
+			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ ✿ Status ▾/));
+			expect(h.screen.frame().join("\n")).not.toContain("Ctrl+T or /feature: tasks");
+			expect(footerRow(h)).not.toContain("T2 1/2");
+			expect(footerRow(h)).not.toContain("1 job");
+			// Ctrl+T folds the Todos while the panel shows them.
+			h.screen.type("\x14");
+			await until(() => panel(h).some((row) => /^│ ◆ Todos ▸/.test(row)));
+			expect(panel(h)).not.toContain("│ ▸ T2 Hot profile");
+			// Ctrl+P hides it: the footer counts again and the feature is over the editor; the choice is kept.
+			h.screen.type("\x10");
+			await until(() => footerRow(h).includes("T2 1/2"));
+			expect(footerRow(h)).toContain("1 job");
+			expect(panel(h)).toEqual([]);
+			expect(h.screen.frame().join("\n")).toContain("◆ M14 · 1/2 done · now T2 Hot profile");
+			await until(() => existsSync(join(home, ".atelier", "settings.json")));
+			expect(await saved()).toEqual({ kind: "atelier.settings", version: 1, tui: { sidePanel: false } });
+			h.screen.type("\x10");
+			await until(() => panel(h).some((row) => row.includes("⧗ pnpm check")));
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			expect((await saved()).tui.sidePanel).toBe(true);
+		});
+
+		it("shows only on a terminal of 120 columns or more, also as it is resized", async () => {
+			const h = harness([], { columns: 119 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			stub.emit(feature);
+			await until(() => footerRow(h).includes("T2 1/2"));
+			expect(panel(h)).toEqual([]);
+			h.screen.type("\x10");
+			await until(() => h.screen.screen().includes("the side panel needs a terminal of 120 columns or more"));
+			h.screen.resize(120);
+			await until(() => panel(h).some((row) => row.includes("◆ Todos")));
+			expect(footerRow(h)).not.toContain("T2 1/2");
+			h.screen.resize(100);
+			await until(() => footerRow(h).includes("T2 1/2"));
+			expect(existsSync(join(home, ".atelier", "settings.json"))).toBe(false);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("moves a running job's time on, and folds a section with a click on its first row", async () => {
+			const h = harness([], { columns: 140 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			stub.emit(job);
+			await until(() => panel(h).some((row) => /⧗ pnpm check +0m0[1-9]s$/.test(row)));
+			const row = h.screen.frame().findIndex((line) => line?.includes("⧗ Jobs ▾")) + 1;
+			const column = h.screen.terminal.columns - 40 + 3;
+			h.screen.type(`\x1b[<0;${column};${row}M`);
+			h.screen.type(`\x1b[<0;${column};${row}m`);
+			await until(() => panel(h).some((line) => /^│ ⧗ Jobs ▸/.test(line)));
+			expect(panel(h).some((line) => line.includes("⧗ pnpm check"))).toBe(false);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("says where its rows are when they do not fit, and scrolls them under the mouse wheel", async () => {
+			const h = harness([], { columns: 140, rows: 16 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			for (let i = 1; i <= 12; i++) stub.emit({ ...job, jobId: `job-${i}`, label: `job ${i}` });
+			await until(() => panel(h).some((row) => /^│ ↑↓ 1–\d+\/\d+$/.test(row)));
+			const row = h.screen.frame().findIndex((line) => line?.includes("⧗ Jobs ▾")) + 1;
+			h.screen.type(`\x1b[<65;${h.screen.terminal.columns - 20};${row}M`);
+			await until(() => panel(h).some((line) => /^│ ↑↓ [2-9]–\d+\/\d+$/.test(line)));
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("starts hidden when the settings say so", async () => {
+			const h = harness([], { columns: 140 });
+			await mkdir(join(home, ".atelier"));
+			await writeFile(
+				join(home, ".atelier", "settings.json"),
+				JSON.stringify({ kind: "atelier.settings", version: 1, tui: { sidePanel: false } }),
+			);
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			stub.emit(feature);
+			await until(() => footerRow(h).includes("T2 1/2"));
+			expect(panel(h)).toEqual([]);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+	});
+
 	it("asks a review question with the question and three answers only, starting on Review", async () => {
 		const h = harness([]);
 		const stub = stubCore();
@@ -2612,6 +2748,12 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 
 	it("shows a resumed session's answered questions in the same block, between the prompt and the turn's text", async () => {
 		const h = harness([], { columns: 120 });
+		// The whole width for the conversation: the side panel would take 40 columns of it.
+		await mkdir(join(home, ".atelier"));
+		await writeFile(
+			join(home, ".atelier", "settings.json"),
+			JSON.stringify({ kind: "atelier.settings", version: 1, tui: { sidePanel: false } }),
+		);
 		const questions = [
 			{
 				id: "q1",
