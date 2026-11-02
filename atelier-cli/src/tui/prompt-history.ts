@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 /** How many distinct prompts a project keeps. */
@@ -9,6 +9,8 @@ export const PROMPT_HISTORY_LIMIT = 100;
 export const PROMPT_HISTORY_MAX_BYTES = 64 * 1024;
 
 const RECORD = /^\d{15}-[0-9a-f-]{36}\.json$/;
+const TEMPORARY = /^\.tmp-([1-9]\d*)-[0-9a-f-]{36}$/;
+const TEMP_MIN_AGE = 24 * 60 * 60 * 1000;
 /** A record is a small JSON wrapper around the text, so its file cannot be much larger than the text. */
 const MAX_RECORD_BYTES = PROMPT_HISTORY_MAX_BYTES * 6 + 256;
 
@@ -16,6 +18,17 @@ interface StoredPrompt {
 	name: string;
 	createdAt: number;
 	text: string;
+}
+
+/** A reused PID, EPERM or any uncertain probe keeps the temporary; only ESRCH proves its owner gone. */
+function ownerIsDead(pid: number): boolean {
+	if (!Number.isSafeInteger(pid)) return false;
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ESRCH";
+	}
 }
 
 async function requireDir(path: string): Promise<void> {
@@ -103,6 +116,7 @@ export class PromptHistory {
 			await privateDir(dir);
 			const opened = new PromptHistory(dir, [], onWarning, false);
 			opened.#entries = await opened.#load();
+			await opened.#cleanTemporaries();
 			return opened;
 		} catch (error) {
 			history.#warn(error);
@@ -141,12 +155,19 @@ export class PromptHistory {
 			const createdAt = Math.max(Date.now(), this.#last + 1);
 			this.#last = createdAt;
 			const name = `${String(createdAt).padStart(15, "0")}-${randomUUID()}.json`;
-			const temp = join(this.#dir, `.tmp-${randomUUID()}`);
-			await writeFile(temp, JSON.stringify({ version: 1, createdAt, text: trimmed }), { flag: "wx", mode: 0o600 });
-			await rename(temp, join(this.#dir, name)).catch(async (error) => {
+			const temp = join(this.#dir, `.tmp-${process.pid}-${randomUUID()}`);
+			const file = await open(temp, "wx", 0o600);
+			try {
+				try {
+					await file.writeFile(JSON.stringify({ version: 1, createdAt, text: trimmed }));
+				} finally {
+					await file.close();
+				}
+				await rename(temp, join(this.#dir, name));
+			} finally {
+				// Only a successful exclusive open owns this name; EEXIST must not remove someone else's file.
 				await rm(temp, { force: true });
-				throw error;
-			});
+			}
 			this.#entries = await this.#load();
 		} catch (error) {
 			this.#warn(error);
@@ -158,6 +179,28 @@ export class PromptHistory {
 		const dir = this.#dir as string;
 		for (const path of [dirname(dirname(dir)), dirname(dir), dir]) await requireDir(path);
 		return dir;
+	}
+
+	/** Reclaim only old, regular temporaries with a provably dead owner; never called by read-only opens. */
+	async #cleanTemporaries(): Promise<void> {
+		try {
+			const dir = await this.#directory();
+			const cutoff = Date.now() - TEMP_MIN_AGE;
+			for (const name of await readdir(dir)) {
+				const match = TEMPORARY.exec(name);
+				if (match === null) continue;
+				try {
+					const path = join(dir, name);
+					const info = await lstat(path);
+					if (!info.isFile() || info.mtimeMs >= cutoff || !ownerIsDead(Number(match[1]))) continue;
+					await rm(path, { force: true });
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.#warn(error);
+				}
+			}
+		} catch (error) {
+			this.#warn(error);
+		}
 	}
 
 	/** The kept texts oldest first; unless read-only, it also deletes the old and repeated records. */
