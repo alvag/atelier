@@ -38,11 +38,11 @@ vi.mock("node:fs/promises", async (original) => {
 		if (faults.rename) throw fail("EIO");
 		return fs.rename(...args);
 	};
-	const rm: typeof fs.rm = async (...args) => {
+	const unlink: typeof fs.unlink = async (...args) => {
 		if (faults.remove && isTemp(args[0])) throw fail("EACCES");
-		return fs.rm(...args);
+		return fs.unlink(...args);
 	};
-	return { ...fs, open, writeFile, rename, rm, default: { ...fs, open, writeFile, rename, rm } };
+	return { ...fs, open, writeFile, rename, unlink, default: { ...fs, open, writeFile, rename, unlink } };
 });
 
 let home: string;

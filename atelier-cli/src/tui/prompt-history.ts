@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 /** How many distinct prompts a project keeps. */
@@ -46,9 +46,17 @@ async function privateDir(path: string): Promise<void> {
 }
 
 /** The record in `name`, or undefined when it is missing, not a plain file, or not a version 1 record within bounds. */
-async function readRecord(dir: string, name: string, readOnly: boolean): Promise<StoredPrompt | undefined> {
+async function readRecord(
+	dir: string,
+	name: string,
+	readOnly: boolean,
+	onError: (error: unknown) => void,
+): Promise<StoredPrompt | undefined> {
 	const file = await open(join(dir, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(
-		() => undefined,
+		(error: NodeJS.ErrnoException) => {
+			if (error.code !== "ENOENT") onError(error);
+			return undefined;
+		},
 	);
 	if (file === undefined) return undefined;
 	try {
@@ -62,10 +70,11 @@ async function readRecord(dir: string, name: string, readOnly: boolean): Promise
 		if (typeof text !== "string" || text !== text.trim() || text === "") return undefined;
 		if (Buffer.byteLength(text) > PROMPT_HISTORY_MAX_BYTES) return undefined;
 		return { name, createdAt, text };
-	} catch {
+	} catch (error) {
+		if (!(error instanceof SyntaxError)) onError(error);
 		return undefined;
 	} finally {
-		await file.close();
+		await file.close().catch(onError);
 	}
 }
 
@@ -75,13 +84,13 @@ async function readRecord(dir: string, name: string, readOnly: boolean): Promise
  * prune deletes only the records it read that are old or repeated. The caller passes the final expanded text of a
  * prompt (pasted text and file references already in), never a placeholder; attachments are not stored.
  * A read-only store (for `--no-session`) reads what exists but never creates, chmods, prunes or writes anything.
- * Every failure is non-fatal: history carries on in memory, with independent once-only storage and cleanup warnings.
+ * Every failure is non-fatal: history carries on in memory, with independent once-only save, access and cleanup warnings.
  */
 export class PromptHistory {
 	readonly #dir: string | undefined;
 	readonly #onWarning: ((message: string) => void) | undefined;
 	readonly #readOnly: boolean;
-	readonly #warned = new Set<"storage" | "cleanup">();
+	readonly #warned = new Set<WarningOperation>();
 	#last = 0;
 	#entries: string[];
 
@@ -121,7 +130,7 @@ export class PromptHistory {
 			await opened.#cleanTemporaries();
 			return opened;
 		} catch (error) {
-			history.#warn(error);
+			history.#warn(error, "read");
 			return history;
 		}
 	}
@@ -153,6 +162,11 @@ export class PromptHistory {
 		if (this.#dir === undefined || this.#readOnly) return;
 		try {
 			await this.#directory();
+		} catch (error) {
+			this.#warn(error, "read");
+			return;
+		}
+		try {
 			// Strictly increasing within this process, so records written in one millisecond keep their order.
 			const createdAt = Math.max(Date.now(), this.#last + 1);
 			this.#last = createdAt;
@@ -166,9 +180,10 @@ export class PromptHistory {
 					await file.close();
 				}
 				await rename(temp, join(this.#dir, name));
-			} finally {
-				// Only a successful exclusive open owns this name; EEXIST must not remove someone else's file.
-				await rm(temp, { force: true }).catch((error) => this.#warn(error, "delete"));
+			} catch (error) {
+				// Exclusive open owns this name only until publication; a successful rename consumes it.
+				await this.#removeFile(temp);
+				throw error;
 			}
 			this.#entries = await this.#load().catch((error) => {
 				this.#warn(error, "read");
@@ -198,7 +213,7 @@ export class PromptHistory {
 					const path = join(dir, name);
 					const info = await lstat(path);
 					if (!info.isFile() || info.mtimeMs >= cutoff || !ownerIsDead(Number(match[1]))) continue;
-					await rm(path, { force: true }).catch((error) => this.#warn(error, "delete"));
+					await this.#removeFile(path);
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.#warn(error, "read");
 				}
@@ -212,7 +227,9 @@ export class PromptHistory {
 	async #load(): Promise<string[]> {
 		const dir = await this.#directory();
 		const names = (await readdir(dir)).filter((name) => RECORD.test(name));
-		const read = await Promise.all(names.map((name) => readRecord(dir, name, this.#readOnly)));
+		const read = await Promise.all(
+			names.map((name) => readRecord(dir, name, this.#readOnly, (error) => this.#warn(error, "read"))),
+		);
 		const records = read.filter((record): record is StoredPrompt => record !== undefined);
 		records.sort((a, b) => b.createdAt - a.createdAt || (a.name < b.name ? 1 : -1));
 		this.#last = Math.max(this.#last, records[0]?.createdAt ?? 0);
@@ -222,17 +239,22 @@ export class PromptHistory {
 			if (kept.size < PROMPT_HISTORY_LIMIT && !kept.has(record.text)) kept.add(record.text);
 			else stale.push(record.name);
 		}
-		if (!this.#readOnly)
-			await Promise.all(
-				stale.map((name) => rm(join(dir, name), { force: true }).catch((error) => this.#warn(error, "delete"))),
-			);
+		if (!this.#readOnly) await Promise.all(stale.map((name) => this.#removeFile(join(dir, name))));
 		return [...kept].reverse();
 	}
 
+	/** Only a failed unlink warrants deletion advice; another writer may already have removed the file. */
+	async #removeFile(path: string): Promise<void> {
+		try {
+			await unlink(path);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.#warn(error, "delete");
+		}
+	}
+
 	#warn(error: unknown, operation: WarningOperation = "save"): void {
-		const kind = operation === "delete" ? "cleanup" : "storage";
-		if (this.#warned.has(kind)) return;
-		this.#warned.add(kind);
+		if (this.#warned.has(operation)) return;
+		this.#warned.add(operation);
 		const reason = error instanceof Error ? error.message : String(error);
 		const messages = {
 			save: "prompt history is not saved",
