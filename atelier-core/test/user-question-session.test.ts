@@ -94,6 +94,24 @@ it.each(["steer", "follow_up"] as const)(
 	},
 );
 
+it.each(["steer", "follow_up"] as const)(
+	"keeps the user's pending question open for an agent-note %s",
+	async (kind) => {
+		const backend = new FakeBackend([[call, end]]);
+		const session = await Session.start({ backend, cwd: process.cwd(), tools: [], userQuestions: true });
+		try {
+			for await (const event of session.send("go")) {
+				if (event.type !== "user_question_requested") continue;
+				session.queue(kind, '<hc from="t7">report</hc>', "agent-note");
+				expect(() => session.answerUser(event.callId, answered.answers)).not.toThrow();
+			}
+			expect(JSON.parse(backend.toolResults[0]?.output ?? "")).toEqual(answered);
+		} finally {
+			await session.close();
+		}
+	},
+);
+
 it.each(["interrupt", "close", "cancel"] as const)(
 	"settles a silent user on %s and invalidates the question",
 	async (action) => {

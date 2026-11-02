@@ -134,6 +134,22 @@ describe("RpcServer", () => {
 		await h.done;
 	});
 
+	it("starts a queued idle agent note as a non-user turn", async () => {
+		const h = harness([[[{ event: finished }]]]);
+		const sessionId = await h.start();
+		const text = "draft plus <hc>report</hc>";
+		const response = await h.responseTo(
+			h.send({ command: "session.queue", sessionId, kind: "steer", text, source: "agent-note" }),
+		);
+		expect(response).toMatchObject({ ok: true, result: { turnId: expect.any(String) } });
+		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
+		expect(h.events(sessionId).filter((event) => event.type === "agent_note")).toHaveLength(1);
+		expect(h.events(sessionId).some((event) => event.type === "queued_message")).toBe(false);
+		expect(h.backends[0]?.prompts[0]).toContain(`<agent_note>\n${text}\n</agent_note>`);
+		h.send({ command: "shutdown" });
+		await h.done;
+	});
+
 	it("greets with the protocol version first", async () => {
 		const h = harness([]);
 		await h.waitFor(() => true);

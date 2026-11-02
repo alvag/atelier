@@ -254,6 +254,8 @@ export type QueuedMessage = {
 	id: string;
 	kind: QueueKind;
 	text: string;
+	/** `agent-note`: another agent's report, not the user's words. */
+	source?: "agent-note";
 };
 
 export type AtelierEventBody =

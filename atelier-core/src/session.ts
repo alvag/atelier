@@ -809,13 +809,14 @@ export class Session {
 	 * Queues a message while a turn runs: a steer goes to the model with the turn's next tool result, a follow-up waits
 	 * for `nextQueued`. Whatever no tool result took is left for `nextQueued`, steers first.
 	 */
-	queue(kind: QueueKind, text: string): QueuedMessage {
+	queue(kind: QueueKind, text: string, source?: "agent-note"): QueuedMessage {
 		// Taken now, it would run after a turn that gave its queue back; refused, it stays with the client.
 		if (this.#givenBack)
 			throw new ConfigureError("turn_ended", "The turn was interrupted or failed; the message was not queued.");
-		const message = { id: this.#createId(), kind, text };
+		const message: QueuedMessage = { id: this.#createId(), kind, text, ...(source === undefined ? {} : { source }) };
 		this.#queue.push(message);
-		this.#userQuestions.cancel({ status: "superseded" });
+		// Another agent's note is not the user's answer or their change of mind: it leaves their question open.
+		if (source === undefined) this.#userQuestions.cancel({ status: "superseded" });
 		this.#sayQueue();
 		return { ...message };
 	}
@@ -847,7 +848,7 @@ export class Session {
 		const next = this.#queue.find((message) => message.kind === "steer") ?? this.#queue[0];
 		if (!next) return this.#wokenTurn(turnId);
 		this.#queue = this.#queue.filter((message) => message !== next);
-		return this.#send(next.text, turnId, next);
+		return this.#send(next.text, turnId, next, false, [], next.source);
 	}
 
 	/** The queue as it stands, to the clients of the running turn. */
@@ -1174,7 +1175,8 @@ export class Session {
 			prompt?.shell.map((result) => result.executionId),
 		);
 		if (entered) {
-			turn.push({ type: "queued_message", ...entered });
+			// A note says it entered with its own `agent_note`.
+			if (entered.source === undefined) turn.push({ type: "queued_message", ...entered });
 			this.#sayQueue();
 		}
 		this.#warned = false;
@@ -1818,11 +1820,13 @@ export class Session {
 		if (steers.length === 0) return notices === undefined ? result : { ...result, steering: notices };
 		this.#queue = this.#queue.filter((message) => message.kind !== "steer");
 		for (const steer of steers) {
-			this.#turn?.push({ type: "queued_message", ...steer });
-			this.#keepPrompt(steer.text);
+			if (steer.source === undefined) {
+				this.#turn?.push({ type: "queued_message", ...steer });
+				this.#keepPrompt(steer.text);
+			} else this.#turn?.push({ type: "agent_note", text: steer.text });
 		}
 		this.#sayQueue();
-		const steering = steeringText(steers.map((steer) => steer.text));
+		const steering = steeringTexts(steers);
 		return { ...result, steering: notices === undefined ? steering : `${steering}\n\n${notices}` };
 	}
 
@@ -2849,6 +2853,23 @@ function untilAborted(work: Promise<void>, signal: AbortSignal | undefined): Pro
 /** How steers reach the model with a tool result: as the user's words, apart from the tool's output. */
 function steeringText(texts: string[]): string {
 	return `The user sent this while you were working; take it into account as you continue:\n\n${texts.join("\n\n")}`;
+}
+
+/** The steers in arrival order: the user's runs under their wrapper, each note in its own, apart from them. */
+function steeringTexts(steers: QueuedMessage[]): string {
+	const parts: string[] = [];
+	let words: string[] = [];
+	for (const steer of steers) {
+		if (steer.source === undefined) {
+			words.push(steer.text);
+			continue;
+		}
+		if (words.length > 0) parts.push(steeringText(words));
+		words = [];
+		parts.push(agentNoteText(steer.text));
+	}
+	if (words.length > 0) parts.push(steeringText(words));
+	return parts.join("\n\n");
 }
 
 /** The main agent's own closing event, with what it cost as the turn's `main` part. */
