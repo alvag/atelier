@@ -1,6 +1,7 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { LineCounter, parse, YAMLParseError } from "yaml";
+import { detectHost } from "./host.ts";
 import { isProtected, protectedReadPaths } from "./tools/paths.ts";
 
 /** A skill as the system prompt lists it: the agent reads `path` when a task matches `description`. */
@@ -185,11 +186,11 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 /**
  * Where herdr-app writes its guide, as herdr-app finds its home: `HERDR_APP_HOME`, else `XDG_CONFIG_HOME/herdr-app`,
- * else `home/.config/herdr-app`, an empty variable skipped. Undefined outside a herdr-core terminal, and for a relative
+ * else `home/.config/herdr-app`, an empty variable skipped. Undefined unless herdr-app is the host, and for a relative
  * folder (herdr-app resolved it against a folder we do not know) or one with control characters.
  */
 function herdrAppGuidePath(home: string, env: Record<string, string | undefined>): string | undefined {
-	if (!env.HC_TERMINAL_ID) return undefined;
+	if (!detectHost(env).supports.herdrAppSkill) return undefined;
 	const set = (name: string) => env[name] || undefined;
 	const xdg = set("XDG_CONFIG_HOME");
 	const dir =
@@ -221,7 +222,7 @@ async function readable(file: string, protectedPaths: readonly string[], warning
 /**
  * Finds the skills in `.agents/skills/` from `cwd` up to the repository root, then in `home`'s, each folder once: a
  * skill is a folder with a SKILL.md whose frontmatter has a description, and of two with the same name the first wins.
- * Inside a herdr-core terminal (`HC_TERMINAL_ID` in `env`), herdr-app's guide comes last, as the skill `herdr-app`.
+ * When `env` says herdr-app is the host (see detectHost), herdr-app's guide comes last, as the skill `herdr-app`.
  *
  * Left out are the skills the agent's `read` could not open and those past MAX_SKILLS_BYTES; with an invalid sandbox
  * configuration, every skill.

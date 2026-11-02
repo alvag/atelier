@@ -168,6 +168,29 @@ describe("herdr-app's guide in a session", () => {
 		expect(prompt).toBe(BASE);
 	});
 
+	it("lists it only when herdr-app is the nearest host of those in the environment", async () => {
+		await put(".config/herdr-app/AGENTS.md", GUIDE);
+		const herdr = { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_SOCKET_PATH: "/tmp/herdr.sock" };
+		// An Orca pane, or a herdr pane, opened from a herdr-core terminal keeps HC_TERMINAL_ID.
+		for (const env of [
+			{ ...inCore, ORCA_PANE_KEY: "tab:1", TERM_PROGRAM: "Orca" },
+			{ ...inCore, ...herdr, TERM_PROGRAM: "herdr" },
+		]) {
+			const { prompt, events } = await start(undefined, { skills: { home, env } });
+			expect(prompt).toBe(BASE);
+			expect(loaded(events)).toBeUndefined();
+		}
+		// A herdr-core terminal whose server was started in Orca or herdr inherits their variables.
+		const path = join(home, ".config/herdr-app/AGENTS.md");
+		for (const env of [
+			{ ...inCore, ORCA_PANE_KEY: "tab:1" },
+			{ ...inCore, ...herdr },
+		]) {
+			const { events } = await start(undefined, { skills: { home, env } });
+			expect(loaded(events)).toMatchObject({ skills: [{ name: "herdr-app", path }] });
+		}
+	});
+
 	it("gives way to a skill of the same name, and reports the guide as ignored", async () => {
 		await put(".config/herdr-app/AGENTS.md", GUIDE);
 		await put(".agents/skills/herdr-app/SKILL.md", "---\nname: herdr-app\ndescription: My own.\n---\n");
