@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -172,6 +172,14 @@ describe("saving the side panel's choice", () => {
 			version: 1,
 			tui: { sidePanel: false },
 		});
+	});
+
+	it("saves overlapping choices one after the other, the last one asked for winning", async () => {
+		await save(file({ statusLine: ["model"] }));
+		const answers = await Promise.all(Array.from({ length: 20 }, (_, i) => saveSidePanel(home, i % 2 === 0)));
+		expect(answers.every((answer) => answer === undefined)).toBe(true);
+		expect(JSON.parse(await readFile(path(), "utf8")).tui).toEqual({ statusLine: ["model"], sidePanel: false });
+		expect(await readdir(join(home, ".atelier"))).toEqual(["settings.json"]);
 	});
 
 	it("leaves a file it cannot read as settings untouched, and says why", async () => {

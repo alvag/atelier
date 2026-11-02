@@ -96,12 +96,28 @@ export async function readTuiSettings(home: string | undefined): Promise<TuiSett
 	return settings;
 }
 
+/** The saves of each settings file, one after the other: a later choice is written after an earlier one. */
+const saves = new Map<string, Promise<unknown>>();
+/** Each save's own temporary file. */
+let saveCount = 0;
+
 /**
  * Saves whether the side panel shows as `tui.sidePanel`, the rest of the file kept as it was (a missing file is made
- * with that setting alone). A file that cannot be read as settings is left untouched: the answer says why.
+ * with that setting alone). A file that cannot be read as settings is left untouched: the answer says why. Saves of
+ * the same file run in the order they were asked for, so the last choice is the one kept.
  */
-export async function saveSidePanel(home: string, shown: boolean): Promise<string | undefined> {
+export function saveSidePanel(home: string, shown: boolean): Promise<string | undefined> {
 	const path = settingsPath(home);
+	const saved = (saves.get(path) ?? Promise.resolve()).then(() => writeSidePanel(path, shown));
+	const done = saved.catch(() => {});
+	saves.set(path, done);
+	void done.then(() => {
+		if (saves.get(path) === done) saves.delete(path);
+	});
+	return saved;
+}
+
+async function writeSidePanel(path: string, shown: boolean): Promise<string | undefined> {
 	const refused = (why: string) => `${path}: ${why}; the side panel's choice was not saved`;
 	let raw: unknown = { kind: KIND, version: VERSION };
 	try {
@@ -116,7 +132,7 @@ export async function saveSidePanel(home: string, shown: boolean): Promise<strin
 	if (raw.tui !== undefined && !isRecord(raw.tui)) return refused(`"tui" must be an object`);
 	const next = { ...raw, tui: { ...(raw.tui ?? {}), sidePanel: shown } };
 	// Written beside it and moved over it, so the file is never left half written.
-	const partial = `${path}.${process.pid}.tmp`;
+	const partial = `${path}.${process.pid}.${++saveCount}.tmp`;
 	try {
 		await mkdir(dirname(path), { recursive: true });
 		await writeFile(partial, `${JSON.stringify(next, null, 2)}\n`);
