@@ -112,6 +112,14 @@ rows = [
 
 Inside a herdr-core terminal (Herdr 2, herdr-core with herdr-app; the terminal has `HC_TERMINAL_ID`), herdr-app reads the agent's state only from the OSC 7501 report above, which needs no setup: the socket reporting and the pane metadata of the two paragraphs above are Herdr 1's, and herdr-core sets none of `HERDR_ENV`, `HERDR_PANE_ID` or `HERDR_SOCKET_PATH`. herdr-app shows a toast and plays a sound of its own when an agent becomes `blocked` or `error` and when it finishes while nobody is looking, so `auto` sends no notification there (see [Notifications](#notifications)). The agent also gets the guide herdr-app writes for agents as the skill `herdr-app`, which it reads when asked to change what the Herdr window shows: spaces, tabs, layouts, keys, settings, programs or mods (see [skills](architecture.md)). On macOS, herdr-core after 0.1.16 (not released yet) starts the core through a one-shot launchd job, so quitting herdr-app no longer ends its terminals: an Atelier session keeps running and the window finds it again when it reopens; if launchd fails, the core falls back to a child of the app, says so in herdr-core's `core.log`, and may then end with the app. With herdr-core 0.1.16, quitting herdr-app on macOS can end the agents running in it.
 
+herdr-app names and draws an agent, and offers it in its new-agent menu, from its table of programs, with `programs.json` in its home (`~/.config/herdr-app`; `$HERDR_APP_HOME`, or `$XDG_CONFIG_HOME/herdr-app`, when set) laid over its built-in table entry by entry. The TUI reports itself as the app `atelier`, which that table does not list, so herdr-app shows it as a generic agent. To show it as Atelier and start it from the menu, add an entry to that `programs.json`:
+
+```json
+{ "programs": { "atelier": { "name": "Atelier", "icon": "icons/agent.svg", "tint": true, "run": ["atelier"] } } }
+```
+
+herdr-app 0.1.11 reads it without a restart and names the pane `Atelier`. Keep the `icon`: an entry without one leaves the agent with no icon at all. `icons/agent.svg` is the generic agent icon herdr-app writes to its home; an icon of your own is a path in that home (`my-icons/atelier.svg`, say), with `"tint": true` for a one-color glyph and `false` for a picture. `run` is the command the new-agent menu starts.
+
 ### Fullscreen header
 
 Fixed at the top in fullscreen only, the header has two rows in three blocks, between vertical rules and closed by a horizontal rule: Atelier and its version; the working directory (under the home as `~`) over the branch (or the short commit of a detached `HEAD`) and its Git counters; the model, its level and the profile over the context gauge, the window and the session's cost:
