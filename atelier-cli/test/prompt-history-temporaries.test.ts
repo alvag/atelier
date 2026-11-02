@@ -89,6 +89,20 @@ it("removes its temporary after a partial write fails, keeping recall and the on
 	expect(await readdir(dir)).toEqual([]);
 });
 
+it("reports failed temporary cleanup without hiding the failed write or repeating either warning", async () => {
+	const warnings: string[] = [];
+	const history = await PromptHistory.open(home, cwd, (message) => warnings.push(message));
+	faults.write = "partial";
+	faults.remove = true;
+	await history.add("private prompt");
+	await history.add("another private prompt");
+	expect(warnings).toHaveLength(2);
+	expect(warnings[0]).toContain("could not delete old prompt history entries");
+	expect(warnings[0]).toContain(JSON.stringify(dir));
+	expect(warnings[1]).toBe("prompt history is not saved: ENOSPC: injected storage failure");
+	expect(await readdir(dir)).toHaveLength(2);
+});
+
 it("removes its temporary when publication fails", async () => {
 	const warnings: string[] = [];
 	const history = await PromptHistory.open(home, cwd, (message) => warnings.push(message));
@@ -145,6 +159,9 @@ it("warns once on abandoned-temporary deletion failures without losing loaded pr
 	expect(history.entries).toEqual(["kept"]);
 	expect(warnings).toHaveLength(1);
 	expect(warnings[0]).toContain("EACCES");
+	expect(warnings[0]).toContain("could not delete old prompt history entries");
+	expect(warnings[0]).toContain(JSON.stringify(dir));
+	expect(warnings[0]).not.toContain("not saved");
 	expect(await readdir(dir)).toHaveLength(3);
 });
 

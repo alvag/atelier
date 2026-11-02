@@ -14,6 +14,8 @@ const TEMP_MIN_AGE = 24 * 60 * 60 * 1000;
 /** A record is a small JSON wrapper around the text, so its file cannot be much larger than the text. */
 const MAX_RECORD_BYTES = PROMPT_HISTORY_MAX_BYTES * 6 + 256;
 
+type WarningKind = "save" | "cleanup";
+
 interface StoredPrompt {
 	name: string;
 	createdAt: number;
@@ -73,13 +75,13 @@ async function readRecord(dir: string, name: string, readOnly: boolean): Promise
  * prune deletes only the records it read that are old or repeated. The caller passes the final expanded text of a
  * prompt (pasted text and file references already in), never a placeholder; attachments are not stored.
  * A read-only store (for `--no-session`) reads what exists but never creates, chmods, prunes or writes anything.
- * Every failure is non-fatal: the history carries on in memory and `onWarning` hears of the first one.
+ * Every failure is non-fatal: history carries on in memory, with independent once-only save and cleanup warnings.
  */
 export class PromptHistory {
 	readonly #dir: string | undefined;
 	readonly #onWarning: ((message: string) => void) | undefined;
 	readonly #readOnly: boolean;
-	#warned = false;
+	readonly #warned = new Set<WarningKind>();
 	#last = 0;
 	#entries: string[];
 
@@ -166,9 +168,12 @@ export class PromptHistory {
 				await rename(temp, join(this.#dir, name));
 			} finally {
 				// Only a successful exclusive open owns this name; EEXIST must not remove someone else's file.
-				await rm(temp, { force: true });
+				await rm(temp, { force: true }).catch((error) => this.#warn(error, "cleanup"));
 			}
-			this.#entries = await this.#load();
+			this.#entries = await this.#load().catch((error) => {
+				this.#warn(error, "cleanup");
+				return this.#entries;
+			});
 		} catch (error) {
 			this.#warn(error);
 		}
@@ -195,11 +200,11 @@ export class PromptHistory {
 					if (!info.isFile() || info.mtimeMs >= cutoff || !ownerIsDead(Number(match[1]))) continue;
 					await rm(path, { force: true });
 				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.#warn(error);
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.#warn(error, "cleanup");
 				}
 			}
 		} catch (error) {
-			this.#warn(error);
+			this.#warn(error, "cleanup");
 		}
 	}
 
@@ -218,16 +223,22 @@ export class PromptHistory {
 			else stale.push(record.name);
 		}
 		if (!this.#readOnly)
-			await Promise.all(stale.map((name) => rm(join(dir, name), { force: true }).catch((error) => this.#warn(error))));
+			await Promise.all(
+				stale.map((name) => rm(join(dir, name), { force: true }).catch((error) => this.#warn(error, "cleanup"))),
+			);
 		return [...kept].reverse();
 	}
 
-	#warn(error: unknown): void {
-		if (this.#warned) return;
-		this.#warned = true;
+	#warn(error: unknown, kind: WarningKind = "save"): void {
+		if (this.#warned.has(kind)) return;
+		this.#warned.add(kind);
 		const reason = error instanceof Error ? error.message : String(error);
+		const message =
+			kind === "save"
+				? "prompt history is not saved"
+				: `could not delete old prompt history entries or temporary files in ${JSON.stringify(this.#dir)}; close this project's TUIs and delete them manually`;
 		try {
-			this.#onWarning?.(`prompt history is not saved: ${reason}`);
+			this.#onWarning?.(`${message}: ${reason}`);
 		} catch {
 			// Reporting unavailable history must never make it a startup or submission failure.
 		}
