@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { AuthStore, authFile } from "./auth-store.ts";
 import { CodexAccess, codexVariantFrom } from "./backends/openai-codex/access.ts";
-import { spawnApart } from "./claude-apart.ts";
+import { endApart, spawnApart } from "./claude-apart.ts";
 import {
 	apiKeySource,
 	MISSING_API_KEY_MESSAGE,
@@ -32,9 +32,13 @@ export interface ClaudeCodeRunOptions {
 	env?: Record<string, string | undefined>;
 	/** Runs the binary in a process group of its own (`spawnApart`): inside a Herdr pane, where it is told to. */
 	apart?: boolean;
+	/** How long `auth status` may take; STATUS_TIMEOUT_MS when absent. */
+	statusTimeoutMs?: number;
 }
 
 const STATUS_TIMEOUT_MS = 15_000;
+/** The most output `auth status` may print: what execFile keeps by default. */
+const STATUS_MAX_BYTES = 1024 * 1024;
 const NOT_FOUND = "Claude Code binary not found (reinstall Atelier)";
 
 /** Why the binary could not be started: not there at all, or another failure. */
@@ -82,44 +86,71 @@ function envOf(options: ClaudeCodeRunOptions): Record<string, string | undefined
 export async function claudeCodeAuthStatus(options: ClaudeCodeRunOptions = {}): Promise<ClaudeCodeAuthStatus> {
 	const executable = executableOf(options);
 	const args = ["auth", "status", "--json"];
-	const stdout = await (options.apart === true ? outputApart : output)(executable, args, envOf(options));
+	const timeoutMs = options.statusTimeoutMs ?? STATUS_TIMEOUT_MS;
+	const stdout = await (options.apart === true ? outputApart : output)(executable, args, envOf(options), timeoutMs);
 	const status = parseStatus(stdout);
 	if (status === undefined) throw new ClaudeCodeAuthError("Claude Code's auth status could not be read.");
 	return status;
 }
 
 /** What the binary prints, whatever its exit code: not logged in exits with 1 and still prints the status. */
-function output(executable: string, args: string[], env: Record<string, string | undefined>): Promise<string> {
+function output(
+	executable: string,
+	args: string[],
+	env: Record<string, string | undefined>,
+	timeoutMs: number,
+): Promise<string> {
 	return new Promise((resolve, reject) => {
-		execFile(executable, args, { env, timeout: STATUS_TIMEOUT_MS }, (error, stdout) => {
+		execFile(executable, args, { env, timeout: timeoutMs }, (error, stdout) => {
 			if (error !== null && typeof error.code !== "number") reject(runError(executable, error));
 			else resolve(stdout);
 		});
 	});
 }
 
-/** As `output`, with the binary in a process group of its own. */
-function outputApart(executable: string, args: string[], env: Record<string, string | undefined>): Promise<string> {
+/**
+ * As `output`, with the binary in a process group of its own. Output past STATUS_MAX_BYTES, or no answer within
+ * `timeoutMs`, fails at once and ends the group as its watcher does (TERM, the grace, then KILL), even for a binary
+ * that ignores TERM.
+ */
+function outputApart(
+	executable: string,
+	args: string[],
+	env: Record<string, string | undefined>,
+	timeoutMs: number,
+): Promise<string> {
 	// The shell that becomes the binary cannot say ENOENT as execFile does: a path that is not there is told first.
 	if (executable.includes("/") && !existsSync(executable)) return Promise.reject(new ClaudeCodeAuthError(NOT_FOUND));
 	return new Promise((resolve, reject) => {
 		const child = spawnApart(executable, args, { env, stdio: ["ignore", "pipe", "ignore"] });
-		let stdout = "";
+		const chunks: Buffer[] = [];
+		let bytes = 0;
+		let settled = false;
+		const settle = (error: Error | undefined, stdout = "") => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			if (error === undefined) resolve(stdout);
+			else reject(error);
+		};
+		const giveUp = (reason: string) => {
+			endApart(child);
+			settle(new ClaudeCodeAuthError(`Claude Code could not be run (${executable}): ${reason}`));
+		};
 		child.stdout?.on("data", (chunk: Buffer) => {
-			stdout += chunk.toString();
+			bytes += chunk.length;
+			if (bytes > STATUS_MAX_BYTES) giveUp("stdout maxBuffer length exceeded");
+			else chunks.push(chunk);
 		});
-		const timer = setTimeout(() => child.kill(), STATUS_TIMEOUT_MS);
-		child.on("error", (error) => {
-			clearTimeout(timer);
-			reject(runError(executable, error));
-		});
+		const timer = setTimeout(() => giveUp(`no answer within ${timeoutMs} ms`), timeoutMs);
+		child.on("error", (error) => settle(runError(executable, error)));
 		child.on("close", (code) => {
-			clearTimeout(timer);
 			// It exits with 127 when there is no such command, with 126 when it cannot run it.
-			if (code === 127) reject(new ClaudeCodeAuthError(NOT_FOUND));
+			if (code === 127) settle(new ClaudeCodeAuthError(NOT_FOUND));
 			else if (code === 126 || code === null)
-				reject(new ClaudeCodeAuthError(`Claude Code could not be run (${executable})`));
-			else resolve(stdout);
+				settle(new ClaudeCodeAuthError(`Claude Code could not be run (${executable})`));
+			// Decoded whole, so a character that comes in two chunks is read as one.
+			else settle(undefined, Buffer.concat(chunks).toString("utf8"));
 		});
 	});
 }
