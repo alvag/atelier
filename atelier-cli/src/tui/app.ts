@@ -5,6 +5,7 @@ import {
 	type AtelierEventBody,
 	type ClientCommand,
 	describeError,
+	detectHost,
 	type JsonValue,
 	type McpServerStatus,
 	normalizeImage,
@@ -468,7 +469,8 @@ async function openSession(
  */
 export async function runTui(args: CliArgs, options: TuiOptions): Promise<number> {
 	const paint = painter(options.color);
-	const herdr = HerdrStatusReporter.fromEnv(options.env ?? {});
+	const host = detectHost(options.env ?? {});
+	const herdr = HerdrStatusReporter.fromEnv(options.env ?? {}, { host });
 	const env: Record<string, string> = {
 		...(args.noSandbox ? { ATELIER_SANDBOX: "off" } : {}),
 		...(args.review ? {} : { ATELIER_REVIEW: "off" }),
@@ -521,7 +523,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	};
 
 	const fullscreen = settings.fullscreen && !args.noFullscreen;
-	const attention = new Attention(settings.notifications, { ...options, cwd: args.cwd });
+	const attention = new Attention(settings.notifications, { ...options, host, cwd: args.cwd });
 	const tui = createScreen(attention.watch(options.terminal, fullscreen), fullscreen, paint);
 	const footer = new Footer(
 		paint,

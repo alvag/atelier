@@ -309,8 +309,8 @@ export interface SessionOptions {
 	projectInstructions?: { home: string };
 	/**
 	 * Lists the skills of `.agents/skills/` (from `cwd` up to the repo root, then `home`'s) in the system prompt, found
-	 * once at start. Never given to subagents. With `env` a herdr-core terminal's (`HC_TERMINAL_ID`), herdr-app's guide
-	 * for agents is listed last, as the skill `herdr-app`.
+	 * once at start. Never given to subagents. When `env` says herdr-app is the host (detectHost), herdr-app's guide for
+	 * agents is listed last, as the skill `herdr-app`.
 	 */
 	skills?: { home: string; env?: Record<string, string | undefined> };
 	/** Turns on RDD: the risk tool, the assessment at the end of each turn and `Session.review`. Never given to subagents. */

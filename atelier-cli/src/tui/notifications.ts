@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
+import { detectHost, type Host } from "@atelier/core";
 
 /** How the user asked to be told: `auto` picks by where the TUI runs. */
 export type NotifyVia = "auto" | "terminal" | "system" | "bell";
@@ -12,6 +13,8 @@ export type Channel = "none" | "bell" | "osc9" | "osascript" | "notify-send";
 /** Where the TUI runs. */
 export interface Surroundings {
 	env: Record<string, string | undefined>;
+	/** The host told at start; without it, the one `env` says. */
+	host?: Host;
 	platform: NodeJS.Platform;
 	hasCommand: (name: string) => boolean;
 }
@@ -47,19 +50,19 @@ function systemChannel({ platform, hasCommand }: Surroundings): Channel {
 }
 
 /**
- * The channel for `via`. In `auto`, Herdr (1, or herdr-app over a herdr-core terminal) notifies by itself and Orca turns
- * the bell into its own notification; a terminal that shows OSC 9 is asked next, unless tmux sits between them; then the
- * system, then the bell.
+ * The channel for `via`. In `auto`, herdr and herdr-app notify by themselves and Orca turns the bell into its own
+ * notification; elsewhere a terminal that shows OSC 9 is asked, unless tmux sits between them; then the system, then
+ * the bell.
  */
 export function channelFor(via: NotifyVia, surroundings: Surroundings): Channel {
 	const { env } = surroundings;
 	if (via === "bell") return "bell";
 	if (via === "terminal") return "osc9";
 	if (via === "system") return systemChannel(surroundings);
-	if (env.HERDR_ENV === "1") return "none";
 	// herdr-core sets TERM_PROGRAM=ghostty, but herdr-app shows no OSC 9: it has toasts of its own.
-	if (env.HC_TERMINAL_ID) return "none";
-	if (env.ORCA_PANE_KEY) return "bell";
+	const { notifications } = (surroundings.host ?? detectHost(env)).supports;
+	if (notifications === "host") return "none";
+	if (notifications === "bell") return "bell";
 	if (showsOsc9(env) && !env.TMUX) return "osc9";
 	return systemChannel(surroundings);
 }
