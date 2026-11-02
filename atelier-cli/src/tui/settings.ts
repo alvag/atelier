@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DEFAULT_STATUS_LINE, isStatusItem, type StatusItem } from "./footer.ts";
 import { NOTIFY_VIAS, type NotifyVia } from "./notifications.ts";
@@ -135,7 +135,13 @@ async function writeSidePanel(path: string, shown: boolean): Promise<string | un
 	const partial = `${path}.${process.pid}.${++saveCount}.tmp`;
 	try {
 		await mkdir(dirname(path), { recursive: true });
-		await writeFile(partial, `${JSON.stringify(next, null, 2)}\n`);
+		// The file keeps its permissions (a private one stays private); a new one gets the usual ones.
+		const mode = await stat(path).then(
+			(found) => found.mode & 0o7777,
+			() => undefined,
+		);
+		await writeFile(partial, `${JSON.stringify(next, null, 2)}\n`, mode === undefined ? {} : { mode });
+		if (mode !== undefined) await chmod(partial, mode);
 		await rename(partial, path);
 		return undefined;
 	} catch (error) {
