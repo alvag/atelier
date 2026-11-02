@@ -33,9 +33,13 @@ const EMPTY_TREE = {
 	sha256: "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
 };
 
-/** What the worktree has changed, each part absent while it is not known: lines against `HEAD`, commits against the upstream. */
+/**
+ * What the worktree has changed, each part absent while it is not known: lines against `HEAD`, the files they are in
+ * (known with the lines, as both come from the same status), commits against the upstream.
+ */
 export interface GitChanges {
 	lines?: { added: number; removed: number };
+	files?: number;
 	commits?: { ahead: number; behind: number };
 }
 
@@ -242,15 +246,19 @@ export async function readGitChanges(
 		]);
 		if (output === "") {
 			changes.lines = { added: 0, removed: 0 };
+			changes.files = 0;
 			return changes;
 		}
 		if (!output.endsWith("\0")) return changes;
 		const records = output.slice(0, -1).split("\0");
 		const paths = new Set<string>();
 		const untracked: string[] = [];
+		// A rename or copy is one file changed, its source a second record of the same one.
+		let files = 0;
 		for (let i = 0; i < records.length; i++) {
 			const record = records[i];
 			if (record === undefined || !/^[ MADRCUT?!]{2} .+/s.test(record)) return changes;
+			files++;
 			paths.add(record.slice(3));
 			if (record.startsWith("??")) untracked.push(record.slice(3));
 			if (/^[RC]|^.[RC]/.test(record)) {
@@ -292,7 +300,10 @@ export async function readGitChanges(
 		);
 		if (tracked === undefined) return changes;
 		const added = await untrackedLines(worktree, untracked, (path) => kindOf(diffs.get(path), drivers), bounded);
-		if (added !== undefined && !expired()) changes.lines = { added: tracked.added + added, removed: tracked.removed };
+		if (added !== undefined && !expired()) {
+			changes.lines = { added: tracked.added + added, removed: tracked.removed };
+			changes.files = files;
+		}
 		return changes;
 	} catch {
 		return changes;

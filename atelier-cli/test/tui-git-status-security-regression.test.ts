@@ -172,7 +172,10 @@ it("never consumes a byte of a file moved out of the worktree, with its folder, 
 
 it("counts the file as usual when nothing is replaced", async () => {
 	const { file } = await ancestors();
-	expect(await readGitChanges(cwd, undefined, { timeoutMs: 30_000 })).toEqual({ lines: { added: 1, removed: 0 } });
+	expect(await readGitChanges(cwd, undefined, { timeoutMs: 30_000 })).toEqual({
+		lines: { added: 1, removed: 0 },
+		files: 1,
+	});
 	expect(swap.reads).toEqual([file]);
 });
 

@@ -76,11 +76,11 @@ describe("read-only git changes", () => {
 		await writeFile(join(base, "old"), "renamed content\n");
 		git(base, "add", ".");
 		git(base, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base");
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0), files: 0 });
 		await writeFile(join(base, ".git", "info", "global-ignore"), "ignored\n");
 		git(base, "config", "core.excludesFile", join(base, ".git", "info", "global-ignore"));
 		await writeFile(join(base, "ignored"), "not counted");
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0), files: 0 });
 		git(base, "mv", "old", "new");
 		await writeFile(join(base, "tracked"), "staged\n");
 		git(base, "add", "tracked");
@@ -90,11 +90,25 @@ describe("read-only git changes", () => {
 		await writeFile(join(base, "dir", "two"), "two");
 		git(base, "update-index", "--split-index");
 		const index = await readFile(join(base, ".git", "index"));
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(3, 1) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(3, 1), files: 4 });
 		await rm(join(base, "tracked"));
 		await symlink("new", join(base, "tracked"));
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(3, 1) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(3, 1), files: 4 });
 		expect(await readFile(join(base, ".git", "index"))).toEqual(index);
+	});
+
+	it("counts the files changed with the lines: staged, unstaged and untracked, a rename once", async () => {
+		await writeFile(join(base, "tracked"), "original\n");
+		await writeFile(join(base, "old"), "renamed content\n");
+		git(base, "add", ".");
+		commit(base);
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0), files: 0 });
+		git(base, "mv", "old", "new");
+		await writeFile(join(base, "tracked"), "staged\n");
+		git(base, "add", "tracked");
+		await writeFile(join(base, "tracked"), "unstaged\n");
+		await writeFile(join(base, "fresh"), "one\ntwo\n");
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(3, 1), files: 3 });
 	});
 
 	it("omits a clean filtered repository's false changes without writing its index", async () => {
@@ -304,7 +318,7 @@ process.stdout.write(output);
 		await writeFile(join(base, "empty"), "");
 		await writeFile(join(base, "blob"), Buffer.from([0, 10, 10]));
 		await symlink("text", join(base, "link"));
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(5, 1) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(5, 1), files: 6 });
 	});
 
 	it("tells untracked binary and text files by their diff attribute, as once they are added", async () => {
@@ -315,7 +329,7 @@ process.stdout.write(output);
 		await writeFile(join(base, "forced.txt"), "a\0\nb\n");
 		await writeFile(join(base, "plain"), "x\0y\n");
 		const untracked = await readGitChanges(base, undefined, loadTolerant);
-		expect(untracked).toEqual({ lines: lines(2, 0) });
+		expect(untracked).toEqual({ lines: lines(2, 0), files: 3 });
 		git(base, "add", "-N", ".");
 		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual(untracked);
 	});
@@ -329,7 +343,7 @@ process.stdout.write(output);
 		await writeFile(join(base, "a.dat"), "a\nb\n");
 		await writeFile(join(base, "b.tx"), "a\0\nb\nc\n");
 		const untracked = await readGitChanges(base, undefined, loadTolerant);
-		expect(untracked).toEqual({ lines: lines(3, 0) });
+		expect(untracked).toEqual({ lines: lines(3, 0), files: 2 });
 		git(base, "add", "-N", ".");
 		expect(git(base, "diff", "--numstat", "HEAD").toString()).toBe("-\t-\ta.dat\n3\t0\tb.tx\n");
 		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual(untracked);
@@ -340,9 +354,9 @@ process.stdout.write(output);
 		git(base, "add", ".");
 		commit(base);
 		await symlink("target", join(base, "link"));
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(1, 0) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(1, 0), files: 1 });
 		git(base, "add", "-N", "link");
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(1, 0) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(1, 0), files: 1 });
 	});
 
 	it("omits the lines when a changed path has a working-tree encoding, which git would convert", async () => {
@@ -362,7 +376,7 @@ process.stdout.write(output);
 		await writeFile(join(base, "tracked"), "one\ntwo\n");
 		await writeFile(join(base, "a.u8"), "x\ny\n");
 		expect(git(base, "diff", "--numstat", "HEAD").toString()).toBe("1\t0\ta.u8\n2\t1\ttracked\n");
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(3, 1) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(3, 1), files: 2 });
 	});
 
 	it("reads a driver's binary setting as git reads a boolean, numbers included", async () => {
@@ -374,7 +388,7 @@ process.stdout.write(output);
 		await writeFile(join(base, "a.dat"), "a\nb\n");
 		await writeFile(join(base, "b.zero"), "a\0\nb\nc\n");
 		const untracked = await readGitChanges(base, undefined, loadTolerant);
-		expect(untracked).toEqual({ lines: lines(3, 0) });
+		expect(untracked).toEqual({ lines: lines(3, 0), files: 2 });
 		git(base, "add", "-N", ".");
 		expect(git(base, "diff", "--numstat", "HEAD").toString()).toBe("-\t-\ta.dat\n3\t0\tb.zero\n");
 		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual(untracked);
@@ -460,7 +474,7 @@ process.stdout.write(output);
 		await writeFile(join(repository, "staged"), "a\nb\n");
 		git(repository, "add", "staged");
 		await writeFile(join(repository, "untracked"), "c\n");
-		expect(await readGitChanges(repository, undefined, loadTolerant)).toEqual({ lines: lines(3, 0) });
+		expect(await readGitChanges(repository, undefined, loadTolerant)).toEqual({ lines: lines(3, 0), files: 2 });
 	});
 
 	it("counts lines on a detached HEAD", async () => {
@@ -469,7 +483,7 @@ process.stdout.write(output);
 		commit(base);
 		git(base, "checkout", "-q", "--detach");
 		await writeFile(join(base, "tracked"), "one\ntwo\n");
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(1, 0) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(1, 0), files: 1 });
 	});
 
 	it("omits the lines rather than reading more than 1000 untracked files or 8 MiB of them", async () => {
@@ -515,6 +529,7 @@ describe("read-only commits against the upstream", () => {
 		await diverged();
 		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({
 			lines: lines(0, 0),
+			files: 0,
 			commits: { ahead: 2, behind: 1 },
 		});
 	});
@@ -531,13 +546,13 @@ describe("read-only commits against the upstream", () => {
 	it("has no commits without an upstream, with a deleted one or on a detached HEAD", async () => {
 		await diverged();
 		git(base, "config", "--unset", "branch.main.merge");
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0), files: 0 });
 		git(base, "config", "branch.main.merge", "refs/heads/main");
 		git(base, "update-ref", "-d", "refs/remotes/origin/main");
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0), files: 0 });
 		git(base, "update-ref", "refs/remotes/origin/main", "HEAD");
 		git(base, "checkout", "-q", "--detach");
-		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0) });
+		expect(await readGitChanges(base, undefined, loadTolerant)).toEqual({ lines: lines(0, 0), files: 0 });
 	});
 
 	it.each(["refs/tags/v1", "HEAD", "refs/remotes/origin/ma\x1bin", "refs/remotes/origin/main\nrefs/heads/main"])(
