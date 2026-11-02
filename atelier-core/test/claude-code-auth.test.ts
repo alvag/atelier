@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +54,43 @@ const ownGroup = () =>
 	Number(spawnSync("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).stdout.trim());
 /** Process groups are read with `ps`, which a sandbox around the tests refuses. */
 const canListProcesses = process.platform !== "darwin" || !isInsideSandbox();
+
+const until = async (condition: () => boolean) => {
+	for (let i = 0; i < 600 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+	expect(condition()).toBe(true);
+};
+
+/** Whether a process runs, a zombie not counted: one killed is a zombie until its parent, or launchd, reaps it. */
+function running(pid: number): boolean {
+	const stat = spawnSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+	return stat !== "" && !stat.startsWith("Z");
+}
+
+/**
+ * A binary that answers badly, as FAKE says: `big` prints more than execFile keeps (1 MiB), `split` prints a status
+ * whose `ñ` comes in two writes, `stuck` ignores TERM and never answers; FAKE_STAY keeps it running, TERM ignored,
+ * after what it printed. It writes its pid to `$dir/odd.pid`.
+ */
+async function writeOdd(): Promise<string> {
+	const odd = join(dir, "odd");
+	await writeFile(
+		odd,
+		`#!/bin/sh
+echo $$ > "${dir}/odd.pid"
+stay() { trap '' TERM; while :; do sleep 0.1; done; }
+case "$FAKE" in
+big) head -c 1100000 /dev/zero | tr '\\0' a ;;
+split) printf '{"loggedIn":true,"authMethod":"claude.ai","email":"a\\303'; sleep 0.2; printf '\\261a@example.com"}' ;;
+stuck) stay ;;
+esac
+[ -n "$FAKE_STAY" ] && stay
+exit 0
+`,
+	);
+	await chmod(odd, 0o755);
+	return odd;
+}
+const oddPid = async () => Number((await readFile(join(dir, "odd.pid"), "utf8")).trim());
 
 beforeEach(async () => {
 	dir = await mkdtemp(join(tmpdir(), "atelier-claude-auth-"));
@@ -138,6 +176,50 @@ it.skipIf(!canListProcesses)(
 		expect(garbled.message).toBe("Claude Code's auth status could not be read.");
 	},
 );
+
+describe("the status asked apart", () => {
+	it.skipIf(!canListProcesses)("keeps as much of the output as execFile, and fails as it does past that", async () => {
+		const odd = await writeOdd();
+		const today = await claudeCodeAuthStatus({ executable: odd, env: { FAKE: "big" } }).catch((error) => error);
+		expect(today.message).toBe(`Claude Code could not be run (${odd}): stdout maxBuffer length exceeded`);
+		const apart = await claudeCodeAuthStatus({
+			executable: odd,
+			env: { FAKE: "big", FAKE_STAY: "1" },
+			apart: true,
+		}).catch((error) => error);
+		expect(apart).toBeInstanceOf(ClaudeCodeAuthError);
+		expect(apart.message).toBe(today.message);
+		// The binary, which ignores TERM, is gone too: its group ended after the grace.
+		const pid = await oddPid();
+		await until(() => !running(pid));
+	});
+
+	it.skipIf(!canListProcesses)(
+		"gives up on a binary that does not answer in time, and ends its group",
+		async () => {
+			const odd = await writeOdd();
+			const error = await claudeCodeAuthStatus({
+				executable: odd,
+				env: { FAKE: "stuck" },
+				apart: true,
+				statusTimeoutMs: 1000,
+			}).catch((error) => error);
+			expect(error).toBeInstanceOf(ClaudeCodeAuthError);
+			expect(error.message).toBe(`Claude Code could not be run (${odd}): no answer within 1000 ms`);
+			await until(() => existsSync(join(dir, "odd.pid")));
+			const pid = await oddPid();
+			await until(() => !running(pid));
+		},
+		10_000,
+	);
+
+	it.skipIf(!canListProcesses)("reads a character that comes in two writes", async () => {
+		const odd = await writeOdd();
+		const read = { loggedIn: true, authMethod: "claude.ai", email: "aña@example.com" };
+		expect(await claudeCodeAuthStatus({ executable: odd, env: { FAKE: "split" }, apart: true })).toEqual(read);
+		expect(await claudeCodeAuthStatus({ executable: odd, env: { FAKE: "split" } })).toEqual(read);
+	});
+});
 
 it("runs Claude Code's own login for a Claude subscription and says how it ended", async () => {
 	await status({ loggedIn: false, authMethod: "none" });

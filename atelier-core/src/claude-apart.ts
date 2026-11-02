@@ -61,3 +61,8 @@ export function spawnApart(command: string, args: readonly string[], options: Ap
 	child.once("error", () => watch?.destroy());
 	return child;
 }
+
+/** Ends the group of a child that `spawnApart` started, as its watcher does: TERM, the grace, then KILL. */
+export function endApart(child: ChildProcess): void {
+	child.stdio[3]?.destroy();
+}
