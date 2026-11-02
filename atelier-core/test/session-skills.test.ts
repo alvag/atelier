@@ -102,3 +102,111 @@ describe("skills in a session", () => {
 		expect(child.startOptions?.systemPromptAppend).toBe("role");
 	});
 });
+
+describe("herdr-app's guide in a session", () => {
+	const inCore = { HC_TERMINAL_ID: "t1", TERM_PROGRAM: "ghostty" };
+	const GUIDE = "# Herdr app\nGUIDE BODY\n";
+	const loaded = (events: AtelierEvent[]) => events.find((event) => event.type === "skills_loaded");
+	const entry = (location: string) =>
+		expect.stringMatching(
+			new RegExp(
+				`<name>herdr-app</name>\\n    <description>[^<]*Herdr window[^<]*over 50 KB[^<]*offset and limit[^<]*herdr-app --skill[^<]*</description>\\n    <location>${location.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</location>`,
+			),
+		);
+
+	it("lists the guide herdr-app writes in its home, never its body", async () => {
+		await put(".config/herdr-app/AGENTS.md", GUIDE);
+		const { prompt, events } = await start(undefined, { skills: { home, env: inCore } });
+		const path = join(home, ".config/herdr-app/AGENTS.md");
+		expect(prompt).toEqual(entry(path));
+		expect(prompt).not.toContain("GUIDE BODY");
+		expect(loaded(events)).toMatchObject({ skills: [{ name: "herdr-app", path }], warnings: [] });
+	});
+
+	it("finds it where herdr-app keeps its home: HERDR_APP_HOME, else XDG_CONFIG_HOME", async () => {
+		await put(".config/herdr-app/AGENTS.md", GUIDE);
+		await put("elsewhere/AGENTS.md", GUIDE);
+		await put("xdg/herdr-app/AGENTS.md", GUIDE);
+		const chosen = await start(undefined, {
+			skills: { home, env: { ...inCore, HERDR_APP_HOME: join(home, "elsewhere"), XDG_CONFIG_HOME: join(home, "xdg") } },
+		});
+		expect(chosen.prompt).toEqual(entry(join(home, "elsewhere/AGENTS.md")));
+		const xdg = await start(undefined, {
+			skills: { home, env: { ...inCore, HERDR_APP_HOME: "", XDG_CONFIG_HOME: join(home, "xdg") } },
+		});
+		expect(xdg.prompt).toEqual(entry(join(home, "xdg/herdr-app/AGENTS.md")));
+	});
+
+	it("escapes the path in the list", async () => {
+		await put("a&b<c>/AGENTS.md", GUIDE);
+		const { prompt } = await start(undefined, {
+			skills: { home, env: { ...inCore, HERDR_APP_HOME: join(home, "a&b<c>") } },
+		});
+		expect(prompt).toContain(`<location>${join(home, "a&amp;b&lt;c&gt;/AGENTS.md")}</location>`);
+	});
+
+	it("lists nothing outside herdr-core, without the file, or where herdr-app's home cannot be told", async () => {
+		await put(".config/herdr-app/AGENTS.md", GUIDE);
+		await put("rel/AGENTS.md", GUIDE);
+		await mkdir(join(home, "folder/AGENTS.md"), { recursive: true });
+		await put("bad\nline/AGENTS.md", GUIDE);
+		for (const env of [
+			{ TERM_PROGRAM: "ghostty" },
+			{ ...inCore, HC_TERMINAL_ID: "" },
+			{ ...inCore, HERDR_APP_HOME: join(home, "missing") },
+			{ ...inCore, HERDR_APP_HOME: "rel" },
+			{ ...inCore, HERDR_APP_HOME: "~/rel" },
+			{ ...inCore, XDG_CONFIG_HOME: "." },
+			{ ...inCore, HERDR_APP_HOME: join(home, "folder") },
+			{ ...inCore, HERDR_APP_HOME: join(home, "bad\nline") },
+		]) {
+			const { prompt, events } = await start(undefined, { skills: { home, env } });
+			expect(prompt).toBe(BASE);
+			expect(loaded(events)).toBeUndefined();
+		}
+		const { prompt } = await start(undefined, { skills: { home } });
+		expect(prompt).toBe(BASE);
+	});
+
+	it("gives way to a skill of the same name, and reports the guide as ignored", async () => {
+		await put(".config/herdr-app/AGENTS.md", GUIDE);
+		await put(".agents/skills/herdr-app/SKILL.md", "---\nname: herdr-app\ndescription: My own.\n---\n");
+		const { prompt, events } = await start(undefined, { skills: { home, env: inCore } });
+		const mine = join(home, ".agents/skills/herdr-app/SKILL.md");
+		expect(prompt).toContain(`<description>My own.</description>\n    <location>${mine}</location>`);
+		expect(prompt).not.toContain("AGENTS.md");
+		expect(loaded(events)).toMatchObject({
+			skills: [{ name: "herdr-app", path: mine }],
+			warnings: [
+				{
+					path: join(home, ".config/herdr-app/AGENTS.md"),
+					message: `skill "herdr-app" is already loaded from ${mine}; this one is ignored`,
+				},
+			],
+		});
+	});
+
+	it("comes after the other skills and leaves out a guide the agent's read could not open", async () => {
+		await put(".config/herdr-app/AGENTS.md", GUIDE);
+		await put(".agents/skills/notes/SKILL.md", "---\nname: notes\ndescription: Take notes.\n---\n");
+		const listed = await start(undefined, { skills: { home, env: inCore } });
+		expect(loaded(listed.events)).toMatchObject({
+			skills: [{ name: "notes" }, { name: "herdr-app" }],
+		});
+
+		await put(".claude/herdr-app/AGENTS.md", GUIDE);
+		const hidden = await start(undefined, {
+			skills: { home, env: { ...inCore, HERDR_APP_HOME: join(home, ".claude/herdr-app") } },
+		});
+		expect(hidden.prompt).not.toContain("herdr-app");
+		expect(loaded(hidden.events)).toMatchObject({
+			skills: [{ name: "notes" }],
+			warnings: [
+				{
+					path: join(home, ".claude/herdr-app/AGENTS.md"),
+					message: "it is in a protected location the agent cannot read; not loaded",
+				},
+			],
+		});
+	});
+});

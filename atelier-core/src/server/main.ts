@@ -132,6 +132,7 @@ const server = new RpcServer({
 	tools: coreTools,
 	systemPromptAppend: SYSTEM_PROMPT_APPEND,
 	home: homedir(),
+	env: process.env,
 	// The echo backend (tests) leaves nothing behind in the home.
 	sessions: process.env.ATELIER_BACKEND !== "echo",
 	connectMemory: memoryOff

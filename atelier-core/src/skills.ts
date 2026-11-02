@@ -1,5 +1,5 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { LineCounter, parse, YAMLParseError } from "yaml";
 import { isProtected, protectedReadPaths } from "./tools/paths.ts";
 
@@ -102,10 +102,7 @@ async function readSkill(
 	warnings: SkillWarning[],
 ): Promise<Skill | undefined> {
 	const warn = (message: string) => warnings.push({ path: file, message });
-	if (isProtected(file, protectedPaths) || isProtected(await realpath(file).catch(() => file), protectedPaths)) {
-		warn("it is in a protected location the agent cannot read; not loaded");
-		return undefined;
-	}
+	if (!(await readable(file, protectedPaths, warnings))) return undefined;
 	let data: Record<string, unknown>;
 	try {
 		data = frontmatter(await readFile(file, "utf8"));
@@ -176,17 +173,68 @@ function withinCap(skills: readonly Skill[], warnings: SkillWarning[]): Skill[] 
 	return kept;
 }
 
+const HERDR_APP_SKILL = "herdr-app";
+const HERDR_APP_DESCRIPTION =
+	"The Herdr app's guide for agents: how to change what the Herdr window shows (spaces, tabs, layouts, keys, " +
+	"settings, programs, mods) and the commands that drive it. Read it when asked to change the Herdr window. It is " +
+	"long, over 50 KB: read it in parts with offset and limit, its headings first. `herdr-app --skill` prints a " +
+	"shorter manual for driving the window.";
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what is refused
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Where herdr-app writes its guide, as herdr-app finds its home: `HERDR_APP_HOME`, else `XDG_CONFIG_HOME/herdr-app`,
+ * else `home/.config/herdr-app`, an empty variable skipped. Undefined outside a herdr-core terminal, and for a relative
+ * folder (herdr-app resolved it against a folder we do not know) or one with control characters.
+ */
+function herdrAppGuidePath(home: string, env: Record<string, string | undefined>): string | undefined {
+	if (!env.HC_TERMINAL_ID) return undefined;
+	const set = (name: string) => env[name] || undefined;
+	const xdg = set("XDG_CONFIG_HOME");
+	const dir =
+		set("HERDR_APP_HOME") ?? (xdg === undefined ? join(home, ".config", "herdr-app") : join(xdg, "herdr-app"));
+	if (!isAbsolute(dir) || CONTROL.test(dir)) return undefined;
+	return join(dir, "AGENTS.md");
+}
+
+/** herdr-app's guide as a skill, when it is a file; nothing is read from it, as it has no frontmatter. */
+async function herdrAppSkill(home: string, env: Record<string, string | undefined>): Promise<Skill | undefined> {
+	const path = herdrAppGuidePath(home, env);
+	if (path === undefined) return undefined;
+	const isFile = await stat(path).then(
+		(info) => info.isFile(),
+		() => false,
+	);
+	return isFile ? { name: HERDR_APP_SKILL, description: HERDR_APP_DESCRIPTION, path } : undefined;
+}
+
+/** Whether the agent's `read` could open `file`; `warnings` gets why not. */
+async function readable(file: string, protectedPaths: readonly string[], warnings: SkillWarning[]): Promise<boolean> {
+	if (isProtected(file, protectedPaths) || isProtected(await realpath(file).catch(() => file), protectedPaths)) {
+		warnings.push({ path: file, message: "it is in a protected location the agent cannot read; not loaded" });
+		return false;
+	}
+	return true;
+}
+
 /**
  * Finds the skills in `.agents/skills/` from `cwd` up to the repository root, then in `home`'s, each folder once: a
  * skill is a folder with a SKILL.md whose frontmatter has a description, and of two with the same name the first wins.
+ * Inside a herdr-core terminal (`HC_TERMINAL_ID` in `env`), herdr-app's guide comes last, as the skill `herdr-app`.
  *
  * Left out are the skills the agent's `read` could not open and those past MAX_SKILLS_BYTES; with an invalid sandbox
  * configuration, every skill.
  */
-export async function loadSkills(cwd: string, home: string): Promise<LoadedSkills> {
+export async function loadSkills(
+	cwd: string,
+	home: string,
+	env: Record<string, string | undefined> = {},
+): Promise<LoadedSkills> {
 	const folders = [...(await projectFolders(cwd)), resolve(home)].map((dir) => join(dir, ".agents", "skills"));
 	const files = (await Promise.all([...new Set(folders)].map((folder) => skillFiles(folder)))).flat();
-	if (files.length === 0) return { skills: [], warnings: [] };
+	const guide = await herdrAppSkill(home, env);
+	if (files.length === 0 && guide === undefined) return { skills: [], warnings: [] };
 	// The same places `read` refuses; without them (an invalid sandbox file) nothing is loaded.
 	let protectedPaths: string[];
 	try {
@@ -198,13 +246,15 @@ export async function loadSkills(cwd: string, home: string): Promise<LoadedSkill
 	const skills: Skill[] = [];
 	const warnings: SkillWarning[] = [];
 	const byName = new Map<string, Skill>();
-	for (const file of files) {
-		const skill = await readSkill(file, protectedPaths, warnings);
+	const found: (Skill | undefined)[] = [];
+	for (const file of files) found.push(await readSkill(file, protectedPaths, warnings));
+	if (guide !== undefined && (await readable(guide.path, protectedPaths, warnings))) found.push(guide);
+	for (const skill of found) {
 		if (skill === undefined) continue;
 		const first = byName.get(skill.name);
 		if (first !== undefined) {
 			warnings.push({
-				path: file,
+				path: skill.path,
 				message: `skill "${skill.name}" is already loaded from ${first.path}; this one is ignored`,
 			});
 			continue;
