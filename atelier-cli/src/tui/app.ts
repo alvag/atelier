@@ -315,6 +315,10 @@ interface Opened {
 	savedId?: string;
 	configuration?: SessionConfiguration;
 	name?: string;
+	/** The name the user gave a resumed session with `/rename`. */
+	named?: string;
+	/** A resumed session's saved events, for the side panel's status. */
+	saved?: AtelierEvent[];
 }
 
 /** The mode requests of one session: how many were sent, the newest the core accepted, and whether the newest failed. */
@@ -419,6 +423,8 @@ async function resumeSession(
 		savedId,
 		...(resumed.configuration === undefined ? {} : { configuration: resumed.configuration }),
 		...(name === undefined ? {} : { name }),
+		...(resumed.name === undefined ? {} : { named: resumed.name }),
+		saved: entries.flatMap((entry) => (entry.type === "event" ? [entry.event] : [])),
 	};
 }
 
@@ -585,6 +591,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			columns: () => options.terminal.columns,
 			context: () => ({ name: sessionName, savedId, mode: footer.state.mode, git: changes }),
 		});
+	sessionName = opened.named;
+	side?.reset(opened.saved);
 	const bar = new StatusBar(colors, () => ({
 		...footer.state,
 		...footer.place,
@@ -1298,8 +1306,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		pasteEpoch++;
 		abortClipboardReads();
 		titleName = next.name;
-		sessionName = undefined;
-		side?.reset();
+		sessionName = next.named;
+		side?.reset(next.saved);
 		showTitle();
 		conversation = shownIn;
 		queue.messages = [];

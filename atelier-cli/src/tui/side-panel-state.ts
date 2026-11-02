@@ -73,6 +73,18 @@ export function emptySidePanel(): SidePanelState {
 	};
 }
 
+/**
+ * A resumed session's panel: what its saved events add up to (turns, tokens, compactions, reviews). Its jobs and agents
+ * ended with the process that ran them, what it runs with comes again in its next turn, and its feature waits for the
+ * session's own events, as the panel over the editor does.
+ */
+export function sidePanelResumed(saved: readonly AtelierEvent[]): SidePanelState {
+	const { status } = saved.reduce((state, event) => sidePanelAfter(state, event, 0), emptySidePanel());
+	const { turns, tokens, main, compactions, lastCompaction, reviews, findings } = status;
+	const counted = { turns, tokens, main, compactions, reviews, findings };
+	return { ...emptySidePanel(), status: lastCompaction === undefined ? counted : { ...counted, lastCompaction } };
+}
+
 const addUsage = (a: Usage, b: Usage): Usage => ({
 	input: a.input + b.input,
 	output: a.output + b.output,

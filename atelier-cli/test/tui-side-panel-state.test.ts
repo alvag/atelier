@@ -1,6 +1,12 @@
 import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
 import { describe, expect, it } from "vitest";
-import { emptySidePanel, MAX_FINISHED_ROWS, type SidePanelState, sidePanelAfter } from "../src/tui/side-panel-state.ts";
+import {
+	emptySidePanel,
+	MAX_FINISHED_ROWS,
+	type SidePanelState,
+	sidePanelAfter,
+	sidePanelResumed,
+} from "../src/tui/side-panel-state.ts";
 
 type Body = AtelierEventBody & { parentCallId?: string; agent?: string };
 const usage = (input: number, output: number, cacheRead = 0, cacheWrite = 0) => ({
@@ -317,5 +323,37 @@ describe("side panel state", () => {
 		const state = after([feature, { ...feature, title: "child's", parentCallId: "c1" }]);
 		expect(state.feature?.title).toBe("TUI status panel");
 		expect(state.feature?.tasks[0]?.note).toBe("decide the cache scope");
+	});
+
+	it("brings back a resumed session's status from its saved events, not its jobs, agents or feature", () => {
+		const saved = [
+			jobStarted("old"),
+			{ type: "tool_call_started", callId: "c1", tool: "task", input: { agent: "worker", prompt: "x" } },
+			turnFinished({ usage: usage(10, 2, 90), phases: { main: { usage: usage(10, 2, 90) } } }),
+			turnFinished({ usage: usage(5, 1), parentCallId: "c1", agent: "worker" } as never),
+			{
+				type: "compaction_finished",
+				ok: true,
+				reason: "threshold",
+				tokensBefore: 9000,
+				tokensAfter: 900,
+				kept: 1,
+				usage: usage(1, 1),
+			},
+			{ type: "feature_changed", name: "f", path: "odd/tasks/f.md", title: "F", tasks: [] },
+			{ type: "mcp_status", servers: [], problems: ["github: no answer"] },
+		] as Body[];
+		const state = sidePanelResumed(saved.map((body, i) => ({ ...body, seq: i + 1, turnId: "t" }) as AtelierEvent));
+		expect(state).toEqual({
+			...emptySidePanel(),
+			status: {
+				...emptySidePanel().status,
+				turns: 1,
+				tokens: usage(15, 3, 90),
+				main: usage(10, 2, 90),
+				compactions: 1,
+				lastCompaction: { before: 9000, after: 900 },
+			},
+		});
 	});
 });

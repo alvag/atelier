@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { GitChanges } from "./git-branch.ts";
 import { type PanelLines, type Section, sidePanelLines } from "./side-panel.ts";
-import { emptySidePanel, type SidePanelState, sidePanelAfter } from "./side-panel-state.ts";
+import { emptySidePanel, type SidePanelState, sidePanelAfter, sidePanelResumed } from "./side-panel-state.ts";
 import type { Paint } from "./style.ts";
 import type { Ink } from "./theme.ts";
 
@@ -117,9 +117,9 @@ export class SidePanel {
 		this.#tick();
 	}
 
-	/** A new session: nothing of the one before; the sections stay folded as they were. */
-	reset(): void {
-		this.#state = emptySidePanel();
+	/** Another session: nothing of the one before but how its sections were folded; a resumed one's saved status. */
+	reset(saved?: readonly AtelierEvent[]): void {
+		this.#state = saved === undefined ? emptySidePanel() : sidePanelResumed(saved);
 		this.#startedAt = this.#now();
 		this.#current = undefined;
 		this.#scroll.scrollToStart();

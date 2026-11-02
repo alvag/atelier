@@ -2094,6 +2094,43 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("brings back a resumed session's name and status from what it saved, and starts over with /new", async () => {
+			const h = harness([], { columns: 140 });
+			const usage = { input: 1000, output: 200, cacheRead: 9000, cacheWrite: 0 };
+			const entries = [
+				{ type: "prompt", turnId: "t1", text: "go" },
+				{ type: "event", event: { ...job, seq: 1, turnId: "t1" } },
+				{
+					type: "event",
+					event: { ...finished, usage, phases: { main: { usage } }, seq: 2, turnId: "t1" },
+				},
+				{ type: "text", turnId: "t1", text: "Done before." },
+			];
+			const stub = stubCore({
+				answer: (command) =>
+					command.command === "sessions.list"
+						? { sessions: [{ id: "old1", backend: "fake", resumable: true }] }
+						: command.command === "session.resume"
+							? { sessionId: "s1", name: "panel work", entries }
+							: { sessionId: "s2" },
+			});
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--resume", "old1"], h.io, () => h.backend);
+			await until(() => panel(h).some((row) => row.includes("1 turns")));
+			expect(panel(h)).toContain("│  panel work");
+			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ {2}Tokens {3}in 10k · out 200$/));
+			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ {2}Cache {4}90% orchestrator$/));
+			// The job ended with the process that ran it.
+			expect(panel(h).some((row) => row.includes("Jobs"))).toBe(false);
+			h.screen.type("/new");
+			h.screen.type("\r");
+			await until(() => panel(h).some((row) => row.includes("0 turns")));
+			expect(panel(h).join("\n")).not.toContain("panel work");
+			expect(panel(h).join("\n")).not.toContain("Tokens");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
 		it("starts hidden when the settings say so", async () => {
 			const h = harness([], { columns: 140 });
 			await mkdir(join(home, ".atelier"));
