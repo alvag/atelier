@@ -15,18 +15,18 @@ export function inHerdrPane(env: Record<string, string | undefined>, platform: N
 	return platform !== "win32" && (env[HERDR_PANE_VARIABLE] ?? "") !== "";
 }
 
-/** How long the command's group has, after TERM, to finish what it was writing before KILL, in tenths of a second. */
-const GRACE_TENTHS = 20;
+/** How long the command's group has, after TERM, to finish what it was writing before KILL, in seconds. */
+const GRACE_SECONDS = 2;
 
 /**
  * The group leader: `sh -c APART atelier-claude <command> <args...>`. It starts a watcher, then becomes the command.
  * The watcher waits for fd 3, a pipe from Atelier, to close: when Atelier quits or dies, however it does, or once the
- * command has exited. It then sends TERM to the group, gives the command GRACE_TENTHS to finish, and kills the whole
- * group, itself included. The watcher ignores TERM, and so does its `sleep`; the command and the arguments come as
+ * command has exited. It then sends TERM to the group, gives every process of it GRACE_SECONDS to finish, the whole
+ * grace even when the command itself is already gone, and kills the whole group, itself included. The watcher ignores TERM, and so does its `sleep`; the command and the arguments come as
  * `"$@"`, never as part of this text, and the command does not get fd 3.
  */
 const APART = [
-	`{ trap '' TERM; read -r _ <&3; kill -TERM 0; i=0; while kill -0 $$ && [ $i -lt ${GRACE_TENTHS} ]; do sleep 0.1; i=$((i + 1)); done; kill -KILL 0; } >/dev/null 2>&1 &`,
+	`{ trap '' TERM; read -r _ <&3; kill -TERM 0; sleep ${GRACE_SECONDS}; kill -KILL 0; } >/dev/null 2>&1 &`,
 	"exec 3<&-",
 	'exec "$@"',
 ].join("\n");
