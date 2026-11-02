@@ -101,6 +101,7 @@ const commandSchema = z.discriminatedUnion("command", [
 			command: z.literal("session.send"),
 			sessionId,
 			prompt: z.string(),
+			source: z.literal("agent-note").optional(),
 			images: z
 				.array(
 					z.object({

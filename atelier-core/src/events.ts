@@ -397,6 +397,8 @@ export type AtelierEventBody =
 	 * no tool result took) as the prompt of the turn it starts, as that turn's first event. Clients show it as a prompt.
 	 */
 	| ({ type: "queued_message" } & QueuedMessage)
+	/** A report from another agent, never the user's request or permission. */
+	| { type: "agent_note"; text: string }
 	/** A background job started (`bash_background`). `running`: the session's jobs running now, this one included. */
 	| { type: "job_started"; jobId: string; label: string; command: string; outputPath: string; running: number }
 	/**

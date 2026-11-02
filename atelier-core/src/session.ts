@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { agentNoteText } from "./agent-notes.ts";
 import type {
 	AgentBackend,
 	BackendSession,
@@ -896,8 +897,9 @@ export class Session {
 		prompt: string,
 		turnId: string = this.#createId(),
 		images: readonly ImageAttachment[] = [],
+		source?: "agent-note",
 	): AsyncGenerator<AtelierEvent> {
-		yield* this.#send(prompt, turnId, undefined, false, images);
+		yield* this.#send(prompt, turnId, undefined, false, images, source);
 	}
 
 	/**
@@ -910,10 +912,12 @@ export class Session {
 		entered?: QueuedMessage,
 		woken = false,
 		images: readonly ImageAttachment[] = [],
+		source?: "agent-note",
 	): AsyncGenerator<AtelierEvent> {
-		// The results the prompt carries are fixed as the turn begins; later ones wait for the next prompt.
-		const shell = woken ? [] : [...this.#shellPending];
-		const recorded = woken ? undefined : { text: prompt, imageCount: images.length, shell };
+		const user = !woken && source !== "agent-note";
+		// Only a user's prompt carries their shell results; notes leave them for that prompt.
+		const shell = user ? [...this.#shellPending] : [];
+		const recorded = user ? { text: prompt, imageCount: images.length, shell } : undefined;
 		yield* this.#stream(turnId, recorded, entered, async (turn, signal, backendSession) => {
 			// A woken turn waits a moment for the notices of work ending with the first, then takes all there are.
 			if (woken) await this.#gatherNotices(signal);
@@ -922,17 +926,18 @@ export class Session {
 				return { type: "turn_finished", stopReason: "interrupted", usage: { ...ZERO_USAGE } };
 			// The user's words reach the feature log as the turn starts, without delaying the backend;
 			// the turn waits for it before finishing, so a failure is reported inside this turn.
-			this.#turnPrompt = woken ? undefined : prompt;
-			const logged = woken ? undefined : this.#odd?.userMessage(prompt);
-			if (!woken) this.#keepPrompt(prompt);
+			this.#turnPrompt = user ? prompt : undefined;
+			const logged = user ? this.#odd?.userMessage(prompt) : undefined;
+			if (user) this.#keepPrompt(prompt);
+			else if (source === "agent-note") turn.push({ type: "agent_note", text: prompt });
 			// The user is back: the notices this prompt does not take may wake a turn again.
-			if (!woken) this.#noticesHeld = false;
-			const request = woken ? (this.#previousTurn?.request ?? prompt) : prompt;
+			if (user) this.#noticesHeld = false;
+			const request = user ? prompt : (this.#previousTurn?.request ?? "");
 			// What the agent declared in an earlier turn does not cover this one, and its candidate starts from today's HEAD.
 			this.#review?.startTurn(this.#options.cwd, request);
 			this.#changedFiles = false;
 			// The first turn says whether memory works and gives the model the recent memory, outside the system prompt.
-			let sent = prompt;
+			let sent = source === "agent-note" ? agentNoteText(prompt) : prompt;
 			if (!this.#announced) {
 				this.#announced = true;
 				const memory = this.#options.memory;
@@ -963,7 +968,7 @@ export class Session {
 					turn.push(errorEvent("permission_mode_invalid", this.#options.permissionModeProblem, true));
 				// Left out only when a compaction before the first prompt fetched the memory again for its notice.
 				if (this.#memoryContext.trim() !== "" && !this.#recovery?.fetched)
-					sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${prompt}`;
+					sent = `<memory>\n${this.#memoryContext}\n</memory>\n\n${sent}`;
 			}
 			if (this.#recovery !== undefined) {
 				sent = `${this.#recovery.text}\n\n${sent}`;

@@ -120,6 +120,20 @@ function harness(turnsPerSession: FakeStep[][][], tools = [shell], env?: Record<
 }
 
 describe("RpcServer", () => {
+	it("delivers an explicitly sourced agent note without recording a user prompt", async () => {
+		const h = harness([[[{ event: finished }]]]);
+		const sessionId = await h.start();
+		const text = '<hc from="t7 review">Review ready</hc>';
+		h.send({ command: "session.send", sessionId, prompt: text, source: "agent-note" });
+		await h.waitFor((m) => m.type === "event" && m.event.type === "turn_finished");
+		expect(h.events(sessionId)).toContainEqual(expect.objectContaining({ type: "agent_note", text }));
+		expect(h.backends[0]?.prompts[0]).toContain("<agent_note>\n");
+		const listed = await h.responseTo(h.send({ command: "sessions.list", cwd }));
+		expect(listed).toMatchObject({ ok: true, result: { sessions: [expect.objectContaining({ turns: 0 })] } });
+		h.send({ command: "shutdown" });
+		await h.done;
+	});
+
 	it("greets with the protocol version first", async () => {
 		const h = harness([]);
 		await h.waitFor(() => true);

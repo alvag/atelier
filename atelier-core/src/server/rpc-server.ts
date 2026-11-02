@@ -357,7 +357,7 @@ export class RpcServer {
 				const entry = this.#session(message.sessionId);
 				if (message.images?.length) return this.#sendImages(message, entry);
 				if (entry.session.busy) throw new CommandError("busy", "A turn is already running in this session.");
-				return this.#sendPrompt(message.sessionId, entry, message.prompt);
+				return this.#sendPrompt(message.sessionId, entry, message.prompt, undefined, message.source);
 			}
 			case "session.queue": {
 				const entry = this.#session(message.sessionId);
@@ -521,9 +521,15 @@ export class RpcServer {
 		}
 	}
 
-	#sendPrompt(sessionId: string, entry: ServerSession, prompt: string, images?: readonly ImageAttachment[]): Result {
+	#sendPrompt(
+		sessionId: string,
+		entry: ServerSession,
+		prompt: string,
+		images?: readonly ImageAttachment[],
+		source?: "agent-note",
+	): Result {
 		const turnId = this.#createId();
-		this.#runTurn(sessionId, entry, () => entry.session.send(prompt, turnId, images)).catch((error: unknown) =>
+		this.#runTurn(sessionId, entry, () => entry.session.send(prompt, turnId, images, source)).catch((error: unknown) =>
 			process.stderr.write(`atelier-core: turn ${turnId} stopped: ${describeError(error)}\n`),
 		);
 		return { turnId };
@@ -549,7 +555,7 @@ export class RpcServer {
 			if (abort.signal.aborted || this.#stopping || this.#sessions.get(message.sessionId) !== entry)
 				throw new Error("Image preparation was canceled.");
 			checkModel();
-			return this.#sendPrompt(message.sessionId, entry, message.prompt, images);
+			return this.#sendPrompt(message.sessionId, entry, message.prompt, images, message.source);
 		} catch (error) {
 			if (this.#stopping || this.#sessions.get(message.sessionId) !== entry)
 				throw new CommandError("session_closed", "The session is closed.");

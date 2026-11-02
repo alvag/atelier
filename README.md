@@ -146,7 +146,7 @@ The agent can offer choices with `ask_user`, one question or a batch of up to fo
 ### Permission modes
 
 - `normal`: commands run in the sandbox without asking; what the sandbox cannot cover (leaving it, writing outside the working directory, deleting or publishing work) asks you.
-- `auto`: what `normal` would ask goes to a classifier model, which allows or denies it; you are asked when it cannot decide.
+- `auto`: what `normal` would ask goes to a classifier model, which allows or denies it; you are asked when it cannot decide. A turn started only by job notices or client-labelled agent notes has no user request for the classifier, so actions needing approval ask you.
 - `yolo`: nothing is asked except the commands that always ask. Do not use it for work you do not trust.
 
 Some commands are always refused (`rm -rf /`, `git reset --hard`, force pushes…) and some always ask (`rm -r`, `git push`, `npm publish`…), in every mode. Details: [sandbox and permissions](docs/sandbox.md).
