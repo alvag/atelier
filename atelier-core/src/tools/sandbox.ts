@@ -216,8 +216,8 @@ export function gitProtectedPaths(cwd: string, home: string = homedir()): string
 	const hooksPaths = [dir, common]
 		.flatMap((d) => [join(d, "config"), join(d, "config.worktree")])
 		.flatMap((file) => [file, ...includedConfigFiles([file], home)])
-		.map((file) => configFilePaths(file).hooksPath)
-		.flatMap((value) => (value === undefined ? [] : [configPath(value, root, home)]));
+		.flatMap((file) => configFilePaths(file).hooksPaths)
+		.map((value) => configPath(value, root, home));
 	return repositoryPaths(root, dir, common, hooksPaths, home, cwd);
 }
 

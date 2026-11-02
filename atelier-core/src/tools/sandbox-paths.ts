@@ -101,9 +101,12 @@ export function packageCacheDirectories(home: string): string[] {
 	].map((path) => join(home, path));
 }
 
-/** What one git configuration file names: its `core.hooksPath`, its include paths, and whether git could not read it. */
+/**
+ * What one git configuration file names: its `core.hooksPath` (every reading of it when only the fallback parser
+ * could read it), its include paths, and whether git could not read it.
+ */
 export interface ConfigFile {
-	hooksPath?: string;
+	hooksPaths: string[];
 	includes: string[];
 	malformed: boolean;
 }
@@ -140,7 +143,7 @@ function configRecords(run: SpawnSyncReturns<Buffer>): Buffer[] | undefined {
  * read the file, its own parser answers instead and `malformed` is set.
  */
 export function configFilePaths(file: string): ConfigFile {
-	if (!existsSync(file)) return { includes: [], malformed: false };
+	if (!existsSync(file)) return { hooksPaths: [], includes: [], malformed: false };
 	const run = gitConfig(
 		file,
 		["--get-regexp", "^(include\\.path|includeif\\..*\\.path|core\\.hookspath)$"],
@@ -174,7 +177,11 @@ export function configFilePaths(file: string): ConfigFile {
 	}
 	// Above the old buffer bound, only the original queries can tell whether git exited before Node could kill it.
 	if (Math.max(plainBytes, conditionalBytes, hooksBytes) > CONFIG_BUFFER_LIMIT) return separateConfigFilePaths(file);
-	return { includes: [...plain, ...conditional], malformed: false, ...(hooksPath === undefined ? {} : { hooksPath }) };
+	return {
+		hooksPaths: hooksPath === undefined ? [] : [hooksPath],
+		includes: [...plain, ...conditional],
+		malformed: false,
+	};
 }
 
 /** Preserve the original commands and their actual exit/overflow behavior for large individual query outputs. */
@@ -189,32 +196,117 @@ function separateConfigFilePaths(file: string): ConfigFile {
 		...conditional.map((record) => record.subarray(record.indexOf(10) + 1).toString("utf8")),
 	];
 	const hooksPath = hooks[0]?.toString("utf8");
-	return { includes, malformed: false, ...(hooksPath === undefined ? {} : { hooksPath }) };
+	return { hooksPaths: hooksPath === undefined ? [] : [hooksPath], includes, malformed: false };
 }
 
-/** The same answer read with a simple parser, for a file git rejects. */
-function parseConfigFile(file: string): { hooksPath?: string; includes: string[] } {
-	const found: { hooksPath?: string; includes: string[] } = { includes: [] };
+const HEADER = /\[[ \t]*([A-Za-z0-9.-]+)(?:[ \t]+"((?:[^"\\\n]|\\.)*)")?[ \t]*\]/y;
+const BROKEN_HEADER = /\[[ \t]*([A-Za-z0-9.-]*)/y;
+const KEY = /([A-Za-z][A-Za-z0-9-]*)[ \t]*(=?)/y;
+const ESCAPES: Record<string, string> = { "\\": "\\", '"': '"', n: "\n", t: "\t", b: "\b" };
+
+function matchAt(pattern: RegExp, text: string, index: number): RegExpExecArray | null {
+	pattern.lastIndex = index;
+	return pattern.exec(text);
+}
+
+function lineEnd(text: string, index: number): number {
+	const end = text.indexOf("\n", index);
+	return end === -1 ? text.length : end;
+}
+
+/**
+ * The value that starts at `start`, read as git reads it: quotes open and close anywhere, a `#` or `;` outside them
+ * starts a comment, `\"`, `\\`, `\n`, `\t` and `\b` are escapes, a backslash before a newline continues the line, and
+ * unquoted space at either end is dropped. `malformed` when git would reject it (an open quote, an unknown escape),
+ * read on to the end of the line; `end` is where its last line ends.
+ */
+function readValue(text: string, start: number): { value: string; malformed: boolean; end: number } {
+	let value = "";
+	let quoted = false;
+	let comment = false;
+	let malformed = false;
+	// Where the unquoted space at the end began, or -1.
+	let trim = -1;
+	let index = start;
+	for (; index < text.length && text[index] !== "\n"; index++) {
+		const char = text[index] as string;
+		if (comment) continue;
+		if (!quoted && (char === " " || char === "\t" || char === "\r")) {
+			if (trim === -1) trim = value.length;
+			if (value !== "") value += char;
+			continue;
+		}
+		if (!quoted && (char === "#" || char === ";")) {
+			comment = true;
+			continue;
+		}
+		trim = -1;
+		if (char === "\\") {
+			const next = text[index + 1];
+			if (next === undefined) continue;
+			index++;
+			if (next === "\n") continue;
+			const escaped = ESCAPES[next];
+			if (escaped === undefined) malformed = true;
+			value += escaped ?? next;
+		} else if (char === '"') quoted = !quoted;
+		else value += char;
+	}
+	return { value: trim === -1 ? value : value.slice(0, trim), malformed: malformed || quoted, end: index };
+}
+
+/**
+ * Every way the value at `start` can be read: the one git reads, or for a value git rejects, also its text to the
+ * end of the line and cut where a comment would start, each with and without its quotes.
+ */
+function valueReadings(text: string, start: number): { readings: string[]; end: number } {
+	const read = readValue(text, start);
+	if (!read.malformed) return { readings: [read.value], end: read.end };
+	const line = text.slice(start, read.end).trim();
+	const cut = line.replace(/[#;][\s\S]*$/, "").trim();
+	const readings = [read.value, line, cut].flatMap((value) => [value, value.replaceAll('"', "").trim()]);
+	return { readings: [...new Set(readings)].filter((value) => value !== ""), end: read.end };
+}
+
+/**
+ * The same answer read by a parser of git's syntax, for a file git rejects: sections and subsections, comments, an
+ * entry on its header's line, and values as `readValue` reads them. An include counts in any `include` or
+ * `includeIf` section; `core.hooksPath` only in `[core]` itself, as git reads it. A header git rejects counts as
+ * its name without a subsection.
+ */
+function parseConfigFile(file: string): { hooksPaths: string[]; includes: string[] } {
+	const found: { hooksPaths: string[]; includes: string[] } = { hooksPaths: [], includes: [] };
 	let text: string;
 	try {
-		text = readFileSync(file, "utf8");
+		text = readFileSync(file, "utf8").replaceAll("\r\n", "\n");
 	} catch {
 		return found;
 	}
 	let section = "";
-	for (const raw of text.split("\n")) {
-		const line = raw.trim();
-		const header = /^\[\s*([A-Za-z0-9.-]+)(?:\s+"[^"]*")?\s*\](.*)$/.exec(line);
-		if (header) {
-			section = (header[1] ?? "").toLowerCase();
-			continue;
+	let subsection = false;
+	for (let index = 0; index < text.length; ) {
+		const char = text[index];
+		if (char === " " || char === "\t" || char === "\r" || char === "\n") index++;
+		else if (char === "#" || char === ";") index = lineEnd(text, index);
+		else if (char === "[") {
+			const header = matchAt(HEADER, text, index);
+			const name = header ?? matchAt(BROKEN_HEADER, text, index);
+			section = (name?.[1] ?? "").toLowerCase();
+			subsection = header?.[2] !== undefined;
+			index = header ? HEADER.lastIndex : lineEnd(text, index);
+		} else {
+			const entry = matchAt(KEY, text, index);
+			if (entry?.[2] !== "=") {
+				// A key without a value names no path; anything else is a line git rejects.
+				index = lineEnd(text, index);
+				continue;
+			}
+			const key = (entry[1] ?? "").toLowerCase();
+			const { readings, end } = valueReadings(text, KEY.lastIndex);
+			if (key === "path" && (section === "include" || section === "includeif")) found.includes.push(...readings);
+			else if (key === "hookspath" && section === "core" && !subsection) found.hooksPaths = readings;
+			index = end;
 		}
-		const entry = /^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*?)\s*(?:[#;].*)?$/.exec(line);
-		if (!entry) continue;
-		const key = (entry[1] ?? "").toLowerCase();
-		const value = (entry[2] ?? "").replace(/^"(.*)"$/, "$1");
-		if (key === "path" && (section === "include" || section === "includeif")) found.includes.push(value);
-		else if (key === "hookspath" && section === "core") found.hooksPath = value;
 	}
 	return found;
 }
