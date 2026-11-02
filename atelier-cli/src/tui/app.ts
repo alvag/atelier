@@ -100,7 +100,7 @@ import {
 	profileChoices,
 	sessionChoices,
 } from "./selectors.ts";
-import { readTuiSettings, saveSidePanel } from "./settings.ts";
+import { abandonSidePanelSaves, readTuiSettings, saveSidePanel } from "./settings.ts";
 import { SIDE_PANEL_MIN_COLUMNS, SIDE_PANEL_WIDTH, SidePanel } from "./side-panel-view.ts";
 import { isStatsCommand, parseStatsCommand, STATS_USAGE, statsNote } from "./stats-command.ts";
 import { StatusLine, terminalTitle } from "./status-line.ts";
@@ -2119,6 +2119,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			timer = setTimeout(resolve, options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS);
 		});
 		await Promise.race([Promise.all([...saving.keys(), panelSaves]), gaveUp]);
+		// A save the disk did not finish in time is given up, its temporary file removed.
+		await abandonSidePanelSaves();
 		await Promise.race([link.request({ command: "session.close", sessionId }).catch(() => {}), gaveUp]);
 		clearTimeout(timer);
 		await Promise.all([link.close(), released, historyWrites]);

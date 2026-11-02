@@ -100,6 +100,18 @@ export async function readTuiSettings(home: string | undefined): Promise<TuiSett
 const saves = new Map<string, Promise<unknown>>();
 /** Each save's own temporary file. */
 let saveCount = 0;
+/** The saves asked for and not over yet, with their temporary file once they have one. */
+const inFlight = new Set<{ partial?: string; abandoned: boolean }>();
+
+/**
+ * Gives up the saves not over yet, as the TUI quits without waiting longer for a disk that does not answer: their
+ * temporary files are removed, and none of them writes or moves anything after. Later saves are not affected.
+ */
+export async function abandonSidePanelSaves(): Promise<void> {
+	const left = [...inFlight];
+	for (const save of left) save.abandoned = true;
+	await Promise.all(left.map((save) => (save.partial === undefined ? undefined : rm(save.partial, { force: true }))));
+}
 
 /**
  * Saves whether the side panel shows as `tui.sidePanel`, the rest of the file kept as it was (a missing file is made
@@ -108,7 +120,11 @@ let saveCount = 0;
  */
 export function saveSidePanel(home: string, shown: boolean): Promise<string | undefined> {
 	const path = settingsPath(home);
-	const saved = (saves.get(path) ?? Promise.resolve()).then(() => writeSidePanel(path, shown));
+	const save = { abandoned: false };
+	inFlight.add(save);
+	const saved = (saves.get(path) ?? Promise.resolve())
+		.then(() => writeSidePanel(path, shown, save))
+		.finally(() => inFlight.delete(save));
 	const done = saved.catch(() => {});
 	saves.set(path, done);
 	void done.then(() => {
@@ -117,8 +133,14 @@ export function saveSidePanel(home: string, shown: boolean): Promise<string | un
 	return saved;
 }
 
-async function writeSidePanel(path: string, shown: boolean): Promise<string | undefined> {
+async function writeSidePanel(
+	path: string,
+	shown: boolean,
+	save: { partial?: string; abandoned: boolean },
+): Promise<string | undefined> {
 	const refused = (why: string) => `${path}: ${why}; the side panel's choice was not saved`;
+	const quit = () => refused("the TUI quit before it was written");
+	if (save.abandoned) return quit();
 	let raw: unknown = { kind: KIND, version: VERSION };
 	try {
 		raw = JSON.parse(await readFile(path, "utf8"));
@@ -137,6 +159,7 @@ async function writeSidePanel(path: string, shown: boolean): Promise<string | un
 		const target = await linkTarget(path);
 		// Written beside it and moved over it, so the file is never left half written.
 		partial = `${target}.${process.pid}.${++saveCount}.tmp`;
+		save.partial = partial;
 		await mkdir(dirname(target), { recursive: true });
 		// The file keeps its permissions (a private one stays private); a new one gets the usual ones.
 		const mode = await stat(target).then(
@@ -145,6 +168,11 @@ async function writeSidePanel(path: string, shown: boolean): Promise<string | un
 		);
 		await writeFile(partial, `${JSON.stringify(next, null, 2)}\n`, mode === undefined ? {} : { mode });
 		if (mode !== undefined) await chmod(partial, mode);
+		// Given up while it was written: its file goes, and the settings stay as they were.
+		if (save.abandoned) {
+			await rm(partial, { force: true });
+			return quit();
+		}
 		await rename(partial, target);
 		return undefined;
 	} catch (error) {
