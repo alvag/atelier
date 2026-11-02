@@ -211,6 +211,15 @@ describe("saving the side panel's choice", () => {
 		expect(await readdir(join(home, ".atelier"))).toEqual(["settings.json"]);
 	});
 
+	it("says the choice was not saved, without throwing, when its temporary file cannot be written or removed", async () => {
+		const before = JSON.stringify(file({ sidePanel: true }));
+		await save(before);
+		// A folder where the temporary file goes: writing it fails, and so does removing it.
+		for (let n = 1; n <= 100; n++) await mkdir(`${path()}.${process.pid}.${n}.tmp`);
+		expect(saveSidePanel(home, false)).toMatch(/: cannot write it: .+; the side panel's choice was not saved$/);
+		expect(await readFile(path(), "utf8")).toBe(before);
+	});
+
 	it("leaves a file it cannot read as settings untouched, and says why", async () => {
 		for (const content of ["{ nope", JSON.stringify({ tui: {} }), JSON.stringify(file("panel"))]) {
 			await save(content);

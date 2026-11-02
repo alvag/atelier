@@ -145,7 +145,10 @@ export function saveSidePanel(home: string, shown: boolean): string | undefined 
 		renameSync(partial, target);
 		return undefined;
 	} catch (error) {
-		if (partial !== undefined) rmSync(partial, { force: true });
+		// What could not be written may not be removable either: the answer says why it was not saved all the same.
+		try {
+			if (partial !== undefined) rmSync(partial, { force: true });
+		} catch {}
 		return refused(`cannot write it: ${(error as Error).message}`);
 	}
 }
