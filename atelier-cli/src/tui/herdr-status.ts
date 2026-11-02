@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
+import { HERDR_PANE_VARIABLE } from "@atelier/core";
 import { type ProgramStatus, visibleWidth } from "@earendil-works/pi-tui";
 
 const AGENT = "atelier";
@@ -8,7 +9,7 @@ const SOURCE = "atelier";
 /** The sidebar's summary is reported apart from the state, as Herdr's own bridges do. */
 const ACTIVITY_SOURCE = "atelier:activity";
 /** The variable the TUI gives the core, and so its tools' commands: an Atelier started by one finds its pane taken. */
-export const PANE_MARKER = "ATELIER_HERDR_PANE";
+export const PANE_MARKER = HERDR_PANE_VARIABLE;
 
 /** Herdr's own bridges wait 500 ms for a reply, then try once more for 1500 ms. */
 const ATTEMPT_MS = [500, 1500];
@@ -90,6 +91,18 @@ function rowWidth(socketPath: string): number {
 	return DEFAULT_ROW_WIDTH;
 }
 
+/** The Herdr pane the process runs in, from Herdr's variables; none outside Herdr. */
+export function herdrPane(env: Record<string, string | undefined>): string | undefined {
+	const paneId = env.HERDR_PANE_ID?.trim();
+	const socketPath = env.HERDR_SOCKET_PATH;
+	if (env.HERDR_ENV !== "1" || !paneId || !socketPath) return undefined;
+	try {
+		return statSync(socketPath).isSocket() ? paneId : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** One request to Herdr; `key` names what a newer request of the same kind replaces while it waits. */
 interface Pending {
 	key: string;
@@ -164,15 +177,9 @@ export class HerdrStatusReporter {
 		env: Record<string, string | undefined>,
 		options: { refreshMs?: number } = {},
 	): HerdrStatusReporter | undefined {
-		const paneId = env.HERDR_PANE_ID?.trim();
-		const socketPath = env.HERDR_SOCKET_PATH;
-		if (env.HERDR_ENV !== "1" || !paneId || !socketPath || env[PANE_MARKER] === paneId) return undefined;
-		try {
-			if (!statSync(socketPath).isSocket()) return undefined;
-		} catch {
-			return undefined;
-		}
-		return new HerdrStatusReporter(paneId, socketPath, options.refreshMs ?? REFRESH_MS);
+		const paneId = herdrPane(env);
+		if (paneId === undefined || env[PANE_MARKER] === paneId) return undefined;
+		return new HerdrStatusReporter(paneId, env.HERDR_SOCKET_PATH as string, options.refreshMs ?? REFRESH_MS);
 	}
 
 	/** Reports the state, unless it is the one asked for last; done and error are idle to Herdr. */

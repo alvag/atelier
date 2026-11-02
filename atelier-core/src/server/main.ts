@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import process from "node:process";
 import { createBackend as createNamedBackend } from "../backend-factory.ts";
+import { inHerdrPane } from "../claude-apart.ts";
 import { signedInBackends } from "../claude-code-auth.ts";
 import { parseCompactAt } from "../compaction/compactor.ts";
 import { describeError } from "../events.ts";
@@ -107,13 +108,14 @@ const createBackend = (name: BackendName) =>
 						}),
 			});
 
-// The models options.list offers: the echo backend (tests) has none, ATELIER_LOGIN_CHECK=off asks nothing.
+// The models options.list offers: the echo backend (tests) has none, ATELIER_LOGIN_CHECK=off asks nothing. Inside a
+// Herdr pane Claude Code is asked apart, or Herdr takes the TUI for Claude Code and forgets how to resume it.
 const signedIn = async (): Promise<readonly BackendName[]> =>
 	process.env.ATELIER_BACKEND === "echo"
 		? []
 		: process.env.ATELIER_LOGIN_CHECK === "off"
 			? BACKEND_NAMES
-			: signedInBackends();
+			: signedInBackends({ apart: inHerdrPane(process.env) });
 
 // The echo backend (tests) and ATELIER_MEMORY=off run without long-term memory.
 const memoryOff = process.env.ATELIER_BACKEND === "echo" || process.env.ATELIER_MEMORY === "off";

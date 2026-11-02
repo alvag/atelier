@@ -31,6 +31,7 @@ export {
 	type SdkQuery,
 } from "./backends/claude-code/backend.ts";
 export { type MapContext, mapSdkMessage } from "./backends/claude-code/map.ts";
+export { HERDR_PANE_VARIABLE, inHerdrPane } from "./claude-apart.ts";
 export {
 	bundledClaudeCode,
 	ClaudeCodeAuthError,
