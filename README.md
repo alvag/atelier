@@ -106,7 +106,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Alt+Enter         | While a turn runs, queue a follow-up, which runs as a turn of its own after it.                                |
 | Shift+Up          | Take the queued messages back into the editor, to edit them and send them again (also Alt+Up).                 |
 | Esc               | Cancel an open question or list; otherwise cancel a `!` command, clear a `!` draft, or interrupt the turn.     |
-| Up / Down         | Prompt history; move in lists and questions.                                                                   |
+| Up / Down         | Per-project prompt history across sessions; move in lists and questions.                                       |
 | Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit; in a question or a list, as Esc.              |
 | Ctrl+D            | Quit, on an empty editor; in a question or a list, as Esc.                                                     |
 | Ctrl+O            | Expand or fold the blocks of calls and every card, or the whole command of an approval.                        |
@@ -114,6 +114,10 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Ctrl+T            | Open or fold the active feature's tasks.                                                                       |
 | Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                                        |
 | PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.                         |
+
+In the TUI, Up in an empty editor recalls the latest prompt from this project, including earlier sessions. While a recalled prompt is unedited, Up/Down browse only on its first/last visual line, including wrapped lines; elsewhere they move the cursor. Editing ends recall, and Down past the newest entry returns to an empty editor. Ordinary drafts keep the arrows for cursor movement. The agent can read `~/.atelier/prompt-history` like saved session transcripts, so `--no-session` only reads it (nothing from that run is saved) and `!!` commands are never saved. Save, access and cleanup failures each warn at most once, independently, without blocking recall or sending; only actual file-deletion failures give the history directory for manual clearing. Each worktree or subdirectory has its own history; see [prompt history and privacy](docs/cli.md#prompt-history).
+
+Failed history writes remove their own temporary files. On a normal launch, abandoned temporaries are cleaned only after 24 hours and only when their owner PID is confirmed gone; live, uncertain and legacy ownerless temporaries are left alone. `--no-session` never cleans them. See the history reference above for safe manual clearing.
 
 ### Shell commands
 
@@ -168,6 +172,7 @@ Everything lives in `~/.atelier/`, which the agent cannot write:
 | `mcp-auth.json`            | OAuth sign-ins of MCP servers (`0600`), written by `atelier mcp login`.                                                                                 |
 | `auth.json`                | API keys and OpenAI sign-ins stored by `atelier login` (`0600`); the agent cannot read it.                                                              |
 | `device-id`                | This installation's id for Sign in with ChatGPT (`0600`).                                                                                               |
+| `prompt-history/`          | Per-project TUI prompt history in plain text (`0700` directories, `0600` files), without `!!` commands ([history](docs/cli.md#prompt-history)).         |
 | `sessions/`                | Saved sessions ([saved sessions](docs/sessions.md)).                                                                                                    |
 
 A project can add `.atelier/profile.json` and `.atelier/sandbox.json`. The agent reads `AGENTS.md` (or `CLAUDE.md`) from the working directory and its parents, and `~/.agents/AGENTS.md`. It also lists the skills in `.agents/skills/` (from the working directory up to the repository root) and in `~/.agents/skills/`, each a folder with a `SKILL.md`, and reads one when a task matches it (inside a herdr-core terminal, herdr-app's guide too, as the skill `herdr-app`); the first turn says which skills were loaded.

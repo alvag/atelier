@@ -1,7 +1,9 @@
 import {
 	type Component,
+	CURSOR_MARKER,
 	Editor,
 	type EditorTheme,
+	getKeybindings,
 	type TUI,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
@@ -9,6 +11,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { PROMPT_HISTORY_LIMIT } from "./prompt-history.ts";
 import type { Paint, Shade } from "./style.ts";
 
 /** What goes before the first line of a prompt, and the indent of the rest. */
@@ -65,12 +68,54 @@ export class PromptEditor extends Editor {
 	readonly #paint: Paint;
 	readonly #shade: Shade;
 	readonly #questionOpen: () => boolean;
+	#prompts: string[] = [];
+	#recalled: number | undefined;
+	#editorWidth = 80;
+	#hiddenAbove = 0;
+	#hiddenBelow = 0;
 	/** `questionOpen` says whether a question is open, which puts the editor out of sight. */
 	constructor(tui: TUI, theme: EditorTheme, paint: Paint, shade: Shade, questionOpen: () => boolean) {
 		super(tui, theme);
 		this.#paint = paint;
 		this.#shade = shade;
 		this.#questionOpen = questionOpen;
+		// Edits, including paste, programmatic changes and undo, end recall; cursor movement does not.
+		this.onChange = () => {
+			this.#recalled = undefined;
+		};
+	}
+
+	/** Keep Pi's own history empty so it only moves the cursor in an ordinary draft. */
+	override addToHistory(text: string): void {
+		const trimmed = text.trim();
+		if (trimmed === "") return;
+		this.#prompts = [...this.#prompts.filter((prompt) => prompt !== trimmed), trimmed].slice(-PROMPT_HISTORY_LIMIT);
+		this.#recalled = undefined;
+	}
+
+	#recall(data: string): boolean {
+		if (this.isShowingAutocomplete()) return false;
+		const keys = getKeybindings();
+		const up = keys.matches(data, "tui.editor.cursorUp");
+		const down = keys.matches(data, "tui.editor.cursorDown");
+		if (!up && !down) return false;
+		let index = this.#recalled;
+		if (index === undefined) {
+			if (!up || this.getText() !== "" || this.#prompts.length === 0) return false;
+			index = this.#prompts.length;
+		} else if (!this.#atBoundary(up)) return false;
+		const next = Math.max(0, Math.min(this.#prompts.length, index + (up ? -1 : 1)));
+		if (next === index) return true;
+		super.setText(this.#prompts[next] ?? "");
+		this.#recalled = next < this.#prompts.length ? next : undefined;
+		return true;
+	}
+
+	/** Let Pi lay out the cursor, including wrapping and scrolling, using only its public render protocol. */
+	#atBoundary(first: boolean): boolean {
+		const rows = super.render(this.#editorWidth);
+		const cursor = rows.findIndex((row) => row.includes(CURSOR_MARKER));
+		return first ? this.#hiddenAbove === 0 && cursor === 1 : this.#hiddenBelow === 0 && cursor === rows.length - 2;
 	}
 
 	/**
@@ -82,11 +127,13 @@ export class PromptEditor extends Editor {
 	}
 
 	protected override renderTopBorder(width: number, hiddenLineCount: number): string {
+		this.#hiddenAbove = hiddenLineCount;
 		if (!this.#shade.on) return super.renderTopBorder(width, hiddenLineCount);
 		return this.#border("↑", hiddenLineCount);
 	}
 
 	protected override renderBottomBorder(width: number, hiddenLineCount: number): string {
+		this.#hiddenBelow = hiddenLineCount;
 		if (!this.#shade.on) return super.renderBottomBorder(width, hiddenLineCount);
 		return this.#border("↓", hiddenLineCount);
 	}
@@ -106,11 +153,12 @@ export class PromptEditor extends Editor {
 	override handleInput(data: string): void {
 		if (this.hidden) return;
 		this.#before = this.getExpandedText();
-		super.handleInput(data);
+		if (!this.#recall(data)) super.handleInput(data);
 	}
 
 	override render(width: number): string[] {
 		if (this.hidden) return [];
+		this.#editorWidth = Math.max(1, width - (this.#shade.on ? MARK.length : 0));
 		const shell = parseShell(this.getText());
 		const notice =
 			shell === undefined

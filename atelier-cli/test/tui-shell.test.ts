@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -272,6 +272,55 @@ describe("TUI shell commands", { timeout: 20_000 }, () => {
 		await until(() => h.core.sent("session.shell_result").length === 2);
 		h.send("/exit");
 		expect(await h.code).toBe(0);
+	});
+
+	/** Runs `keys` as one launch's shell command in the given mode, then quits. */
+	const shellLaunch = async (args: string[], keys: string[]) => {
+		const h = open(args);
+		await until(h.screen.started);
+		expect(h.runner.calls).toHaveLength(0);
+		for (const key of keys) h.screen.type(key);
+		return h;
+	};
+
+	it("recalls a ! command in a later TUI without running it at startup", async () => {
+		for (const keys of [
+			["!echo again", "\r"],
+			["\x1b[A", "\r"],
+		]) {
+			const h = await shellLaunch(["--mode", "auto"], keys);
+			await until(() => h.runner.calls.length === 1);
+			expect(h.runner.calls[0]?.command).toBe("echo again");
+			h.runner.calls[0]?.finish(done);
+			await until(() => h.core.sent("session.shell_result").length === 1);
+			h.screen.type("\x04");
+			expect(await h.code).toBe(0);
+		}
+	});
+
+	it("recalls a !! command in the same TUI but never saves it", async () => {
+		const first = await shellLaunch(["--mode", "auto"], ["!!echo private", "\r"]);
+		await until(() => first.runner.calls.length === 1);
+		first.runner.calls[0]?.finish(done);
+		await until(() => first.core.sent("session.shell_result").length === 1);
+		expect(first.core.sent("session.shell_result")[0]).toMatchObject({ result: { excludeFromContext: true } });
+		first.screen.type("\x1b[A");
+		first.screen.type("\r");
+		await until(() => first.runner.calls.length === 2);
+		expect(first.runner.calls[1]?.command).toBe("echo private");
+		first.runner.calls[1]?.finish(done);
+		await until(() => first.core.sent("session.shell_result").length === 2);
+		expect(first.core.sent("session.shell_result")[1]).toMatchObject({ result: { excludeFromContext: true } });
+		first.screen.type("\x04");
+		expect(await first.code).toBe(0);
+		const stored = await readdir(join(home, ".atelier", "prompt-history"), { recursive: true });
+		expect(stored.filter((name) => name.endsWith(".json"))).toEqual([]);
+
+		const second = await shellLaunch(["--mode", "auto"], ["\x1b[A", "\r"]);
+		await turn();
+		expect(second.runner.calls).toHaveLength(0);
+		second.screen.type("\x04");
+		expect(await second.code).toBe(0);
 	});
 
 	it("sends a bare ! or !! as an ordinary prompt", async () => {
