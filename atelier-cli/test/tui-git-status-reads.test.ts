@@ -91,7 +91,7 @@ describe("reading untracked files", () => {
 		const pending = readGitChanges(base, undefined, { timeoutMs: 30_000 });
 		await reads.started;
 		reads.release();
-		expect(await pending).toEqual({ lines: { added: 2, removed: 0 } });
+		expect(await pending).toEqual({ lines: { added: 2, removed: 0 }, files: 1 });
 	});
 
 	it("gives up a read held past an abort, without the lines", async () => {
@@ -113,7 +113,11 @@ describe("reading untracked files", () => {
 		reads.release();
 		await writeFile(join(base, "other"), "three\n");
 		reads.failOpen = { name: "untracked", code: "ENOENT" };
-		expect(await readGitChanges(base, undefined, { timeoutMs: 30_000 })).toEqual({ lines: { added: 1, removed: 0 } });
+		// The files are the ones git status listed, the one gone since included.
+		expect(await readGitChanges(base, undefined, { timeoutMs: 30_000 })).toEqual({
+			lines: { added: 1, removed: 0 },
+			files: 2,
+		});
 		for (const code of ["ELOOP", "EACCES"]) {
 			reads.failOpen = { name: "untracked", code };
 			expect(await readGitChanges(base, undefined, { timeoutMs: 30_000 })).toEqual({});
@@ -173,7 +177,7 @@ describe("reading untracked files", () => {
 		};
 		const changes = await readGitChanges(base, undefined, { timeoutMs: 30_000 });
 		expect(gone).toBe(true);
-		expect(changes).toEqual({ lines: gitLines() });
+		expect(changes).toEqual({ lines: gitLines(), files: 2 });
 	});
 
 	it.each([
