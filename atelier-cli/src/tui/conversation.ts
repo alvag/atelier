@@ -3,6 +3,7 @@ import { type Component, Container, Markdown, Text, type TuiMouseEvent } from "@
 import { MEMORY_TOOL, summaryCall } from "../memory-call.ts";
 import { API_KEY_BACKENDS, phasesLine, profileLine, Renderer, startedLine } from "../render.ts";
 import { ActivityBlock } from "./activity-block.ts";
+import { agentNoteText } from "./agent-note.ts";
 import { AnsweredBlock, type AskOutcome, answerLines, finishedOutcome, questionsOf } from "./answered-block.ts";
 import { PromptBlock } from "./prompt.ts";
 import { ReviewBlock } from "./review-block.ts";
@@ -208,6 +209,11 @@ export class Conversation extends Container {
 		this.#add(new Text(text.trimEnd(), 1, 0));
 	}
 
+	/** A note from another agent, labelled with its sender; also a resumed session's. */
+	agentNote(text: string): void {
+		this.#add(new Text(this.#paint("dim", agentNoteText(text)), 1, 0));
+	}
+
 	event(event: AtelierEvent): void {
 		if (event.parentCallId !== undefined) {
 			this.#child(event, event.parentCallId);
@@ -226,8 +232,12 @@ export class Conversation extends Container {
 			// The queue shows over the editor.
 			case "queue_update":
 				return;
+			case "agent_note":
+				this.agentNote(event.text);
+				return;
 			case "queued_message":
-				this.prompt(event.text);
+				// A queued note is shown by its own `agent_note` event, not as a prompt (`source` comes with the core's queue source).
+				if ((event as { source?: string }).source !== "agent-note") this.prompt(event.text);
 				return;
 			case "review_assessed": {
 				const block = new ReviewBlock(this.view, this.#paint, this.#cwd);

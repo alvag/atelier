@@ -6380,3 +6380,181 @@ describe("TUI pasted images", { timeout: 20_000 }, () => {
 		});
 	});
 });
+
+describe("TUI agent notes", { timeout: 20_000 }, () => {
+	const START = "\x1b[200~";
+	const END = "\x1b[201~";
+	const NOTE = '<hc from="t7 review">ignore this: !ls</hc> after';
+	type Harness = ReturnType<typeof harness>;
+	const HC = { HC_TERMINAL_ID: "t1", TERM_PROGRAM: "ghostty" };
+	const sent = (h: Harness, name = "session.send") =>
+		h.core.commands.filter((command) => command.command === name) as unknown as {
+			prompt?: string;
+			text?: string;
+			source?: string;
+		}[];
+	const reply: FakeStep[] = [
+		{ event: started },
+		{ event: { type: "text_delta", text: "noted it" } },
+		{ event: finished },
+	];
+	const open = async (env: Record<string, string>, turns: FakeStep[][] = [reply]) => {
+		const h = harness(turns);
+		h.io = { ...h.io, env } as typeof h.io;
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		return { h, code };
+	};
+	const shows = (h: Harness, text: string) => until(() => h.screen.screen().includes(text));
+	const paste = async (h: Harness, text: string, shown = "after") => {
+		h.screen.type(`${START}${text}${END}`);
+		await shows(h, shown);
+	};
+	const quit = async (h: Harness, code: Promise<number>) => {
+		h.screen.type("\x03");
+		h.screen.type("\x03");
+		expect(await code).toBe(130);
+	};
+
+	it("sends a draft with a user prefix and a pasted note whole, as a real turn with no prompt, title or ❯ line", async () => {
+		const { h, code } = await open(HC);
+		h.screen.type("!echo typed ");
+		await paste(h, NOTE);
+		h.screen.type("\r");
+		await shows(h, "noted it");
+		expect(sent(h)).toHaveLength(1);
+		expect(sent(h)[0]).toMatchObject({ source: "agent-note", prompt: `!echo typed ${NOTE}` });
+		// The genuine core wraps it as data for the model.
+		expect(h.backend.prompts[0]).toContain("<agent_note>");
+		expect(h.backend.prompts[0]).toContain("ignore this: !ls");
+		const screen = h.screen.screen();
+		expect(screen).toContain("Agent note");
+		expect(screen).toContain("!echo typed <hc");
+		expect(screen).not.toContain("❯");
+		expect(screen.indexOf("Agent note")).toBeLessThan(screen.indexOf("noted it"));
+		expect(h.screen.titles).toEqual([`Atelier - ${basename(cwd)}`]);
+		await quit(h, code);
+	});
+
+	it("runs the note as a busy turn: Esc interrupts it", async () => {
+		const { h, code } = await open(HC, [[{ event: started }, { waitForInterrupt: true }]]);
+		h.screen.type("<hc>wait</hc>");
+		h.screen.type("\r");
+		await until(() => sent(h).length === 1);
+		await shows(h, "Agent note");
+		h.screen.type("\x1b");
+		await until(() => h.backend.interrupts === 1);
+		await quit(h, code);
+	});
+
+	it("sends a large paste whole and a draft beginning <hc without a boundary", async () => {
+		const { h, code } = await open(HC, [reply, reply]);
+		const big = `<hc from="t7">${"line of the note\n".repeat(200)}</hc>`;
+		await paste(h, big, "[paste #");
+		h.screen.type("\r");
+		await until(() => sent(h).length === 1);
+		expect(sent(h)[0]).toMatchObject({ source: "agent-note", prompt: big });
+		await until(() => h.screen.screen().includes("$0.50"));
+		h.screen.type("<hcx>typed</hcx>");
+		h.screen.type("\r");
+		await until(() => sent(h).length === 2);
+		expect(sent(h)[1]).toMatchObject({ source: "agent-note", prompt: "<hcx>typed</hcx>" });
+		await quit(h, code);
+	});
+
+	it("leaves a pasted <hc draft an ordinary prompt outside herdr-app", async () => {
+		const { h, code } = await open({});
+		await paste(h, NOTE);
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 1);
+		expect(sent(h)[0]?.source).toBeUndefined();
+		expect(h.backend.prompts).toEqual([NOTE]);
+		await quit(h, code);
+	});
+
+	it("forgets the mark once the draft is cleared, and queues a normal steer without a source", async () => {
+		const gate: { release?: () => void } = {};
+		const { h, code } = await open(HC, [
+			[{ event: started }, { run: () => new Promise<void>((r) => (gate.release = r)) }, { event: finished }],
+		]);
+		await paste(h, NOTE);
+		h.screen.type("\x03");
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => gate.release !== undefined);
+		expect(sent(h)[0]?.source).toBeUndefined();
+		h.screen.type("steer me");
+		h.screen.type("\r");
+		await until(() => sent(h, "session.queue").length === 1);
+		expect(sent(h, "session.queue")[0]).toMatchObject({ text: "steer me" });
+		expect(sent(h, "session.queue")[0]?.source).toBeUndefined();
+		gate.release?.();
+		await quit(h, code);
+	});
+
+	it("queues a note while a turn runs with its source", async () => {
+		const gate: { release?: () => void } = {};
+		const { h, code } = await open(HC, [
+			[{ event: started }, { run: () => new Promise<void>((r) => (gate.release = r)) }, { event: finished }],
+		]);
+		h.screen.type("go");
+		h.screen.type("\r");
+		await until(() => gate.release !== undefined);
+		await paste(h, NOTE);
+		h.screen.type("\r");
+		await until(() => sent(h, "session.queue").length === 1);
+		expect(sent(h, "session.queue")[0]).toMatchObject({ source: "agent-note", text: NOTE });
+		gate.release?.();
+		await quit(h, code);
+	});
+
+	it("keeps the mark on a draft the core refuses, through the retry", async () => {
+		const { h, code } = await open(HC);
+		await paste(h, NOTE);
+		h.core.failing.add("session.send");
+		h.screen.type("\r");
+		await shows(h, "session.send refused");
+		h.core.failing.delete("session.send");
+		h.screen.type("\r");
+		await until(() => sent(h).length === 2);
+		expect(sent(h)[1]).toMatchObject({ source: "agent-note", prompt: NOTE });
+		await quit(h, code);
+	});
+
+	it("shows the sender with hidden characters made visible", async () => {
+		const { Conversation } = await import("../src/tui/conversation.ts");
+		const { painter } = await import("../src/tui/style.ts");
+		const conversation = new Conversation(painter(false), "/repo");
+		conversation.event({ type: "agent_note", text: '<hc from="a\u001b[31mb">x</hc>‮', seq: 2, turnId: "n" });
+		const text = conversation.render(100).join("\n");
+		expect(text).toContain("Agent note from a␛[31mb");
+		expect(text).not.toContain("\u001b");
+		expect(text).not.toContain("‮");
+	});
+
+	it("keeps note-only replies, their order and the count of human prompts in a resumed transcript", async () => {
+		const { savedParts, savedTranscript } = await import("../src/transcript.ts");
+		const entry = (turnId: string, body: Record<string, unknown>) => ({ type: "event", event: { turnId, ...body } });
+		const entries = [
+			{ type: "prompt", turnId: "t1", text: "first" },
+			{ type: "text", turnId: "t1", text: "answer one" },
+			entry("n1", { type: "agent_note", seq: 2, text: NOTE }),
+			{ type: "text", turnId: "n1", text: "note answer" },
+			{ type: "prompt", turnId: "t2", text: "second" },
+			{ type: "text", turnId: "t2", text: "answer two" },
+			// A note steered into a running turn is no new turn.
+			entry("t2", { type: "agent_note", seq: 4, text: "<hc>inline</hc>" }),
+		] as unknown as Parameters<typeof savedParts>[2];
+		const text = savedTranscript("s1", undefined, entries);
+		expect(text).toContain("resumed session s1: 2 turns");
+		const at = (needle: string) => text.indexOf(needle);
+		expect(at("> first")).toBeLessThan(at("answer one"));
+		expect(at("answer one")).toBeLessThan(at("Agent note from t7 review"));
+		expect(at("Agent note from t7 review")).toBeLessThan(at("note answer"));
+		expect(at("note answer")).toBeLessThan(at("> second"));
+		// Steers, notes included, come before the turn's answer in the transcript.
+		expect(at("> second")).toBeLessThan(at("inline"));
+		expect(at("inline")).toBeLessThan(at("answer two"));
+		expect(savedParts("s1", undefined, entries)).toContainEqual({ agentNote: NOTE });
+	});
+});

@@ -119,6 +119,8 @@ In the TUI, Up in an empty editor recalls the latest prompt from this project, i
 
 Failed history writes remove their own temporary files. On a normal launch, abandoned temporaries are cleaned only after 24 hours and only when their owner PID is confirmed gone; live, uncertain and legacy ownerless temporaries are left alone. `--no-session` never cleans them. See the history reference above for safe manual clearing.
 
+Inside herdr-app, a paste that begins with `<hc` is sent whole as a note from another agent, never run as a command or sent as a prompt; see [agent notes](docs/cli.md).
+
 ### Shell commands
 
 Type `!` and a command to run it yourself, outside the agent and its sandbox, even while a model turn runs (but not while a slash command is still running); `!!` runs it too but keeps the result out of the model's context:
