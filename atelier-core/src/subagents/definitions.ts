@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Usage } from "../events.ts";
 import { defineTool, type ToolContext, type ToolDefinition, type ToolOutcome } from "../tools/types.ts";
 
 export const TASK_TOOL = "task";
@@ -63,10 +64,10 @@ export const BUILTIN_AGENTS: readonly SubagentDefinition[] = Object.freeze([
 	},
 ]);
 
-/** How a subagent's turn ended: its report, or why there is none; with what it cost when its backend says. */
+/** How a subagent's turn ended: its report, or why there is none; with its tokens and what it cost when its backend says. */
 export type SubagentResult =
-	| { ok: true; report: string; costUsd?: number }
-	| { ok: false; error: string; costUsd?: number };
+	| { ok: true; report: string; usage?: Usage; costUsd?: number }
+	| { ok: false; error: string; usage?: Usage; costUsd?: number };
 
 export type RunSubagent = (agent: SubagentDefinition, prompt: string, context: ToolContext) => Promise<ToolOutcome>;
 /** Starts the subagent in the background and answers at once; `undefined` runs it as `task` without background. */

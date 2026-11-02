@@ -220,6 +220,25 @@ describe("background tasks", () => {
 		expect(prompt.length).toBeLessThan(26_000);
 	});
 
+	it("tells the clients the subagent's model as it starts and the tokens it used when it ends", async () => {
+		const spent = { input: 10, output: 5, cacheRead: 100, cacheWrite: 2 };
+		const { session, play, woke, events } = await started(
+			[
+				[task({ agent: "explorer", prompt: "x", background: true, label: "l" }, "c1"), { event: finished }],
+				[{ event: finished }],
+			],
+			[[text("THE REPORT"), { event: { type: "turn_finished", stopReason: "end_turn", usage: spent, costUsd: 0.25 } }]],
+			{ model: "fake-main" },
+		);
+		await play(session.send("go"));
+		expect(ofType(events, "task_started")).toEqual([expect.objectContaining({ taskId: "task-1", model: "fake-main" })]);
+		await until(() => woke() === 1);
+		await play(session.nextQueued());
+		expect(ofType(events, "task_finished")).toEqual([
+			expect.objectContaining({ taskId: "task-1", status: "finished", usage: spent, costUsd: 0.25 }),
+		]);
+	});
+
 	it("says how it failed when the subagent fails", async () => {
 		const { parent, session, play, woke, events } = await started(
 			[
