@@ -26,6 +26,8 @@ export class WorkingDirectoryUnavailableError extends Error {
 export interface CliArgs {
 	/** Absent: interactive session. */
 	prompt?: string;
+	/** -i, --prompt-interactive: the interactive session submits it as its first message, as if typed. */
+	interactivePrompt?: string;
 	/** Deprecated: --yes, an alias of `--mode normal`. */
 	yes: boolean;
 	/** Present only when --mode was given: it wins over --yes and over the default saved in the home. */
@@ -65,6 +67,7 @@ export interface CliArgs {
 const STATS_OPTIONS = ["since", "project", "by", "json"] as const;
 
 export const USAGE = `Usage: atelier [options] [prompt]
+       atelier [options] -i <prompt>
        atelier update [vX.Y.Z | --main]
        atelier desktop
        atelier mcp list | login <server> | logout <server>
@@ -79,6 +82,11 @@ and exits; without one, starts an interactive session (/exit or Ctrl+D to quit),
 in a terminal interface when stdin and stdout are terminals.
 
 Options:
+  -i, --prompt-interactive <prompt>
+                         Start the interactive session and submit the prompt as its
+                         first message, as if typed; it needs the terminal interface.
+                         The next word is the prompt as it is, even one that starts
+                         with a dash, so the other options go before it
       --mode <mode>      Permission mode of the session: normal (default; commands that
                          run in the sandbox never ask, except the ones the guard
                          confirms in every mode: recursive removal, git push, ...),
@@ -193,8 +201,9 @@ export function parseCliArgs(
 	env: Record<string, string | undefined> = {},
 ): CliArgs {
 	let parsed: ReturnType<typeof parse>;
+	const { interactivePrompt, rest } = takeInteractivePrompt(argv);
 	try {
-		parsed = parse(argv);
+		parsed = parse(rest);
 	} catch (error) {
 		throw new UsageError(error instanceof Error ? error.message : String(error));
 	}
@@ -233,7 +242,10 @@ export function parseCliArgs(
 					: subcommand.name === "models"
 						? ["help", "version", "refresh"]
 						: ["help", "version"];
-		const given = Object.keys(values).filter((name) => !allowed.includes(name));
+		const given = [
+			...(interactivePrompt === undefined ? [] : [INTERACTIVE]),
+			...Object.keys(values).filter((name) => !allowed.includes(name)),
+		];
 		if (given.length > 0)
 			throw new UsageError(
 				`atelier ${subcommand.name} takes no session options (${given.map((name) => `--${name}`).join(", ")}).`,
@@ -246,9 +258,14 @@ export function parseCliArgs(
 	const chosenBackend = values.backend ?? named.backend;
 	const backend = chosenBackend ?? DEFAULT_BACKEND;
 	const prompt = subcommand === undefined && positionals.length > 0 ? positionals.join(" ") : undefined;
-	if (prompt !== undefined && prompt.trim() === "") throw new UsageError("The prompt is empty.");
+	if (prompt !== undefined && interactivePrompt !== undefined)
+		throw new UsageError(
+			`Give the prompt once: as the value of --${INTERACTIVE}, or alone for one turn. Quote a prompt of several words.`,
+		);
+	if ((prompt ?? interactivePrompt)?.trim() === "") throw new UsageError("The prompt is empty.");
 	return {
 		...(prompt === undefined ? {} : { prompt }),
+		...(interactivePrompt === undefined ? {} : { interactivePrompt }),
 		yes: values.yes ?? false,
 		...(mode === undefined ? {} : { mode }),
 		...(named.model === undefined ? {} : { model: named.model }),
@@ -293,34 +310,70 @@ function resolveCwd(value: string, baseDir: string | (() => string)): string {
 	return resolve(base, value);
 }
 
+const INTERACTIVE = "prompt-interactive";
+
+/**
+ * Takes -i and --prompt-interactive out of `argv` before parseArgs reads it: their value is the next word as it is, a
+ * prompt that starts with a dash included, or what follows `=`. The value of another option and what follows `--` are
+ * left alone.
+ */
+function takeInteractivePrompt(argv: readonly string[]): { interactivePrompt?: string; rest: string[] } {
+	const rest: string[] = [];
+	let interactivePrompt: string | undefined;
+	const take = (value: string) => {
+		if (interactivePrompt !== undefined) throw new UsageError(`--${INTERACTIVE} can be given only once.`);
+		interactivePrompt = value;
+	};
+	for (let index = 0; index < argv.length; index++) {
+		const word = argv[index] ?? "";
+		if (word === "--") {
+			rest.push(...argv.slice(index));
+			break;
+		}
+		if (word === "-i" || word === `--${INTERACTIVE}`) {
+			const value = argv[index + 1];
+			if (value === undefined) throw new UsageError(`--${INTERACTIVE} needs a prompt.`);
+			take(value);
+			index++;
+			continue;
+		}
+		if (word.startsWith(`--${INTERACTIVE}=`)) {
+			take(word.slice(`--${INTERACTIVE}=`.length));
+			continue;
+		}
+		rest.push(word);
+		// The value of a string option given apart is its own: `--profile -i` names a profile.
+		const option = OPTIONS[word.slice(2) as keyof typeof OPTIONS];
+		if (word.startsWith("--") && option?.type === "string" && index + 1 < argv.length) rest.push(argv[++index] ?? "");
+	}
+	return { ...(interactivePrompt === undefined ? {} : { interactivePrompt }), rest };
+}
+
+const OPTIONS = {
+	yes: { type: "boolean", short: "y" },
+	mode: { type: "string" },
+	model: { type: "string" },
+	backend: { type: "string" },
+	profile: { type: "string" },
+	cwd: { type: "string" },
+	help: { type: "boolean", short: "h" },
+	version: { type: "boolean", short: "v" },
+	"no-review": { type: "boolean" },
+	"no-sandbox": { type: "boolean" },
+	continue: { type: "boolean" },
+	resume: { type: "string" },
+	"no-session": { type: "boolean" },
+	"no-fullscreen": { type: "boolean" },
+	main: { type: "boolean" },
+	since: { type: "string" },
+	project: { type: "string" },
+	by: { type: "string" },
+	json: { type: "boolean" },
+	refresh: { type: "boolean" },
+} as const;
+
 function parse(argv: readonly string[]) {
-	return parseArgs({
-		args: [...argv],
-		allowPositionals: true,
-		strict: true,
-		options: {
-			yes: { type: "boolean", short: "y" },
-			mode: { type: "string" },
-			model: { type: "string" },
-			backend: { type: "string" },
-			profile: { type: "string" },
-			cwd: { type: "string" },
-			help: { type: "boolean", short: "h" },
-			version: { type: "boolean", short: "v" },
-			"no-review": { type: "boolean" },
-			"no-sandbox": { type: "boolean" },
-			continue: { type: "boolean" },
-			resume: { type: "string" },
-			"no-session": { type: "boolean" },
-			"no-fullscreen": { type: "boolean" },
-			main: { type: "boolean" },
-			since: { type: "string" },
-			project: { type: "string" },
-			by: { type: "string" },
-			json: { type: "boolean" },
-			refresh: { type: "boolean" },
-		},
-	});
+	return parseArgs({ args: [...argv], allowPositionals: true, strict: true, options: OPTIONS });
 }
 
 /**

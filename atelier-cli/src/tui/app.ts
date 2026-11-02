@@ -1781,9 +1781,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 	};
 	// A shell command keeps the bytes after its marker: the editor trims what it submits, and the command's tail may matter.
+	const submitTyped = (raw: string) => {
+		const line = raw.trim();
+		void submit(parseShell(line) !== undefined ? raw : line);
+	};
 	editor.onSubmit = (line) => {
 		const raw = editor.untrimmed;
-		void submit(raw.trim() === line && parseShell(line) !== undefined ? raw : line);
+		submitTyped(raw.trim() === line ? raw : line);
 	};
 	/**
 	 * Runs `prepare` behind the reads ahead of it and inserts the images it yields at the cursor; `none` runs when it
@@ -2030,6 +2034,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	// The state first: Herdr takes a resume command only from a reporter that holds the pane.
 	reportState("idle");
 	reportSession();
+	// -i: the first message, as if typed. Keys typed meanwhile are read after it, into the editor.
+	if (args.interactivePrompt !== undefined) submitTyped(args.interactivePrompt);
 	try {
 		return await done;
 	} finally {

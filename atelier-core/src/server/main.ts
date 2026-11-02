@@ -32,7 +32,9 @@ asks for anthropic-api, which reads the API key from the macOS Keychain
 (service atelier-anthropic).
 
 Environment:
-  ATELIER_BACKEND=echo   Network-free echo backend, for tests
+  ATELIER_BACKEND=echo   Network-free echo backend, for tests; it saves no sessions
+  ATELIER_ECHO_SESSIONS=on
+                         Save the echo backend's sessions in the home, for tests
   ANTHROPIC_API_KEY      API key for anthropic-api sessions, instead of the Keychain
   ATELIER_MEMORY=off     Run sessions without long-term memory
   ATELIER_MEMORY_PROMPTS=off
@@ -141,8 +143,8 @@ const server = new RpcServer({
 	systemPromptAppend: SYSTEM_PROMPT_APPEND,
 	home: homedir(),
 	env: process.env,
-	// The echo backend (tests) leaves nothing behind in the home.
-	sessions: process.env.ATELIER_BACKEND !== "echo",
+	// The echo backend (tests) leaves nothing behind in the home, unless a test with a home of its own asks for its sessions.
+	sessions: process.env.ATELIER_BACKEND !== "echo" || process.env.ATELIER_ECHO_SESSIONS === "on",
 	connectMemory: memoryOff
 		? async () => {
 				throw new MemoryUnavailableError(
