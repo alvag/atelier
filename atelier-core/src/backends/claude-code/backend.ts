@@ -217,7 +217,8 @@ export class ClaudeCodeBackend implements AgentBackend {
 				...(this.#options.pathToClaudeCodeExecutable === undefined
 					? {}
 					: { pathToClaudeCodeExecutable: this.#options.pathToClaudeCodeExecutable }),
-				// With the pipes the SDK gives Claude Code when it starts it itself.
+				// Its stdin and stdout are the SDK's pipes; the SDK does not read the stderr of a process it did not start,
+				// and Atelier asks it for none, so stderr goes nowhere rather than to a pipe that would fill and stop Claude Code.
 				...(this.#options.apart === true
 					? {
 							spawnClaudeCodeProcess: ({ command, args, cwd, env, signal }: SpawnOptions) =>
@@ -225,7 +226,7 @@ export class ClaudeCodeBackend implements AgentBackend {
 									...(cwd === undefined ? {} : { cwd }),
 									env,
 									signal,
-									stdio: ["pipe", "pipe", "pipe"],
+									stdio: ["pipe", "pipe", "ignore"],
 								}) as SpawnedProcess,
 						}
 					: {}),
