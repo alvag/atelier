@@ -933,6 +933,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		conversation.event(event);
 		feature.event(event);
 		line.event(event);
+		// Every root turn starts at seq 1, including queued and background-woken turns.
+		if (event.seq === 1 && event.parentCallId === undefined) childStatus.beginTurn();
 		childStatus.handle(event);
 		// The main agent's task in progress, the footer's, goes to Herdr's sidebar.
 		if (event.type === "feature_changed" && event.parentCallId === undefined) {

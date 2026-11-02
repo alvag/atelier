@@ -3853,6 +3853,140 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			);
 		});
 
+		const firstRootEvents: Record<string, AtelierEventBody> = {
+			text: { type: "text_delta", text: "hi" },
+			queued: { type: "queued_message", id: "q1", kind: "steer", text: "q" },
+			task_finished: {
+				type: "task_finished",
+				taskId: "w1",
+				agent: "w",
+				label: "L",
+				outputPath: "/o",
+				status: "finished",
+				notified: true,
+				running: 1,
+				waiting: 0,
+				durationMs: 1,
+			},
+		};
+		it.each(Object.keys(firstRootEvents))(
+			"takes finished children off at the first root event of each turn (seq 1), though the session starts once and the ack is late: %s",
+			async (first) => {
+				const h = harness([]);
+				const stub = stubCore();
+				const acks: (() => void)[] = [];
+				stub.link.request = (command) => {
+					stub.log.commands.push(command);
+					const sent = stub.log.commands.filter((c) => c.command === "session.send").length;
+					if (command.command !== "session.send" || sent === 1) return Promise.resolve({ sessionId: "s1" });
+					return new Promise((resolve) => acks.push(() => resolve({ sessionId: "s1" })));
+				};
+				const input = new PassThrough();
+				h.io.tui.terminal = observeProgramStatus(h.screen.terminal, input);
+				h.io.tui.connect = async () => stub.link;
+				const code = run(["--no-session"], h.io, () => h.backend);
+				await until(h.screen.started);
+				input.write("\x1b]7501;?\x1b\\");
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: capture the child OSC body
+				const records = () => [...h.screen.raw().matchAll(/\x1b\]7501;([^\x1b]*id=[^\x1b]*)\x1b\\/g)].map((m) => m[1]);
+				const job = { agent: "w", label: "L", outputPath: "/o" };
+				// The core numbers each turn's events from 1 again, and never says `session_started` twice.
+				let seq = 0;
+				const emit = (body: Record<string, unknown>) => stub.emit({ ...body, seq: ++seq });
+				const sends = () => stub.log.commands.filter((c) => c.command === "session.send").length;
+				const turn = async (n: number, opening: Record<string, unknown>) => {
+					emit(opening);
+					emit({ type: "tool_call_started", callId: `t${n}`, tool: "task", input: { label: "L" } });
+					emit({
+						type: "tool_call_started",
+						callId: `r${n}`,
+						tool: "read",
+						input: {},
+						parentCallId: `t${n}`,
+						agent: "w",
+					});
+					emit({ type: "tool_call_finished", callId: `t${n}`, ok: true, summary: "done", truncated: false });
+					emit(finished);
+				};
+				stub.emit({ type: "session_started" });
+				// Turn 1: a task ends while a background job (and, for the third case, another) keeps running.
+				h.screen.type("one");
+				h.screen.type("\r");
+				await until(() => sends() === 1);
+				await new Promise((resolve) => setImmediate(resolve));
+				seq = 0;
+				emit({ type: "task_started", taskId: "w1", ...job, running: 1 });
+				await turn(1, { type: "text_delta", text: "one" });
+				const before = records();
+				expect(before.filter((r) => r?.startsWith("state=clear"))).toEqual([]);
+				// Turn 2 opens with `first`; the ack of its prompt has not come, and the turn-1 rows go at once.
+				h.screen.type("two");
+				h.screen.type("\r");
+				await until(() => sends() === 2);
+				seq = 0;
+				emit(firstRootEvents[first] as Record<string, unknown>);
+				const swept = records().slice(before.length);
+				expect(swept.filter((r) => r?.startsWith("state=clear"))).toEqual(["state=clear:id=task2"]);
+				await turn(2, { type: "text_delta", text: "more" });
+				const mid = records().length;
+				// The late ack of the second prompt clears nothing the current turn reported.
+				for (const ack of acks) ack();
+				await new Promise((resolve) => setImmediate(resolve));
+				expect(records().length).toBe(mid);
+				expect(
+					records()
+						.slice(before.length)
+						.filter((r) => r === "state=clear:id=task3"),
+				).toEqual([]);
+				h.screen.type("\x03");
+				h.screen.type("\x03");
+				expect(await code).toBe(130);
+			},
+		);
+
+		it("clears each finished background task's row before the next prompt's, through the real core", async () => {
+			const job = { agent: "w", label: "L", outputPath: "/o" };
+			const turn = (n: number): FakeStep[] => [
+				{ event: { type: "task_started", taskId: `b${n}`, ...job, running: 1 } },
+				{
+					event: {
+						type: "task_finished",
+						taskId: `b${n}`,
+						...job,
+						status: "finished",
+						notified: true,
+						running: 0,
+						waiting: 0,
+						durationMs: 1,
+					},
+				},
+				{ event: finished },
+			];
+			const h = harness([[{ event: started }, ...turn(1)], turn(2), turn(3)]);
+			const input = new PassThrough();
+			h.io.tui.terminal = observeProgramStatus(h.screen.terminal, input);
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			input.write("\x1b]7501;?\x1b\\");
+			const records = () =>
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: capture the child OSC body
+				[...h.screen.raw().matchAll(/\x1b\]7501;([^\x1b]*id=[^\x1b]*)\x1b\\/g)].map((match) => match[1]);
+			const t = (n: number) => `id=task${n}:title=TA==`;
+			const expected: string[] = [];
+			for (const n of [1, 2, 3]) {
+				h.screen.type(`prompt ${n}`);
+				h.screen.type("\r");
+				if (n > 1) expected.push(`state=clear:id=task${n - 1}`);
+				expected.push(`state=working:${t(n)}`, `state=done:${t(n)}`);
+				await until(() => records().length >= expected.length);
+				expect(records()).toEqual(expected);
+			}
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+			expect(records().slice(expected.length)).toEqual(["state=clear:id=task3"]);
+		});
+
 		it("reports the main agent's feature progress, never a subagent's, and drops it with the session", async () => {
 			const h = harness([]);
 			let sessions = 0;
