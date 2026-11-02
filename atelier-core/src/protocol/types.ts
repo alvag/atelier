@@ -80,7 +80,7 @@ export type ClientCommand =
 	 * the message starts one at once and the answer adds its `turnId`. Fails with `turn_ended` while a turn that was interrupted
 	 * or failed is ending: it gave its queue back, takes nothing more, and the client keeps the message.
 	 */
-	| { command: "session.queue"; sessionId: string; kind: QueueKind; text: string }
+	| { command: "session.queue"; sessionId: string; kind: QueueKind; text: string; source?: "agent-note" }
 	/** Changes a queued message's text; fails with `not_queued` once it entered the conversation or left the queue. Answers `{}`. */
 	| { command: "session.queue_edit"; sessionId: string; messageId: string; text: string }
 	/** Takes the queued message `messageId` off the queue, or all of them without one; answers `{ messages }`, what it took. */

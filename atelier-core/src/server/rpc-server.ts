@@ -363,7 +363,7 @@ export class RpcServer {
 				const entry = this.#session(message.sessionId);
 				let id: string;
 				try {
-					({ id } = entry.session.queue(message.kind, message.text));
+					({ id } = entry.session.queue(message.kind, message.text, message.source));
 				} catch (error) {
 					// A turn that is ending interrupted or failed takes nothing more: the client keeps the message.
 					if (error instanceof ConfigureError) throw new CommandError(error.code, error.message);

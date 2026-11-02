@@ -107,6 +107,36 @@ describe("agent notes", () => {
 		expect(backend.toolResults[0]?.ok).toBe(false);
 	});
 
+	it("keeps idle notes out of the active feature's user-message log", async () => {
+		const backend = new FakeBackend([
+			[
+				{
+					toolCall: {
+						tool: "feature",
+						callId: "feature",
+						input: {
+							action: "start",
+							name: "notes",
+							title: "Notes",
+							header: "Keep attribution",
+							specs: ["Actual user request"],
+							tasks: [{ title: "Check", specs: ["S1"], route: "inline" }],
+						},
+					},
+				},
+				{ event: finished },
+			],
+			[{ event: finished }],
+		]);
+		const session = await Session.start({ backend, cwd, tools: [], odd: true });
+		await collect(session.send("Actual user request"));
+		await collect(session.send(note, undefined, [], "agent-note"));
+		await session.close();
+		const log = await readFile(join(cwd, "odd/tasks/notes.md"), "utf8");
+		expect(log).toContain("Actual user request");
+		expect(log).not.toContain(note);
+	});
+
 	it("leaves unmarked text unchanged, even when it looks like a note", async () => {
 		const backend = new FakeBackend([[{ event: finished }]]);
 		const memory = new FakeMemory();

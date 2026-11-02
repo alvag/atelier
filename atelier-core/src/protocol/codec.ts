@@ -132,6 +132,7 @@ const commandSchema = z.discriminatedUnion("command", [
 		sessionId,
 		kind: z.enum(["steer", "follow_up"]),
 		text: z.string().min(1),
+		source: z.literal("agent-note").optional(),
 	}),
 	z.object({
 		command: z.literal("session.queue_edit"),
