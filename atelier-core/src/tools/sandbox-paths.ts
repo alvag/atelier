@@ -209,22 +209,23 @@ function separateConfigFilePaths(file: string): ConfigFile {
 }
 
 /**
- * For a file git rejected or did not finish reading: the includes it did report, everything the fallback parser
- * reads in the file, and `core.hooksPath` from git when its answer is whole or else from the parser. So a cut read
- * protects at least what git would have reported; `malformed` protects the file's directory's places too.
+ * For a file git rejected or did not finish reading: the includes and `core.hooksPath` git did report (the hooks
+ * path only when its answer is whole) and everything the fallback parser reads in the file. So a cut read protects
+ * at least what git would have reported; `malformed` protects the file's directory's places too.
  */
 function fallbackConfigFile(file: string, includes: string[] = [], hooksPath?: string): ConfigFile {
 	const parsed = parseConfigFile(file);
 	return {
-		hooksPaths: hooksPath === undefined ? parsed.hooksPaths : [hooksPath],
+		hooksPaths: [...new Set([...(hooksPath === undefined ? [] : [hooksPath]), ...parsed.hooksPaths])],
 		includes: [...includes, ...parsed.includes],
 		malformed: true,
 	};
 }
 
-const HEADER = /\[[ \t]*([A-Za-z0-9.-]+)(?:[ \t]+"((?:[^"\\\n]|\\.)*)")?[ \t]*\]/y;
-const BROKEN_HEADER = /\[[ \t]*([A-Za-z0-9.-]*)/y;
-const KEY = /([A-Za-z][A-Za-z0-9-]*)[ \t]*(=?)/y;
+// Space around a header or a key is any space but a newline, a byte order mark included, as the line parser trimmed it.
+const HEADER = /\[[^\S\n]*([A-Za-z0-9.-]+)(?:[^\S\n]+"((?:[^"\\\n]|\\.)*)")?[^\S\n]*\]/y;
+const BROKEN_HEADER = /\[[^\S\n]*([A-Za-z0-9.-]*)/y;
+const KEY = /([A-Za-z][A-Za-z0-9-]*)[^\S\n]*(=?)/y;
 const ESCAPES: Record<string, string> = { "\\": "\\", '"': '"', n: "\n", t: "\t", b: "\b" };
 
 function matchAt(pattern: RegExp, text: string, index: number): RegExpExecArray | null {
@@ -292,24 +293,37 @@ function valueReadings(text: string, start: number): { readings: string[]; end: 
 }
 
 /**
- * The same answer read by a parser of git's syntax, for a file git rejects: sections and subsections, comments, an
- * entry on its header's line, and values as `readValue` reads them. An include counts in any `include` or
- * `includeIf` section; `core.hooksPath` only in `[core]` itself, as git reads it. A header git rejects counts as
- * its name without a subsection.
+ * The same answer read without git, for a file git rejects or does not finish reading: what a parser of git's
+ * syntax reads (`parseConfigText`) and, so the fallback never protects less than it once did, what the earlier
+ * line parser read (`parseConfigLines`).
  */
 function parseConfigFile(file: string): { hooksPaths: string[]; includes: string[] } {
-	const found: { hooksPaths: string[]; includes: string[] } = { hooksPaths: [], includes: [] };
 	let text: string;
 	try {
-		text = readFileSync(file, "utf8").replaceAll("\r\n", "\n");
+		text = readFileSync(file, "utf8");
 	} catch {
-		return found;
+		return { hooksPaths: [], includes: [] };
 	}
+	const syntax = parseConfigText(text.replaceAll("\r\n", "\n"));
+	const lines = parseConfigLines(text);
+	return {
+		hooksPaths: [...new Set([...syntax.hooksPaths, ...lines.hooksPaths])],
+		includes: [...new Set([...syntax.includes, ...lines.includes])],
+	};
+}
+
+/**
+ * A parser of git's syntax: sections and subsections, comments, an entry on its header's line, and values as
+ * `readValue` reads them. An include counts in any `include` or `includeIf` section; `core.hooksPath` only in
+ * `[core]` itself, as git reads it. A header git rejects counts as its name without a subsection.
+ */
+function parseConfigText(text: string): { hooksPaths: string[]; includes: string[] } {
+	const found: { hooksPaths: string[]; includes: string[] } = { hooksPaths: [], includes: [] };
 	let section = "";
 	let subsection = false;
 	for (let index = 0; index < text.length; ) {
-		const char = text[index];
-		if (char === " " || char === "\t" || char === "\r" || char === "\n") index++;
+		const char = text[index] as string;
+		if (/\s/.test(char)) index++;
 		else if (char === "#" || char === ";") index = lineEnd(text, index);
 		else if (char === "[") {
 			const header = matchAt(HEADER, text, index);
@@ -330,6 +344,27 @@ function parseConfigFile(file: string): { hooksPaths: string[]; includes: string
 			else if (key === "hookspath" && section === "core" && !subsection) found.hooksPaths = readings;
 			index = end;
 		}
+	}
+	return found;
+}
+
+/** The earlier line parser: a trailing comment cut first, then one pair of outer quotes; any `core` section. */
+function parseConfigLines(text: string): { hooksPaths: string[]; includes: string[] } {
+	const found: { hooksPaths: string[]; includes: string[] } = { hooksPaths: [], includes: [] };
+	let section = "";
+	for (const raw of text.split("\n")) {
+		const line = raw.trim();
+		const header = /^\[\s*([A-Za-z0-9.-]+)(?:\s+"[^"]*")?\s*\](.*)$/.exec(line);
+		if (header) {
+			section = (header[1] ?? "").toLowerCase();
+			continue;
+		}
+		const entry = /^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*?)\s*(?:[#;].*)?$/.exec(line);
+		if (!entry) continue;
+		const key = (entry[1] ?? "").toLowerCase();
+		const value = (entry[2] ?? "").replace(/^"(.*)"$/, "$1");
+		if (key === "path" && (section === "include" || section === "includeif")) found.includes.push(value);
+		else if (key === "hookspath" && section === "core") found.hooksPaths = [value];
 	}
 	return found;
 }
