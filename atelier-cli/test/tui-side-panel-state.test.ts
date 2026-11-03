@@ -303,13 +303,68 @@ describe("side panel state", () => {
 			compactions: 1,
 			lastCompaction: { before: 180_000, after: 40_000 },
 			memory: { available: true, project: "atelier", savedId: 5510 },
-			mcp: { servers: 2, failed: ["github"], problems: ["github: no answer"] },
-			review: { available: false, reason: "no reviewer model" },
+			mcp: {
+				servers: [
+					{ name: "docs", state: "connected", tools: ["a"] },
+					{ name: "github", state: "failed", tools: [], error: "no answer" },
+				],
+				problems: ["github: no answer"],
+			},
 			reviews: 1,
 			findings: 2,
 			instructions: ["AGENTS.md"],
-			skills: 2,
+			skills: ["a", "b"],
 		});
+		expect(state.status.review).toBeUndefined();
+	});
+
+	it("keeps every MCP server state and problems that belong to no server without starting a turn", () => {
+		const servers = [
+			{ name: "starting", state: "connecting" as const, tools: [] },
+			{ name: "docs", state: "connected" as const, tools: ["search", "read"] },
+			{ name: "broken", state: "failed" as const, tools: [], error: "no answer" },
+			{ name: "login", state: "needs_auth" as const, tools: [], error: "sign in" },
+			{ name: "off", state: "disabled" as const, tools: [] },
+			{ name: "bad", state: "invalid" as const, tools: [], error: "invalid entry" },
+		];
+		const problems = ["could not read MCP configuration"];
+		const state = after([{ type: "mcp_status", servers, problems }]);
+		expect(state.status.mcp).toEqual({ servers, problems });
+		expect(state.status.firstTurnStarted).toBe(false);
+		const next = after([{ type: "mcp_status", servers: [], problems: [] }], state);
+		expect(next.status.mcp).toEqual({ servers: [], problems: [] });
+	});
+
+	it("keeps dropped instruction paths and skill names", () => {
+		const state = after([
+			{ type: "project_instructions", files: ["/repo/AGENTS.md"], dropped: ["/repo/docs/AGENTS.md"] },
+			{
+				type: "skills_loaded",
+				skills: [{ name: "debugging", path: "/skills/debugging/SKILL.md" }],
+				warnings: [],
+			},
+		]);
+		expect(state.status.instructions).toEqual(["/repo/AGENTS.md"]);
+		expect(state.status.droppedInstructions).toEqual(["/repo/docs/AGENTS.md"]);
+		expect(state.status.skills).toEqual(["debugging"]);
+	});
+
+	it.each<Body>([
+		{ type: "session_started", backend: "fake", model: "fake", authSource: "none" },
+		{ type: "project_instructions", files: [], dropped: [] },
+		{ type: "skills_loaded", skills: [], warnings: [] },
+		{ type: "memory_status", available: false, reason: "not configured" },
+	])("marks the first turn started on $type, even without MCP or skills", (event) => {
+		expect(emptySidePanel().status.firstTurnStarted).toBe(false);
+		expect(after([event]).status.firstTurnStarted).toBe(true);
+		expect(after([{ ...event, parentCallId: "child" }]).status.firstTurnStarted).toBe(false);
+	});
+
+	it("marks a failed main turn started even when the backend never announced its session", () => {
+		expect(after([turnFinished({ stopReason: "error" })]).status.firstTurnStarted).toBe(true);
+		expect(after([{ ...turnFinished({ stopReason: "error" }), parentCallId: "child" }]).status.firstTurnStarted).toBe(
+			false,
+		);
 	});
 
 	it("keeps the main agent's feature with each task's note, and ignores a subagent's", () => {
@@ -342,6 +397,20 @@ describe("side panel state", () => {
 			},
 			{ type: "feature_changed", name: "f", path: "odd/tasks/f.md", title: "F", tasks: [] },
 			{ type: "mcp_status", servers: [], problems: ["github: no answer"] },
+			{ type: "memory_status", available: true, project: "atelier" },
+			{ type: "project_instructions", files: ["AGENTS.md"], dropped: ["nested/AGENTS.md"] },
+			{ type: "skills_loaded", skills: [{ name: "debugging", path: "skill" }], warnings: [] },
+			{ type: "review_status", available: false, reason: "could not run" },
+			{
+				type: "review_finished",
+				reviewId: "r1",
+				verdict: "approved",
+				findings: [{ id: "F1" } as never],
+				refuted: [],
+				followUps: [],
+				correction: null,
+				usage: usage(1, 1),
+			},
 		] as Body[];
 		const state = sidePanelResumed(saved.map((body, i) => ({ ...body, seq: i + 1, turnId: "t" }) as AtelierEvent));
 		expect(state).toEqual({
@@ -353,7 +422,10 @@ describe("side panel state", () => {
 				main: usage(10, 2, 90),
 				compactions: 1,
 				lastCompaction: { before: 9000, after: 900 },
+				reviews: 1,
+				findings: 1,
 			},
 		});
+		expect(state.status.firstTurnStarted).toBe(false);
 	});
 });

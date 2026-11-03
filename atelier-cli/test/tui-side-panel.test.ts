@@ -287,6 +287,26 @@ describe("side panel sections", () => {
 		]);
 	});
 
+	it("keeps MCP failure counts and the singular skill label with detailed state", () => {
+		const state = stateOf([
+			[
+				0,
+				{
+					type: "mcp_status",
+					servers: [
+						{ name: "broken", state: "failed", tools: [], error: "no answer" },
+						{ name: "bad", state: "invalid", tools: [], error: "invalid entry" },
+						{ name: "login", state: "needs_auth", tools: [] },
+					],
+					problems: [],
+				},
+			],
+			[0, { type: "skills_loaded", skills: [{ name: "debugging", path: "skill" }], warnings: [] }],
+			[0, { type: "project_instructions", files: [], dropped: ["nested/AGENTS.md"] }],
+		]);
+		expect(render(state).lines.slice(-3)).toEqual(["Integrations", " mcp      3 servers · 2 failed", " 1 skill"]);
+	});
+
 	it("puts what fails at the top of the panel", () => {
 		const state = stateOf([
 			[0, { type: "job_started", jobId: "j", label: "x", command: "x", outputPath: "x", running: 1 }],
