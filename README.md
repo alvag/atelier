@@ -122,7 +122,9 @@ In the TUI, Up in an empty editor recalls the latest prompt from this project, i
 
 Failed history writes remove their own temporary files. On a normal launch, abandoned temporaries are cleaned only after 24 hours and only when their owner PID is confirmed gone; live, uncertain and legacy ownerless temporaries are left alone. `--no-session` never cleans them. See the history reference above for safe manual clearing.
 
-Inside herdr-app, input beginning with `<hc`, or a draft containing a paste beginning that way, is sent as one note from another agent, never run as a command or saved as your prompt. In the TUI, Enter trims leading and trailing whitespace. Notes never answer questions for you; in line mode a note that cannot be queued is printed in full as not sent. This applies to the TUI (including the initial `-i` draft) and line mode; see [agent notes](docs/cli.md).
+When submitting a message inside herdr-app, input beginning with `<hc`, including the TUI's initial `-i` draft, is treated as an agent note rather than your prompt or command. A bracketed paste beginning that way marks the whole draft. Only bracketed pastes keep multiple lines in one note; otherwise each line is evaluated separately. A quoted `from` adds the sender to the label, as hc sends it. In the TUI, Enter trims leading and trailing whitespace.
+
+In the TUI, bracketed note pastes do not answer open questions; manually typed text follows normal question input rules. hc holds child notes while the TUI reports `blocked`. Line mode recognizes notes at the message prompt and during `ask_user`, but not approvals or review consent; notes waiting in type-ahead or queued in a turn that ends can be lost. Line mode does not report OSC 7501, so hc delivers no child notes to it; `hc send` from another hc terminal can still arrive. See [agent notes](docs/cli.md).
 
 ### Shell commands
 
