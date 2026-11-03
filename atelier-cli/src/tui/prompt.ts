@@ -145,7 +145,7 @@ export class PromptEditor extends Editor {
 
 	#before = "";
 
-	/** The text as it stood before the last key, which is what Enter submitted, without the trimming `onSubmit` gets. */
+	/** The untrimmed draft before the last key; Enter passes text without leading or trailing whitespace to `onSubmit`. */
 	get untrimmed(): string {
 		return this.#before;
 	}

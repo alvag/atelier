@@ -59,7 +59,7 @@ import { Renderer } from "./render.ts";
 import { runStats } from "./stats.ts";
 import { createTerminalReader, type LineReader } from "./terminal-input.ts";
 import { savedTranscript } from "./transcript.ts";
-import { startsNote } from "./tui/agent-note.ts";
+import { agentNoteText, startsNote } from "./tui/agent-note.ts";
 import { runTui, type TuiOptions } from "./tui/app.ts";
 import { runUpdate } from "./update.ts";
 
@@ -423,8 +423,14 @@ export async function run(
 			if (inHerdrCore && (isNote(answer.line) || lines.notePasted?.() === true)) {
 				try {
 					liveSession?.queue("steer", answer.line, "agent-note");
-				} catch {
-					// The turn already ended: the note stays unsent.
+				} catch (error) {
+					// The turn already ended: line mode cannot restore a draft, so show the whole note instead of losing it.
+					const code =
+						error instanceof Error && "code" in error && typeof error.code === "string" ? `${error.code}: ` : "";
+					const why = visibleText(`${code}${describeError(error)}`).text;
+					renderer.write(
+						`agent note not sent or queued (${why}); it is not your answer. Full note:\n${agentNoteText(answer.line)}\n`,
+					);
 				}
 				continue;
 			}

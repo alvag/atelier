@@ -19,6 +19,7 @@ import {
 	MissingApiKeyError,
 	Sandbox,
 	type SandboxManagerLike,
+	Session,
 	SessionStore,
 	type ToolDefinition,
 	VERSION,
@@ -2847,5 +2848,40 @@ describe("agent notes during a live ask_user question", () => {
 
 	it("keeps the question open when a draft and a pasted note share the line, and delivers it once", async () => {
 		await asked(`draft ${paste(NOTE)}\r`);
+	});
+
+	it.each([
+		["typed", `${NOTE}\r`, NOTE],
+		["draft and pasted", `draft ${paste(NOTE)}\r`, `draft ${NOTE}`],
+	])("shows a %s note in full, as not queued, when the turn already ended", async (_name, input, shown) => {
+		const queue = vi.spyOn(Session.prototype, "queue").mockImplementation(() => {
+			throw Object.assign(new Error("The turn was interrupted or failed; the message was not queued."), {
+				code: "turn_ended",
+			});
+		});
+		try {
+			const h = harness(
+				[[{ toolCall: { tool: "ask_user", input: { questions } } }, { event: started }, { event: finished }]],
+				{ env: HC, raw: true, keepStdinOpen: true, input: [] },
+			);
+			const pending = run(["--no-review", "--no-session", "go"], h.io, h.createBackend);
+			await until(() => h.out().includes("Choose 1-"));
+			type(h, input);
+			await until(() => h.out().split("Choose 1-").length > 2);
+			expect(queue).toHaveBeenCalledTimes(1);
+			expect(h.out()).toContain("not sent");
+			expect(h.out()).toContain("turn_ended");
+			expect(h.out()).toContain(`Agent note\n${shown}`);
+			expect(h.backend.toolResults).toHaveLength(0);
+			type(h, "2\r");
+			await until(() => h.backend.toolResults.length === 1);
+			h.io.stdin.end();
+			await pending;
+			expect(JSON.parse(h.backend.toolResults[0]?.output ?? "null")).toMatchObject({ status: "answered" });
+			expect(h.backend.toolResults[0]?.steering ?? "").not.toContain("run the checks");
+			expect(h.backend.prompts).toEqual(["go"]);
+		} finally {
+			queue.mockRestore();
+		}
 	});
 });
