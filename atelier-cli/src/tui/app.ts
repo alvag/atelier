@@ -1729,7 +1729,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		runShellCommand(typed.command, typed.exclude);
 		tui.requestRender();
 	};
-	/** A draft of another agent's note goes whole as a note: no command, no prompt, no history, but a turn like any other. */
+	/** Another agent's draft is one note, not a command, prompt or history entry. Enter trims its boundary whitespace. */
 	const sendNote = async (line: string, kind: QueueKind): Promise<void> => {
 		if (commanding) return origin.restore(true);
 		if (line.trim() === "") return;
@@ -1847,7 +1847,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			await startTurn({ command: "session.send", sessionId, prompt: line }, line);
 		}
 	};
-	// A shell command keeps the bytes after its marker: the editor trims what it submits, and the command's tail may matter.
+	// Enter trims boundary whitespace for prompts and notes. Only shell commands use the raw draft to preserve their tail.
 	editor.onSubmit = (line) => {
 		const raw = editor.untrimmed;
 		if (isNote(line)) return void submit(line, true);
