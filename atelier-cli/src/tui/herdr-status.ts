@@ -4,8 +4,8 @@ import { dirname, join } from "node:path";
 import { detectHost, HERDR_PANE_VARIABLE, type Host } from "@atelier/core";
 import { type ProgramStatus, visibleWidth } from "@earendil-works/pi-tui";
 import { oneLine } from "./program-status.ts";
+import { AGENT, resumeArgv } from "./resume-hint.ts";
 
-const AGENT = "atelier";
 const SOURCE = "atelier";
 /** The sidebar's summary is reported apart from the state, as Herdr's own bridges do. */
 const ACTIVITY_SOURCE = "atelier:activity";
@@ -267,7 +267,7 @@ export class HerdrStatusReporter {
 		this.#enqueue({
 			key: "session",
 			method: "pane.report_agent_session",
-			params: { agent_session_id: id, ...(saved ? { resume_argv: [AGENT, "--resume", id] } : {}) },
+			params: { agent_session_id: id, ...(saved ? { resume_argv: resumeArgv(id) } : {}) },
 		});
 	}
 
