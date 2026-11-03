@@ -1895,11 +1895,11 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	// Enter trims boundary whitespace for prompts and notes. Only shell commands use the raw draft to preserve their tail.
 	const submitTyped = (raw: string) => {
 		const line = raw.trim();
+		if (isNote(line)) return void submit(line, true);
 		void submit(parseShell(line) !== undefined ? raw : line);
 	};
 	editor.onSubmit = (line) => {
 		const raw = editor.untrimmed;
-		if (isNote(line)) return void submit(line, true);
 		submitTyped(raw.trim() === line ? raw : line);
 	};
 	/**

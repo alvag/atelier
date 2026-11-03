@@ -7020,10 +7020,10 @@ describe("TUI agent notes", { timeout: 20_000 }, () => {
 		{ event: { type: "text_delta", text: "noted it" } },
 		{ event: finished },
 	];
-	const open = async (env: Record<string, string>, turns: FakeStep[][] = [reply]) => {
+	const open = async (env: Record<string, string>, turns: FakeStep[][] = [reply], extra: string[] = []) => {
 		const h = harness(turns);
 		h.io = { ...h.io, env } as typeof h.io;
-		const code = run(["--no-session"], h.io, () => h.backend);
+		const code = run(["--no-session", ...extra], h.io, () => h.backend);
 		await until(h.screen.started);
 		return { h, code };
 	};
@@ -7089,6 +7089,32 @@ describe("TUI agent notes", { timeout: 20_000 }, () => {
 		const { h, code } = await open({});
 		await paste(h, NOTE);
 		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 1);
+		expect(sent(h)[0]?.source).toBeUndefined();
+		expect(h.backend.prompts).toEqual([NOTE]);
+		await quit(h, code);
+	});
+
+	it("sends an initial -i <hc note under herdr-app without a prompt, title or history entry", async () => {
+		const { h, code } = await open(HC, [reply, reply], ["-i", NOTE]);
+		await shows(h, "noted it");
+		expect(sent(h)).toHaveLength(1);
+		expect(sent(h)[0]).toMatchObject({ source: "agent-note", prompt: NOTE });
+		expect(h.screen.screen()).not.toContain("❯");
+		expect(h.screen.titles).toEqual([`Atelier - ${basename(cwd)}`]);
+		await shows(h, "$0.50");
+		h.screen.type("\x1b[A");
+		h.screen.type("a genuine prompt");
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length === 2);
+		expect(sent(h)[1]).toMatchObject({ prompt: "a genuine prompt" });
+		expect(sent(h)[1]?.source).toBeUndefined();
+		expect(h.backend.prompts[1]).toBe("a genuine prompt");
+		await quit(h, code);
+	});
+
+	it("leaves an initial -i <hc draft an ordinary prompt outside herdr-app", async () => {
+		const { h, code } = await open({}, [reply], ["-i", NOTE]);
 		await until(() => h.backend.prompts.length === 1);
 		expect(sent(h)[0]?.source).toBeUndefined();
 		expect(h.backend.prompts).toEqual([NOTE]);
