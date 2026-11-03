@@ -362,17 +362,19 @@ function statusLines(view: PanelView, p: Painters, width: number): string[] {
 				status.memory.savedId === undefined ? "" : ink.fg("textSecondary", `#${status.memory.savedId}`),
 			])
 		: "";
+	const servers = status.mcp?.servers ?? [];
+	const failed = servers.filter((server) => server.state === "failed" || server.state === "invalid").length;
 	const mcp =
-		status.mcp === undefined || status.mcp.servers === 0
+		servers.length === 0
 			? ""
-			: status.mcp.failed.length === 0
-				? `${value(`${status.mcp.servers} servers`)} ${ink.fg("success", "✓")}`
-				: joined(p, [value(`${status.mcp.servers} servers`), ink.fg("warning", `${status.mcp.failed.length} failed`)]);
+			: failed === 0
+				? `${value(`${servers.length} servers`)} ${ink.fg("success", "✓")}`
+				: joined(p, [value(`${servers.length} servers`), ink.fg("warning", `${failed} failed`)]);
 	const instructions = joined(p, [
 		...(status.instructions ?? []).map((file) => value(oneLine(file.split("/").at(-1) ?? file))),
-		status.skills === undefined || status.skills === 0
+		status.skills === undefined || status.skills.length === 0
 			? ""
-			: value(status.skills === 1 ? "1 skill" : `${status.skills} skills`),
+			: value(status.skills.length === 1 ? "1 skill" : `${status.skills.length} skills`),
 	]);
 	group("Integrations", [
 		...(status.memory?.available ? [label("memory", memory || value("on"))] : []),

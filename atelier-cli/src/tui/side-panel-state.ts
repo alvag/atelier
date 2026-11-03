@@ -1,4 +1,4 @@
-import { type AtelierEvent, type JsonValue, type Usage, ZERO_USAGE } from "@atelier/core";
+import { type AtelierEvent, type JsonValue, type McpServerStatus, type Usage, ZERO_USAGE } from "@atelier/core";
 import { type FeatureState, featureAfter } from "./feature-panel.ts";
 import { callLabel } from "./tool-card.ts";
 
@@ -38,6 +38,8 @@ export interface PanelAgent {
 
 /** What the Status section sums up, from the session's events. */
 export interface PanelStatus {
+	/** Whether this process has begun its first main-agent turn, independent of its integrations. */
+	firstTurnStarted: boolean;
 	/** The main agent's turns. */
 	turns: number;
 	/** Every turn's tokens, the subagents' included. */
@@ -47,12 +49,14 @@ export interface PanelStatus {
 	compactions: number;
 	lastCompaction?: { before: number; after?: number };
 	memory?: { available: boolean; project?: string; reason?: string; savedId?: number };
-	mcp?: { servers: number; failed: string[]; problems: string[] };
+	mcp?: { servers: McpServerStatus[]; problems: string[] };
 	review?: { available: boolean; reason?: string };
 	reviews: number;
 	findings: number;
 	instructions?: string[];
-	skills?: number;
+	/** Paths omitted by the core's 32 KB instructions cap; the event gives no per-file reason. */
+	droppedInstructions?: string[];
+	skills?: string[];
 }
 
 export interface SidePanelState {
@@ -69,7 +73,15 @@ export function emptySidePanel(): SidePanelState {
 		jobs: [],
 		agents: [],
 		unread: [],
-		status: { turns: 0, tokens: ZERO_USAGE, main: ZERO_USAGE, compactions: 0, reviews: 0, findings: 0 },
+		status: {
+			firstTurnStarted: false,
+			turns: 0,
+			tokens: ZERO_USAGE,
+			main: ZERO_USAGE,
+			compactions: 0,
+			reviews: 0,
+			findings: 0,
+		},
 	};
 }
 
@@ -81,7 +93,7 @@ export function emptySidePanel(): SidePanelState {
 export function sidePanelResumed(saved: readonly AtelierEvent[]): SidePanelState {
 	const { status } = saved.reduce((state, event) => sidePanelAfter(state, event, 0), emptySidePanel());
 	const { turns, tokens, main, compactions, lastCompaction, reviews, findings } = status;
-	const counted = { turns, tokens, main, compactions, reviews, findings };
+	const counted = { firstTurnStarted: false, turns, tokens, main, compactions, reviews, findings };
 	return { ...emptySidePanel(), status: lastCompaction === undefined ? counted : { ...counted, lastCompaction } };
 }
 
@@ -238,6 +250,7 @@ export function sidePanelAfter(state: SidePanelState, event: AtelierEvent, now: 
 				),
 				status: {
 					...state.status,
+					firstTurnStarted: true,
 					turns: state.status.turns + 1,
 					tokens: addUsage(state.status.tokens, event.usage),
 					main: main === undefined ? state.status.main : addUsage(state.status.main, main),
@@ -303,9 +316,12 @@ function statusAfter(status: PanelStatus, event: AtelierEvent): PanelStatus {
 					...(event.tokensAfter === undefined ? {} : { after: event.tokensAfter }),
 				},
 			};
+		case "session_started":
+			return { ...status, firstTurnStarted: true };
 		case "memory_status":
 			return {
 				...status,
+				firstTurnStarted: true,
 				memory: {
 					available: event.available,
 					...(event.project === undefined ? {} : { project: event.project }),
@@ -319,10 +335,7 @@ function statusAfter(status: PanelStatus, event: AtelierEvent): PanelStatus {
 			return {
 				...status,
 				mcp: {
-					servers: event.servers.length,
-					failed: event.servers
-						.filter((server) => server.state === "failed" || server.state === "invalid")
-						.map((server) => server.name),
+					servers: event.servers,
 					problems: event.problems,
 				},
 			};
@@ -331,12 +344,14 @@ function statusAfter(status: PanelStatus, event: AtelierEvent): PanelStatus {
 				...status,
 				review: { available: event.available, ...(event.reason === undefined ? {} : { reason: event.reason }) },
 			};
-		case "review_finished":
-			return { ...status, reviews: status.reviews + 1, findings: status.findings + event.findings.length };
+		case "review_finished": {
+			const { review: _review, ...rest } = status;
+			return { ...rest, reviews: status.reviews + 1, findings: status.findings + event.findings.length };
+		}
 		case "project_instructions":
-			return { ...status, instructions: event.files };
+			return { ...status, firstTurnStarted: true, instructions: event.files, droppedInstructions: event.dropped };
 		case "skills_loaded":
-			return { ...status, skills: event.skills.length };
+			return { ...status, firstTurnStarted: true, skills: event.skills.map((skill) => skill.name) };
 		default:
 			return status;
 	}
