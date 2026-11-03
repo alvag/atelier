@@ -239,6 +239,7 @@ export async function run(
 		if (args.yes) io.stderr(YES_DEPRECATED);
 		return runTui(args, {
 			...io.tui,
+			stdout: io.stdout,
 			stderr: io.stderr,
 			color: io.color,
 			version: await versionLabel(io.appRoot ?? OWN_ROOT),

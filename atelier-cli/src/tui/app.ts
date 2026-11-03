@@ -91,6 +91,7 @@ import { PromptEditor, parseShell } from "./prompt.ts";
 import { PromptHistory } from "./prompt-history.ts";
 import { type ImageDraft, PromptImages } from "./prompt-images.ts";
 import { QueuePanel } from "./queue-panel.ts";
+import { resumeHint } from "./resume-hint.ts";
 import {
 	choicesOf,
 	LIST_ROWS,
@@ -138,6 +139,7 @@ export interface TuiOptions {
 	terminal: Terminal;
 	/** Starts the core with these variables added to the environment (the switches --no-sandbox and --no-review set). */
 	connect: (env: Record<string, string>) => Promise<CoreLink>;
+	stdout: (text: string) => void;
 	stderr: (text: string) => void;
 	home?: string;
 	color: boolean;
@@ -318,6 +320,8 @@ interface Opened {
 	name?: string;
 	/** The name the user gave a resumed session with `/rename`. */
 	named?: string;
+	/** Whether the session was resumed from its file. */
+	resumed?: true;
 	/** A resumed session's saved events, for the side panel's status. */
 	saved?: AtelierEvent[];
 }
@@ -423,6 +427,7 @@ async function resumeSession(
 	return {
 		sessionId: resumed.sessionId,
 		savedId,
+		resumed: true,
 		...(resumed.configuration === undefined ? {} : { configuration: resumed.configuration }),
 		...(name === undefined ? {} : { name }),
 		...(resumed.name === undefined ? {} : { named: resumed.name }),
@@ -542,6 +547,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		return EXIT_FAILED;
 	}
 	let { sessionId, savedId } = opened;
+	let resumedFile = opened.resumed === true;
 	/** What the terminal's title names the session by, and the title it was given last. */
 	let titleName = opened.name;
 	let titled: string | undefined;
@@ -1360,6 +1366,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		programStatus.feature(undefined);
 		sessionId = next.sessionId;
 		savedId = next.savedId;
+		resumedFile = next.resumed === true;
 		pasted.reset();
 		pasteEpoch++;
 		abortClipboardReads();
@@ -2226,5 +2233,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		await Promise.race([link.request({ command: "session.close", sessionId }).catch(() => {}), gaveUp]);
 		clearTimeout(timer);
 		await Promise.all([link.close(), released, historyWrites]);
+		// Last, once the terminal is given back and the file is complete: the line to resume the session by.
+		if (savedId !== undefined && options.home !== undefined) {
+			const line = await resumeHint(options.home, args.cwd, savedId, resumedFile);
+			try {
+				if (line !== undefined) options.stdout(line);
+			} catch {
+				// The hint is best-effort: a closed terminal must not change the exit code.
+			}
+		}
 	}
 }

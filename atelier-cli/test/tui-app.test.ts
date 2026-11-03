@@ -7614,3 +7614,207 @@ describe("TUI agent notes", { timeout: 20_000 }, () => {
 		await quit(h, code);
 	});
 });
+
+describe("TUI resume hint", { timeout: 20_000 }, () => {
+	const sessionsDir = () => join(home, ".atelier", "sessions", folderKey(cwd));
+	const savedFiles = async () =>
+		(await readdir(sessionsDir()).catch(() => [])).filter((name) => name.endsWith(".jsonl"));
+	const hint = (id: string) => `atelier --resume ${id}\n`;
+
+	/** A harness whose stdout is kept, and whose core's session ids are noted. */
+	function hinting(turns: FakeStep[][], options: { stdout?: (text: string) => void } = {}) {
+		const h = harness(turns, { saveSessions: true, backendId: "anthropic-api" });
+		const out: string[] = [];
+		const runtime: string[] = [];
+		h.io.stdout = ((text: string) => {
+			expect(h.screen.stopped()).toBe(true);
+			out.push(text);
+			options.stdout?.(text);
+		}) as () => void;
+		h.io.tui.connect = async (env) => {
+			const link = await h.core.connect(env);
+			return {
+				...link,
+				request: async (command) => {
+					const answer = await link.request(command);
+					if (command.command === "session.start") runtime.push((answer as { sessionId: string }).sessionId);
+					return answer;
+				},
+			};
+		};
+		return { h, out, runtime };
+	}
+
+	/** Saves a session of the folder with one finished turn, as the core lays it out. */
+	async function saved(id: string): Promise<void> {
+		await mkdir(sessionsDir(), { recursive: true });
+		const lines = [
+			{ kind: "atelier.session", version: 1, id, cwd, createdAt: new Date().toISOString() },
+			{ type: "config", backend: "anthropic-api", model: "m", mode: "normal" },
+			{ type: "prompt", turnId: "t", text: "before" },
+			{ type: "event", event: { ...finished, seq: 2, turnId: "t", at: new Date().toISOString() } },
+		];
+		await writeFile(join(sessionsDir(), `${id}.jsonl`), lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+	}
+
+	const ranTurn = async (h: ReturnType<typeof hinting>["h"], text = "go") => {
+		await until(h.screen.started);
+		h.screen.type(text);
+		h.screen.type("\r");
+		await until(() => h.backend.prompts.length > 0 && h.screen.screen().includes("$0.50"));
+	};
+	const savedOnDisk = async (h: ReturnType<typeof hinting>["h"]) => {
+		await until(() => h.screen.screen().includes("$0.50"));
+		const files = await savedFiles();
+		expect(files).toHaveLength(1);
+		return (files[0] as string).slice(0, -".jsonl".length);
+	};
+
+	it("prints the resume command on stdout alone after /exit, with the saved id and not the core's", async () => {
+		const { h, out, runtime } = hinting([[{ event: started }, { event: finished }]]);
+		const code = run([], h.io, () => h.backend);
+		await ranTurn(h);
+		const id = await savedOnDisk(h);
+		h.screen.type("/exit");
+		h.screen.type("\r");
+		expect(await code).toBe(0);
+		expect(out).toEqual([hint(id)]);
+		expect(runtime).not.toContain(id);
+		expect(h.err()).toBe("");
+	});
+
+	it("prints nothing for a session that ran no turn, or one that is not saved", async () => {
+		const fresh = hinting([]);
+		const code = run([], fresh.h.io, () => fresh.h.backend);
+		await until(fresh.h.screen.started);
+		fresh.h.screen.type("\x04");
+		expect(await code).toBe(0);
+		expect(fresh.out).toEqual([]);
+
+		const unsaved = hinting([[{ event: started }, { event: finished }]]);
+		const second = run(["--no-session"], unsaved.h.io, () => unsaved.h.backend);
+		await ranTurn(unsaved.h);
+		unsaved.h.screen.type("\x04");
+		expect(await second).toBe(0);
+		expect(unsaved.out).toEqual([]);
+	});
+
+	it("prints the command of a resumed session without a new turn", async () => {
+		const id = randomUUID();
+		await saved(id);
+		const { h, out } = hinting([]);
+		const code = run(["--resume", id], h.io, () => h.backend);
+		await until(h.screen.started);
+		await until(() => h.screen.screen().includes("before"));
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+		expect(out).toEqual([hint(id)]);
+	});
+
+	it("prints nothing when the saved file is gone or cannot be read at the end", async () => {
+		for (const damage of [(path: string) => rm(path), (path: string) => writeFile(path, "not a session\n")]) {
+			const { h, out } = hinting([[{ event: started }, { event: finished }]]);
+			const code = run([], h.io, () => h.backend);
+			await ranTurn(h);
+			const id = await savedOnDisk(h);
+			await damage(join(sessionsDir(), `${id}.jsonl`));
+			h.screen.type("\x04");
+			expect(await code).toBe(0);
+			expect(out).toEqual([]);
+			await rm(sessionsDir(), { recursive: true, force: true });
+		}
+	});
+
+	it("prints the command after failed and interrupted turns that were saved", async () => {
+		const failed = hinting([[{ throw: "boom" }]]);
+		const first = run([], failed.h.io, () => failed.h.backend);
+		await until(failed.h.screen.started);
+		failed.h.screen.type("go");
+		failed.h.screen.type("\r");
+		await until(() => JSON.stringify(failed.h.screen.statuses).includes("error"));
+		failed.h.screen.type("\x04");
+		expect(await first).toBe(0);
+		const files = await savedFiles();
+		expect(files).toHaveLength(1);
+		expect(failed.out).toEqual([hint(files[0]?.slice(0, -6) as string)]);
+		await rm(sessionsDir(), { recursive: true, force: true });
+
+		const stopped = hinting([[{ event: { type: "text_delta", text: "working" } }, { waitForInterrupt: true }]]);
+		const second = run([], stopped.h.io, () => stopped.h.backend);
+		await until(stopped.h.screen.started);
+		stopped.h.screen.type("go");
+		stopped.h.screen.type("\r");
+		await until(() => stopped.h.screen.screen().includes("working"));
+		stopped.h.screen.type("\x1b");
+		await until(() => stopped.h.screen.screen().includes("interrupted"));
+		stopped.h.screen.type("\x04");
+		expect(await second).toBe(0);
+		const kept = await savedFiles();
+		expect(kept).toHaveLength(1);
+		expect(stopped.out).toEqual([hint(kept[0]?.slice(0, -6) as string)]);
+	});
+
+	it("starts over with /new, and follows /resume to the session it shows", async () => {
+		const id = randomUUID();
+		await saved(id);
+		const { h, out } = hinting([[{ event: started }, { event: finished }]]);
+		const code = run([], h.io, () => h.backend);
+		await ranTurn(h);
+		h.screen.type("/new");
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("── new session ──"));
+		await until(() => h.core.commands.some((command) => command.command === "session.close"));
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+		expect(out).toEqual([]);
+
+		// Only the fixture is left to pick: the first part saved a session too.
+		for (const name of await savedFiles()) if (name !== `${id}.jsonl`) await rm(join(sessionsDir(), name));
+		const again = hinting([]);
+		const second = run([], again.h.io, () => again.h.backend);
+		await until(again.h.screen.started);
+		again.h.screen.type("/resume");
+		again.h.screen.type("\r");
+		await until(() => again.h.screen.screen().includes("Resume a session"));
+		again.h.screen.type("\r");
+		await until(() => again.h.screen.screen().includes("── resumed session ──"));
+		await until(() => again.h.core.commands.some((command) => command.command === "session.close"));
+		again.h.screen.type("\x04");
+		expect(await second).toBe(0);
+		expect(again.out).toEqual([hint(id)]);
+	});
+
+	it.each([
+		["Ctrl+C", (h: ReturnType<typeof harness>) => h.screen.type("\x03"), 130],
+		["SIGTERM", (h: ReturnType<typeof harness>) => h.terminate(15), 143],
+		["SIGHUP", (h: ReturnType<typeof harness>) => h.terminate(1), 129],
+		["a core that died", (h: ReturnType<typeof harness>) => h.core.exit({ code: 1, signal: null, stderr: "" }), 1],
+	])("prints the command when %s ends the TUI", async (_name, quit, exitCode) => {
+		const { h, out } = hinting([[{ event: started }, { event: finished }]]);
+		const code = run([], h.io, () => h.backend);
+		await ranTurn(h);
+		const id = await savedOnDisk(h);
+		quit(h);
+		expect(await code).toBe(exitCode);
+		expect(out).toEqual([hint(id)]);
+	});
+
+	it.each([
+		["SIGTERM", 15, 143],
+		["SIGHUP", 1, 129],
+	])("keeps the exit code of %s when stdout fails with EIO or EPIPE", async (_name, signal, exitCode) => {
+		for (const errno of ["EIO", "EPIPE"]) {
+			const { h } = hinting([[{ event: started }, { event: finished }]], {
+				stdout: () => {
+					throw Object.assign(new Error(`write ${errno}`), { code: errno });
+				},
+			});
+			const code = run([], h.io, () => h.backend);
+			await ranTurn(h);
+			await savedOnDisk(h);
+			h.terminate(signal);
+			expect(await code).toBe(exitCode);
+			await rm(sessionsDir(), { recursive: true, force: true });
+		}
+	});
+});

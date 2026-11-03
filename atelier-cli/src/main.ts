@@ -41,12 +41,17 @@ const tui =
 	process.stdin.isTTY && process.stdout.isTTY && process.env.ATELIER_TUI !== "off" && recordPath === undefined
 		? {
 				terminal: observeProgramStatus(new ProcessTerminal()),
-				connect: (env: Record<string, string>) =>
-					RpcClient.connect({
+				connect: (env: Record<string, string>) => {
+					// Only an actual TUI session tolerates a terminal closing during shutdown, not --prompt or other commands.
+					process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+						if (error.code !== "EIO" && error.code !== "EPIPE") throw error;
+					});
+					return RpcClient.connect({
 						command: process.execPath,
 						args: [coreServer, "serve"],
 						env: { ...process.env, ...env },
-					}),
+					});
+				},
 			}
 		: undefined;
 
