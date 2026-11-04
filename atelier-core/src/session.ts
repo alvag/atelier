@@ -493,7 +493,7 @@ export class Session {
 	/** The MCP servers whose instructions the model was already given. */
 	readonly #mcpGiven = new Set<string>();
 	/** The last `mcp_status` said, as JSON, so a turn says it again only when it changed. */
-	#mcpSaid: string | undefined;
+	#mcpSaid: { json: string } | undefined;
 	/** The latest status waiting in the running turn's queue, not heard yet. */
 	#mcpQueued: string | undefined;
 	/** Stops listening to the MCP manager's changes. */
@@ -1001,7 +1001,7 @@ export class Session {
 				sent = woken ? `${sent}${text}` : `${text}\n\n${sent}`;
 			}
 			const mcpStatus = this.mcpStatus();
-			if (mcpStatus !== undefined && JSON.stringify(mcpStatus) !== (this.#mcpQueued ?? this.#mcpSaid)) {
+			if (mcpStatus !== undefined && JSON.stringify(mcpStatus) !== (this.#mcpQueued ?? this.#mcpSaid?.json)) {
 				this.#mcpQueued = JSON.stringify(mcpStatus);
 				turn.push({ type: "mcp_status", ...mcpStatus });
 			}
@@ -1270,7 +1270,7 @@ export class Session {
 				}
 				// Heard once the consumer takes it, before the yield: a listener may start a turn right away.
 				if (body.type === "mcp_status")
-					this.#mcpSaid = JSON.stringify({ servers: body.servers, problems: body.problems });
+					this.#mcpSaid = { json: JSON.stringify({ servers: body.servers, problems: body.problems }) };
 				const event = stamp(body);
 				// The state goes after the turn's events and before its end, which is the last line of the turn.
 				if (event.type === "turn_finished")
@@ -1953,17 +1953,24 @@ export class Session {
 		if (status === undefined || this.#closed) return;
 		const said = JSON.stringify(status);
 		if (this.#turn !== undefined) {
-			if (!this.#turn.closed && said !== (this.#mcpQueued ?? this.#mcpSaid)) {
+			if (!this.#turn.closed && said !== (this.#mcpQueued ?? this.#mcpSaid?.json)) {
 				this.#mcpQueued = said;
 				this.#turn.push({ type: "mcp_status", ...status });
 			}
 			return;
 		}
 		const idle = this.#options.idleEvent;
-		if (said === this.#mcpSaid || idle === undefined) return;
-		// A listener may immediately start a turn: it must already know this snapshot was delivered.
-		this.#mcpSaid = said;
-		this.#sayIdle(idle, { type: "mcp_status", ...status });
+		if (said === this.#mcpSaid?.json || idle === undefined) return;
+		// A listener may immediately start a turn: do not repeat its in-flight snapshot.
+		const previous = this.#mcpSaid;
+		const attempt = { json: said };
+		this.#mcpSaid = attempt;
+		try {
+			this.#sayIdle(idle, { type: "mcp_status", ...status });
+		} catch {
+			// A listener's failure is not delivery; preserve any newer reentrant acknowledgment.
+			if (this.#mcpSaid === attempt) this.#mcpSaid = previous;
+		}
 	}
 
 	/** The waiting notices as the agent reads them, the clients told none waits now; undefined when none waited. */

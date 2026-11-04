@@ -476,6 +476,99 @@ describe("MCP in a session", () => {
 					await session.close();
 				}
 			});
+
+			it("does not let a failing idle listener reject a completed turn, and retries the snapshot", async () => {
+				const mcpFake = fake();
+				const idle: AtelierEventBody[] = [];
+				let failing = true;
+				const session = await Session.start({
+					backend: new FakeBackend([
+						[{ run: async () => mcpFake.set("connected") }, { event: finished }],
+						[{ event: finished }],
+					]),
+					cwd: dir,
+					tools: [],
+					mcp: mcpFake.manager,
+					idleEvent: (event) => {
+						idle.push(event);
+						if (failing) throw new Error("listener broke");
+					},
+				});
+				try {
+					const stream = session.send("one");
+					const seen: AtelierEvent[] = [(await stream.next()).value as AtelierEvent];
+					await new Promise((resolve) => setImmediate(resolve));
+					mcpFake.set("failed");
+					for await (const event of stream) seen.push(event);
+					expect(seen.map((event) => event.type)).toContain("turn_finished");
+					expect(states(idle)).toEqual(["failed"]);
+					// The failed snapshot was not delivered: the next turn still says it.
+					failing = false;
+					expect(states(await collect(session.send("two")))).toEqual(["failed"]);
+				} finally {
+					await session.close();
+				}
+			});
+
+			it("does not let a failing idle listener reject an abandoned stream, and retries on the next change", async () => {
+				const mcpFake = fake();
+				const idle: AtelierEventBody[] = [];
+				let failing = true;
+				const session = await Session.start({
+					backend: new FakeBackend([[{ run: async () => mcpFake.set("connected") }, { event: finished }]]),
+					cwd: dir,
+					tools: [],
+					mcp: mcpFake.manager,
+					idleEvent: (event) => {
+						idle.push(event);
+						if (failing) throw new Error("listener broke");
+					},
+				});
+				try {
+					const stream = session.send("one");
+					await stream.next();
+					await expect(stream.return(undefined)).resolves.toBeDefined();
+					expect(states(idle)).toEqual(["connected"]);
+					failing = false;
+					// The same state announced again: the earlier delivery failed, so it is delivered now.
+					mcpFake.set("connected");
+					expect(states(idle)).toEqual(["connected", "connected"]);
+				} finally {
+					await session.close();
+				}
+			});
+
+			it.each([false, true])(
+				"keeps a newer reentrant delivery when the outer listener throws (return=%s)",
+				async (returnToOuter) => {
+					const mcpFake = fake();
+					const idle: AtelierEventBody[] = [];
+					const session = await Session.start({
+						backend: new FakeBackend([]),
+						cwd: dir,
+						tools: [],
+						mcp: mcpFake.manager,
+						idleEvent: (event) => {
+							idle.push(event);
+							if (idle.length === 1) {
+								mcpFake.set("connected");
+								if (returnToOuter) mcpFake.set("failed");
+								throw new Error("outer broke");
+							}
+						},
+					});
+					try {
+						mcpFake.set("failed");
+						const expected = returnToOuter ? ["failed", "connected", "failed"] : ["failed", "connected"];
+						expect(states(idle)).toEqual(expected);
+						// The latest reentrant delivery succeeded, even if it matches the outer attempt.
+						mcpFake.set(returnToOuter ? "failed" : "connected");
+						expect(states(idle)).toEqual(expected);
+					} finally {
+						await session.close();
+					}
+				},
+			);
 		});
 
 		it.each(["subagent", "review", "verifier", "classifier"])(
