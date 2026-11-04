@@ -245,8 +245,10 @@ export function sidePanelAfter(state: SidePanelState, event: AtelierEvent, now: 
 			const left = event.stopReason === "interrupted" ? "interrupted" : "the turn ended";
 			return {
 				...state,
-				agents: state.agents.map((agent) =>
-					agent.background || agent.status !== "running" ? agent : foregroundEnded(agent, now, left),
+				agents: capped(
+					state.agents.map((agent) =>
+						agent.background || agent.status !== "running" ? agent : foregroundEnded(agent, now, left),
+					),
 				),
 				status: {
 					...state.status,

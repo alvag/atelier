@@ -2646,7 +2646,7 @@ export class Session {
 			else if (event.type === "turn_finished") {
 				stopReason = event.stopReason;
 				usage = usage === undefined ? event.usage : addUsage(usage, event.usage);
-				costUsd = event.costUsd;
+				if (event.costUsd !== undefined) costUsd = (costUsd ?? 0) + event.costUsd;
 			}
 		}
 		const cost = { ...(usage === undefined ? {} : { usage }), ...(costUsd === undefined ? {} : { costUsd }) };
