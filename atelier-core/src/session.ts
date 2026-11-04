@@ -341,9 +341,15 @@ export interface SessionOptions {
 	 */
 	wake?: () => void;
 	/**
-	 * Hears what happens while no turn runs and none will start for it: the end of a background job after a turn that
-	 * was interrupted or failed, whose notice waits for the user's next prompt (`job_finished`, with `waiting`). Without
-	 * it, the event goes first in the next turn instead.
+	 * Set by the session that starts this one for itself (a subagent, a review role, the verifier, the permission
+	 * classifier): it may share the main session's `mcp` and `idleEvent`, and neither says the servers' changes nor closes
+	 * the manager, which the main session owns.
+	 */
+	internalChild?: boolean;
+	/**
+	 * Hears events that do not start a turn: background work ending after an interrupted or failed turn, and changes
+	 * to the main session's MCP status (even before the first turn). Without it, background events wait for the next
+	 * turn and that turn reports the latest MCP status if it changed.
 	 */
 	idleEvent?: (event: AtelierEventBody) => void;
 	/**
@@ -488,6 +494,8 @@ export class Session {
 	readonly #mcpGiven = new Set<string>();
 	/** The last `mcp_status` said, as JSON, so a turn says it again only when it changed. */
 	#mcpSaid: string | undefined;
+	/** Stops listening to the MCP manager's changes. */
+	#stopMcpWatch: (() => void) | undefined;
 	/** The configuration the session started with was saved. */
 	#recordedConfig = false;
 	/** What the backend that ran the turn answered at its end, until the turn's last event is saved. */
@@ -702,6 +710,8 @@ export class Session {
 		]
 			.filter((part) => part !== "")
 			.join("\n\n");
+		// Only the main session hears the manager.
+		if (options.internalChild !== true) session.#stopMcpWatch = options.mcp?.onChange(() => session.#mcpChanged());
 		try {
 			session.#backendSession = await options.backend.start({
 				...session.#startOptions(session.#model, session.#thinking, session.#compaction),
@@ -709,6 +719,7 @@ export class Session {
 			});
 			session.#backendSessionId = options.backend.id;
 		} catch (error) {
+			session.#stopMcpWatch?.();
 			await scratch.remove();
 			throw error;
 		}
@@ -1747,7 +1758,8 @@ export class Session {
 					...(requests === undefined ? {} : { requests }),
 				};
 			},
-			startChild: (options) => Session.start({ ...options, userQuestions: false }),
+			startChild: ({ mcp: _mcp, ...options }) =>
+				Session.start({ ...options, userQuestions: false, internalChild: true }),
 			createId: this.#createId,
 		};
 	}
@@ -1775,6 +1787,8 @@ export class Session {
 	close(): Promise<void> {
 		if (!this.#closing) {
 			this.#closed = true;
+			this.#stopMcpWatch?.();
+			this.#stopMcpWatch = undefined;
 			this.#userQuestions.close();
 			const scratch = this.#scratch;
 			this.#gathering?.();
@@ -1790,7 +1804,7 @@ export class Session {
 				// Nobody is left to hear that ending the memory session failed.
 				.then(() => this.#options.memory?.end().catch(() => {}))
 				.then(() => this.#options.memory?.close().catch(() => {}))
-				.then(() => this.#options.mcp?.close().catch(() => {}))
+				.then(() => (this.#options.internalChild ? undefined : this.#options.mcp?.close().catch(() => {})))
 				.then(() => this.#backendSession?.close())
 				.finally(async () => {
 					await stoppingJobs;
@@ -1914,10 +1928,29 @@ export class Session {
 		});
 	}
 
-	/** An event outside any turn: to its listener, and saved with the session as a turn's events are (`turnId` empty). */
+	/** An event outside any turn: to its listener and the recorder, which filters transient events (`turnId` empty). */
 	#sayIdle(idle: (event: AtelierEventBody) => void, event: AtelierEventBody): void {
 		this.#options.record?.event({ ...event, seq: 0, turnId: "" } as AtelierEvent);
 		idle(event);
+	}
+
+	/**
+	 * The MCP servers' visible state changed: said in the running turn, else through the idle event, once. Without
+	 * either it waits for the next turn, which says it if it still differs. It never wakes the agent.
+	 */
+	#mcpChanged(): void {
+		const status = this.mcpStatus();
+		if (status === undefined || this.#closed) return;
+		const said = JSON.stringify(status);
+		if (said === this.#mcpSaid) return;
+		const turn = this.#turnOpen() ? this.#turn : undefined;
+		const idle = this.#options.idleEvent;
+		if (turn === undefined && idle === undefined) return;
+		// A listener may immediately start a turn: it must already know this snapshot was delivered.
+		this.#mcpSaid = said;
+		const event: AtelierEventBody = { type: "mcp_status", ...status };
+		if (turn !== undefined) turn.push(event);
+		else if (idle !== undefined) this.#sayIdle(idle, event);
 	}
 
 	/** The waiting notices as the agent reads them, the clients told none waits now; undefined when none waited. */
@@ -2140,6 +2173,7 @@ export class Session {
 			child = await Session.start({
 				backend,
 				userQuestions: false,
+				internalChild: true,
 				cwd: this.#options.cwd,
 				...(settings.model === undefined ? {} : { model: settings.model }),
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),
@@ -2529,6 +2563,7 @@ export class Session {
 			return await Session.start({
 				backend,
 				userQuestions: false,
+				internalChild: true,
 				cwd: worktree?.cwd ?? this.#options.cwd,
 				...(model === undefined ? {} : { model }),
 				...(settings.thinking === undefined ? {} : { thinking: settings.thinking }),

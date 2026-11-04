@@ -2,12 +2,14 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type AtelierEventBody,
 	type BackendName,
 	decodeServerMessage,
 	FakeBackend,
+	McpManager,
 	RpcServer,
 	type ServerMessage,
 	SessionStore,
@@ -38,6 +40,8 @@ interface ServeOptions {
 	startError?: () => string | undefined;
 	/** Makes the backends created fail when they are closed. */
 	closeError?: string;
+	/** The MCP manager each session gets. */
+	connectMcp?: () => McpManager;
 }
 
 function serve(options: ServeOptions = {}) {
@@ -63,6 +67,7 @@ function serve(options: ServeOptions = {}) {
 		},
 		tools: [],
 		systemPromptAppend: "",
+		...(options.connectMcp ? { connectMcp: options.connectMcp } : {}),
 		...(options.noHome ? {} : { home }),
 		...(options.sessions === undefined ? {} : { sessions: options.sessions }),
 	});
@@ -170,6 +175,56 @@ describe("saving the sessions a server starts", () => {
 		await h.result({ command: "session.close", sessionId });
 		const resumed = await h.result({ command: "session.resume", sessionId: savedId, cwd });
 		expect(resumed.configuration).toMatchObject({ backend: "claude-code", permissionMode: "normal", pending: false });
+		await h.close();
+	});
+});
+
+describe("session.resume with MCP", () => {
+	it("returns the saved status as history and sends the live change as one session event, after the response", async () => {
+		const managers: McpManager[] = [];
+		const connectMcp = () => {
+			const manager = new McpManager({
+				file: join(cwd, "mcp.json"),
+				servers: [
+					{
+						name: "fixture",
+						transport: "stdio",
+						enabled: true,
+						timeoutMs: 1000,
+						command: process.execPath,
+						args: [fileURLToPath(new URL("fixtures/mcp/server.ts", import.meta.url))],
+						env: {},
+						cwd,
+					},
+				],
+				problems: [],
+				secrets: [],
+			});
+			managers.push(manager);
+			return manager;
+		};
+		const h = serve({ connectMcp });
+		const first = await h.open({ sessionEvents: true });
+		await h.turn(first.sessionId);
+		await h.result({ command: "session.close", sessionId: first.sessionId });
+		const resumed = await h.result({ command: "session.resume", sessionId: first.savedId, cwd, sessionEvents: true });
+		const historical = (resumed.entries as { event?: { type: string; servers?: { state: string }[] } }[]).flatMap(
+			(entry) => (entry.event?.type === "mcp_status" ? [entry.event.servers?.[0]?.state] : []),
+		);
+		expect(historical).toEqual(["connecting"]);
+		const live = () => h.messages.filter((m) => m.type === "session_event");
+		expect(live()).toEqual([]);
+		managers[1]?.start();
+		await managers[1]?.ready();
+		expect(live()).toEqual([
+			expect.objectContaining({
+				sessionId: resumed.sessionId,
+				event: expect.objectContaining({
+					type: "mcp_status",
+					servers: [expect.objectContaining({ state: "connected" })],
+				}),
+			}),
+		]);
 		await h.close();
 	});
 });

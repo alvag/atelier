@@ -121,6 +121,11 @@ export class SessionRecorder {
 		if (event.type === "queue_update") return;
 		// A queued message that starts a turn is its first event, and that turn's prompt already holds it.
 		if (event.type === "queued_message" && event.seq === 1 && event.turnId === this.#promptTurn) return;
+		// Idle snapshots must not touch session files; active snapshots must not split text segments.
+		if (event.type === "mcp_status") {
+			if (event.turnId !== "") this.#enqueue(() => this.#write({ type: "event", event }));
+			return;
+		}
 		if (event.type === "text_delta") {
 			const segment = this.#segment;
 			if (

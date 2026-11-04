@@ -911,3 +911,27 @@ process.exit(0);`;
 		expect(recorder.path).not.toBe(path);
 	});
 });
+
+describe("idle mcp_status", () => {
+	const idle: AtelierEvent = { type: "mcp_status", seq: 0, turnId: "", servers: [], problems: [] };
+
+	it("never creates or touches a session file", async () => {
+		const store = new SessionStore(home);
+		const fresh = store.create(cwd);
+		fresh.event(idle);
+		await fresh.release();
+		await expect(stat(fresh.path)).rejects.toMatchObject({ code: "ENOENT" });
+
+		const saved = store.create(cwd);
+		saved.config({ backend: "claude-code", mode: "normal" });
+		await saved.release();
+		const past = new Date(Date.now() - 60_000);
+		await utimes(saved.path, past, past);
+		const before = await readFile(saved.path, "utf8");
+		const resumed = store.continue(cwd, await store.load(cwd, saved.id));
+		resumed.event(idle);
+		await resumed.release();
+		expect(await readFile(saved.path, "utf8")).toBe(before);
+		expect((await stat(saved.path)).mtimeMs).toBe(past.getTime());
+	});
+});

@@ -58,6 +58,9 @@ export class McpManager {
 	/** The sign-ins under way, by server: a sign-out cancels its server's. */
 	readonly #logins = new Map<string, AbortController>();
 	#closed = false;
+	readonly #listeners = new Set<() => void>();
+	/** The visible state (`status()` and `problems()`) the listeners were last told, or found when the first listened. */
+	#told: string | undefined;
 
 	/** `auth` holds the OAuth credentials of HTTP servers; without it no server signs in. `openBrowser` opens a sign-in page. */
 	constructor(
@@ -101,6 +104,34 @@ export class McpManager {
 	async ready(name?: string): Promise<void> {
 		const servers = name === undefined ? [...this.#servers.values()] : [this.#servers.get(name)];
 		await Promise.all(servers.map((server) => server?.connecting));
+	}
+
+	/**
+	 * Calls `listener` (without arguments: it reads `status()` and `problems()`, which hide the secrets) each time the
+	 * visible state differs from the one it last heard. Returns the function that stops it.
+	 */
+	onChange(listener: () => void): () => void {
+		this.#told ??= this.#snapshot();
+		this.#listeners.add(listener);
+		return () => void this.#listeners.delete(listener);
+	}
+
+	#snapshot(): string {
+		return JSON.stringify([this.status(), this.problems()]);
+	}
+
+	#changed(): void {
+		if (this.#listeners.size === 0) return;
+		const snapshot = this.#snapshot();
+		if (snapshot === this.#told) return;
+		this.#told = snapshot;
+		for (const listener of [...this.#listeners]) {
+			try {
+				listener();
+			} catch {
+				// A listener's failure is not the server's.
+			}
+		}
 	}
 
 	status(): McpServerStatus[] {
@@ -212,6 +243,7 @@ export class McpManager {
 	/** Closes every server and stops their processes; later calls are refused. */
 	async close(): Promise<void> {
 		this.#closed = true;
+		this.#listeners.clear();
 		this.#closing.abort(new Error("the sign-in stopped: the MCP servers closed"));
 		await Promise.all(
 			[...this.#servers.values()].map(async (server) => {
@@ -229,7 +261,9 @@ export class McpManager {
 		delete server.stderr;
 		server.connecting = this.#open(server).finally(() => {
 			delete server.connecting;
+			this.#changed();
 		});
+		this.#changed();
 	}
 
 	async #open(server: Server): Promise<void> {
@@ -259,9 +293,11 @@ export class McpManager {
 			if (server.client !== client) return;
 			server.client = undefined;
 			this.#failed(server, "the connection closed", transport);
+			this.#changed();
 		};
 		client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
 			server.tools = await listTools(client, config.timeoutMs).catch(() => server.tools);
+			this.#changed();
 		});
 	}
 

@@ -197,6 +197,8 @@ export class RpcServer {
 	readonly #sessions = new Map<string, ServerSession>();
 	/** Recently used command ids, to reject reuse; bounded to the last MAX_REMEMBERED_IDS. */
 	readonly #usedIds = new Set<string>();
+	/** By session id: what runs once the response that tells the client the id has been sent. */
+	readonly #afterResponse = new Map<string, () => void>();
 	/** Files of saved sessions this server writes: one writer per file. */
 	readonly #writing = new Set<string>();
 	readonly #store: SessionStore | undefined;
@@ -265,6 +267,11 @@ export class RpcServer {
 		try {
 			const result = await this.#execute(decoded.message);
 			this.#send({ type: "response", id, ok: true, result });
+			const sessionId = (result as { sessionId?: unknown } | undefined)?.sessionId;
+			if (typeof sessionId === "string") {
+				this.#afterResponse.get(sessionId)?.();
+				this.#afterResponse.delete(sessionId);
+			}
 			if (decoded.message.command === "shutdown") this.#options.onShutdown?.();
 		} catch (error) {
 			const code = error instanceof CommandError ? error.code : "internal_error";
@@ -504,6 +511,7 @@ export class RpcServer {
 			case "session.close": {
 				const entry = this.#session(message.sessionId);
 				this.#sessions.delete(message.sessionId);
+				this.#afterResponse.delete(message.sessionId);
 				entry.preparing?.abort();
 				denyAll(entry);
 				declineAll(entry);
@@ -852,6 +860,8 @@ export class RpcServer {
 		let wake: (() => void) | undefined;
 		/** Says an event outside any turn, once the session is served. */
 		let idleEvent: ((event: AtelierEventBody) => void) | undefined;
+		/** What the session said outside a turn before it was served, said when the client knows its id. */
+		const early: AtelierEventBody[] = [];
 		let session: Session;
 		try {
 			session = await Session.start({
@@ -902,7 +912,9 @@ export class RpcServer {
 				},
 				wake: () => wake?.(),
 				// Only a client that reads events outside a turn gets them; the others get them in the next turn.
-				...(request.sessionEvents === true ? { idleEvent: (event: AtelierEventBody) => idleEvent?.(event) } : {}),
+				...(request.sessionEvents === true
+					? { idleEvent: (event: AtelierEventBody) => (idleEvent ? idleEvent(event) : early.push(event)) }
+					: {}),
 			});
 		} catch (error) {
 			if (recorder) this.#writing.delete(recorder.path);
@@ -942,9 +954,15 @@ export class RpcServer {
 			const entry = this.#sessions.get(sessionId);
 			if (entry !== undefined && !entry.session.busy) this.#runQueued(sessionId, entry);
 		};
-		idleEvent = (event) => {
+		const say = (event: AtelierEventBody) => {
 			if (this.#sessions.has(sessionId)) this.#send({ type: "session_event", sessionId, event });
 		};
+		// The client learns the id from the response to this command: events outside a turn wait for it.
+		if (request.sessionEvents === true)
+			this.#afterResponse.set(sessionId, () => {
+				idleEvent = say;
+				for (const event of early.splice(0)) say(event);
+			});
 		return { sessionId, session, ...(recorder === undefined ? {} : { savedId: recorder.id }) };
 	}
 
@@ -973,6 +991,7 @@ export class RpcServer {
 	async #closeAll(): Promise<void> {
 		const entries = [...this.#sessions.values()];
 		this.#sessions.clear();
+		this.#afterResponse.clear();
 		for (const entry of entries) {
 			entry.preparing?.abort();
 			denyAll(entry);
