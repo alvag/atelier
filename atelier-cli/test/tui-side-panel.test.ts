@@ -7,6 +7,8 @@ import { painter } from "../src/tui/style.ts";
 import { activeTheme, ink } from "../src/tui/theme.ts";
 
 const WIDTH = 37;
+/** A panel-wide separator between sections. */
+const RULE = "─".repeat(WIDTH);
 const plain = { ink: ink(activeTheme, false, "truecolor"), paint: painter(false) };
 const usage = (input: number, output: number, cacheRead = 0, cacheWrite = 0) => ({
 	input,
@@ -334,6 +336,56 @@ describe("side panel sections", () => {
 		const { lines } = render(emptySidePanel(), { tab: "session", mode: "normal" });
 		expect(lines).toEqual(["Session", " 0m · 0 turns", "Permissions", " normal · asks outside the sandbox"]);
 		expect(lines.join("\n")).not.toMatch(/STATUS|Status|✿|▾|▸/);
+	});
+
+	it("puts Todos, Jobs and Agents on the Status tab with uppercase headers, a rule between sections and no fold marks", () => {
+		const state = stateOf([
+			[0, job("j", "x")],
+			[0, { type: "tool_call_started", callId: "c1", tool: "task", input: { agent: "worker", prompt: "docs" } }],
+			[
+				0,
+				{
+					type: "feature_changed",
+					name: "p",
+					path: "odd/tasks/p.md",
+					title: "Panel",
+					tasks: [{ id: "T1", title: "One", specs: [], status: "in_progress" }],
+				},
+			],
+		]);
+		const { lines, current } = render(state);
+		expect(lines).toEqual([
+			at("TODOS", "0/1 ▱▱▱▱▱▱  ctrl+t"),
+			"Panel",
+			"▸ T1 One",
+			RULE,
+			at("JOBS", "1 running"),
+			at("⧗ x", "0m00s"),
+			RULE,
+			at("AGENTS", "1 running"),
+			at("⧗ worker · docs", "0m00s"),
+		]);
+		expect(current).toEqual({ start: 2, end: 2 });
+		expect(lines.join("\n")).not.toMatch(/[▾▸] *$|⧗ Jobs|❀|◆|✿/m);
+	});
+
+	it("folds only the Todos, to their header", () => {
+		const state = stateOf([
+			[0, job("j", "x")],
+			[
+				0,
+				{
+					type: "feature_changed",
+					name: "p",
+					path: "odd/tasks/p.md",
+					title: "Panel",
+					tasks: [{ id: "T1", title: "One", specs: [], status: "in_progress" }],
+				},
+			],
+		]);
+		const { lines, current } = render(state, { todosFolded: true });
+		expect(lines).toEqual([at("TODOS", "0/1 ▱▱▱▱▱▱  ctrl+t"), RULE, at("JOBS", "1 running"), at("⧗ x", "0m00s")]);
+		expect(current).toBeUndefined();
 	});
 
 	it("draws the tabs on two rows: ink text for the active label, textSecondary for the other, a brand underline", () => {
