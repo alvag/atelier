@@ -939,7 +939,12 @@ describe("ClaudeCodeBackend interrupted turns", () => {
 
 	async function started(interrupt?: () => Promise<unknown>, onSdkMessage: (message: SDKMessage) => void = () => {}) {
 		const h = controlledQuery(interrupt);
-		const session = await new ClaudeCodeBackend({ query: h.query, env: {}, onSdkMessage }).start({
+		const session = await new ClaudeCodeBackend({
+			query: h.query,
+			env: {},
+			onSdkMessage,
+			interruptGraceMs: 5000,
+		}).start({
 			cwd: "/w",
 			systemPromptAppend: "",
 			tools: [],
@@ -1028,6 +1033,33 @@ describe("ClaudeCodeBackend interrupted turns", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it.each(["none", "accepted", "refused", "pending"] as const)(
+		"keeps the original grace deadline after refusal, with retry: %s",
+		async (retry) => {
+			vi.useFakeTimers();
+			try {
+				let calls = 0;
+				const h = await started(async () => {
+					if (++calls === 1 || retry === "refused") throw new Error("no control channel");
+					if (retry === "pending") await new Promise<void>(() => {});
+				});
+				const pending = h.turn("x");
+				await h.session.interrupt();
+				await vi.advanceTimersByTimeAsync(2000);
+				const retrying = retry === "none" ? Promise.resolve() : h.session.interrupt();
+				await vi.advanceTimersByTimeAsync(2999);
+				expect(calls).toBe(retry === "none" ? 1 : 2);
+				expect(h.close).not.toHaveBeenCalled();
+				await vi.advanceTimersByTimeAsync(1);
+				expect(h.close).toHaveBeenCalledOnce();
+				expect(await pending).toContainEqual(expect.objectContaining({ type: "error", code: "interrupt_timeout" }));
+				await retrying;
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
 
 	it("preserves a result received before the SDK rejects the interrupt", async () => {
 		let refuse = (_error: Error) => {};
