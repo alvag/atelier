@@ -6,10 +6,6 @@ import type { PanelAgent, PanelJob, SidePanelState } from "./side-panel-state.ts
 import type { Paint } from "./style.ts";
 import type { Ink } from "./theme.ts";
 
-/** The sections, in the panel's order. */
-export const SECTIONS = ["jobs", "agents", "todos", "status"] as const;
-export type Section = (typeof SECTIONS)[number];
-
 /** The panel's tabs, in the order of their labels. */
 export const PANEL_TABS = ["status", "session"] as const;
 export type PanelTab = (typeof PANEL_TABS)[number];
@@ -34,13 +30,15 @@ export interface PanelView {
 	savedId?: string;
 	mode?: string;
 	git?: GitChanges;
-	folded: ReadonlySet<Section>;
+	/** The tab whose lines are wanted. */
+	tab: PanelTab;
+	/** Whether the Todos show only their header. */
+	todosFolded: boolean;
 }
 
-/** The panel's lines, the rows of each section's header (for a click to fold it) and the rows of the task in progress. */
+/** The lines of one tab and the rows of the task in progress. */
 export interface PanelLines {
 	lines: string[];
-	headers: Map<number, Section>;
 	current?: { start: number; end: number };
 }
 
@@ -89,10 +87,9 @@ export function tokens(count: number): string {
 
 const prompt = (usage: Usage) => usage.input + usage.cacheRead + usage.cacheWrite;
 
-/** A section's first row: its icon, its name in bold, `▾` open or `▸` folded, and its counts. */
-function header({ ink, paint }: Painters, icon: string, name: string, open: boolean, counts: string, width: number) {
-	const left = `${ink.fg("textSecondary", icon)} ${paint("bold", ink.fg("text", name))} ${ink.fg("textSecondary", open ? "▾" : "▸")}`;
-	return row(left, counts, width);
+/** A section's first row: its name in capitals, and its counts. */
+function header({ ink }: Painters, name: string, counts: string, width: number) {
+	return row(ink.fg("textSecondary", name), counts, width);
 }
 
 /** The columns `[start, end)` of each tab's label on the first tab row. */
@@ -148,9 +145,7 @@ function jobLines(view: PanelView, p: Painters, width: number): string[] {
 		running > 0 ? `${running} running` : "",
 		notices > 0 ? `${notices} ${ink.fg("warning", "●")}` : "",
 	]);
-	const open = !view.folded.has("jobs");
-	const lines = [header(p, "⧗", "Jobs", open, ink.fg("textSecondary", counts), width)];
-	if (!open) return lines;
+	const lines = [header(p, "JOBS", ink.fg("textSecondary", counts), width)];
 	const { shown, rest } = ordered(jobs, waiting);
 	for (const job of shown) {
 		const failed =
@@ -195,9 +190,7 @@ function agentLines(view: PanelView, p: Painters, width: number): string[] {
 		count("finished") > 0 ? `${count("finished")} ${ink.fg("success", "✓")}` : "",
 		count("failed") > 0 ? `${count("failed")} ${ink.fg("error", "✗")}` : "",
 	]);
-	const open = !view.folded.has("agents");
-	const lines = [header(p, "❀", "Agents", open, ink.fg("textSecondary", counts), width)];
-	if (!open) return lines;
+	const lines = [header(p, "AGENTS", ink.fg("textSecondary", counts), width)];
 	const { shown, rest } = ordered(agents, waiting);
 	for (const agent of shown) {
 		const mark =
@@ -262,10 +255,9 @@ function todoLines(
 	const { done, total } = featureProgress(feature);
 	const filled = total === 0 ? 0 : Math.round((done / total) * PROGRESS_CELLS);
 	const bar = `${"▰".repeat(filled)}${"▱".repeat(PROGRESS_CELLS - filled)}`;
-	const open = !view.folded.has("todos");
 	const counts = ink.fg("textSecondary", `${done}/${total} ${bar}  ctrl+t`);
-	const lines = [header(p, "◆", "Todos", open, counts, width)];
-	if (!open) return { lines };
+	const lines = [header(p, "TODOS", counts, width)];
+	if (view.todosFolded) return { lines };
 	lines.push(cut(ink.fg("text", oneLine(feature.title)), width));
 	const finished = feature.tasks.filter((task) => task.status === "done");
 	if (finished.length > 0) {
@@ -329,12 +321,10 @@ const PERMISSIONS: Record<string, string> = {
 	yolo: "destructive confirmations",
 };
 
-function statusLines(view: PanelView, p: Painters, width: number): string[] {
+function sessionLines(view: PanelView, p: Painters, width: number): string[] {
 	const { ink } = p;
 	const { status } = view.state;
-	const open = !view.folded.has("status");
-	const lines = [header(p, "✿", "Status", open, "", width)];
-	if (!open) return lines;
+	const lines: string[] = [];
 	const group = (name: string, rows: string[]) => {
 		if (rows.length === 0) return;
 		lines.push(ink.fg("text", name), ...rows.map((each) => cut(` ${each}`, width)));
@@ -421,29 +411,36 @@ function statusLines(view: PanelView, p: Painters, width: number): string[] {
 	return lines;
 }
 
-/** The panel's lines at `width` cells: the alerts, then each section that has something, a blank line between them. */
+/**
+ * The lines of the tab at `width` cells. Status: the Todos, the jobs and the agents that have something, a rule
+ * between them. Session: the alerts, a blank line and the session's groups.
+ */
 export function sidePanelLines(view: PanelView, ink: Ink, paint: Paint, width: number): PanelLines {
 	const p = { ink, paint };
 	const lines: string[] = [];
-	const headers = new Map<number, Section>();
+	if (view.tab === "session") {
+		const alerts = statusAlerts(view.state);
+		for (const alert of alerts) lines.push(cut(ink.fg("warning", `⚠ ${oneLine(alert)}`), width));
+		if (alerts.length > 0) lines.push("");
+		lines.push(...sessionLines(view, p, width));
+		return { lines };
+	}
+	const rule = ink.fg("separator", "─".repeat(width));
 	let current: PanelLines["current"];
-	const alerts = statusAlerts(view.state);
-	for (const alert of alerts) lines.push(cut(ink.fg("warning", `⚠ ${oneLine(alert)}`), width));
-	for (const section of SECTIONS) {
-		const start = lines.length + (lines.length > 0 ? 1 : 0);
-		let block: string[];
-		if (section === "jobs") block = jobLines(view, p, width);
-		else if (section === "agents") block = agentLines(view, p, width);
-		else if (section === "status") block = statusLines(view, p, width);
-		else {
+	const sections = [
+		(start: number) => {
 			const todos = todoLines(view, p, width, start);
-			block = todos.lines;
 			current = todos.current;
-		}
+			return todos.lines;
+		},
+		() => jobLines(view, p, width),
+		() => agentLines(view, p, width),
+	];
+	for (const section of sections) {
+		const block = section(lines.length + (lines.length > 0 ? 1 : 0));
 		if (block.length === 0) continue;
-		if (lines.length > 0) lines.push("");
-		headers.set(lines.length, section);
+		if (lines.length > 0) lines.push(rule);
 		lines.push(...block);
 	}
-	return { lines, headers, ...(current === undefined ? {} : { current }) };
+	return { lines, ...(current === undefined ? {} : { current }) };
 }

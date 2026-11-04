@@ -1399,7 +1399,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if (!(side?.shown() ? side.hasFeature : feature.active))
 			return conversation.note("no ODD feature is active in this session");
 		// With the side panel on screen, its Todos are the feature's tasks.
-		if (side?.shown()) side.fold("todos");
+		if (side?.shown()) side.toggleTodos();
 		else feature.toggle();
 	};
 	/** Ctrl+P shows or hides the side panel, and keeps the choice for the next sessions. */
@@ -2100,6 +2100,12 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		}
 		if (matchesKey(data, "ctrl+t")) {
 			toggleFeature();
+			tui.requestRender();
+			return { consume: true };
+		}
+		// Ctrl+N takes the side panel to its other tab, only while the panel is on screen.
+		if (matchesKey(data, "ctrl+n") && side?.shown()) {
+			side.toggleTab();
 			tui.requestRender();
 			return { consume: true };
 		}

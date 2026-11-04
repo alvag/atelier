@@ -9,7 +9,7 @@ import {
 	VStack,
 } from "@earendil-works/pi-tui";
 import type { GitChanges } from "./git-branch.ts";
-import { type PanelLines, type Section, sidePanelLines } from "./side-panel.ts";
+import { type PanelLines, type PanelTab, sidePanelLines, tabAt, tabRows } from "./side-panel.ts";
 import { emptySidePanel, type SidePanelState, sidePanelAfter, sidePanelResumed } from "./side-panel-state.ts";
 import type { Paint } from "./style.ts";
 import type { Ink } from "./theme.ts";
@@ -55,9 +55,10 @@ export interface SidePanelOptions {
 }
 
 /**
- * The fullscreen panel at the right of the conversation, the editor and the footer: the session's jobs, agents, tasks
- * and status (see `side-panel.ts`). It shows while the user wants it and the terminal has the columns for it; when its
- * rows do not fit, it scrolls under the mouse wheel, with where it is on its last row.
+ * The fullscreen panel at the right of the conversation, the editor and the footer: two tabs under a fixed pair of
+ * rows, Status (tasks, jobs and agents) and Session (see `side-panel.ts`). It shows while the user wants it and the
+ * terminal has the columns for it; each tab keeps its own scroll, under the mouse wheel when its rows do not fit, with
+ * where it is on the last row of the active one.
  */
 export class SidePanel {
 	open: boolean;
@@ -68,11 +69,12 @@ export class SidePanel {
 	readonly #paint: Paint;
 	readonly #options: SidePanelOptions;
 	readonly #now: () => number;
-	readonly #scroll: PanelScroll;
+	readonly #scrolls: Record<PanelTab, PanelScroll>;
+	#tab: PanelTab = "status";
 	#state: SidePanelState = emptySidePanel();
 	#startedAt: number;
-	readonly #folded = new Set<Section>();
-	#rendered: PanelLines = { lines: [], headers: new Map() };
+	#todosFolded = false;
+	#rendered: Record<PanelTab, PanelLines> = { status: { lines: [] }, session: { lines: [] } };
 	#indicator = false;
 	#ticker: NodeJS.Timeout | undefined;
 	/** The task in progress the panel keeps in view. */
@@ -88,15 +90,21 @@ export class SidePanel {
 		this.open = options.open;
 		this.#now = options.now ?? Date.now;
 		this.#startedAt = this.#now();
-		const content: Component = {
-			render: (width) => this.#render(width).lines,
+		const scroll = (tab: PanelTab) => {
+			const content: Component = { render: (width) => this.#render(tab, width).lines, invalidate: () => {} };
+			return new PanelScroll(content, { follow: "none", overscroll: "contain", scrollbar: "hidden" });
+		};
+		this.#scrolls = { status: scroll("status"), session: scroll("session") };
+		// Only the Status tab holds the task in progress.
+		this.#scrolls.status.afterLayout = () => this.#keepTaskInView();
+		this.#scrolls.status.onWheel = () => {
+			this.#following = false;
+		};
+		const tabs: Component = {
+			// The width the rows get, less the column kept free at the right edge.
+			render: (width) => tabRows(this.#ink, this.#tab, Math.max(1, width - 1)),
 			invalidate: () => {},
 			handleMouse: (event) => this.#click(event),
-		};
-		this.#scroll = new PanelScroll(content, { follow: "none", overscroll: "contain", scrollbar: "hidden" });
-		this.#scroll.afterLayout = () => this.#keepTaskInView();
-		this.#scroll.onWheel = () => {
-			this.#following = false;
 		};
 		const rule: Component = {
 			// As tall as any terminal: the layout cuts it to the panel's height.
@@ -104,8 +112,19 @@ export class SidePanel {
 			invalidate: () => {},
 		};
 		const indicator: Component = { render: () => [this.#where()], invalidate: () => {} };
+		const scrolling = (tab: PanelTab) => ({
+			component: this.#scrolls[tab],
+			basis: 0,
+			grow: 1,
+			shrink: 1,
+			minSize: 1,
+			// The tab on show is the only one laid out.
+			visible: () => this.#tab === tab,
+		});
 		const body = new VStack([
-			{ component: this.#scroll, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: tabs, basis: 2, grow: 0, shrink: 0 },
+			scrolling("status"),
+			scrolling("session"),
 			{ component: indicator, basis: 1, grow: 0, shrink: 0, visible: () => this.#overflows() },
 		]);
 		this.component = new HStack(
@@ -127,7 +146,7 @@ export class SidePanel {
 		return this.open && this.fits(columns);
 	}
 
-	/** Whether a feature is active, for its Todos to fold. */
+	/** Whether a feature is active, for its Todos to show. */
 	get hasFeature(): boolean {
 		return this.#state.feature !== undefined;
 	}
@@ -142,21 +161,27 @@ export class SidePanel {
 		this.#tick();
 	}
 
-	/** Another session: nothing of the one before but how its sections were folded; a resumed one's saved status. */
+	/** Another session: nothing of the one before but whether its Todos were folded, on the Status tab; a resumed one's saved status. */
 	reset(saved?: readonly AtelierEvent[]): void {
 		this.#state = saved === undefined ? emptySidePanel() : sidePanelResumed(saved);
 		this.#startedAt = this.#now();
 		this.#current = undefined;
 		this.#following = true;
-		this.#scroll.scrollToStart();
+		this.#tab = "status";
+		for (const scroll of Object.values(this.#scrolls)) scroll.scrollToStart();
 		this.#tick();
 	}
 
-	fold(section: Section): void {
-		if (this.#folded.has(section)) this.#folded.delete(section);
-		else this.#folded.add(section);
-		// Opened again, the Todos show the task in progress.
-		if (section === "todos") this.#following = true;
+	/** The other tab, as Ctrl+N does; it stays until the next session. */
+	toggleTab(): void {
+		this.#tab = this.#tab === "status" ? "session" : "status";
+	}
+
+	/** Ctrl+T and `/feature` fold the Todos or open them. */
+	toggleTodos(): void {
+		this.#todosFolded = !this.#todosFolded;
+		// Opened, the Todos show the task in progress.
+		if (!this.#todosFolded) this.#following = true;
 	}
 
 	/** Stops the clock of the running rows, once the TUI stops. */
@@ -165,14 +190,15 @@ export class SidePanel {
 		this.#ticker = undefined;
 	}
 
-	#render(width: number): PanelLines {
+	#render(tab: PanelTab, width: number): PanelLines {
 		const context = this.#options.context();
-		this.#rendered = sidePanelLines(
+		this.#rendered[tab] = sidePanelLines(
 			{
 				state: this.#state,
 				now: this.#now(),
 				startedAt: this.#startedAt,
-				folded: this.#folded,
+				tab,
+				todosFolded: this.#todosFolded,
 				...(context.name === undefined ? {} : { name: context.name }),
 				...(context.savedId === undefined ? {} : { savedId: context.savedId }),
 				...(context.mode === undefined ? {} : { mode: context.mode }),
@@ -183,30 +209,31 @@ export class SidePanel {
 			// One column kept free at the right edge.
 			Math.max(1, width - 1),
 		);
-		return this.#rendered;
+		return this.#rendered[tab];
 	}
 
-	/** A left click on a section's first row folds or opens it. */
+	/** A left click on a tab's label selects it; the gap, the space after the labels and the rule under them do nothing. */
 	#click(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (event.type !== "click" || event.button !== "left") return undefined;
-		const section = this.#rendered.headers.get(event.y);
-		if (section === undefined) return undefined;
-		this.fold(section);
+		if (event.type !== "click" || event.button !== "left" || event.y !== 0) return undefined;
+		const tab = tabAt(event.x);
+		if (tab === undefined) return undefined;
+		this.#tab = tab;
 		return { handled: true };
 	}
 
 	/** Its rows do not fit in its height: the last row says where the view is. */
 	#overflows(): boolean {
-		const height = this.#scroll.viewportHeight + (this.#indicator ? 1 : 0);
-		this.#indicator = height > 0 && this.#rendered.lines.length > height;
+		const height = this.#scrolls[this.#tab].viewportHeight + (this.#indicator ? 1 : 0);
+		this.#indicator = height > 0 && this.#rendered[this.#tab].lines.length > height;
 		return this.#indicator;
 	}
 
 	/** `↑↓ 1–11/21`: the rows in view and how many there are. */
 	#where(): string {
-		const total = this.#rendered.lines.length;
-		const top = this.#scroll.scrollTop;
-		const bottom = Math.min(total, top + this.#scroll.viewportHeight);
+		const scroll = this.#scrolls[this.#tab];
+		const total = this.#rendered[this.#tab].lines.length;
+		const top = scroll.scrollTop;
+		const bottom = Math.min(total, top + scroll.viewportHeight);
 		return this.#ink.fg("textSecondary", `↑↓ ${top + 1}–${bottom}/${total}`);
 	}
 
@@ -215,12 +242,13 @@ export class SidePanel {
 	 * before would stop at the end of the rows held before).
 	 */
 	#keepTaskInView(): void {
-		const { current } = this.#rendered;
-		const height = this.#scroll.viewportHeight;
+		const { current } = this.#rendered.status;
+		const scroll = this.#scrolls.status;
+		const height = scroll.viewportHeight;
 		if (!this.#following || current === undefined || height <= 0) return;
-		const top = this.#scroll.scrollTop;
-		if (current.start < top) this.#scroll.scrollTo(current.start);
-		else if (current.end >= top + height) this.#scroll.scrollTo(Math.min(current.start, current.end - height + 1));
+		const top = scroll.scrollTop;
+		if (current.start < top) scroll.scrollTo(current.start);
+		else if (current.end >= top + height) scroll.scrollTo(Math.min(current.start, current.end - height + 1));
 	}
 
 	/** One render a second while a job or an agent runs and the panel is on screen; none otherwise. */
