@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ResumeState } from "../backend.ts";
 import { isSavedSessionId, MAX_SESSION_NAME_CHARS } from "../protocol/types.ts";
@@ -180,7 +181,15 @@ export class SessionStore {
 		const path = this.path(cwd, id);
 		let text: string;
 		try {
-			text = await readFile(path, "utf8");
+			// A FIFO must not leave a blocking open in the filesystem thread pool, even during process.exit.
+			const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+			try {
+				if (!(await file.stat()).isFile()) throw new Error("not a regular file");
+				// Read the checked descriptor, not a path that could have been replaced since opening it.
+				text = await file.readFile("utf8");
+			} finally {
+				await file.close();
+			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") throw notFound(id, cwd);
 			throw new SessionFileError("corrupt", `Saved session ${id} cannot be read: ${(error as Error).message}`);

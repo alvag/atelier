@@ -29,8 +29,9 @@ def launch(args, steps):
   os.chdir(os.path.join(folder,'project'))
   os.execv(node, [node,'--import',guard,main]+args)
  state = {'data': b'', 'done': False, 'status': None}
- def wait_for(what, check):
-  while time.monotonic()<deadline:
+ def wait_for(what, check, limit=None):
+  end = deadline if limit is None else min(deadline, time.monotonic()+limit)
+  while time.monotonic()<end:
    if select.select([master],[],[],0.02)[0]:
     try: state['data'] += os.read(master,65536)
     except OSError: pass
@@ -47,15 +48,29 @@ def launch(args, steps):
    if step[0] == 'send': os.write(master, step[1].encode()+b'\r')
    elif step[0] == 'screen': wait_for(step[1], lambda: step[1].encode() in state['data'])
    elif step[0] == 'turns': wait_for('%d turns' % step[1], lambda: turns(state['data']) >= step[1])
+   elif step[0] == 'fifo':
+    # The saved turn is on disk: replace the file with a FIFO nobody ever opens for writing.
+    def saved():
+     for d, _, names in os.walk(os.path.join(folder,'home','.atelier','sessions')):
+      for n in names:
+       if n.endswith('.jsonl') and b'turn_finished' in open(os.path.join(d,n),'rb').read(): return os.path.join(d,n)
+    wait_for('the saved turn', lambda: saved() is not None)
+    path = saved(); os.unlink(path); os.mkfifo(path)
    elif step[0] in ('exit', 'signal'):
+    # The last element bounds the wait: the real process must be gone by then, not merely have called process.exit.
+    grace = step[-1] if len(step) > (2 if step[0] == 'signal' else 1) else None
     if step[0] == 'signal': os.kill(pid, step[1])
     else: os.write(master, b'\x04')
-    wait_for('the process to quit', exited)
+    wait_for('the real process to exit within %s s' % grace, exited, grace)
     state['done'] = True
   return {'exit': os.waitstatus_to_exitcode(state['status']) if state['done'] else None, 'output': state['data'].decode('utf-8','replace')}
  finally:
   if not state['done']:
-   os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+   # pty.fork made the child a session and process group leader: kill it and anything it left behind.
+   for target in (os.killpg, os.kill):
+    try: target(pid, signal.SIGKILL)
+    except OSError: pass
+   os.waitpid(pid, 0)
   os.close(master)
 print(json.dumps([launch(l['args'], l['steps']) for l in json.loads(script)]))
 `;
@@ -69,7 +84,13 @@ const ptyAvailable =
 	process.platform !== "win32" &&
 	spawnSync("python3", ["-c", "import pty; pty.openpty()"], { stdio: "ignore", timeout: 10_000 }).status === 0;
 
-type Step = ["send", string] | ["screen", string] | ["turns", number] | ["signal", number] | ["exit"];
+type Step =
+	| ["send", string]
+	| ["screen", string]
+	| ["turns", number]
+	| ["fifo"]
+	| ["signal", number, number?]
+	| ["exit", number?];
 interface Launch {
 	args: string[];
 	steps: Step[];
@@ -284,6 +305,29 @@ it.skipIf(!ptyAvailable).each([
 		);
 		expect(result?.output).toContain(`fixture stdout ${errno}`);
 		expect(result?.exit).toBe(expected);
+	},
+	(PROBE_BUDGET_S + 5) * 1000,
+);
+
+const SHUTDOWN_GRACE_S = 8;
+
+// The saved file becomes a FIFO that has no writer, so reading it never ends. Whatever the TUI does to build a hint
+// must not keep the real process alive past the grace, nor print a hint it could not read the session for.
+it.skipIf(!ptyAvailable).each([
+	["Ctrl+D", 0, ["exit", SHUTDOWN_GRACE_S]],
+	["SIGHUP", 129, ["signal", 1, SHUTDOWN_GRACE_S]],
+	["SIGTERM", 143, ["signal", 15, SHUTDOWN_GRACE_S]],
+] as [string, number, Step][])(
+	"terminates the real process on %s when the saved session is an unread FIFO, printing no hint",
+	async (_name, expected, quit) => {
+		const [result] = await drive([
+			{
+				args: ["--mode", "yolo", "--no-sandbox"],
+				steps: [["send", FAILED_PROMPT], ["turns", 1], ["fifo"], quit],
+			},
+		]);
+		expect(result?.exit).toBe(expected);
+		expect(resumeLine(result?.output ?? "")).toBeUndefined();
 	},
 	(PROBE_BUDGET_S + 5) * 1000,
 );
