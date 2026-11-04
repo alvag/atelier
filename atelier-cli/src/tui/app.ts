@@ -142,6 +142,8 @@ export interface TuiOptions {
 	stdout: (text: string) => void;
 	stderr: (text: string) => void;
 	home?: string;
+	/** The shell's directory, where a printed resume command would run; absent when it cannot be determined. */
+	shellCwd?: string;
 	color: boolean;
 	/** Atelier's version, for the header. */
 	version?: string;
@@ -2234,8 +2236,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		clearTimeout(timer);
 		await Promise.all([link.close(), released, historyWrites]);
 		// Last, once the terminal is given back and the file is complete: the line to resume the session by.
-		if (savedId !== undefined && options.home !== undefined) {
-			const line = await resumeHint(options.home, args.cwd, savedId, resumedFile);
+		if (savedId !== undefined && options.home !== undefined && options.shellCwd !== undefined) {
+			const line = await resumeHint(options.home, options.shellCwd, savedId, resumedFile);
 			try {
 				if (line !== undefined) options.stdout(line);
 			} catch {

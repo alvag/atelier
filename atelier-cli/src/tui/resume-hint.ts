@@ -6,7 +6,7 @@ export const AGENT = "atelier";
 export const resumeArgv = (id: string): string[] => [AGENT, "--resume", id];
 
 /**
- * The line that tells how to resume the saved session `id` of `cwd`, or undefined when it cannot be: a new session
+ * The line that resumes saved session `id` from the shell's directory `cwd`, or undefined when it cannot: a new session
  * needs a recorded prompt in its file; a resumed one only needs a file that loads.
  */
 export async function resumeHint(home: string, cwd: string, id: string, resumed: boolean): Promise<string | undefined> {
