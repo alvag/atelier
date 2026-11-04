@@ -19,6 +19,7 @@ import {
 	RpcServer,
 	Sandbox,
 	type SandboxManagerLike,
+	SessionStore,
 } from "@atelier/core";
 import { type CoreExit, RpcError } from "@atelier/core/client";
 import { decodeServerMessage, encodeMessage, LineSplitter } from "@atelier/core/protocol";
@@ -7473,6 +7474,54 @@ describe("TUI resume hint", { timeout: 20_000 }, () => {
 		expect(await code).toBe(exitCode);
 		expect(out).toEqual([hint(id)]);
 	});
+
+	it("follows /resume from a --no-session start to the saved session", async () => {
+		const id = randomUUID();
+		await saved(id);
+		const { h, out } = hinting([]);
+		const code = run(["--no-session"], h.io, () => h.backend);
+		await until(h.screen.started);
+		h.screen.type(`/resume ${id}`);
+		h.screen.type("\r");
+		await until(() => h.screen.screen().includes("── resumed session ──"));
+		await until(() => h.core.commands.some((command) => command.command === "session.close"));
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+		expect(out).toEqual([hint(id)]);
+	});
+
+	it.each([
+		["Ctrl+D", (h: ReturnType<typeof harness>) => h.screen.type("\x04"), 0],
+		["SIGHUP", (h: ReturnType<typeof harness>) => h.terminate(1), 129],
+		["SIGTERM", (h: ReturnType<typeof harness>) => h.terminate(15), 143],
+	])(
+		"gives up on a saved file that never loads after the close timeout, keeping the exit code of %s",
+		async (_name, quit, exitCode) => {
+			const { h, out } = hinting([[{ event: started }, { event: finished }]]);
+			h.io.tui = { ...h.io.tui, closeTimeoutMs: 50 } as typeof h.io.tui;
+			const code = run([], h.io, () => h.backend);
+			await ranTurn(h);
+			await savedOnDisk(h);
+			let release: (() => void) | undefined;
+			const load = vi.spyOn(SessionStore.prototype, "load").mockImplementation(
+				() =>
+					new Promise((_resolve, reject) => {
+						release = () => reject(new Error("late"));
+					}),
+			);
+			try {
+				quit(h);
+				expect(await code).toBe(exitCode);
+				expect(load).toHaveBeenCalledTimes(1);
+				expect(out).toEqual([]);
+				release?.();
+				await new Promise((resolve) => setImmediate(resolve));
+				expect(out).toEqual([]);
+			} finally {
+				load.mockRestore();
+			}
+		},
+	);
 
 	it.each([
 		["SIGTERM", 15, 143],
