@@ -102,7 +102,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | `/stats [project]`          | Show this session's cost by model and role, or the directory's.                                                                                                                                                                                              |
 | `/exit`                     | Quit.                                                                                                                                                                                                                                                        |
 
-The fullscreen side panel shows every running job and agent, then up to three other finished rows per section for 60 seconds. Rows with unread notices stay until read, without using those three places; reading a notice does not restart its 60 seconds.
+The fullscreen side panel shows every running job and agent, then up to three other finished rows per section for 60 seconds. Rows with unread notices stay until read, without using those three places; reading a notice does not restart its 60 seconds. The mouse wheel over the panel's left rule scrolls the conversation from the first tick.
 
 ### Keys
 

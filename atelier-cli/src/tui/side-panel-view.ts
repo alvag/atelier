@@ -85,7 +85,6 @@ export class SidePanel {
 	#rendered: Record<PanelTab, PanelLines> = { status: { lines: [] }, session: { lines: [] } };
 	/** Per tab, whether it shows the indicator: the layout of one tab says nothing of the other. */
 	#indicators: Record<PanelTab, boolean> = { status: false, session: false };
-	#height = 0;
 	#ticker: NodeJS.Timeout | undefined;
 	#expiry: NodeJS.Timeout | undefined;
 	#expiryAt: number | undefined;
@@ -128,11 +127,6 @@ export class SidePanel {
 			render: () => Array.from({ length: Math.max(1, this.#tui.terminal.rows) }, () => this.#ink.fg("separator", "│")),
 			invalidate: () => {},
 		};
-		// The rule is laid out first, at the panel's actual height (below any fullscreen header).
-		const edge = new PanelScroll(rule, { follow: "none", scrollbar: "hidden" });
-		edge.afterLayout = () => {
-			this.#height = edge.viewportHeight;
-		};
 		const indicator: Component = { render: () => [this.#where()], invalidate: () => {} };
 		const scrolling = (tab: PanelTab) => ({
 			component: this.#scrolls[tab],
@@ -152,7 +146,7 @@ export class SidePanel {
 		]);
 		this.component = new HStack(
 			[
-				{ component: edge, basis: 1, grow: 0, shrink: 0 },
+				{ component: rule, basis: 1, grow: 0, shrink: 0 },
 				{ component: body, basis: 0, grow: 1, shrink: 1 },
 			],
 			{ gap: 1 },
@@ -289,14 +283,16 @@ export class SidePanel {
 	}
 
 	/**
-	 * After a tab's layout, which knows its rows: if the indicator is not what they need in the panel's height under the
-	 * two fixed rows, another render sets it. The height is the panel's, not the scroll's, which the indicator and a
-	 * short panel clip.
+	 * After a tab's layout, which knows its rows: if the indicator is not what they need in the room under the two fixed
+	 * rows, another render sets it. The room is the scroll's rows plus the indicator's, if shown. A scroll with no rows
+	 * always overflows: a section has two rows at least, so the indicator never flips with the height.
 	 */
 	#measure(tab: PanelTab): void {
 		if (tab !== this.#tab) return;
-		const room = Math.max(0, this.#height - 2);
-		const overflows = this.#rendered[tab].lines.length > room;
+		const total = this.#rendered[tab].lines.length;
+		const scroll = this.#scrolls[tab];
+		const room = scroll.viewportHeight + (this.#indicators[tab] ? 1 : 0);
+		const overflows = total > 0 && (scroll.viewportHeight <= 0 || total > room);
 		if (overflows === this.#indicators[tab]) return;
 		this.#indicators[tab] = overflows;
 		this.#tui.requestRender();
