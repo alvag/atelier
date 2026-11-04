@@ -81,6 +81,7 @@ beforeEach(async () => {
 	await chmod(folder, 0o700);
 	await mkdir(join(folder, "home"));
 	await mkdir(join(folder, "project"));
+	await mkdir(join(folder, "other"));
 	await writeFile(
 		join(folder, "backend.mjs"),
 		`import { EchoBackend } from ${JSON.stringify(new URL("../../atelier-core/src/server/echo-backend.ts", import.meta.url).href)};
@@ -218,6 +219,34 @@ it.skipIf(!ptyAvailable)(
 	},
 	(PROBE_BUDGET_S + 5) * 1000,
 );
+
+it.skipIf(!ptyAvailable).each(["relative", "absolute", "same directory"])(
+	"offers no unusable resume hint for --cwd (%s)",
+	async (kind) => {
+		const cwd = kind === "relative" ? "../other" : kind === "absolute" ? join(folder, "other") : ".";
+		const [result] = await drive([
+			{
+				args: ["--cwd", cwd, "--mode", "yolo", "--no-sandbox"],
+				steps: [["send", FAILED_PROMPT], ["turns", 1], ["exit"]],
+			},
+		]);
+		expect(result?.exit).toBe(0);
+		expect(await savedPrompts()).toEqual([[FAILED_PROMPT]]);
+		const id = resumeLine(result?.output ?? "");
+		if (kind === "same directory") {
+			expect(id).toBeDefined();
+			const [resumed] = await drive([{ args: ["--resume", id ?? ""], steps: [["screen", FAILED_PROMPT], ["exit"]] }]);
+			expect(resumed?.exit).toBe(0);
+		} else expect(id).toBeUndefined();
+	},
+	(PROBE_BUDGET_S + 5) * 1000,
+);
+
+it("documents that only the TUI prints a hint and preserves script output", async () => {
+	const docs = await readFile(new URL("../../docs/cli.md", import.meta.url), "utf8");
+	expect(docs).toContain("Only the TUI prints");
+	expect(docs).toContain("The line-by-line CLI and `--prompt` do not print it, preserving stdout for scripts.");
+});
 
 it.skipIf(!ptyAvailable).each([
 	[1, "EIO", 129],

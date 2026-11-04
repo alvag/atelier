@@ -87,7 +87,7 @@ The installed copy is marked by `.git/atelier-install` (key=value lines, `deskto
 
 ## Interactive TUI
 
-On exit, after restoring the terminal and printing the transcript, the TUI prints `atelier --resume <id>` on its own line to stdout. The session must be readable from disk and either have run a turn (including an interrupted or failed one) or have been resumed; a resumed session needs no new turn. New sessions without turns, `--no-session`, and missing or invalid session files produce no hint. The line-by-line CLI and `--prompt` do not print it, preserving stdout for scripts.
+Only the TUI prints `atelier --resume <id>` on its own line to stdout, after restoring the terminal and printing the transcript on exit. The session must be readable from the shell's original directory and either have run a turn (including an interrupted or failed one) or have been resumed; a resumed session needs no new turn. New sessions without turns, `--no-session`, and missing or invalid session files produce no hint. If `--cwd` selects another directory, the TUI omits the hint: the exact command would not find that directory's session from the shell. Resume it with `atelier --cwd <dir> --resume <id>` instead. The line-by-line CLI and `--prompt` do not print it, preserving stdout for scripts.
 
 The hint uses the TUI's shutdown path for `/exit`, a quitting Ctrl+C, SIGTERM, SIGHUP and an unexpected core exit. Core errors stay on stderr. If writing the hint fails with EIO or EPIPE because stdout has closed, the failure is ignored and the exit code is preserved. A process killed before cleanup (for example, SIGKILL or Herdr forcibly closing its panel) cannot print the hint; use `atelier --continue` if the session was saved.
 

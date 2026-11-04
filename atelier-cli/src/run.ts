@@ -237,8 +237,15 @@ export async function run(
 	}
 	if (args.prompt === undefined && io.tui !== undefined && io.isTTY) {
 		if (args.yes) io.stderr(YES_DEPRECATED);
+		let shellCwd: string | undefined;
+		try {
+			shellCwd = typeof io.cwd === "function" ? io.cwd() : io.cwd;
+		} catch {
+			// An absolute --cwd can still work after the shell's directory is removed; omit its resume hint.
+		}
 		return runTui(args, {
 			...io.tui,
+			...(shellCwd === undefined ? {} : { shellCwd }),
 			stdout: io.stdout,
 			stderr: io.stderr,
 			color: io.color,

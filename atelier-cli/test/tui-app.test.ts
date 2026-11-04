@@ -7367,6 +7367,25 @@ describe("TUI resume hint", { timeout: 20_000 }, () => {
 		expect(out).toEqual([hint(id)]);
 	});
 
+	it("runs with an absolute --cwd but omits the hint when the shell directory is unavailable", async () => {
+		const { h, out } = hinting([[{ event: started }, { event: finished }]]);
+		const code = run(
+			["--cwd", cwd],
+			{
+				...h.io,
+				cwd: () => {
+					throw new Error("shell directory was removed");
+				},
+			},
+			() => h.backend,
+		);
+		await ranTurn(h);
+		await savedOnDisk(h);
+		h.screen.type("\x04");
+		expect(await code).toBe(0);
+		expect(out).toEqual([]);
+	});
+
 	it("prints nothing when the saved file is gone or cannot be read at the end", async () => {
 		for (const damage of [(path: string) => rm(path), (path: string) => writeFile(path, "not a session\n")]) {
 			const { h, out } = hinting([[{ event: started }, { event: finished }]]);

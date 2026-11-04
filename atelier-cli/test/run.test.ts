@@ -1927,6 +1927,24 @@ describe("saved sessions", () => {
 		expect(file).toContain('"text":"it parses"');
 	});
 
+	it.each([
+		{ name: "one-shot prompt", argv: ["explain the parser"], input: undefined },
+		{ name: "interactive line-by-line (ATELIER_TUI=off)", argv: [], input: ["explain the parser"] },
+	])("prints no resume hint after a saved turn: $name", async ({ argv, input }) => {
+		const h = savedHarness([answer("it parses")], {
+			env: { ATELIER_TUI: "off" },
+			isTTY: input !== undefined,
+			...(input ? { input } : {}),
+		});
+		expect(await run(argv, h.io, h.createBackend)).toBe(0);
+		expect(h.backend.prompts).toEqual(["explain the parser"]);
+		expect(h.out()).toContain("it parses");
+		expect(await saved()).toEqual([expect.objectContaining({ turns: 1, lastPrompt: "explain the parser" })]);
+		expect(h.out()).not.toMatch(/^atelier --resume/m);
+		expect(h.out()).not.toContain("atelier --resume");
+		expect(h.err()).not.toContain("--resume");
+	});
+
 	it("saves nothing with --no-session, nor without a home", async () => {
 		const withFlag = savedHarness([answer("x")]);
 		expect(await run(["--no-session", "hi"], withFlag.io, withFlag.createBackend)).toBe(0);
