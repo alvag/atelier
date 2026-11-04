@@ -151,12 +151,12 @@ function fakeQuery(
 }
 
 /** SDK query whose output the test pushes by hand. */
-function controlledQuery() {
+function controlledQuery(interrupt: () => Promise<unknown> = async () => {}) {
 	const output = new Channel<SDKMessage>();
 	const close = vi.fn(() => output.close());
 	const query: QueryFunction = () => ({
 		[Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
-		interrupt: async () => {},
+		interrupt,
 		close,
 	});
 	return { output, close, query };
@@ -923,6 +923,225 @@ describe("ClaudeCodeBackend turns", () => {
 		await backendSession.close();
 		expect(calls.interrupts).toBe(1);
 		expect(calls.closed).toBe(true);
+	});
+});
+
+describe("ClaudeCodeBackend interrupted turns", () => {
+	const failed = (totalCost = 0.25) =>
+		msg({
+			type: "result",
+			subtype: "error_during_execution",
+			total_cost_usd: totalCost,
+			num_turns: 3,
+			errors: ["raw diagnostic"],
+			usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 7, cache_creation_input_tokens: 1 },
+		});
+
+	async function started(interrupt?: () => Promise<unknown>, onSdkMessage: (message: SDKMessage) => void = () => {}) {
+		const h = controlledQuery(interrupt);
+		const session = await new ClaudeCodeBackend({ query: h.query, env: {}, onSdkMessage }).start({
+			cwd: "/w",
+			systemPromptAppend: "",
+			tools: [],
+			executeTool: async () => ({ ok: true, output: "" }),
+		});
+		return { ...h, session, turn: (prompt: string) => collectBodies(session.send(prompt)) };
+	}
+
+	it("ends a turn Claude Code reports as failed after an interrupt as interrupted, without an error", async () => {
+		const h = await started();
+		const pending = h.turn("x");
+		await h.session.interrupt();
+		h.output.push(failed());
+		expect(await pending).toEqual([
+			{
+				type: "turn_finished",
+				stopReason: "interrupted",
+				usage: { input: 10, output: 2, cacheRead: 7, cacheWrite: 1 },
+				costUsd: 0.25,
+				requests: 3,
+			},
+		]);
+	});
+
+	it("keeps the error of a failed turn nobody interrupted", async () => {
+		const h = await started();
+		const pending = h.turn("x");
+		h.output.push(failed());
+		expect(await pending).toEqual([
+			expect.objectContaining({ type: "error", code: "error_during_execution", message: "raw diagnostic" }),
+			expect.objectContaining({ type: "turn_finished", stopReason: "error_during_execution" }),
+		]);
+	});
+
+	it("marks the turn before the SDK answers the interrupt, so a result that comes first is interrupted", async () => {
+		let answer = () => {};
+		let observed = () => {};
+		const seen = new Promise<void>((resolve) => (observed = resolve));
+		const h = await started(
+			() => new Promise<void>((resolve) => (answer = resolve)),
+			(message) => {
+				if (message.type === "result") observed();
+			},
+		);
+		const pending = h.turn("x");
+		const interrupting = h.session.interrupt();
+		h.output.push(failed());
+		await seen;
+		answer();
+		await interrupting;
+		expect(await pending).toEqual([expect.objectContaining({ type: "turn_finished", stopReason: "interrupted" })]);
+	});
+
+	it("shows the failure again when the SDK rejects the interrupt", async () => {
+		const h = await started(async () => {
+			throw new Error("no control channel");
+		});
+		const pending = h.turn("x");
+		await h.session.interrupt();
+		h.output.push(failed());
+		expect(await pending).toEqual([
+			expect.objectContaining({ type: "error", code: "error_during_execution", message: "raw diagnostic" }),
+			expect.objectContaining({ type: "turn_finished", stopReason: "error_during_execution" }),
+		]);
+	});
+
+	it("retries a refused interrupt and keeps the session usable", async () => {
+		vi.useFakeTimers();
+		try {
+			let calls = 0;
+			const h = await started(async () => {
+				if (++calls === 1) throw new Error("no control channel");
+				h.output.push(failed());
+			});
+			const pending = h.turn("x");
+			await h.session.interrupt();
+			await h.session.interrupt();
+			expect(calls).toBe(2);
+			expect(await pending).toEqual([expect.objectContaining({ type: "turn_finished", stopReason: "interrupted" })]);
+			await vi.runAllTimersAsync();
+			expect(h.close).not.toHaveBeenCalled();
+			const next = h.turn("y");
+			h.output.push(result(0.25));
+			expect(await next).toEqual([expect.objectContaining({ type: "turn_finished", stopReason: "end_turn" })]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("preserves a result received before the SDK rejects the interrupt", async () => {
+		let refuse = (_error: Error) => {};
+		let observed = () => {};
+		const seen = new Promise<void>((resolve) => (observed = resolve));
+		const h = await started(
+			() => new Promise<void>((_, reject) => (refuse = reject)),
+			(message) => {
+				if (message.type === "result") observed();
+			},
+		);
+		const pending = h.turn("x");
+		const interrupting = h.session.interrupt();
+		h.output.push(failed());
+		await seen;
+		refuse(new Error("no control channel"));
+		await interrupting;
+		expect(await pending).toEqual([
+			expect.objectContaining({ type: "error", code: "error_during_execution", message: "raw diagnostic" }),
+			expect.objectContaining({ type: "turn_finished", stopReason: "error_during_execution" }),
+		]);
+	});
+
+	it.each([false, true])("releases a pending interrupt on close, with a buffered result: %s", async (buffered) => {
+		let observed = () => {};
+		const seen = new Promise<void>((resolve) => (observed = resolve));
+		const h = await started(
+			() => new Promise<void>(() => {}),
+			(message) => {
+				if (message.type === "result") observed();
+			},
+		);
+		const pending = h.turn("x");
+		const interrupting = h.session.interrupt();
+		if (buffered) {
+			h.output.push(failed());
+			await seen;
+		}
+		await h.session.close();
+		expect(await pending).toEqual(
+			buffered ? [expect.objectContaining({ type: "turn_finished", stopReason: "interrupted" })] : [],
+		);
+		await interrupting;
+		expect(h.close).toHaveBeenCalledOnce();
+	});
+
+	it.each([1, 2])("bounds classification when the SDK never answers %i interrupt requests", async (count) => {
+		vi.useFakeTimers();
+		try {
+			const h = await started(() => new Promise<void>(() => {}));
+			const pending = h.turn("x");
+			const interrupting = Array.from({ length: count }, () => h.session.interrupt());
+			h.output.push(failed());
+			await vi.runAllTimersAsync();
+			expect(h.close).toHaveBeenCalledOnce();
+			expect(await pending).toContainEqual(expect.objectContaining({ type: "error", code: "interrupt_timeout" }));
+			await Promise.all(interrupting);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not carry an interrupt that found no turn into the next one", async () => {
+		const h = await started();
+		const first = h.turn("x");
+		h.output.push(result(0));
+		await first;
+		await h.session.interrupt();
+		const second = h.turn("y");
+		h.output.push(failed());
+		expect(await second).toEqual([
+			expect.objectContaining({ type: "error", code: "error_during_execution" }),
+			expect.objectContaining({ type: "turn_finished", stopReason: "error_during_execution" }),
+		]);
+	});
+
+	it("does not carry an interrupted turn's marker into the next one", async () => {
+		const h = await started();
+		const first = h.turn("x");
+		await h.session.interrupt();
+		h.output.push(result(0));
+		await first;
+		const second = h.turn("y");
+		h.output.push(failed());
+		expect(await second).toContainEqual(expect.objectContaining({ type: "error", code: "error_during_execution" }));
+	});
+
+	it("lets a rejection that settles after the turn ended leave the next turn's interrupt alone", async () => {
+		const rejections: ((error: Error) => void)[] = [];
+		let calls = 0;
+		const h = await started(() =>
+			++calls === 1 ? new Promise<void>((_, reject) => rejections.push(reject)) : Promise.resolve(),
+		);
+		const first = h.turn("x");
+		const stale = h.session.interrupt();
+		h.output.push(result(0));
+		await first;
+		const second = h.turn("y");
+		await h.session.interrupt();
+		rejections[0]?.(new Error("late"));
+		await stale;
+		h.output.push(failed());
+		expect(await second).toEqual([expect.objectContaining({ type: "turn_finished", stopReason: "interrupted" })]);
+	});
+
+	it("keeps other failures of an interrupted turn", async () => {
+		const h = await started();
+		const pending = h.turn("x");
+		await h.session.interrupt();
+		h.output.push(msg({ type: "result", subtype: "error_max_turns", errors: [], total_cost_usd: 0, usage: {} }));
+		expect(await pending).toEqual([
+			expect.objectContaining({ type: "error", code: "error_max_turns" }),
+			expect.objectContaining({ type: "turn_finished", stopReason: "error_max_turns" }),
+		]);
 	});
 });
 
