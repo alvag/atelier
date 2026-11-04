@@ -2099,6 +2099,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				.frame()
 				.map((row) => row?.slice(h.screen.terminal.columns - 40) ?? "")
 				.filter((row) => row.startsWith("│"));
+		/** Whether the panel has a row with exactly this text, before the trailing spaces of a running row. */
+		const shows = (h: ReturnType<typeof harness>, text: string) => panel(h).some((row) => row.trimEnd() === text);
 		const footerRow = (h: ReturnType<typeof harness>) => h.screen.frame().at(-1) ?? "";
 		const saved = async () => JSON.parse(await readFile(join(home, ".atelier", "settings.json"), "utf8"));
 
@@ -2112,16 +2114,18 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			stub.emit(job);
 			await until(() => panel(h).some((row) => row.includes("⧗ pnpm check")));
 			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ JOBS +1 running$/));
-			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ TODOS +1\/2 ▰▰▰▱▱▱ {2}ctrl\+t$/));
-			expect(panel(h)).toContain("│ ▸ T2 Hot profile");
+			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ TASKS +1\/2 · ctrl\+t$/));
+			expect(shows(h, "│ ◐ Hot profile")).toBe(true);
 			expect(panel(h).join("\n")).not.toContain("STATUS");
 			expect(h.screen.frame().join("\n")).not.toContain("Ctrl+T or /feature: tasks");
 			expect(footerRow(h)).not.toContain("T2 1/2");
 			expect(footerRow(h)).not.toContain("1 job");
-			// Ctrl+T folds the Todos while the panel shows them.
+			// Ctrl+T lists every task with its id while the panel shows the summary.
 			h.screen.type("\x14");
-			await until(() => !panel(h).includes("│ ▸ T2 Hot profile"));
-			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ TODOS +1\/2 ▰▰▰▱▱▱ {2}ctrl\+t$/));
+			await until(() => shows(h, "│ ◐ T2 Hot profile"));
+			expect(shows(h, "│ ✓ T1 Hot model")).toBe(true);
+			expect(shows(h, "│ ctrl+t summary")).toBe(true);
+			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ TASKS +1\/2 · ctrl\+t$/));
 			// Ctrl+P hides it: the footer counts again and the feature is over the editor; the choice is kept.
 			h.screen.type("\x10");
 			await until(() => footerRow(h).includes("T2 1/2"));
@@ -2149,7 +2153,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\x10");
 			await until(() => h.screen.screen().includes("the side panel needs a terminal of 120 columns or more"));
 			h.screen.resize(120);
-			await until(() => panel(h).some((row) => row.includes("TODOS")));
+			await until(() => panel(h).some((row) => row.includes("TASKS")));
 			expect(footerRow(h)).not.toContain("T2 1/2");
 			h.screen.resize(100);
 			await until(() => footerRow(h).includes("T2 1/2"));
@@ -2299,6 +2303,12 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => panel(h).some((row) => row.includes("Status  Session")));
 			h.screen.type("\x0e");
 			await until(() => onSession(h));
+			// The full list is chosen once, from Session, and stays while the panel is on Session.
+			stub.emit(feature);
+			h.screen.type("\x14");
+			await until(() => shows(h, "│ ◐ T2 Hot profile"));
+			h.screen.type("\x0e");
+			await until(() => onSession(h));
 			const tasks = Array.from({ length: 30 }, (_, i) => ({
 				id: `T${i + 1}`,
 				title: `Task ${i + 1}`,
@@ -2311,12 +2321,12 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(onSession(h)).toBe(true);
 			expect(panel(h).join("\n")).not.toContain("T30");
 			h.screen.type("\x0e");
-			await until(() => panel(h).includes("│ ▸ T30 Task 30"));
+			await until(() => shows(h, "│ ◐ T30 Task 30"));
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
 
-		it("takes Ctrl+T and /feature from Session to Status and opens the Todos there, and folds them from Status as before", async () => {
+		it("takes Ctrl+T and /feature from Session to Status with every task listed, and switches Status between summary and full", async () => {
 			const h = harness([], { columns: 140 });
 			const stub = stubCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
@@ -2329,32 +2339,36 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => h.screen.screen().includes("no ODD feature is active in this session"));
 			expect(onSession(h)).toBe(true);
 			stub.emit(feature);
-			// Open Todos stay open: Ctrl+T from Session only switches to Status.
+			const full = () => shows(h, "│ ◐ T2 Hot profile") && shows(h, "│ ✓ T1 Hot model");
+			const summary = () => shows(h, "│ ◐ Hot profile") && !shows(h, "│ ✓ T1 Hot model");
+			// From Session, Ctrl+T switches to Status and lists every task.
 			h.screen.type("\x14");
-			await until(() => panel(h).includes("│ ▸ T2 Hot profile"));
+			await until(full);
+			expect(shows(h, "│ ctrl+t summary")).toBe(true);
 			expect(onSession(h)).toBe(false);
-			// On Status it folds.
+			// On Status it goes back to the summary, where the current task stays visible without its id.
 			h.screen.type("\x14");
-			await until(() => !panel(h).includes("│ ▸ T2 Hot profile"));
-			// Folded, then Session: Ctrl+T does not toggle what is hidden, it switches and opens.
+			await until(summary);
+			expect(shows(h, "│ ctrl+t summary")).toBe(false);
+			// Summary, then Session: Ctrl+T does not toggle what is out of sight, it switches and lists every task.
 			h.screen.type("\x0e");
 			await until(() => onSession(h));
 			h.screen.type("\x14");
-			await until(() => panel(h).includes("│ ▸ T2 Hot profile"));
+			await until(full);
 			expect(onSession(h)).toBe(false);
 			// The same with /feature.
 			h.screen.type("/feature");
 			h.screen.type("\r");
-			await until(() => !panel(h).includes("│ ▸ T2 Hot profile"));
+			await until(summary);
 			h.screen.type("\x0e");
 			await until(() => onSession(h));
 			h.screen.type("/feature");
 			h.screen.type("\r");
-			await until(() => panel(h).includes("│ ▸ T2 Hot profile"));
+			await until(full);
 			expect(onSession(h)).toBe(false);
 			h.screen.type("/feature");
 			h.screen.type("\r");
-			await until(() => !panel(h).includes("│ ▸ T2 Hot profile"));
+			await until(summary);
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
@@ -2462,13 +2476,16 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 				status: i === 29 ? "in_progress" : "pending",
 			}));
 			stub.emit({ ...feature, tasks });
-			await until(() => panel(h).includes("│ ▸ T30 Task 30"));
+			await until(() => shows(h, "│ ◐ Task 30"));
+			// Every task listed, the one in progress is in view, not the first.
+			h.screen.type("\x14");
+			await until(() => shows(h, "│ ◐ T30 Task 30"));
 			expect(panel(h)).not.toContain("│ ○ T1 Task 1");
-			// Folded and opened again, the Todos come back with the task in progress in view.
+			// Back to the summary and to the full list again, the task in progress comes back in view.
 			h.screen.type("\x14");
-			await until(() => !panel(h).includes("│ ▸ T30 Task 30"));
+			await until(() => !shows(h, "│ ◐ T30 Task 30"));
 			h.screen.type("\x14");
-			await until(() => panel(h).includes("│ ▸ T30 Task 30"));
+			await until(() => shows(h, "│ ◐ T30 Task 30"));
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});

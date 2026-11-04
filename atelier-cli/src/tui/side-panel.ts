@@ -1,6 +1,5 @@
 import { cacheHitRate, type FeatureTask, type Usage, visibleText } from "@atelier/core";
 import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { featureProgress } from "./feature-panel.ts";
 import type { GitChanges } from "./git-branch.ts";
 import type { PanelAgent, PanelJob, SidePanelState } from "./side-panel-state.ts";
 import type { Paint } from "./style.ts";
@@ -17,8 +16,6 @@ const TAB_GAP = 2;
 /** Finished jobs or agents shown besides the unread ones, for the minute after they end. */
 const FINISHED_SHOWN = 3;
 const FINISHED_FOR = 60_000;
-/** The cells of the Todos progress bar. */
-const PROGRESS_CELLS = 6;
 
 /** What the panel shows: its state and what the TUI knows apart from the events. */
 export interface PanelView {
@@ -33,8 +30,8 @@ export interface PanelView {
 	git?: GitChanges;
 	/** The tab whose lines are wanted. */
 	tab: PanelTab;
-	/** Whether the Todos show only their header. */
-	todosFolded: boolean;
+	/** Whether Tasks lists every task with its id, rather than the summary. */
+	tasksExpanded?: boolean;
 }
 
 /** The lines of one tab and the rows of the task in progress. */
@@ -255,6 +252,15 @@ function wrapped(lead: string, title: string, width: number, paintTitle: (text: 
 	return [`${lead}${paintTitle(first)}`, `${" ".repeat(indent)}${paintTitle(cut(second, room))}`];
 }
 
+/** The pending tasks the summary lists; the rest are counted in its tail. */
+const PENDING_SHOWN = 3;
+
+/** `width` cells of bar: `▰` for the share done, `▱` for the rest. */
+function progressBar({ ink }: Painters, done: number, total: number, width: number): string {
+	const filled = total === 0 ? 0 : Math.round((done / total) * width);
+	return `${ink.fg("success", "▰".repeat(filled))}${ink.fg("textSecondary", "▱".repeat(width - filled))}`;
+}
+
 function todoLines(
 	view: PanelView,
 	p: Painters,
@@ -264,53 +270,71 @@ function todoLines(
 	const feature = view.state.feature;
 	if (feature === undefined) return { lines: [] };
 	const { ink } = p;
-	const { done, total } = featureProgress(feature);
-	const filled = total === 0 ? 0 : Math.round((done / total) * PROGRESS_CELLS);
-	const bar = `${"▰".repeat(filled)}${"▱".repeat(PROGRESS_CELLS - filled)}`;
-	const counts = ink.fg("textSecondary", `${done}/${total} ${bar}  ctrl+t`);
-	const lines = [header(p, "TODOS", counts, width)];
-	if (view.todosFolded) return { lines };
-	lines.push(cut(ink.fg("text", oneLine(feature.title)), width));
-	const finished = feature.tasks.filter((task) => task.status === "done");
-	if (finished.length > 0) {
-		const commit = finished.findLast((task) => task.commit !== undefined)?.commit;
-		lines.push(
-			row(
-				`${ink.fg("success", "✓")} ${ink.fg("text", `${finished.length} done`)}`,
-				commit === undefined ? "" : ink.fg("textSecondary", oneLine(commit).slice(0, 7)),
-				width,
-			),
-		);
-	}
+	const counted = feature.tasks.filter((task) => task.status !== "dropped");
+	const done = counted.filter((task) => task.status === "done").length;
+	const counts = ink.fg("textSecondary", `${done}/${counted.length} · ctrl+t`);
+	const lines = [header(p, "TASKS", counts, width)];
+	lines.push(cut(ink.fg("text", oneLine(feature.title)), width), progressBar(p, done, counted.length, width));
+	const count = (status: string) => feature.tasks.filter((task) => task.status === status).length;
+	const pending = feature.tasks.filter((task) => task.status === "pending");
+	const listed = new Set(pending.slice(0, PENDING_SHOWN));
+	const shown = (status: string | undefined) => feature.tasks.filter((task) => task.status === status);
+	const expanded = view.tasksExpanded === true;
+	const summary = expanded
+		? feature.tasks
+		: [
+				...shown("in_progress"),
+				...shown("blocked"),
+				...feature.tasks.filter((task) => listed.has(task) || task.status === undefined),
+			];
 	let current: PanelLines["current"];
-	for (const task of feature.tasks) {
-		if (task.status === "done") continue;
+	for (const task of summary) {
 		const at = start + lines.length;
-		lines.push(...taskLines(task, p, width));
+		lines.push(...taskLines(task, p, width, expanded));
 		if (task.status === "in_progress" && current === undefined) current = { start: at, end: start + lines.length - 1 };
 	}
+	if (expanded) {
+		lines.push(cut(ink.fg("textSecondary", "ctrl+t summary"), width));
+		return { lines, ...(current === undefined ? {} : { current }) };
+	}
+	const tail = [
+		pending.length > PENDING_SHOWN ? `+${pending.length - PENDING_SHOWN} pending` : "",
+		count("done") > 0 ? `${count("done")} done` : "",
+		count("dropped") > 0 ? `${count("dropped")} dropped` : "",
+	].filter(Boolean);
+	if (tail.length > 0) lines.push(cut(ink.fg("textSecondary", tail.join(" · ")), width));
 	return { lines, ...(current === undefined ? {} : { current }) };
 }
 
-function taskLines(task: FeatureTask, { ink, paint }: Painters, width: number): string[] {
-	const title = `${oneLine(task.id)} ${oneLine(task.title)}`;
+/** A task's title on one row, with its id in the full list, and an optional note below. */
+function taskLines(task: FeatureTask, { ink, paint }: Painters, width: number, withId = false): string[] {
+	const title = withId ? `${ink.fg("textSecondary", oneLine(task.id))} ${oneLine(task.title)}` : oneLine(task.title);
+	const row = (mark: string, text: string) => cut(`${mark} ${text}`, width);
 	switch (task.status) {
-		case "in_progress":
-			return wrapped(`${paint("bold", ink.fg("text", "▸"))} `, title, width, (text) =>
-				paint("bold", ink.fg("text", text)),
-			);
-		case "blocked": {
-			const lines = wrapped(`${ink.fg("warning", "⊘")} `, title, width, (text) => ink.fg("text", text));
-			return task.note === undefined
-				? lines
-				: [...lines, cut(`  ${ink.fg("warning", `waiting: ${oneLine(task.note)}`)}`, width)];
+		case "in_progress": {
+			const line = cut(`${ink.fg("running", "◐")} ${paint("bold", ink.fg("text", title))}`, width);
+			return [
+				ink.bg("surface", line + " ".repeat(Math.max(0, width - visibleWidth(line)))),
+				...(task.note === undefined
+					? []
+					: wrapped("  ", oneLine(task.note), width, (text) => ink.fg("textSecondary", text))),
+			];
 		}
+		case "blocked":
+			return [
+				row(ink.fg("warning", "⊘"), ink.fg("text", title)),
+				...(task.note === undefined
+					? []
+					: wrapped("  ", `waiting: ${oneLine(task.note)}`, width, (text) => ink.fg("warning", text))),
+			];
+		case "done":
+			return [row(ink.fg("success", "✓"), ink.fg("text", title))];
 		case "dropped":
-			return wrapped("  ", title, width, (text) => paint("strikethrough", ink.fg("textSecondary", text)));
+			return [row(ink.fg("textSecondary", "–"), paint("strikethrough", ink.fg("textSecondary", title)))];
 		case "pending":
-			return wrapped(`${ink.fg("textSecondary", "○")} `, title, width, (text) => ink.fg("text", text));
+			return [row(ink.fg("textSecondary", "○"), ink.fg("text", title))];
 		default:
-			return wrapped(`${ink.fg("textSecondary", "·")} `, title, width, (text) => ink.fg("text", text));
+			return [row(ink.fg("textSecondary", "·"), ink.fg("text", title))];
 	}
 }
 

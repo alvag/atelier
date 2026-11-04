@@ -1414,8 +1414,8 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 	const toggleFeature = () => {
 		if (!(side?.shown() ? side.hasFeature : feature.active))
 			return conversation.note("no ODD feature is active in this session");
-		// With the side panel on screen, its Todos are the feature's tasks.
-		if (side?.shown()) side.toggleTodos();
+		// While visible, the side panel owns the task summary/full-list switch.
+		if (side?.shown()) side.toggleTasks();
 		else feature.toggle();
 	};
 	/** Ctrl+P shows or hides the side panel, and keeps the choice for the next sessions. */
