@@ -9,6 +9,7 @@ import {
 	type AtelierEventBody,
 	FakeBackend,
 	type FakeStep,
+	type McpServerStatus,
 	type PermissionMode,
 	Session,
 } from "../src/index.ts";
@@ -370,6 +371,111 @@ describe("MCP in a session", () => {
 			} finally {
 				await session.close();
 			}
+		});
+
+		describe("delivery order and acknowledgment", () => {
+			/** A manager whose visible state the test sets and announces itself. */
+			function fake() {
+				const listeners = new Set<() => void>();
+				let state: McpServerStatus["state"] = "connecting";
+				const manager = {
+					status: () => [{ name: "fx", state, tools: 0 }],
+					problems: () => [],
+					instructions: () => undefined,
+					close: async () => {},
+					onChange: (listener: () => void) => {
+						listeners.add(listener);
+						return () => listeners.delete(listener);
+					},
+				} as unknown as McpManager;
+				return {
+					manager,
+					set: (next: McpServerStatus["state"]) => {
+						state = next;
+						for (const listener of [...listeners]) listener();
+					},
+				};
+			}
+			const states = (events: AtelierEventBody[]) =>
+				events.flatMap((event) => (event.type === "mcp_status" ? [event.servers[0]?.state] : []));
+
+			it("keeps a status for the idle event behind the unread ones of a finished turn nobody drained", async () => {
+				const mcpFake = fake();
+				let ran = false;
+				const idle: AtelierEventBody[] = [];
+				const session = await Session.start({
+					backend: new FakeBackend([
+						[
+							{
+								run: async () => {
+									mcpFake.set("connected");
+									ran = true;
+								},
+							},
+							{ event: finished },
+						],
+					]),
+					cwd: dir,
+					tools: [],
+					mcp: mcpFake.manager,
+					idleEvent: (event) => idle.push(event),
+				});
+				try {
+					const stream = session.send("one");
+					const seen: AtelierEvent[] = [(await stream.next()).value as AtelierEvent];
+					await vi.waitFor(() => expect(ran).toBe(true));
+					// The turn's end closes its queue while A is still unread in it.
+					await new Promise((resolve) => setImmediate(resolve));
+					mcpFake.set("failed");
+					expect(states(idle)).toEqual([]);
+					for await (const event of stream) seen.push(event);
+					expect(states(seen)).toEqual(["connecting", "connected"]);
+					await vi.waitFor(() => expect(states(idle)).toEqual(["failed"]));
+				} finally {
+					await session.close();
+				}
+			});
+
+			it("says a status the consumer abandoned unread in the next turn", async () => {
+				const mcpFake = fake();
+				const session = await Session.start({
+					backend: new FakeBackend([
+						[{ run: async () => mcpFake.set("connected") }, { event: finished }],
+						[{ event: finished }],
+					]),
+					cwd: dir,
+					tools: [],
+					mcp: mcpFake.manager,
+				});
+				try {
+					const stream = session.send("one");
+					expect(states([(await stream.next()).value as AtelierEvent])).toEqual(["connecting"]);
+					await stream.return(undefined);
+					expect(states(await collect(session.send("two")))).toEqual(["connected"]);
+				} finally {
+					await session.close();
+				}
+			});
+
+			it("tells the idle event the latest status an abandoned turn never delivered", async () => {
+				const mcpFake = fake();
+				const idle: AtelierEventBody[] = [];
+				const session = await Session.start({
+					backend: new FakeBackend([[{ run: async () => mcpFake.set("connected") }, { event: finished }]]),
+					cwd: dir,
+					tools: [],
+					mcp: mcpFake.manager,
+					idleEvent: (event) => idle.push(event),
+				});
+				try {
+					const stream = session.send("one");
+					await stream.next();
+					await stream.return(undefined);
+					await vi.waitFor(() => expect(states(idle)).toEqual(["connected"]));
+				} finally {
+					await session.close();
+				}
+			});
 		});
 
 		it.each(["subagent", "review", "verifier", "classifier"])(

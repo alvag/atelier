@@ -494,6 +494,8 @@ export class Session {
 	readonly #mcpGiven = new Set<string>();
 	/** The last `mcp_status` said, as JSON, so a turn says it again only when it changed. */
 	#mcpSaid: string | undefined;
+	/** The latest status waiting in the running turn's queue, not heard yet. */
+	#mcpQueued: string | undefined;
 	/** Stops listening to the MCP manager's changes. */
 	#stopMcpWatch: (() => void) | undefined;
 	/** The configuration the session started with was saved. */
@@ -999,8 +1001,8 @@ export class Session {
 				sent = woken ? `${sent}${text}` : `${text}\n\n${sent}`;
 			}
 			const mcpStatus = this.mcpStatus();
-			if (mcpStatus !== undefined && JSON.stringify(mcpStatus) !== this.#mcpSaid) {
-				this.#mcpSaid = JSON.stringify(mcpStatus);
+			if (mcpStatus !== undefined && JSON.stringify(mcpStatus) !== (this.#mcpQueued ?? this.#mcpSaid)) {
+				this.#mcpQueued = JSON.stringify(mcpStatus);
 				turn.push({ type: "mcp_status", ...mcpStatus });
 			}
 			// Servers that connected since the last prompt, with no description, say what they offer once.
@@ -1266,6 +1268,9 @@ export class Session {
 					this.#options.record?.event(said);
 					yield said;
 				}
+				// Heard once the consumer takes it, before the yield: a listener may start a turn right away.
+				if (body.type === "mcp_status")
+					this.#mcpSaid = JSON.stringify({ servers: body.servers, problems: body.problems });
 				const event = stamp(body);
 				// The state goes after the turn's events and before its end, which is the last line of the turn.
 				if (event.type === "turn_finished")
@@ -1284,6 +1289,9 @@ export class Session {
 			this.#turn = undefined;
 			this.#abort = undefined;
 			this.#givenBack = false;
+			// What the consumer never took from the queue is still owed, in its order, to the next turn or the idle event.
+			this.#mcpQueued = undefined;
+			if (!this.#options.internalChild) this.#mcpChanged();
 		}
 	}
 
@@ -1936,21 +1944,26 @@ export class Session {
 
 	/**
 	 * The MCP servers' visible state changed: said in the running turn, else through the idle event, once. Without
-	 * either it waits for the next turn, which says it if it still differs. It never wakes the agent.
+	 * either it waits for the next turn, which says it if it still differs. It never wakes the agent. A status counts
+	 * as said when a consumer takes it, not when it is queued; a turn that ended with its queue unread says nothing
+	 * until it is released, and then only the latest status.
 	 */
 	#mcpChanged(): void {
 		const status = this.mcpStatus();
 		if (status === undefined || this.#closed) return;
 		const said = JSON.stringify(status);
-		if (said === this.#mcpSaid) return;
-		const turn = this.#turnOpen() ? this.#turn : undefined;
+		if (this.#turn !== undefined) {
+			if (!this.#turn.closed && said !== (this.#mcpQueued ?? this.#mcpSaid)) {
+				this.#mcpQueued = said;
+				this.#turn.push({ type: "mcp_status", ...status });
+			}
+			return;
+		}
 		const idle = this.#options.idleEvent;
-		if (turn === undefined && idle === undefined) return;
+		if (said === this.#mcpSaid || idle === undefined) return;
 		// A listener may immediately start a turn: it must already know this snapshot was delivered.
 		this.#mcpSaid = said;
-		const event: AtelierEventBody = { type: "mcp_status", ...status };
-		if (turn !== undefined) turn.push(event);
-		else if (idle !== undefined) this.#sayIdle(idle, event);
+		this.#sayIdle(idle, { type: "mcp_status", ...status });
 	}
 
 	/** The waiting notices as the agent reads them, the clients told none waits now; undefined when none waited. */
