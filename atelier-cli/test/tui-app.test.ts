@@ -2332,11 +2332,15 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(() => panel(h).some((row) => row.includes("Status  Session")));
-			// No feature: it says so and stays on the tab it was on.
+			// No feature: it says so and stays on either tab.
+			h.screen.type("\x14");
+			await until(() => h.screen.screen().includes("no ODD feature is active in this session"));
+			expect(onSession(h)).toBe(false);
+			expect(shows(h, "│ ctrl+t summary")).toBe(false);
 			h.screen.type("\x0e");
 			await until(() => onSession(h));
 			h.screen.type("\x14");
-			await until(() => h.screen.screen().includes("no ODD feature is active in this session"));
+			await rendered(h);
 			expect(onSession(h)).toBe(true);
 			stub.emit(feature);
 			const full = () => shows(h, "│ ◐ T2 Hot profile") && shows(h, "│ ✓ T1 Hot model");

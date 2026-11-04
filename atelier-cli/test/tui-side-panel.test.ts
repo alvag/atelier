@@ -141,8 +141,8 @@ describe("side panel sections", () => {
 		]);
 		const { lines } = render(state, { now: 100_000 });
 		expect(lines).toEqual([
-			at("AGENTS", "1 running · 1 ✓"),
-			at("⧗ worker · fix footer cost", "1m40s"),
+			"AGENTS",
+			at("◐ worker · fix footer cost", "1m40s"),
 			"  sonnet-5-5 · ▸ edit footer.ts",
 			at("✓ explorer · cache calc", "◷  3m35s"),
 			"  opus-5-5 · 322k · $0.11",
@@ -152,7 +152,7 @@ describe("side panel sections", () => {
 			[52, { type: "turn_finished", stopReason: "interrupted", usage: usage(0, 0) }],
 		]);
 		expect(render(interrupted).lines).toEqual([
-			at("AGENTS", "1 ✗"),
+			"AGENTS",
 			at("✗ worker · docs update", "0m52s"),
 			"  no report: interrupted",
 		]);
@@ -324,7 +324,7 @@ describe("side panel sections", () => {
 		expect(lines.join("\n")).not.toMatch(/STATUS|Status|✿|▾|▸/);
 	});
 
-	it("puts Todos, Jobs and Agents on the Status tab with uppercase headers, a rule between sections and no fold marks", () => {
+	it("puts Tasks, Jobs and Agents on the Status tab with uppercase headers, a rule between sections and no fold marks", () => {
 		const state = stateOf([
 			[0, job("j", "x")],
 			[0, { type: "tool_call_started", callId: "c1", tool: "task", input: { agent: "worker", prompt: "docs" } }],
@@ -349,8 +349,8 @@ describe("side panel sections", () => {
 			"JOBS",
 			at("◐ x", "0m00s"),
 			RULE,
-			at("AGENTS", "1 running"),
-			at("⧗ worker · docs", "0m00s"),
+			"AGENTS",
+			at("◐ worker · docs", "0m00s"),
 		]);
 		expect(current).toEqual({ start: 3, end: 3 });
 		expect(lines.join("\n")).not.toMatch(/[▾▸] *$|⧗ Jobs|❀|◆|✿/m);
@@ -502,7 +502,7 @@ describe("finished rows", () => {
 		expect(lines[0]).toBe("JOBS");
 	});
 
-	it("counts the agents shown in the header, not the ones left out", () => {
+	it("shows only the name in the agents header, whatever rows are shown or left out", () => {
 		const bodies: [number, Body][] = [];
 		for (let i = 0; i < 5; i++)
 			bodies.push(
@@ -525,7 +525,7 @@ describe("finished rows", () => {
 			);
 		const state = stateOf(bodies);
 		const { lines } = render(state, { now: 110_000 });
-		expect(lines[0]).toBe(at("AGENTS", "2 ✓ · 1 ✗"));
+		expect(lines[0]).toBe("AGENTS");
 		expect(lines.join("\n")).not.toContain("more");
 		expect(render(state, { now: 400_000 }).lines).toEqual([]);
 	});

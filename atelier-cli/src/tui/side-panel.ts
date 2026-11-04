@@ -189,17 +189,11 @@ function agentLines(view: PanelView, p: Painters, width: number): string[] {
 	const waiting = (agent: PanelAgent) => unread.includes(`task:${agent.key}`);
 	const { shown } = ordered(agents, waiting, view.now);
 	if (shown.length === 0) return [];
-	const count = (status: PanelAgent["status"]) => shown.filter((agent) => agent.status === status).length;
-	const counts = joined(p, [
-		count("running") > 0 ? `${count("running")} running` : "",
-		count("finished") > 0 ? `${count("finished")} ${ink.fg("success", "✓")}` : "",
-		count("failed") > 0 ? `${count("failed")} ${ink.fg("error", "✗")}` : "",
-	]);
-	const lines = [header(p, "AGENTS", ink.fg("textSecondary", counts), width)];
+	const lines = [header(p, "AGENTS", "", width)];
 	for (const agent of shown) {
 		const mark =
 			agent.status === "running"
-				? ink.fg("running", "⧗")
+				? ink.fg("running", "◐")
 				: agent.status === "finished"
 					? ink.fg("success", "✓")
 					: agent.status === "stopped"
@@ -213,18 +207,24 @@ function agentLines(view: PanelView, p: Painters, width: number): string[] {
 		const symbol = waiting(agent) ? ink.fg("warning", "●") : mark;
 		const name = `${oneLine(agent.agent)}${agent.label === "" ? "" : ` · ${oneLine(agent.label)}`}`;
 		lines.push(row(`${symbol} ${ink.fg("text", name)}`, right.filter(Boolean).join("  "), width));
-		const model = agent.model === undefined ? "" : ink.fg("textSecondary", oneLine(agent.model));
-		let detail: string;
-		if (agent.status === "running")
-			detail = joined(p, [model, agent.tool === undefined ? "" : ink.fg("running", `▸ ${oneLine(agent.tool.label)}`)]);
-		else if (agent.status === "failed" || (agent.status === "stopped" && agent.error !== undefined))
-			detail = ink.fg("error", oneLine(`no report: ${agent.error ?? "stopped"}`));
-		else {
-			const used = agent.usage === undefined ? "" : tokens(prompt(agent.usage) + agent.usage.output);
-			const cost = agent.costUsd === undefined ? "" : `$${agent.costUsd.toFixed(2)}`;
-			detail = joined(p, [model, ink.fg("textSecondary", used), ink.fg("textSecondary", cost)]);
+		const model = agent.model === undefined ? "" : oneLine(agent.model);
+		if (agent.status === "failed" || (agent.status === "stopped" && agent.error !== undefined)) {
+			lines.push(
+				...wrapped("  ", oneLine(`no report: ${agent.error ?? "stopped"}`), width, (text) => ink.fg("error", text)),
+			);
+			continue;
 		}
-		if (visibleWidth(detail) > 0) lines.push(cut(`  ${detail}`, width));
+		let parts: string[];
+		if (agent.status === "running")
+			parts = [model, agent.tool === undefined || agent.background ? "" : `▸ ${oneLine(agent.tool.label)}`];
+		else
+			parts = [
+				model,
+				agent.usage === undefined ? "" : tokens(prompt(agent.usage) + agent.usage.output),
+				agent.costUsd === undefined ? "" : `$${agent.costUsd.toFixed(2)}`,
+			];
+		const detail = parts.filter((part) => part !== "").join(" · ");
+		if (detail !== "") lines.push(cut(`  ${ink.fg("textSecondary", cut(detail, Math.max(1, width - 2)))}`, width));
 	}
 	return lines;
 }
