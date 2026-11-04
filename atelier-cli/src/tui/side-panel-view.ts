@@ -77,6 +77,7 @@ export class SidePanel {
 	#rendered: Record<PanelTab, PanelLines> = { status: { lines: [] }, session: { lines: [] } };
 	/** Per tab, whether it shows the indicator: the layout of one tab says nothing of the other. */
 	#indicators: Record<PanelTab, boolean> = { status: false, session: false };
+	#height = 0;
 	#ticker: NodeJS.Timeout | undefined;
 	/** The task in progress the panel keeps in view. */
 	#current: string | undefined;
@@ -116,25 +117,31 @@ export class SidePanel {
 			render: () => Array.from({ length: Math.max(1, this.#tui.terminal.rows) }, () => this.#ink.fg("separator", "│")),
 			invalidate: () => {},
 		};
+		// The rule is laid out first, at the panel's actual height (below any fullscreen header).
+		const edge = new PanelScroll(rule, { follow: "none", scrollbar: "hidden" });
+		edge.afterLayout = () => {
+			this.#height = edge.viewportHeight;
+		};
 		const indicator: Component = { render: () => [this.#where()], invalidate: () => {} };
 		const scrolling = (tab: PanelTab) => ({
 			component: this.#scrolls[tab],
 			basis: 0,
 			grow: 1,
 			shrink: 1,
-			minSize: 1,
+			minSize: 0,
 			// The tab on show is the only one laid out.
 			visible: () => this.#tab === tab,
 		});
 		const body = new VStack([
-			{ component: tabs, basis: 2, grow: 0, shrink: 0 },
+			// Two rows, less in a panel too short to hold the indicator beside them.
+			{ component: tabs, basis: 2, grow: 0, shrink: 1 },
 			scrolling("status"),
 			scrolling("session"),
 			{ component: indicator, basis: 1, grow: 0, shrink: 0, visible: () => this.#overflows() },
 		]);
 		this.component = new HStack(
 			[
-				{ component: rule, basis: 1, grow: 0, shrink: 0 },
+				{ component: edge, basis: 1, grow: 0, shrink: 0 },
 				{ component: body, basis: 0, grow: 1, shrink: 1 },
 			],
 			{ gap: 1 },
@@ -237,20 +244,25 @@ export class SidePanel {
 		return this.#indicators[this.#tab];
 	}
 
-	/** After a tab's layout, which knows the height it got: if the indicator is not what its rows need, another render sets it. */
+	/**
+	 * After a tab's layout, which knows its rows: if the indicator is not what they need in the panel's height under the
+	 * two fixed rows, another render sets it. The height is the panel's, not the scroll's, which the indicator and a
+	 * short panel clip.
+	 */
 	#measure(tab: PanelTab): void {
 		if (tab !== this.#tab) return;
-		const height = this.#scrolls[tab].viewportHeight + (this.#indicators[tab] ? 1 : 0);
-		const overflows = height > 0 && this.#rendered[tab].lines.length > height;
+		const room = Math.max(0, this.#height - 2);
+		const overflows = this.#rendered[tab].lines.length > room;
 		if (overflows === this.#indicators[tab]) return;
 		this.#indicators[tab] = overflows;
 		this.#tui.requestRender();
 	}
 
-	/** `↑↓ 1–11/21`: the rows in view and how many there are. */
+	/** `↑↓ 1–11/21`: the rows in view and how many there are; `↑↓ 0–0/21` where none fit. */
 	#where(): string {
 		const scroll = this.#scrolls[this.#tab];
 		const total = this.#rendered[this.#tab].lines.length;
+		if (scroll.viewportHeight <= 0) return this.#ink.fg("textSecondary", `↑↓ 0–0/${total}`);
 		const top = scroll.scrollTop;
 		const bottom = Math.min(total, top + scroll.viewportHeight);
 		return this.#ink.fg("textSecondary", `↑↓ ${top + 1}–${bottom}/${total}`);
