@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type AtelierEventBody, FakeBackend, Session } from "../src/index.ts";
 import type { HttpServerConfig } from "../src/mcp/config.ts";
 import { loadMcpConfig } from "../src/mcp/config.ts";
 import { McpManager } from "../src/mcp/manager.ts";
@@ -338,10 +339,25 @@ describe("MCP OAuth", () => {
 		manager.start();
 		await manager.ready();
 		expect(manager.status()[0]?.state).toBe("needs_auth");
+		const states: string[] = [];
+		manager.onChange(() => states.push(manager.status()[0]?.state ?? ""));
+		const idle: AtelierEventBody[] = [];
+		const session = await Session.start({
+			backend: new FakeBackend([]),
+			cwd: home,
+			tools: [],
+			mcp: manager,
+			idleEvent: (event) => idle.push(event),
+		});
 		await manager.login("remote");
 		expect(manager.status()[0]).toMatchObject({ state: "connected", tools: ["whoami"] });
 		await manager.logout("remote");
 		expect(manager.status()[0]?.state).toBe("needs_auth");
+		expect(states.at(-1)).toBe("needs_auth");
+		expect(states).toContain("connected");
+		const said = idle.flatMap((event) => (event.type === "mcp_status" ? [event.servers[0]?.state] : []));
+		expect(said).toEqual(["connecting", "connected", "connecting", "needs_auth"]);
+		await session.close();
 		await expect(manager.login("nope")).rejects.toThrow('No MCP server named "nope"');
 		await manager.close();
 	});

@@ -199,4 +199,35 @@ describe("McpManager over HTTP", () => {
 		expect(status?.state).toBe("failed");
 		expect(JSON.stringify(status)).not.toMatch(/wrong-literal-token|http-secret-token/);
 	});
+
+	it("tells a listener each change of the visible state once, and nothing once it unsubscribed", async () => {
+		const created = new McpManager({
+			file: join(dir, "mcp.json"),
+			servers: [stdio("fixture"), { ...stdio("broken"), command: join(dir, "missing") }],
+			problems: [],
+			secrets: [],
+		});
+		managers.push(created);
+		const seen: string[] = [];
+		const stop = created.onChange(() =>
+			seen.push(
+				created
+					.status()
+					.map(({ name, state }) => `${name}:${state}`)
+					.join(","),
+			),
+		);
+		created.start();
+		await created.ready();
+		expect(seen.length).toBeGreaterThan(0);
+		expect(new Set(seen).size).toBe(seen.length);
+		expect(seen.at(-1)).toBe("fixture:connected,broken:failed");
+		const count = seen.length;
+		created.start();
+		await created.ready();
+		expect(seen).toHaveLength(count);
+		stop();
+		await created.close();
+		expect(seen).toHaveLength(count);
+	});
 });

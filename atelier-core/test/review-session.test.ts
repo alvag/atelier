@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile }
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { AgentBackend, BackendSession, BackendStartOptions, ToolCall } from "../src/backend.ts";
 import { type Effort, errorEvent } from "../src/events.ts";
@@ -525,6 +525,19 @@ describe("the risk declaration", () => {
 			VERIFIER_MAX_REQUESTS,
 			REVIEW_ROLE_MAX_REQUESTS,
 		]);
+	});
+
+	it("starts the verifier and the review roles as internal children, which never hear the MCP manager", async () => {
+		const spy = vi.spyOn(Session, "start");
+		try {
+			const declare = call("risk", { items: [4], reason: "r", lenses: ["resilience"], lensesReason: "r" });
+			const s = await start({ turns: [[declare, ...MEDIUM_TURN]], roles: new RoleBackend(clean) });
+			await s.send("edit");
+			expect(s.roles.roles.map((role) => role.role)).toEqual(["verifier", "resilience"]);
+			expect(spy.mock.calls.map(([options]) => options.internalChild)).toEqual([undefined, true, true]);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 
 	it("asks once, inside the turn, when a code change has no declaration; the answer counts", async () => {

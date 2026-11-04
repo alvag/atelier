@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type ApprovalRequest,
 	type AtelierEvent,
@@ -215,6 +215,253 @@ describe("MCP in a session", () => {
 		}
 	});
 
+	describe("status changes outside the turn that would say them", () => {
+		const idleStatuses = (idle: AtelierEventBody[]) => idle.filter((event) => event.type === "mcp_status");
+		const unstarted = (servers: McpServerConfig[], secrets: string[] = []) =>
+			new McpManager({ file: join(dir, "mcp.json"), servers, problems: [], secrets });
+
+		it("says a change during a turn in that turn, and the next turn does not repeat it", async () => {
+			const manager = unstarted([server("fixture")]);
+			const backend = new FakeBackend([
+				[
+					{
+						run: async () => {
+							manager.start();
+							await manager.ready();
+						},
+					},
+					{ event: finished },
+				],
+				[{ event: finished }],
+			]);
+			const idle: AtelierEventBody[] = [];
+			const session = await Session.start({
+				backend,
+				cwd: dir,
+				tools: [],
+				mcp: manager,
+				idleEvent: (event) => idle.push(event),
+			});
+			try {
+				const states = (await collect(session.send("one")))
+					.filter((event) => event.type === "mcp_status")
+					.map((event) => (event.type === "mcp_status" ? event.servers[0]?.state : undefined));
+				expect(states).toEqual(["connecting", "connected"]);
+				expect(await collect(session.send("two"))).not.toContainEqual(expect.objectContaining({ type: "mcp_status" }));
+				expect(idle).toEqual([]);
+			} finally {
+				await session.close();
+			}
+		});
+
+		it("says a change before the first turn and between turns through the idle event, once", async () => {
+			const manager = unstarted([server("fixture")]);
+			const backend = new FakeBackend([[{ event: finished }], [{ event: finished }]]);
+			const idle: AtelierEventBody[] = [];
+			const session = await Session.start({
+				backend,
+				cwd: dir,
+				tools: [],
+				mcp: manager,
+				idleEvent: (event) => idle.push(event),
+			});
+			try {
+				manager.start();
+				await manager.ready();
+				expect(idleStatuses(idle)).toEqual([
+					expect.objectContaining({ servers: [expect.objectContaining({ name: "fixture", state: "connected" })] }),
+				]);
+				// Said already: the first turn does not say it again.
+				expect(await collect(session.send("one"))).not.toContainEqual(expect.objectContaining({ type: "mcp_status" }));
+				expect(idle).toHaveLength(1);
+				await manager.close();
+				expect(idleStatuses(idle)).toHaveLength(1);
+			} finally {
+				await session.close();
+			}
+		});
+
+		it("keeps the change for the next turn when nobody hears events outside a turn", async () => {
+			const manager = unstarted([server("fixture")]);
+			const session = await Session.start({
+				backend: new FakeBackend([[{ event: finished }]]),
+				cwd: dir,
+				tools: [],
+				mcp: manager,
+			});
+			try {
+				manager.start();
+				await manager.ready();
+				const events = await collect(session.send("one"));
+				expect(events.filter((event) => event.type === "mcp_status")).toEqual([
+					expect.objectContaining({ servers: [expect.objectContaining({ state: "connected" })] }),
+				]);
+			} finally {
+				await session.close();
+			}
+		});
+
+		it("says a server that fails with its secrets hidden, and nothing after the session closed", async () => {
+			const missing = join(dir, "hidden-name-xyz");
+			const manager = unstarted([server("broken", { command: missing })], ["hidden-name-xyz"]);
+			const idle: AtelierEventBody[] = [];
+			const session = await Session.start({
+				backend: new FakeBackend([]),
+				cwd: dir,
+				tools: [],
+				mcp: manager,
+				idleEvent: (event) => idle.push(event),
+			});
+			manager.start();
+			await manager.ready();
+			expect(idleStatuses(idle)).toHaveLength(1);
+			expect(JSON.stringify(idle)).toContain('"state":"failed"');
+			expect(JSON.stringify(idle)).not.toContain("hidden-name-xyz");
+			await session.close();
+			const before = idle.length;
+			manager.start();
+			await manager.ready();
+			expect(idle).toHaveLength(before);
+		});
+
+		it("says a change between two completed turns once, then the next turn does not repeat it", async () => {
+			const manager = unstarted([server("fixture")]);
+			const idle: AtelierEventBody[] = [];
+			const session = await Session.start({
+				backend: new FakeBackend([[{ event: finished }], [{ event: finished }]]),
+				cwd: dir,
+				tools: [],
+				mcp: manager,
+				idleEvent: (event) => idle.push(event),
+			});
+			try {
+				const first = await collect(session.send("one"));
+				expect(first.filter((event) => event.type === "mcp_status")).toHaveLength(1);
+				expect(idle).toEqual([]);
+				manager.start();
+				await manager.ready();
+				expect(idleStatuses(idle).map((event) => (event.type === "mcp_status" ? event.servers[0]?.state : ""))).toEqual(
+					["connected"],
+				);
+				expect(await collect(session.send("two"))).not.toContainEqual(expect.objectContaining({ type: "mcp_status" }));
+				expect(idleStatuses(idle)).toHaveLength(1);
+			} finally {
+				await session.close();
+			}
+		});
+
+		it("does not repeat a status when its idle listener immediately starts a turn", async () => {
+			const manager = unstarted([server("fixture")]);
+			let turn: Promise<AtelierEvent[]> | undefined;
+			const session = await Session.start({
+				backend: new FakeBackend([[{ event: finished }]]),
+				cwd: dir,
+				tools: [],
+				mcp: manager,
+				idleEvent: (event) => {
+					if (event.type === "mcp_status") turn = collect(session.send("go"));
+				},
+			});
+			try {
+				manager.start();
+				await manager.ready();
+				expect(turn).toBeDefined();
+				expect(await turn).not.toContainEqual(expect.objectContaining({ type: "mcp_status" }));
+			} finally {
+				await session.close();
+			}
+		});
+
+		it.each(["subagent", "review", "verifier", "classifier"])(
+			"a %s child sharing the main session's manager and idle event neither says changes nor closes the manager",
+			async (_role) => {
+				const manager = unstarted([server("fixture")]);
+				const idle: AtelierEventBody[] = [];
+				const shared = { mcp: manager, idleEvent: (event: AtelierEventBody) => idle.push(event), tools: [], cwd: dir };
+				const main = await Session.start({ ...shared, backend: new FakeBackend([]) });
+				const child = await Session.start({ ...shared, backend: new FakeBackend([]), internalChild: true });
+				try {
+					manager.start();
+					await manager.ready();
+					expect(idleStatuses(idle)).toHaveLength(1);
+					await child.close();
+					await expect(manager.call("fixture", "echo", { text: "live" })).resolves.toBeDefined();
+				} finally {
+					await main.close();
+				}
+			},
+		);
+
+		it("starts a subagent as an internal child", async () => {
+			const agent: SubagentDefinition = {
+				name: "w",
+				description: "d",
+				tools: [],
+				prompt: "W",
+				models: {},
+				maxRequests: 5,
+			};
+			const start = vi.spyOn(Session, "start");
+			const session = await Session.start({
+				backend: new FakeBackend([[call("task", { agent: "w", prompt: "go" }), { event: finished }]]),
+				cwd: dir,
+				tools: [],
+				mcp: unstarted([server("fixture")]),
+				subagents: { agents: [agent], createBackend: () => new FakeBackend([[{ event: finished }]]) },
+			});
+			try {
+				await collect(session.send("delegate"));
+				expect(start.mock.calls.map(([options]) => options.internalChild)).toEqual([undefined, true]);
+			} finally {
+				await session.close();
+				start.mockRestore();
+			}
+		});
+
+		it("is not heard from a subagent, which has no MCP, while the main session says the change once", async () => {
+			const manager = unstarted([server("fixture")]);
+			const agent: SubagentDefinition = {
+				name: "worker",
+				description: "Changes code",
+				tools: [],
+				prompt: "WORKER",
+				models: {},
+				maxRequests: 5,
+			};
+			const parent = new FakeBackend([[call("task", { agent: "worker", prompt: "go" }), { event: finished }]]);
+			const idle: AtelierEventBody[] = [];
+			const session = await Session.start({
+				backend: parent,
+				cwd: dir,
+				tools: [],
+				mcp: manager,
+				idleEvent: (event) => idle.push(event),
+				subagents: {
+					agents: [agent],
+					createBackend: () =>
+						new FakeBackend([
+							[
+								{
+									run: async () => {
+										manager.start();
+										await manager.ready();
+									},
+								},
+								{ event: finished },
+							],
+						]),
+				},
+			});
+			try {
+				const events = await collect(session.send("delegate"));
+				expect(events.filter((event) => event.type === "mcp_status")).toHaveLength(2);
+				expect(idle).toEqual([]);
+			} finally {
+				await session.close();
+			}
+		});
+	});
+
 	it("closes its servers when the session closes", async () => {
 		const manager = mcp([server("fixture")]);
 		const session = await Session.start({ backend: new FakeBackend([]), cwd: dir, tools: [], mcp: manager });
@@ -338,6 +585,16 @@ describe("MCP approval", () => {
 		expect(questions).toEqual([]);
 		expect(classifierBackends).toEqual([]);
 		expect(result).toEqual({ ok: true, output: "echo: hola" });
+	});
+
+	it("starts the classifier as an internal child, and only the main session as one that hears the manager", async () => {
+		const start = vi.spyOn(Session, "start");
+		try {
+			await run("auto", reply("allow"));
+			expect(start.mock.calls.map(([options]) => options.internalChild)).toEqual([undefined, true]);
+		} finally {
+			start.mockRestore();
+		}
 	});
 
 	it("asks the classifier in auto, with the tool's description and schema", async () => {

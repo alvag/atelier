@@ -2,6 +2,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeBackend, McpManager } from "../src/index.ts";
 import { decodeServerMessage } from "../src/protocol/codec.ts";
@@ -18,13 +19,13 @@ afterEach(async () => {
 	await rm(cwd, { recursive: true, force: true });
 });
 
-function serve(connectMcp?: (cwd: string) => McpManager) {
+function serve(connectMcp?: (cwd: string) => McpManager, createBackend: () => FakeBackend = () => new FakeBackend([])) {
 	const input = new PassThrough();
 	const messages: ServerMessage[] = [];
 	const server = new RpcServer({
 		input,
 		write: (line) => messages.push(decodeServerMessage(line.trimEnd()) as ServerMessage),
-		createBackend: () => new FakeBackend([]),
+		createBackend,
 		tools: [],
 		systemPromptAppend: "",
 		home: cwd,
@@ -47,7 +48,7 @@ function serve(connectMcp?: (cwd: string) => McpManager) {
 		input.end();
 		return done;
 	};
-	return { request, close };
+	return { request, close, messages };
 }
 
 describe("session.mcp", () => {
@@ -100,5 +101,70 @@ describe("session.mcp", () => {
 			ok: false,
 		});
 		await rpc.close();
+	});
+
+	describe("status changes outside a turn", () => {
+		const slow = () => {
+			const manager = new McpManager({
+				file: join(cwd, "mcp.json"),
+				servers: [
+					{
+						name: "slow",
+						transport: "stdio",
+						enabled: true,
+						timeoutMs: 1000,
+						command: process.execPath,
+						args: [fileURLToPath(new URL("fixtures/mcp/server.ts", import.meta.url))],
+						env: {},
+						cwd,
+					},
+				],
+				problems: [],
+				secrets: [],
+			});
+			// The state changes while the session is being started, before the client knows its id.
+			const backend = () => {
+				const fake = new FakeBackend([]);
+				const start = fake.start.bind(fake);
+				fake.start = async (options) => {
+					manager.start();
+					await manager.ready();
+					return start(options);
+				};
+				return fake;
+			};
+			return { manager, backend };
+		};
+		const events = (messages: ServerMessage[]) => messages.filter((m) => m.type === "session_event");
+		const until = async (condition: () => boolean) => {
+			for (let i = 0; i < 250 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(condition()).toBe(true);
+		};
+
+		it("sends it to a client that asked for session events, after the response that names the session", async () => {
+			const { manager, backend } = slow();
+			const rpc = serve(() => manager, backend);
+			const started = await rpc.request({ command: "session.start", cwd, sessionEvents: true });
+			await until(() => events(rpc.messages).length > 0);
+			const sessionId = (started as unknown as { result: { sessionId: string } }).result.sessionId;
+			const first = events(rpc.messages)[0];
+			expect(first).toMatchObject({
+				sessionId,
+				event: { type: "mcp_status", servers: [{ name: "slow", state: "connected" }] },
+			});
+			expect(rpc.messages.indexOf(started)).toBeLessThan(rpc.messages.indexOf(first as ServerMessage));
+			await rpc.close();
+		});
+
+		it("sends nothing to a client that did not ask", async () => {
+			const { manager, backend } = slow();
+			const rpc = serve(() => manager, backend);
+			const started = await rpc.request({ command: "session.start", cwd });
+			const sessionId = (started as unknown as { result: { sessionId: string } }).result.sessionId;
+			await manager.ready();
+			await rpc.request({ command: "session.mcp", sessionId });
+			expect(events(rpc.messages)).toEqual([]);
+			await rpc.close();
+		});
 	});
 });
