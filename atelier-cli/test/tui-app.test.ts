@@ -2161,6 +2161,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type(`\x1b[<0;${column};${row + 1}M`);
 			h.screen.type(`\x1b[<0;${column};${row + 1}m`);
 		};
+		const tabRow = (h: ReturnType<typeof harness>) =>
+			h.screen.frame().findIndex((line) => line?.includes("Status  Session"));
 		/** The panel is on Session when its content has the session's turns. */
 		const onSession = (h: ReturnType<typeof harness>) => panel(h).some((row) => row.includes(" turns"));
 		/** Wait for input to reach a rendered frame without relying on a fixed delay. */
@@ -2184,6 +2186,172 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			click(h, 1, jobs);
 			await rendered(h);
 			expect(panel(h).some((line) => line.includes("⧗ pnpm check"))).toBe(true);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("shows the Status and Session tabs on two fixed rows, and selects one with a click on its label alone", async () => {
+			const h = harness([], { columns: 140 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => panel(h).some((row) => row.includes("Status  Session")));
+			const row = tabRow(h);
+			expect(panel(h)[panel(h).indexOf("│ Status  Session")]).toBe("│ Status  Session");
+			expect(h.screen.frame()[row + 1]?.slice(h.screen.terminal.columns - 40)).toBe(`│ ${"─".repeat(37)}`);
+			expect(onSession(h)).toBe(false);
+			// The gap, the space past the labels and the underline do nothing.
+			for (const x of [6, 7, 15, 30]) click(h, x, row);
+			click(h, 10, row + 1);
+			await rendered(h);
+			expect(onSession(h)).toBe(false);
+			click(h, 8, row);
+			await until(() => onSession(h));
+			expect(panel(h).join("\n")).toContain("Session");
+			click(h, 14, row);
+			await rendered(h);
+			expect(onSession(h)).toBe(true);
+			click(h, 5, row);
+			await until(() => !onSession(h));
+			click(h, 0, row);
+			await rendered(h);
+			expect(onSession(h)).toBe(false);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("switches tabs with Ctrl+N only while the panel is on screen, and keeps the tab while the panel is hidden", async () => {
+			const h = harness([], { columns: 140 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => panel(h).some((row) => row.includes("Status  Session")));
+			h.screen.type("\x0e");
+			await until(() => onSession(h));
+			h.screen.type("\x0e");
+			await until(() => !onSession(h));
+			h.screen.type("\x0e");
+			await until(() => onSession(h));
+			// Hidden with Ctrl+P: Ctrl+N does nothing, and the panel comes back on the tab it had.
+			h.screen.type("\x10");
+			await until(() => panel(h).length === 0);
+			h.screen.type("\x0e");
+			await rendered(h);
+			h.screen.type("\x10");
+			await until(() => onSession(h));
+			// Too narrow: it does not show, and Ctrl+N does nothing.
+			h.screen.resize(100);
+			await until(() => panel(h).length === 0);
+			h.screen.type("\x0e");
+			await rendered(h);
+			h.screen.resize(140);
+			await until(() => onSession(h));
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("scrolls each tab on its own, keeps the tabs in place and says where the rows are on the tab that overflows", async () => {
+			const h = harness([], { columns: 140, rows: 16 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			for (let i = 1; i <= 12; i++) stub.emit({ ...job, jobId: `job-${i}`, label: `job ${i}` });
+			await until(() => panel(h).some((row) => /^│ ↑↓ 1–\d+\/\d+$/.test(row)));
+			const row = h.screen.frame().findIndex((line) => line?.includes("JOBS")) + 1;
+			h.screen.type(`\x1b[<65;${h.screen.terminal.columns - 20};${row}M`);
+			await until(() => panel(h).some((line) => /^│ ↑↓ [2-9]–\d+\/\d+$/.test(line)));
+			// The tabs stay where they are while the rows scroll under them.
+			expect(panel(h)).toContain("│ Status  Session");
+			const where = panel(h).find((line) => line.includes("↑↓"));
+			expect(where).toMatch(/\/13$/); // JOBS and twelve jobs, without the tab rows.
+			h.screen.type("\x0e");
+			await until(() => onSession(h));
+			expect(panel(h).some((line) => line.includes("↑↓"))).toBe(false);
+			expect(panel(h)).toContain("│ Status  Session");
+			stub.emit({
+				type: "mcp_status",
+				servers: [],
+				problems: Array.from({ length: 15 }, (_, i) => `problem ${i}`),
+			});
+			await until(() => panel(h).some((line) => /^│ ↑↓ 1–\d+\/\d+$/.test(line)));
+			h.screen.type(`\x1b[<65;${h.screen.terminal.columns - 20};${row}M`);
+			await until(() => panel(h).some((line) => /^│ ↑↓ [2-9]–\d+\/\d+$/.test(line)));
+			const sessionWhere = panel(h).find((line) => line.includes("↑↓"));
+			expect(sessionWhere).not.toMatch(/\/13$/);
+			h.screen.type("\x0e");
+			await until(() => panel(h).includes(where ?? ""));
+			h.screen.type("\x0e");
+			await until(() => panel(h).includes(sessionWhere ?? ""));
+			expect(panel(h)).toContain("│ Status  Session");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("brings the task in progress into view on Status after it started while Session was open", async () => {
+			const h = harness([], { columns: 140, rows: 16 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => panel(h).some((row) => row.includes("Status  Session")));
+			h.screen.type("\x0e");
+			await until(() => onSession(h));
+			const tasks = Array.from({ length: 30 }, (_, i) => ({
+				id: `T${i + 1}`,
+				title: `Task ${i + 1}`,
+				specs: [],
+				status: i === 29 ? "in_progress" : "pending",
+			}));
+			stub.emit({ ...feature, tasks });
+			await rendered(h);
+			// Session shows no task, and its own rows stay where they were.
+			expect(onSession(h)).toBe(true);
+			expect(panel(h).join("\n")).not.toContain("T30");
+			h.screen.type("\x0e");
+			await until(() => panel(h).includes("│ ▸ T30 Task 30"));
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("takes Ctrl+T and /feature from Session to Status and opens the Todos there, and folds them from Status as before", async () => {
+			const h = harness([], { columns: 140 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => panel(h).some((row) => row.includes("Status  Session")));
+			// No feature: it says so and stays on the tab it was on.
+			h.screen.type("\x0e");
+			await until(() => onSession(h));
+			h.screen.type("\x14");
+			await until(() => h.screen.screen().includes("no ODD feature is active in this session"));
+			expect(onSession(h)).toBe(true);
+			stub.emit(feature);
+			// Open Todos stay open: Ctrl+T from Session only switches to Status.
+			h.screen.type("\x14");
+			await until(() => panel(h).includes("│ ▸ T2 Hot profile"));
+			expect(onSession(h)).toBe(false);
+			// On Status it folds.
+			h.screen.type("\x14");
+			await until(() => !panel(h).includes("│ ▸ T2 Hot profile"));
+			// Folded, then Session: Ctrl+T does not toggle what is hidden, it switches and opens.
+			h.screen.type("\x0e");
+			await until(() => onSession(h));
+			h.screen.type("\x14");
+			await until(() => panel(h).includes("│ ▸ T2 Hot profile"));
+			expect(onSession(h)).toBe(false);
+			// The same with /feature.
+			h.screen.type("/feature");
+			h.screen.type("\r");
+			await until(() => !panel(h).includes("│ ▸ T2 Hot profile"));
+			h.screen.type("\x0e");
+			await until(() => onSession(h));
+			h.screen.type("/feature");
+			h.screen.type("\r");
+			await until(() => panel(h).includes("│ ▸ T2 Hot profile"));
+			expect(onSession(h)).toBe(false);
+			h.screen.type("/feature");
+			h.screen.type("\r");
+			await until(() => !panel(h).includes("│ ▸ T2 Hot profile"));
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});

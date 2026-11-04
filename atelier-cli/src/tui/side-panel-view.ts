@@ -177,9 +177,15 @@ export class SidePanel {
 		this.#tab = this.#tab === "status" ? "session" : "status";
 	}
 
-	/** Ctrl+T and `/feature` fold the Todos or open them. */
+	/**
+	 * Ctrl+T and `/feature`: from the Status tab they fold the Todos or open them; from the Session tab, where they are
+	 * out of sight, they take the panel to Status with the Todos open.
+	 */
 	toggleTodos(): void {
-		this.#todosFolded = !this.#todosFolded;
+		if (this.#tab === "session") {
+			this.#tab = "status";
+			this.#todosFolded = false;
+		} else this.#todosFolded = !this.#todosFolded;
 		// Opened, the Todos show the task in progress.
 		if (!this.#todosFolded) this.#following = true;
 	}

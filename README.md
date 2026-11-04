@@ -102,22 +102,22 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 
 ### Keys
 
-| Key               | Effect                                                                                                         |
-| ----------------- | -------------------------------------------------------------------------------------------------------------- |
-| Enter             | Send the prompt; while a turn runs, queue it as a steer, which the agent gets with its next tool result.       |
-| Alt+Enter         | While a turn runs, queue a follow-up, which runs as a turn of its own after it.                                |
-| Shift+Up          | Take the queued messages back into the editor, to edit them and send them again (also Alt+Up).                 |
-| Esc               | Cancel an open question or list; otherwise cancel a `!` command, clear a `!` draft, or interrupt the turn.     |
-| Up / Down         | Per-project prompt history across sessions; move in lists and questions.                                       |
-| Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit; in a question or a list, as Esc.              |
-| Ctrl+D            | Quit, on an empty editor; in a question or a list, as Esc.                                                     |
-| Ctrl+O            | Expand or fold the blocks of calls and every card, or the whole command of an approval.                        |
-| Ctrl+R            | Open or fold the model's thinking, which folds once the model moves on (full screen, a click opens one block). |
-| Ctrl+T            | Open or fold the active feature's tasks (the side panel's Todos while it shows).                               |
-| Ctrl+P            | Show or hide the fullscreen side panel of jobs, agents, tasks and status; the choice is saved.                 |
+| Key               | Effect                                                                                                            |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Enter             | Send the prompt; while a turn runs, queue it as a steer, which the agent gets with its next tool result.          |
+| Alt+Enter         | While a turn runs, queue a follow-up, which runs as a turn of its own after it.                                   |
+| Shift+Up          | Take the queued messages back into the editor, to edit them and send them again (also Alt+Up).                    |
+| Esc               | Cancel an open question or list; otherwise cancel a `!` command, clear a `!` draft, or interrupt the turn.        |
+| Up / Down         | Per-project prompt history across sessions; move in lists and questions.                                          |
+| Ctrl+C            | Interrupt the turn; with none running, clear the editor or quit; in a question or a list, as Esc.                 |
+| Ctrl+D            | Quit, on an empty editor; in a question or a list, as Esc.                                                        |
+| Ctrl+O            | Expand or fold the blocks of calls and every card, or the whole command of an approval.                           |
+| Ctrl+R            | Open or fold the model's thinking, which folds once the model moves on (full screen, a click opens one block).    |
+| Ctrl+T            | Open or fold the active feature's tasks (the side panel's Todos while it shows; from its Session tab, open them). |
+| Ctrl+P            | Show or hide the fullscreen side panel of jobs, agents, tasks and status; the choice is saved.                    |
 | Ctrl+N            | Switch the side panel between its Status and Session tabs, while it shows.                                        |
-| Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                                        |
-| PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.                         |
+| Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                                           |
+| PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.                            |
 
 In the TUI, Up in an empty editor recalls the latest prompt from this project, including earlier sessions. While a recalled prompt is unedited, Up/Down browse only on its first/last visual line, including wrapped lines; elsewhere they move the cursor. Editing ends recall, and Down past the newest entry returns to an empty editor. Ordinary drafts keep the arrows for cursor movement. The agent can read `~/.atelier/prompt-history` like saved session transcripts, so `--no-session` only reads it (nothing from that run is saved) and `!!` commands are never saved. Save, access and cleanup failures each warn at most once, independently, without blocking recall or sending; only actual file-deletion failures give the history directory for manual clearing. A blocked write uses the save warning too, even if an access warning was already shown. Each worktree or subdirectory has its own history; see [prompt history and privacy](docs/cli.md#prompt-history).
 
