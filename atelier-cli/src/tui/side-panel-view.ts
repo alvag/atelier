@@ -179,13 +179,14 @@ export class SidePanel {
 		this.syncExpiryTimer();
 	}
 
-	/** Another session: nothing of the one before but whether its Todos were folded, on the Status tab; a resumed one's saved status. */
+	/** Another session: nothing of the one before, on the Status tab with the Tasks summary; a resumed one's saved status. */
 	reset(saved?: readonly AtelierEvent[]): void {
 		this.#state = saved === undefined ? emptySidePanel() : sidePanelResumed(saved);
 		this.#startedAt = this.#now();
 		this.#current = undefined;
 		this.#following = true;
 		this.#tab = "status";
+		this.#tasksExpanded = false;
 		for (const scroll of Object.values(this.#scrolls)) scroll.scrollToStart();
 		this.#tick();
 		this.syncExpiryTimer();
@@ -199,7 +200,8 @@ export class SidePanel {
 
 	/**
 	 * Ctrl+T and `/feature`: from the Status tab they switch the tasks between the summary and the full list; from the
-	 * Session tab, where they are out of sight, they take the panel to Status with the full list.
+	 * Session tab, where they are out of sight, they take the panel to Status with the full list. With no feature this
+	 * only changes the view; the app says that no feature is active before calling it.
 	 */
 	toggleTasks(): void {
 		if (this.#tab === "session") {

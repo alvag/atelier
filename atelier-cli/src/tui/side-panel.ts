@@ -235,21 +235,34 @@ function agentLines(view: PanelView, p: Painters, width: number): string[] {
 	return lines;
 }
 
-/** A task's title after its mark, on two rows at most, the second under the first's text and cut with `…`. */
-function wrapped(lead: string, title: string, width: number, paintTitle: (text: string) => string): string[] {
+/**
+ * A task's title after its mark, on two rows at most, the second under the first's text and cut with `…`. A `right`
+ * text stays against the last column of the first row, which the title leaves room for.
+ */
+function wrapped(
+	lead: string,
+	title: string,
+	width: number,
+	paintTitle: (text: string) => string,
+	right = "",
+): string[] {
 	const indent = visibleWidth(lead);
 	const room = Math.max(1, width - indent);
-	if (visibleWidth(title) <= room) return [`${lead}${paintTitle(title)}`];
+	const reserved = right === "" ? 0 : visibleWidth(right) + 1;
+	const firstRoom = Math.max(1, room - reserved);
+	const withRight = (text: string) =>
+		right === "" ? text : `${text}${" ".repeat(Math.max(1, width - visibleWidth(text) - visibleWidth(right)))}${right}`;
+	if (visibleWidth(title) <= firstRoom) return [withRight(`${lead}${paintTitle(title)}`)];
 	let first = "";
 	for (const word of title.split(" ")) {
 		const next = first === "" ? word : `${first} ${word}`;
-		if (visibleWidth(next) > room) break;
+		if (visibleWidth(next) > firstRoom) break;
 		first = next;
 	}
 	// A first word wider than the row is cut where it ends.
-	if (first === "") first = truncateToWidth(title, room, "");
+	if (first === "") first = truncateToWidth(title, firstRoom, "");
 	const second = title.slice(first.length).trimStart();
-	return [`${lead}${paintTitle(first)}`, `${" ".repeat(indent)}${paintTitle(cut(second, room))}`];
+	return [withRight(`${lead}${paintTitle(first)}`), `${" ".repeat(indent)}${paintTitle(cut(second, room))}`];
 }
 
 /** The pending tasks the summary lists; the rest are counted in its tail. */
@@ -306,35 +319,43 @@ function todoLines(
 	return { lines, ...(current === undefined ? {} : { current }) };
 }
 
-/** A task's title on one row, with its id in the full list, and an optional note below. */
-function taskLines(task: FeatureTask, { ink, paint }: Painters, width: number, withId = false): string[] {
-	const title = withId ? `${ink.fg("textSecondary", oneLine(task.id))} ${oneLine(task.title)}` : oneLine(task.title);
-	const row = (mark: string, text: string) => cut(`${mark} ${text}`, width);
+/**
+ * A task: its title on one row, cut with `…`, without its id, and a note under it. In the full list the id leads the
+ * title, which takes two rows at most, and a done task's commit stays at the right of the first.
+ */
+function taskLines(task: FeatureTask, { ink, paint }: Painters, width: number, full = false): string[] {
+	const rows = (mark: string, paintTitle: (text: string) => string, right = "") =>
+		full
+			? wrapped(`${mark} ${ink.fg("textSecondary", oneLine(task.id))} `, oneLine(task.title), width, paintTitle, right)
+			: [cut(`${mark} ${paintTitle(oneLine(task.title))}`, width)];
+	const text = (title: string) => ink.fg("text", title);
 	switch (task.status) {
-		case "in_progress": {
-			const line = cut(`${ink.fg("running", "◐")} ${paint("bold", ink.fg("text", title))}`, width);
+		case "in_progress":
 			return [
-				ink.bg("surface", line + " ".repeat(Math.max(0, width - visibleWidth(line)))),
+				...rows(ink.fg("running", "◐"), (title) => paint("bold", text(title))).map((line) =>
+					ink.bg("surface", line + " ".repeat(Math.max(0, width - visibleWidth(line)))),
+				),
 				...(task.note === undefined
 					? []
 					: wrapped("  ", oneLine(task.note), width, (text) => ink.fg("textSecondary", text))),
 			];
-		}
 		case "blocked":
 			return [
-				row(ink.fg("warning", "⊘"), ink.fg("text", title)),
+				...rows(ink.fg("warning", "⊘"), text),
 				...(task.note === undefined
 					? []
 					: wrapped("  ", `waiting: ${oneLine(task.note)}`, width, (text) => ink.fg("warning", text))),
 			];
-		case "done":
-			return [row(ink.fg("success", "✓"), ink.fg("text", title))];
+		case "done": {
+			const commit = full && task.commit !== undefined ? oneLine(task.commit).slice(0, 7) : "";
+			return rows(ink.fg("success", "✓"), text, commit === "" ? "" : ink.fg("textSecondary", commit));
+		}
 		case "dropped":
-			return [row(ink.fg("textSecondary", "–"), paint("strikethrough", ink.fg("textSecondary", title)))];
+			return rows(ink.fg("textSecondary", "–"), (title) => paint("strikethrough", ink.fg("textSecondary", title)));
 		case "pending":
-			return [row(ink.fg("textSecondary", "○"), ink.fg("text", title))];
+			return rows(ink.fg("textSecondary", "○"), text);
 		default:
-			return [row(ink.fg("textSecondary", "·"), ink.fg("text", title))];
+			return rows(ink.fg("textSecondary", "·"), text);
 	}
 }
 
