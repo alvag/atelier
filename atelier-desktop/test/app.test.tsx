@@ -990,6 +990,36 @@ describe("App", () => {
 		expect(await screen.findByText("Allowed")).toBeTruthy();
 	});
 
+	it("keeps an MCP status the core sent before the session.start answer, even across a frame flush", async () => {
+		const fake = fakeBridge();
+		let answer: (result: CommandResult) => void = () => {};
+		const request = fake.bridge.request;
+		fake.bridge.request = (command) => {
+			if (command.command !== "session.start") return request(command);
+			fake.commands.push(command);
+			return new Promise((resolve) => (answer = resolve));
+		};
+		render(<App bridge={fake.bridge} />);
+		await screen.findByText("core 0.0.0");
+		fireEvent.click(screen.getByRole("button", { name: "Open folder…" }));
+		await waitFor(() => expect(fake.commands.at(-1)?.command).toBe("session.start"));
+		const status = (name: string) => ({
+			servers: [{ name, transport: "http" as const, state: "connected" as const, tools: [] }],
+			problems: [],
+		});
+		fake.push({ type: "session_event", sessionId: "old", event: { type: "mcp_status", ...status("stale") } as never });
+		fake.push({ type: "session_event", sessionId: "s1", event: { type: "mcp_status", ...status("docs") } as never });
+		// A visible host update proves the frame queue flushed while the start response was still pending.
+		fake.push({ type: "core_ready", version: "0.0.1" });
+		await screen.findByText("core 0.0.1");
+		await act(async () => answer({ ok: true, result: { sessionId: "s1" } }));
+		expect(await screen.findByRole("button", { name: "MCP 1/1" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "MCP 1/1" }));
+		const panel = await screen.findByRole("complementary", { name: "MCP servers" });
+		expect(within(panel).queryByText(/stale/)).toBeNull();
+		expect(screen.queryByText("docs")).toBeNull();
+	});
+
 	it("shows the MCP servers in the status bar and opens their details, asking the core for them", async () => {
 		const fake = fakeBridge();
 		fake.answers["session.mcp"] = {

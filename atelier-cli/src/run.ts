@@ -550,9 +550,12 @@ export async function run(
 		wake: () => wakeUp(),
 		// A job's end while no turn runs and none will: said at once, on a line of its own, and the prompt again.
 		idleEvent: (event) => {
-			renderer.endLine();
-			renderer.render({ ...event, seq: 0, turnId: "" } as AtelierEvent);
-			if (io.isTTY && atPrompt) {
+			const idle = { ...event, seq: 0, turnId: "" } as AtelierEvent;
+			// A snapshot with nothing new to say leaves the prompt as it is.
+			const quiet = renderer.isQuiet(idle);
+			if (!quiet) renderer.endLine();
+			renderer.render(idle);
+			if (!quiet && io.isTTY && atPrompt) {
 				renderer.write(PROMPT);
 				// What was typed before the line came stays in the reader: it is shown again after the prompt.
 				lines.redraw();

@@ -25,6 +25,7 @@ export interface RendererOptions {
 	cwd?: string;
 }
 
+type McpStatus = Extract<AtelierEvent, { type: "mcp_status" }>;
 type Style = Parameters<typeof styleText>[0];
 
 const numbers = new Intl.NumberFormat("en-US");
@@ -268,6 +269,14 @@ export class Renderer {
 	#expectedMissTurns = 0;
 	/** Subagents, by task call, whose next cache miss is the expected result of their own compaction. */
 	readonly #childMissExpected = new Set<string>();
+	/** The latest MCP snapshot that arrived before the first turn, kept for the summary the first turn starts with. */
+	#mcpPending: McpStatus | undefined;
+	/** A turn's event has come. */
+	#mcpTurnSeen = false;
+	/** The first summary has been said: later snapshots only add the warnings they have new. */
+	#mcpSaid = false;
+	/** The warnings of the last snapshot, so an unchanged one is not said again. */
+	#mcpWarned = new Set<string>();
 	/** A non-recoverable error or an errored turn happened since the last reset. */
 	failed = false;
 
@@ -480,6 +489,68 @@ export class Renderer {
 			this.#renderChild(event);
 			return;
 		}
+		if (event.type === "mcp_status") {
+			this.#mcpStatus(event);
+			return;
+		}
+		if (event.turnId === "") {
+			this.#renderEvent(event);
+			return;
+		}
+		this.#mcpTurnSeen = true;
+		// The header comes first; anything else follows the summary of the servers that connected before the turn.
+		if (event.type === "session_started") this.#renderEvent(event);
+		this.announceMcp();
+		if (event.type !== "session_started") this.#renderEvent(event);
+	}
+
+	/** Says the summary of a snapshot that came before the first turn, once, when a turn starts. */
+	announceMcp(): void {
+		this.#mcpTurnSeen = true;
+		const pending = this.#mcpPending;
+		this.#mcpPending = undefined;
+		if (pending !== undefined && !this.#mcpSaid) this.#mcpSay(pending);
+	}
+
+	/** Whether `render` would print nothing for this event, so a caller can leave its prompt alone. */
+	isQuiet(event: AtelierEvent): boolean {
+		if (event.type !== "mcp_status") return false;
+		if (this.#mcpCached(event)) return true;
+		const { ok, warnings } = this.#mcpNew(event);
+		return ok === undefined && warnings.length === 0;
+	}
+
+	/** Before the first turn nothing is said: the latest snapshot waits for the turn's start. */
+	#mcpCached(event: McpStatus): boolean {
+		return !this.#mcpSaid && event.turnId === "" && !this.#mcpTurnSeen;
+	}
+
+	#mcpStatus(event: McpStatus): void {
+		if (event.turnId !== "") this.#mcpTurnSeen = true;
+		if (this.#mcpCached(event)) {
+			this.#mcpPending = event;
+			return;
+		}
+		this.#mcpPending = undefined;
+		this.#mcpSay(event);
+	}
+
+	/** What a snapshot adds: the first one in full, a later one the warnings it has new and none of the routine summary. */
+	#mcpNew(event: McpStatus): { ok?: string; warnings: string[] } {
+		const lines = mcpStatusLines(event);
+		if (!this.#mcpSaid) return lines;
+		return { warnings: lines.warnings.filter((warning) => !this.#mcpWarned.has(warning)) };
+	}
+
+	#mcpSay(event: McpStatus): void {
+		const { ok, warnings } = this.#mcpNew(event);
+		this.#mcpSaid = true;
+		this.#mcpWarned = new Set(mcpStatusLines(event).warnings);
+		if (ok !== undefined) this.#line(this.#style("dim", ok));
+		for (const warning of warnings) this.#warn(warning);
+	}
+
+	#renderEvent(event: AtelierEvent): void {
 		switch (event.type) {
 			case "session_started":
 				this.#line(this.#style("dim", startedLine(event)));
@@ -584,12 +655,6 @@ export class Renderer {
 				if (event.available) this.#line(this.#style("dim", `memory: ${event.project ?? "on"}`));
 				else this.#warn(`no memory: ${event.reason ?? "unavailable"}`);
 				return;
-			case "mcp_status": {
-				const lines = mcpStatusLines(event);
-				if (lines.ok !== undefined) this.#line(this.#style("dim", lines.ok));
-				for (const warning of lines.warnings) this.#warn(warning);
-				return;
-			}
 			case "project_instructions":
 				if (event.files.length > 0) this.#line(this.#style("dim", `instructions: ${event.files.join(", ")}`));
 				if (event.dropped.length > 0) this.#warn(`instructions over 32 KiB, left out: ${event.dropped.join(", ")}`);

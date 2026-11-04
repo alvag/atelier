@@ -219,6 +219,8 @@ export class Conversation extends Container {
 			this.#child(event, event.parentCallId);
 			return;
 		}
+		// The MCP servers that connected before the first turn are said as it starts.
+		if (event.turnId !== "" && event.type !== "mcp_status") this.#flushRenderer(() => this.#renderer.announceMcp());
 		switch (event.type) {
 			case "text_delta":
 				this.#appendText(event.text);
@@ -459,7 +461,11 @@ export class Conversation extends Container {
 
 	/** The CLI's line for an event, as a block of its own. */
 	#rendered(event: AtelierEvent): void {
-		this.#renderer.render(event);
+		this.#flushRenderer(() => this.#renderer.render(event));
+	}
+
+	#flushRenderer(run: () => void): void {
+		run();
 		this.#renderer.endLine();
 		const text = shown(this.#notes.trimEnd());
 		this.#notes = "";

@@ -163,6 +163,10 @@ atelier desktop
 
 The first time it installs Electron (about 200 MB) and builds the app, unless `install.sh --desktop` already did. Open a folder, pick a backend, a model, a profile and a permission mode, and chat. Tool calls, approvals, subagents, reviews and the cost of each turn show in the conversation. More: [desktop](docs/desktop.md).
 
+## MCP servers
+
+A session prints one quiet summary of its MCP servers (`mcp: docs (2 tools)`) as the first turn starts, from their latest state; nothing is printed before it, and a resumed session does not repeat the saved one. Later changes print only a new warning, such as a server that failed. The desktop app shows the live state in its MCP panel without adding chat entries. Details: [MCP servers](docs/mcp.md).
+
 ## Configuration
 
 Everything lives in `~/.atelier/`, which the agent cannot write:

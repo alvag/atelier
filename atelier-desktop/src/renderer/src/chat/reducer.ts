@@ -892,10 +892,12 @@ function closeConsents(items: TurnItem[], reviewId?: string): TurnItem[] {
 
 /** Updates the turn with this id; else adopts the turn still waiting for its id; else starts one. */
 /**
- * An event outside any turn, which starts none: a job's end after an interrupted or failed turn. Its row goes under the
- * last turn, its counts to the status bar, and the chat stays idle.
+ * An event outside any turn, which starts none: MCP status updates only the panel. Background work ending after an
+ * interrupted or failed turn adds a row under the last turn and updates the status bar. The chat stays idle.
  */
 function applyIdleEvent(state: ChatState, event: AtelierEventBody): ChatState {
+	// The servers' state changed between turns: the panel shows it; the transcript has no row for it.
+	if (event.type === "mcp_status") return { ...state, mcp: { servers: event.servers, problems: event.problems } };
 	if (event.type !== "job_finished" && event.type !== "task_finished") return state;
 	const item =
 		event.type === "job_finished"
