@@ -9,7 +9,7 @@ import {
 	VStack,
 } from "@earendil-works/pi-tui";
 import type { GitChanges } from "./git-branch.ts";
-import { type PanelLines, type PanelTab, sidePanelLines, tabAt, tabRows } from "./side-panel.ts";
+import { nextSidePanelExpiry, type PanelLines, type PanelTab, sidePanelLines, tabAt, tabRows } from "./side-panel.ts";
 import { emptySidePanel, type SidePanelState, sidePanelAfter, sidePanelResumed } from "./side-panel-state.ts";
 import type { Paint } from "./style.ts";
 import type { Ink } from "./theme.ts";
@@ -87,6 +87,9 @@ export class SidePanel {
 	#indicators: Record<PanelTab, boolean> = { status: false, session: false };
 	#height = 0;
 	#ticker: NodeJS.Timeout | undefined;
+	#expiry: NodeJS.Timeout | undefined;
+	#expiryAt: number | undefined;
+	#stopped = false;
 	/** The task in progress the panel keeps in view. */
 	#current: string | undefined;
 	/** Whether it keeps that task in view: until the user scrolls the panel, and again once another task starts. */
@@ -179,6 +182,7 @@ export class SidePanel {
 			this.#following = true;
 		}
 		this.#tick();
+		this.syncExpiryTimer();
 	}
 
 	/** Another session: nothing of the one before but whether its Todos were folded, on the Status tab; a resumed one's saved status. */
@@ -190,11 +194,13 @@ export class SidePanel {
 		this.#tab = "status";
 		for (const scroll of Object.values(this.#scrolls)) scroll.scrollToStart();
 		this.#tick();
+		this.syncExpiryTimer();
 	}
 
 	/** The other tab, as Ctrl+N does; it stays until the next session. */
 	toggleTab(): void {
 		this.#tab = this.#tab === "status" ? "session" : "status";
+		this.syncExpiryTimer();
 	}
 
 	/**
@@ -208,12 +214,41 @@ export class SidePanel {
 		} else this.#todosFolded = !this.#todosFolded;
 		// Opened, the Todos show the task in progress.
 		if (!this.#todosFolded) this.#following = true;
+		this.syncExpiryTimer();
 	}
 
-	/** Stops the clock of the running rows, once the TUI stops. */
+	/** Stops both clocks once the TUI stops. */
 	stop(): void {
+		this.#stopped = true;
 		clearInterval(this.#ticker);
 		this.#ticker = undefined;
+		clearTimeout(this.#expiry);
+		this.#expiry = undefined;
+		this.#expiryAt = undefined;
+	}
+
+	/** The layout calls this even when hidden, so a resize also cancels or rearms the deadline. */
+	syncExpiryTimer(columns = this.#options.columns()): void {
+		const now = this.#now();
+		const next =
+			!this.#stopped && this.shown(columns) && this.#tab === "status"
+				? nextSidePanelExpiry(this.#state, now)
+				: undefined;
+		if (next === this.#expiryAt) return;
+		clearTimeout(this.#expiry);
+		this.#expiry = undefined;
+		this.#expiryAt = next;
+		if (next === undefined) return;
+		this.#expiry = setTimeout(
+			() => {
+				this.#expiry = undefined;
+				this.#expiryAt = undefined;
+				if (!this.#stopped && this.shown() && this.#tab === "status") this.#tui.requestRender();
+				this.syncExpiryTimer();
+			},
+			Math.max(0, next - now),
+		);
+		this.#expiry.unref();
 	}
 
 	#render(tab: PanelTab, width: number): PanelLines {
@@ -244,6 +279,7 @@ export class SidePanel {
 		const tab = tabAt(event.x);
 		if (tab === undefined) return undefined;
 		this.#tab = tab;
+		this.syncExpiryTimer();
 		return { handled: true };
 	}
 
@@ -293,11 +329,14 @@ export class SidePanel {
 	/** One render a second while a job or an agent runs and the panel is on screen; none otherwise. */
 	#tick(): void {
 		const running = [...this.#state.jobs, ...this.#state.agents].some((row) => row.status === "running");
-		if (running && this.#ticker === undefined) {
+		if (!this.#stopped && running && this.#ticker === undefined) {
 			this.#ticker = setInterval(() => {
 				if (this.shown()) this.#tui.requestRender();
 			}, TICK_MS);
 			this.#ticker.unref();
-		} else if (!running) this.stop();
+		} else if (!running) {
+			clearInterval(this.#ticker);
+			this.#ticker = undefined;
+		}
 	}
 }
