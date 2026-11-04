@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { AgentBackend } from "../src/backend.ts";
 import {
@@ -466,5 +466,73 @@ describe("subagent events and control", () => {
 		});
 		await turn;
 		expect(children[0]?.closed).toBe(true);
+	});
+});
+
+describe("a subagent's cost", () => {
+	const turn = (costUsd?: number): AtelierEventBody => ({
+		type: "turn_finished",
+		stopReason: "end_turn",
+		usage,
+		...(costUsd === undefined ? {} : { costUsd }),
+	});
+
+	/**
+	 * The `costUsd` of a background task whose subagent's stream carries `events` (a session ends one turn, but its
+	 * stream also holds the turns of what it runs inside; those are played in place of the child's own `send`).
+	 */
+	async function backgroundCost(events: AtelierEventBody[]): Promise<number | undefined> {
+		const send = Session.prototype.send;
+		let parentSession: Session | undefined;
+		const spy = vi.spyOn(Session.prototype, "send").mockImplementation(function (this: Session, ...args) {
+			parentSession ??= this;
+			if (this === parentSession) return send.apply(this, args);
+			return (async function* () {
+				for (const [i, body] of events.entries()) yield { ...body, seq: i + 1, turnId: "t1" } as AtelierEvent;
+			})();
+		});
+		let woke = 0;
+		const parent = new FakeBackend([
+			[
+				{ toolCall: { tool: "task", input: { agent: "explorer", prompt: "Do it.", background: true }, callId: "c1" } },
+				{ event: finished },
+			],
+			[{ event: finished }],
+		]);
+		const session = await Session.start({
+			backend: parent,
+			cwd: process.cwd(),
+			tools,
+			wake: () => woke++,
+			subagents: { agents: [explorer, worker], createBackend: () => new FakeBackend([]) },
+		});
+		try {
+			for await (const _ of session.send("go")) {
+			}
+			for (let i = 0; i < 400 && woke === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+			const ended: AtelierEvent[] = [];
+			for await (const event of session.nextQueued() as AsyncIterable<AtelierEvent>) ended.push(event);
+			const done = ended.find((event) => event.type === "task_finished");
+			expect(done).toBeDefined();
+			return done?.type === "task_finished" ? done.costUsd : undefined;
+		} finally {
+			spy.mockRestore();
+			await session.close();
+		}
+	}
+
+	const report: AtelierEventBody = { type: "text_delta", text: "Report." };
+
+	it("sums every turn's cost, skipping a turn without one", async () => {
+		expect(await backgroundCost([report, turn(0.25), turn(undefined), turn(0.5), turn(undefined)])).toBeCloseTo(
+			0.75,
+			10,
+		);
+		expect(await backgroundCost([report, turn(0.1), turn(0.2), turn(0.3)])).toBeCloseTo(0.6, 10);
+	});
+
+	it("keeps a cost of zero, and none when no turn has one", async () => {
+		expect(await backgroundCost([report, turn(undefined), turn(0)])).toBe(0);
+		expect(await backgroundCost([report, turn(undefined), turn(undefined)])).toBeUndefined();
 	});
 });

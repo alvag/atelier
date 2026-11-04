@@ -103,6 +103,28 @@ describe("side panel state", () => {
 		expect(state.jobs.some((job) => job.id === "j0")).toBe(false);
 	});
 
+	for (const stopReason of ["interrupted", "end_turn"] as const) {
+		it(`caps foreground agents a ${stopReason} turn end finishes, and keeps running background rows`, () => {
+			const bodies: Body[] = [
+				{ type: "task_started", taskId: "bg", agent: "explorer", label: "bg", outputPath: "/tmp/bg", running: 1 },
+			];
+			for (let i = 0; i < MAX_FINISHED_ROWS + 5; i++)
+				bodies.push({
+					type: "tool_call_started",
+					callId: `c${i}`,
+					tool: "task",
+					input: { agent: "worker", prompt: `p${i}` },
+				});
+			bodies.push(turnFinished({ stopReason }));
+			const state = after(bodies);
+			expect(state.agents.filter((agent) => agent.status !== "running")).toHaveLength(MAX_FINISHED_ROWS);
+			expect(state.agents).toHaveLength(MAX_FINISHED_ROWS + 1);
+			expect(state.agents[0]).toMatchObject({ key: "bg", status: "running", background: true });
+			expect(state.agents.some((agent) => agent.key === "c0")).toBe(false);
+			expect(state.agents.at(-1)?.key).toBe(`c${MAX_FINISHED_ROWS + 4}`);
+		});
+	}
+
 	it("follows a foreground subagent through its call and its own events, and a background one through its task", () => {
 		const state = after([
 			{
