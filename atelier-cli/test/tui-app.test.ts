@@ -2112,8 +2112,8 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(h.screen.started);
 			stub.emit(feature);
 			stub.emit(job);
-			await until(() => panel(h).some((row) => row.includes("⧗ pnpm check")));
-			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ JOBS +1 running$/));
+			await until(() => panel(h).some((row) => row.includes("◐ pnpm check")));
+			expect(panel(h)).toContain("│ JOBS");
 			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ TASKS +1\/2 · ctrl\+t$/));
 			expect(shows(h, "│ ◐ Hot profile")).toBe(true);
 			expect(panel(h).join("\n")).not.toContain("STATUS");
@@ -2135,7 +2135,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(() => existsSync(join(home, ".atelier", "settings.json")));
 			expect(await saved()).toEqual({ kind: "atelier.settings", version: 1, tui: { sidePanel: false } });
 			h.screen.type("\x10");
-			await until(() => panel(h).some((row) => row.includes("⧗ pnpm check")));
+			await until(() => panel(h).some((row) => row.includes("◐ pnpm check")));
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 			expect((await saved()).tui.sidePanel).toBe(true);
@@ -2187,12 +2187,12 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
 			stub.emit(job);
-			await until(() => panel(h).some((row) => /⧗ pnpm check +0m0[1-9]s$/.test(row)));
+			await until(() => panel(h).some((row) => /◐ pnpm check +0m0[1-9]s$/.test(row)));
 			const jobs = h.screen.frame().findIndex((line) => line?.includes("JOBS"));
 			click(h, 3, jobs);
 			click(h, 1, jobs);
 			await rendered(h);
-			expect(panel(h).some((line) => line.includes("⧗ pnpm check"))).toBe(true);
+			expect(panel(h).some((line) => line.includes("◐ pnpm check"))).toBe(true);
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
@@ -2461,7 +2461,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const code = run(["--no-session"], h.io, () => h.backend);
 			await until(h.screen.started);
 			stub.emit(job);
-			await until(() => panel(h).some((row) => row.includes("⧗ pnpm check")));
+			await until(() => panel(h).some((row) => row.includes("◐ pnpm check")));
 			for (let i = 0; i < 21; i++) h.screen.type("\x10");
 			await until(() => panel(h).length === 0);
 			expect((await saved()).tui.sidePanel).toBe(false);

@@ -150,19 +150,13 @@ function jobLines(view: PanelView, p: Painters, width: number): string[] {
 	const waiting = (job: PanelJob) => unread.includes(`job:${job.id}`);
 	const { shown } = ordered(jobs, waiting, view.now);
 	if (shown.length === 0) return [];
-	const running = shown.filter((job) => job.status === "running").length;
-	const notices = shown.filter(waiting).length;
-	const counts = joined(p, [
-		running > 0 ? `${running} running` : "",
-		notices > 0 ? `${notices} ${ink.fg("warning", "●")}` : "",
-	]);
-	const lines = [header(p, "JOBS", ink.fg("textSecondary", counts), width)];
+	const lines = [header(p, "JOBS", "", width)];
 	for (const job of shown) {
 		const failed =
 			job.status === "failed" || (job.status === "exited" && (job.signal !== undefined || job.exitCode !== 0));
 		const mark =
 			job.status === "running"
-				? ink.fg("running", "⧗")
+				? ink.fg("running", "◐")
 				: job.status === "stopped"
 					? ink.fg("textSecondary", "■")
 					: failed
@@ -176,7 +170,7 @@ function jobLines(view: PanelView, p: Painters, width: number): string[] {
 					: job.signal !== undefined
 						? ink.fg("error", oneLine(job.signal))
 						: failed
-							? ink.fg("error", `exit ${job.exitCode}`)
+							? ink.fg("error", job.exitCode === undefined ? "failed" : `exit ${job.exitCode}`)
 							: "";
 		const time = job.status === "running" ? view.now - job.startedAt : (job.durationMs ?? 0);
 		const clock = ink.fg(job.status === "running" ? "running" : "textSecondary", elapsed(time));

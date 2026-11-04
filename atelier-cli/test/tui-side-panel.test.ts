@@ -70,8 +70,8 @@ describe("side panel sections", () => {
 		]);
 		const { lines } = render(state, { now: 137_000 });
 		expect(lines).toEqual([
-			at("JOBS", "1 running · 1 ●"),
-			at("⧗ pnpm check", "2m14s"),
+			"JOBS",
+			at("◐ pnpm check", "2m14s"),
 			at("● PR 61 abort fix wait", "✓ 29m01s"),
 			at("✗ verifier e2e", "exit 1 4m02s"),
 			at("■ dev server", "stopped 1h10m"),
@@ -346,8 +346,8 @@ describe("side panel sections", () => {
 			"▱".repeat(WIDTH),
 			"◐ One".padEnd(WIDTH),
 			RULE,
-			at("JOBS", "1 running"),
-			at("⧗ x", "0m00s"),
+			"JOBS",
+			at("◐ x", "0m00s"),
 			RULE,
 			at("AGENTS", "1 running"),
 			at("⧗ worker · docs", "0m00s"),
@@ -378,8 +378,8 @@ describe("side panel sections", () => {
 			"◐ T1 One".padEnd(WIDTH),
 			"ctrl+t summary",
 			RULE,
-			at("JOBS", "1 running"),
-			at("⧗ x", "0m00s"),
+			"JOBS",
+			at("◐ x", "0m00s"),
 		]);
 		expect(current).toEqual({ start: 3, end: 3 });
 	});
@@ -431,7 +431,7 @@ describe("side panel sections", () => {
 			.join("\n");
 		const rgb = (hex: string) =>
 			`\x1b[38;2;${[1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16)).join(";")}m`;
-		expect(text).toContain(`${rgb(activeTheme.textSecondary)}⧗`);
+		expect(text).toContain(`${rgb(activeTheme.textSecondary)}◐`);
 		expect(text).toContain(`${rgb(activeTheme.error)}✗`);
 		expect(text).toContain(`${rgb(activeTheme.warning)}●`);
 		expect(text).toContain(`${rgb(activeTheme.success)}✓`);
@@ -499,7 +499,7 @@ describe("finished rows", () => {
 		const state = ended({ a: 10, b: 20, c: 100, d: 101, e: 102, f: 103, g: 104 }, ["a", "b"]);
 		expect(labels(state, 110_000)).toEqual(["JOBS", "b", "a", "g", "f", "e"]);
 		const { lines } = render(state, { now: 110_000 });
-		expect(lines[0]).toBe(at("JOBS", "2 ●"));
+		expect(lines[0]).toBe("JOBS");
 	});
 
 	it("counts the agents shown in the header, not the ones left out", () => {
