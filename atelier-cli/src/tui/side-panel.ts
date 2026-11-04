@@ -14,8 +14,9 @@ const TAB_LABELS: Record<PanelTab, string> = { status: "Status", session: "Sessi
 /** The cells between two tab labels. */
 const TAB_GAP = 2;
 
-/** Finished jobs or agents shown under the running ones before `+N more`. */
-const FINISHED_SHOWN = 5;
+/** Finished jobs or agents shown besides the unread ones, for the minute after they end. */
+const FINISHED_SHOWN = 3;
+const FINISHED_FOR = 60_000;
 /** The cells of the Todos progress bar. */
 const PROGRESS_CELLS = 6;
 
@@ -124,14 +125,25 @@ export function tabRows(ink: Ink, active: PanelTab, width: number): [string, str
 const joined = ({ ink }: Painters, parts: string[]) =>
 	parts.filter((part) => visibleWidth(part) > 0).join(ink.fg("textSecondary", " · "));
 
-/** Running first, then those with a notice waiting, then the finished ones newest first; `rest` is how many are left out. */
-function ordered<T extends { status: string; endedAt?: number }>(rows: T[], waiting: (row: T) => boolean) {
-	const running = rows.filter((each) => each.status === "running");
-	const ended = rows
-		.filter((each) => each.status !== "running")
-		.sort((a, b) => Number(waiting(b)) - Number(waiting(a)) || (b.endedAt ?? 0) - (a.endedAt ?? 0));
-	const kept = ended.filter((each, at) => waiting(each) || at < FINISHED_SHOWN);
-	return { shown: [...running, ...kept], rest: ended.length - kept.length };
+/** Running first, then every unread finished row newest first, then the newest other finished rows still in their minute. */
+function ordered<T extends { status: string; endedAt?: number }>(rows: T[], waiting: (row: T) => boolean, now: number) {
+	const newest = (a: T, b: T) => (b.endedAt ?? 0) - (a.endedAt ?? 0);
+	const ended = rows.filter((each) => each.status !== "running");
+	const unread = ended.filter(waiting).sort(newest);
+	const others = ended
+		.filter((each) => !waiting(each) && each.endedAt !== undefined && now < each.endedAt + FINISHED_FOR)
+		.sort(newest)
+		.slice(0, FINISHED_SHOWN);
+	return { shown: [...rows.filter((each) => each.status === "running"), ...unread, ...others], others };
+}
+
+/** When the earliest finished row shown for its minute (not an unread one) goes away; none if no such row shows. */
+export function nextSidePanelExpiry({ jobs, agents, unread }: SidePanelState, now: number): number | undefined {
+	const deadlines = [
+		...ordered(jobs, (job) => unread.includes(`job:${job.id}`), now).others,
+		...ordered(agents, (agent) => unread.includes(`task:${agent.key}`), now).others,
+	].map((each) => (each.endedAt ?? 0) + FINISHED_FOR);
+	return deadlines.length === 0 ? undefined : Math.min(...deadlines);
 }
 
 function jobLines(view: PanelView, p: Painters, width: number): string[] {
@@ -139,14 +151,15 @@ function jobLines(view: PanelView, p: Painters, width: number): string[] {
 	if (jobs.length === 0) return [];
 	const { ink } = p;
 	const waiting = (job: PanelJob) => unread.includes(`job:${job.id}`);
-	const running = jobs.filter((job) => job.status === "running").length;
-	const notices = jobs.filter(waiting).length;
+	const { shown } = ordered(jobs, waiting, view.now);
+	if (shown.length === 0) return [];
+	const running = shown.filter((job) => job.status === "running").length;
+	const notices = shown.filter(waiting).length;
 	const counts = joined(p, [
 		running > 0 ? `${running} running` : "",
 		notices > 0 ? `${notices} ${ink.fg("warning", "●")}` : "",
 	]);
 	const lines = [header(p, "JOBS", ink.fg("textSecondary", counts), width)];
-	const { shown, rest } = ordered(jobs, waiting);
 	for (const job of shown) {
 		const failed =
 			job.status === "failed" || (job.status === "exited" && (job.signal !== undefined || job.exitCode !== 0));
@@ -175,7 +188,6 @@ function jobLines(view: PanelView, p: Painters, width: number): string[] {
 		const right = [waiting(job) && outcome === "" ? mark : outcome, clock].filter(Boolean).join(" ");
 		lines.push(row(`${symbol} ${ink.fg("text", oneLine(job.label))}`, right, width));
 	}
-	if (rest > 0) lines.push(row("", ink.fg("textSecondary", `+${rest} more`), width));
 	return lines;
 }
 
@@ -184,14 +196,15 @@ function agentLines(view: PanelView, p: Painters, width: number): string[] {
 	if (agents.length === 0) return [];
 	const { ink } = p;
 	const waiting = (agent: PanelAgent) => unread.includes(`task:${agent.key}`);
-	const count = (status: PanelAgent["status"]) => agents.filter((agent) => agent.status === status).length;
+	const { shown } = ordered(agents, waiting, view.now);
+	if (shown.length === 0) return [];
+	const count = (status: PanelAgent["status"]) => shown.filter((agent) => agent.status === status).length;
 	const counts = joined(p, [
 		count("running") > 0 ? `${count("running")} running` : "",
 		count("finished") > 0 ? `${count("finished")} ${ink.fg("success", "✓")}` : "",
 		count("failed") > 0 ? `${count("failed")} ${ink.fg("error", "✗")}` : "",
 	]);
 	const lines = [header(p, "AGENTS", ink.fg("textSecondary", counts), width)];
-	const { shown, rest } = ordered(agents, waiting);
 	for (const agent of shown) {
 		const mark =
 			agent.status === "running"
@@ -222,7 +235,6 @@ function agentLines(view: PanelView, p: Painters, width: number): string[] {
 		}
 		if (visibleWidth(detail) > 0) lines.push(cut(`  ${detail}`, width));
 	}
-	if (rest > 0) lines.push(row("", ink.fg("textSecondary", `+${rest} more`), width));
 	return lines;
 }
 
