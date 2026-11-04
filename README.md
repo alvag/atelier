@@ -115,6 +115,7 @@ Exit codes: `0` ok, `1` failed turn, `2` usage error, `130` interrupted.
 | Ctrl+R            | Open or fold the model's thinking, which folds once the model moves on (full screen, a click opens one block). |
 | Ctrl+T            | Open or fold the active feature's tasks (the side panel's Todos while it shows).                               |
 | Ctrl+P            | Show or hide the fullscreen side panel of jobs, agents, tasks and status; the choice is saved.                 |
+| Ctrl+N            | Switch the side panel between its Status and Session tabs, while it shows.                                        |
 | Shift+Tab         | Switch the permission mode between `normal` and `auto`.                                                        |
 | PageUp / PageDown | Scroll the transcript (also the mouse wheel); Ctrl+End goes back to the latest output.                         |
 

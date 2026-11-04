@@ -2014,17 +2014,17 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			stub.emit(feature);
 			stub.emit(job);
 			await until(() => panel(h).some((row) => row.includes("⧗ pnpm check")));
-			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ ⧗ Jobs ▾ +1 running$/));
-			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ ◆ Todos ▾ +1\/2 ▰▰▰▱▱▱ {2}ctrl\+t$/));
+			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ JOBS +1 running$/));
+			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ TODOS +1\/2 ▰▰▰▱▱▱ {2}ctrl\+t$/));
 			expect(panel(h)).toContain("│ ▸ T2 Hot profile");
-			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ ✿ Status ▾/));
+			expect(panel(h).join("\n")).not.toContain("STATUS");
 			expect(h.screen.frame().join("\n")).not.toContain("Ctrl+T or /feature: tasks");
 			expect(footerRow(h)).not.toContain("T2 1/2");
 			expect(footerRow(h)).not.toContain("1 job");
 			// Ctrl+T folds the Todos while the panel shows them.
 			h.screen.type("\x14");
-			await until(() => panel(h).some((row) => /^│ ◆ Todos ▸/.test(row)));
-			expect(panel(h)).not.toContain("│ ▸ T2 Hot profile");
+			await until(() => !panel(h).includes("│ ▸ T2 Hot profile"));
+			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ TODOS +1\/2 ▰▰▰▱▱▱ {2}ctrl\+t$/));
 			// Ctrl+P hides it: the footer counts again and the feature is over the editor; the choice is kept.
 			h.screen.type("\x10");
 			await until(() => footerRow(h).includes("T2 1/2"));
@@ -2052,7 +2052,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\x10");
 			await until(() => h.screen.screen().includes("the side panel needs a terminal of 120 columns or more"));
 			h.screen.resize(120);
-			await until(() => panel(h).some((row) => row.includes("◆ Todos")));
+			await until(() => panel(h).some((row) => row.includes("TODOS")));
 			expect(footerRow(h)).not.toContain("T2 1/2");
 			h.screen.resize(100);
 			await until(() => footerRow(h).includes("T2 1/2"));
@@ -2061,7 +2061,23 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
-		it("moves a running job's time on, and folds a section with a click on its first row", async () => {
+		/** A left click at the panel's local column `x` of the screen row `row` (0-based). */
+		const click = (h: ReturnType<typeof harness>, x: number, row: number) => {
+			const column = h.screen.terminal.columns - 40 + 3 + x;
+			h.screen.type(`\x1b[<0;${column};${row + 1}M`);
+			h.screen.type(`\x1b[<0;${column};${row + 1}m`);
+		};
+		/** The panel is on Session when its content has the session's turns. */
+		const onSession = (h: ReturnType<typeof harness>) => panel(h).some((row) => row.includes(" turns"));
+		/** Wait for input to reach a rendered frame without relying on a fixed delay. */
+		const rendered = async (h: ReturnType<typeof harness>) => {
+			h.screen.type("render-barrier");
+			await until(() => h.screen.frame().some((row) => row?.includes("render-barrier")));
+			h.screen.type("\x15");
+			await until(() => !h.screen.frame().some((row) => row?.includes("render-barrier")));
+		};
+
+		it("moves a running job's time on, and has no fold under a click on a section's header", async () => {
 			const h = harness([], { columns: 140 });
 			const stub = stubCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
@@ -2069,12 +2085,11 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(h.screen.started);
 			stub.emit(job);
 			await until(() => panel(h).some((row) => /⧗ pnpm check +0m0[1-9]s$/.test(row)));
-			const row = h.screen.frame().findIndex((line) => line?.includes("⧗ Jobs ▾")) + 1;
-			const column = h.screen.terminal.columns - 40 + 3;
-			h.screen.type(`\x1b[<0;${column};${row}M`);
-			h.screen.type(`\x1b[<0;${column};${row}m`);
-			await until(() => panel(h).some((line) => /^│ ⧗ Jobs ▸/.test(line)));
-			expect(panel(h).some((line) => line.includes("⧗ pnpm check"))).toBe(false);
+			const jobs = h.screen.frame().findIndex((line) => line?.includes("JOBS"));
+			click(h, 3, jobs);
+			click(h, 1, jobs);
+			await rendered(h);
+			expect(panel(h).some((line) => line.includes("⧗ pnpm check"))).toBe(true);
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});
@@ -2087,7 +2102,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			await until(h.screen.started);
 			for (let i = 1; i <= 12; i++) stub.emit({ ...job, jobId: `job-${i}`, label: `job ${i}` });
 			await until(() => panel(h).some((row) => /^│ ↑↓ 1–\d+\/\d+$/.test(row)));
-			const row = h.screen.frame().findIndex((line) => line?.includes("⧗ Jobs ▾")) + 1;
+			const row = h.screen.frame().findIndex((line) => line?.includes("JOBS")) + 1;
 			h.screen.type(`\x1b[<65;${h.screen.terminal.columns - 20};${row}M`);
 			await until(() => panel(h).some((line) => /^│ ↑↓ [2-9]–\d+\/\d+$/.test(line)));
 			h.screen.type("\x03");
@@ -2116,6 +2131,10 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			});
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 			const code = run(["--resume", "old1"], h.io, () => h.backend);
+			await until(() => panel(h).some((row) => row.includes("Status  Session")));
+			// Status is the tab a session opens on; the saved status is on Session.
+			expect(panel(h).join("\n")).not.toContain("1 turns");
+			h.screen.type("\x0e");
 			await until(() => panel(h).some((row) => row.includes("1 turns")));
 			expect(panel(h)).toContain("│  panel work");
 			expect(panel(h)).toContainEqual(expect.stringMatching(/^│ {2}Tokens {3}in 10k · out 200$/));
@@ -2124,6 +2143,10 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(panel(h).some((row) => row.includes("Jobs"))).toBe(false);
 			h.screen.type("/new");
 			h.screen.type("\r");
+			// A new session goes back to Status, whichever tab the one before was on.
+			await until(() => !panel(h).some((row) => row.includes("1 turns")));
+			expect(panel(h).join("\n")).not.toContain("0 turns");
+			h.screen.type("\x0e");
 			await until(() => panel(h).some((row) => row.includes("0 turns")));
 			expect(panel(h).join("\n")).not.toContain("panel work");
 			expect(panel(h).join("\n")).not.toContain("Tokens");
@@ -2166,7 +2189,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			const stub = stubCore();
 			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
 			const code = run(["--no-session"], h.io, () => h.backend);
-			await until(() => panel(h).some((row) => row.includes("✿ Status")));
+			await until(() => panel(h).some((row) => row.includes("Status  Session")));
 			const tasks = Array.from({ length: 30 }, (_, i) => ({
 				id: `T${i + 1}`,
 				title: `Task ${i + 1}`,
@@ -2178,7 +2201,7 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(panel(h)).not.toContain("│ ○ T1 Task 1");
 			// Folded and opened again, the Todos come back with the task in progress in view.
 			h.screen.type("\x14");
-			await until(() => panel(h).some((row) => /^│ ◆ Todos ▸/.test(row)));
+			await until(() => !panel(h).includes("│ ▸ T30 Task 30"));
 			h.screen.type("\x14");
 			await until(() => panel(h).includes("│ ▸ T30 Task 30"));
 			h.screen.type("\x03");

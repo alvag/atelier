@@ -1,7 +1,7 @@
 import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import { type PanelView, type Section, sidePanelLines, tabAt, tabRows } from "../src/tui/side-panel.ts";
+import { type PanelView, sidePanelLines, tabAt, tabRows } from "../src/tui/side-panel.ts";
 import { emptySidePanel, type SidePanelState, sidePanelAfter } from "../src/tui/side-panel-state.ts";
 import { painter } from "../src/tui/style.ts";
 import { activeTheme, ink } from "../src/tui/theme.ts";
@@ -30,7 +30,7 @@ const at = (left: string, right: string, width = WIDTH) =>
 
 function render(state: SidePanelState, view: Partial<PanelView> = {}, width = WIDTH) {
 	return sidePanelLines(
-		{ state, now: 0, startedAt: 0, folded: new Set<Section>(), ...view },
+		{ state, now: 0, startedAt: 0, tab: "status", todosFolded: false, ...view },
 		plain.ink,
 		plain.paint,
 		width,
@@ -73,15 +73,11 @@ describe("side panel sections", () => {
 		]);
 		const { lines } = render(state, { now: 137_000 });
 		expect(lines).toEqual([
-			at("⧗ Jobs ▾", "1 running · 1 ●"),
+			at("JOBS", "1 running · 1 ●"),
 			at("⧗ pnpm check", "2m14s"),
 			at("● PR 61 abort fix wait", "✓ 29m01s"),
 			at("✗ verifier e2e", "exit 1 4m02s"),
 			at("■ dev server", "stopped 1h10m"),
-			"",
-			"✿ Status ▾",
-			"Session",
-			" 2m · 0 turns",
 		]);
 		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
 	});
@@ -90,8 +86,8 @@ describe("side panel sections", () => {
 		const bodies: [number, Body][] = [];
 		for (let i = 0; i < 8; i++) bodies.push([i, job(`j${i}`, `job ${i}`)], [i, jobEnd(`j${i}`, 1000)]);
 		const { lines } = render(stateOf(bodies));
-		expect(lines.slice(0, 7)).toEqual([
-			"⧗ Jobs ▾",
+		expect(lines).toEqual([
+			"JOBS",
 			at("✓ job 7", "0m01s"),
 			at("✓ job 6", "0m01s"),
 			at("✓ job 5", "0m01s"),
@@ -155,8 +151,8 @@ describe("side panel sections", () => {
 			],
 		]);
 		const { lines } = render(state, { now: 100_000 });
-		expect(lines.slice(0, 5)).toEqual([
-			at("❀ Agents ▾", "1 running · 1 ✓"),
+		expect(lines).toEqual([
+			at("AGENTS", "1 running · 1 ✓"),
 			at("⧗ worker · fix footer cost", "1m40s"),
 			"  sonnet-5-5 · ▸ edit footer.ts",
 			at("✓ explorer · cache calc", "◷  3m35s"),
@@ -166,8 +162,8 @@ describe("side panel sections", () => {
 			[0, { type: "tool_call_started", callId: "c1", tool: "task", input: { agent: "worker", prompt: "docs update" } }],
 			[52, { type: "turn_finished", stopReason: "interrupted", usage: usage(0, 0) }],
 		]);
-		expect(render(interrupted).lines.slice(0, 3)).toEqual([
-			at("❀ Agents ▾", "1 ✗"),
+		expect(render(interrupted).lines).toEqual([
+			at("AGENTS", "1 ✗"),
 			at("✗ worker · docs update", "0m52s"),
 			"  no report: interrupted",
 		]);
@@ -199,8 +195,8 @@ describe("side panel sections", () => {
 			],
 		]);
 		const { lines, current } = render(state);
-		expect(lines.slice(0, 10)).toEqual([
-			at("◆ Todos ▾", "2/6 ▰▰▱▱▱▱  ctrl+t"),
+		expect(lines).toEqual([
+			at("TODOS", "2/6 ▰▰▱▱▱▱  ctrl+t"),
 			"TUI status panel",
 			at("✓ 2 done", "abc1234"),
 			"▸ T3 Side panel Todos section with a",
@@ -209,7 +205,6 @@ describe("side panel sections", () => {
 			"  waiting: decide the cache scope",
 			"○ T5 Footer cut by priority",
 			"  T7 Inline mode",
-			"",
 		]);
 		expect(current).toEqual({ start: 3, end: 4 });
 	});
@@ -261,6 +256,7 @@ describe("side panel sections", () => {
 			],
 		]);
 		const { lines } = render(state, {
+			tab: "session",
 			now: 42 * 60_000,
 			name: "panel work",
 			savedId: "a3f9c2d1e5",
@@ -268,7 +264,6 @@ describe("side panel sections", () => {
 			git: { lines: { added: 128, removed: 40 }, files: 6, commits: { ahead: 2, behind: 0 } },
 		});
 		expect(lines).toEqual([
-			"✿ Status ▾",
 			"Session",
 			" panel work",
 			" 42m · 1 turns · #a3f9c2d1",
@@ -304,7 +299,11 @@ describe("side panel sections", () => {
 			[0, { type: "skills_loaded", skills: [{ name: "debugging", path: "skill" }], warnings: [] }],
 			[0, { type: "project_instructions", files: [], dropped: ["nested/AGENTS.md"] }],
 		]);
-		expect(render(state).lines.slice(-3)).toEqual(["Integrations", " mcp      3 servers · 2 failed", " 1 skill"]);
+		expect(render(state, { tab: "session" }).lines.slice(-3)).toEqual([
+			"Integrations",
+			" mcp      3 servers · 2 failed",
+			" 1 skill",
+		]);
 	});
 
 	it("puts what fails at the top of the panel", () => {
@@ -320,22 +319,21 @@ describe("side panel sections", () => {
 			],
 			[0, { type: "memory_status", available: false, reason: "not installed" }],
 		]);
-		expect(render(state).lines.slice(0, 4)).toEqual([
+		expect(render(state, { tab: "session" }).lines.slice(0, 5)).toEqual([
 			"⚠ mcp: github: no answer",
 			"⚠ memory unavailable: not installed",
 			"",
-			at("⧗ Jobs ▾", "1 running"),
+			"Session",
+			" 0m · 0 turns",
 		]);
+		// Alerts belong to the Session tab alone.
+		expect(render(state).lines.join("\n")).not.toContain("⚠");
 	});
 
-	it("folds a section to its header and says which rows are headers", () => {
-		const state = stateOf([[0, job("j", "x")]]);
-		const { lines, headers } = render(state, { folded: new Set<Section>(["jobs", "status"]) });
-		expect(lines).toEqual([at("⧗ Jobs ▸", "1 running"), "", "✿ Status ▸"]);
-		expect([...headers]).toEqual([
-			[0, "jobs"],
-			[2, "status"],
-		]);
+	it("keeps the Session tab's groups as they were, with no Status heading over them", () => {
+		const { lines } = render(emptySidePanel(), { tab: "session", mode: "normal" });
+		expect(lines).toEqual(["Session", " 0m · 0 turns", "Permissions", " normal · asks outside the sandbox"]);
+		expect(lines.join("\n")).not.toMatch(/STATUS|Status|✿|▾|▸/);
 	});
 
 	it("draws the tabs on two rows: ink text for the active label, textSecondary for the other, a brand underline", () => {
@@ -377,12 +375,17 @@ describe("side panel sections", () => {
 			[4, job("live", "dev")],
 		]);
 		const colored = ink(activeTheme, true, "truecolor");
-		const text = sidePanelLines(
-			{ state, now: 0, startedAt: 0, folded: new Set(), mode: "yolo" },
-			colored,
-			painter(true),
-			WIDTH,
-		).lines.join("\n");
+		const text = (["status", "session"] as const)
+			.flatMap(
+				(tab) =>
+					sidePanelLines(
+						{ state, now: 0, startedAt: 0, tab, todosFolded: false, mode: "yolo" },
+						colored,
+						painter(true),
+						WIDTH,
+					).lines,
+			)
+			.join("\n");
 		const rgb = (hex: string) =>
 			`\x1b[38;2;${[1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16)).join(";")}m`;
 		expect(text).toContain(`${rgb(activeTheme.textSecondary)}⧗`);
@@ -411,6 +414,13 @@ describe("side panel sections", () => {
 			],
 		]);
 		const { lines } = render(state, { now: 5000 }, 30);
+		const session = render(
+			state,
+			{ now: 5000, tab: "session", name: "構建 ターミナル パネル 🚀 with a long name" },
+			30,
+		);
+		for (const line of [...session.lines, ...tabRows(plain.ink, "session", 30)])
+			expect(visibleWidth(line)).toBeLessThanOrEqual(30);
 		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(30);
 		expect(lines.join("\n")).not.toContain("\x1b");
 		expect(lines.join("\n")).toContain("␛[31m label␊next");
