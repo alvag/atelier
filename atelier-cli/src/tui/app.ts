@@ -708,7 +708,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 			{ component: footer },
 		],
 		fullscreen ? bar : undefined,
-		side && { component: side.component, width: SIDE_PANEL_WIDTH, shown: (columns) => side?.shown(columns) === true },
+		side && {
+			component: side.component,
+			width: SIDE_PANEL_WIDTH,
+			shown: (columns) => {
+				side?.syncExpiryTimer(columns);
+				return side?.shown(columns) === true;
+			},
+		},
 	);
 	tui.setFocus(editor);
 
@@ -1416,6 +1423,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		if (!panel.fits())
 			return conversation.note(`the side panel needs a terminal of ${SIDE_PANEL_MIN_COLUMNS} columns or more`);
 		panel.open = !panel.open;
+		panel.syncExpiryTimer();
 		if (options.home === undefined) return;
 		// Written at once: a small file, so the last choice is the one kept, also when the TUI quits right after.
 		const warning = saveSidePanel(options.home, panel.open);
