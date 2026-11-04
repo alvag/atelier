@@ -69,17 +69,19 @@ it("sends the first wheel tick on the panel's rule to the conversation", async (
 	};
 	tui.start();
 	await until(() => grid.some((line) => line.includes("line 99")));
-	const conversation = () => grid.slice(1).map((line) => line.slice(0, COLUMNS - SIDE_PANEL_WIDTH).trimEnd());
+	// Exclude the transient scrollbar: its fading is not movement of the conversation.
+	const conversation = () => grid.slice(1).map((line) => line.slice(0, COLUMNS - SIDE_PANEL_WIDTH - 1).trimEnd());
 	const wheel = async (button: number, column: number) => {
-		const before = conversation().join("\n");
+		const before = conversation()[0];
 		onInput(`\x1b[<${button};${column};5M`);
-		await until(() => conversation().join("\n") !== before);
+		await until(() => conversation()[0] !== before);
 	};
 	expect(conversation().join("\n")).toContain("line 99");
 	// Up over the conversation, then down over the rule (the panel's first column, below the header).
 	await wheel(64, 5);
-	const before = conversation();
-	expect(before.join("\n")).not.toContain("line 99");
+	expect(conversation()[0]).toBe("line 89");
+	expect(conversation().join("\n")).not.toContain("line 99");
 	await wheel(65, COLUMNS - SIDE_PANEL_WIDTH + 1);
-	expect(conversation()).not.toEqual(before);
+	expect(conversation()[0]).toBe("line 90");
+	expect(conversation()).toContain("line 99");
 });
