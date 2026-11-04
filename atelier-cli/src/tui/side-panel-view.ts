@@ -81,7 +81,7 @@ export class SidePanel {
 	#tab: PanelTab = "status";
 	#state: SidePanelState = emptySidePanel();
 	#startedAt: number;
-	#todosFolded = false;
+	#tasksExpanded = false;
 	#rendered: Record<PanelTab, PanelLines> = { status: { lines: [] }, session: { lines: [] } };
 	/** Per tab, whether it shows the indicator: the layout of one tab says nothing of the other. */
 	#indicators: Record<PanelTab, boolean> = { status: false, session: false };
@@ -198,16 +198,17 @@ export class SidePanel {
 	}
 
 	/**
-	 * Ctrl+T and `/feature`: from the Status tab they fold the Todos or open them; from the Session tab, where they are
-	 * out of sight, they take the panel to Status with the Todos open.
+	 * Ctrl+T and `/feature`: from the Status tab they switch the tasks between the summary and the full list; from the
+	 * Session tab, where they are out of sight, they take the panel to Status with the full list.
 	 */
-	toggleTodos(): void {
+	toggleTasks(): void {
 		if (this.#tab === "session") {
 			this.#tab = "status";
-			this.#todosFolded = false;
-		} else this.#todosFolded = !this.#todosFolded;
-		// Opened, the Todos show the task in progress.
-		if (!this.#todosFolded) this.#following = true;
+			this.#tasksExpanded = true;
+		} else this.#tasksExpanded = !this.#tasksExpanded;
+		// Either way the tasks show the one in progress.
+		this.#following = true;
+		if (this.#current === undefined) this.#scrolls.status.scrollTo(0);
 		this.syncExpiryTimer();
 	}
 
@@ -253,7 +254,7 @@ export class SidePanel {
 				now: this.#now(),
 				startedAt: this.#startedAt,
 				tab,
-				todosFolded: this.#todosFolded,
+				tasksExpanded: this.#tasksExpanded,
 				...(context.name === undefined ? {} : { name: context.name }),
 				...(context.savedId === undefined ? {} : { savedId: context.savedId }),
 				...(context.mode === undefined ? {} : { mode: context.mode }),

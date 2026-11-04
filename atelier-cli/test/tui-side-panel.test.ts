@@ -31,12 +31,7 @@ const at = (left: string, right: string, width = WIDTH) =>
 	`${left}${" ".repeat(width - visibleWidth(left) - visibleWidth(right))}${right}`;
 
 function render(state: SidePanelState, view: Partial<PanelView> = {}, width = WIDTH) {
-	return sidePanelLines(
-		{ state, now: 0, startedAt: 0, tab: "status", todosFolded: false, ...view },
-		plain.ink,
-		plain.paint,
-		width,
-	);
+	return sidePanelLines({ state, now: 0, startedAt: 0, tab: "status", ...view }, plain.ink, plain.paint, width);
 }
 
 const job = (jobId: string, label: string): Body => ({
@@ -163,7 +158,7 @@ describe("side panel sections", () => {
 		]);
 	});
 
-	it("lists the feature's tasks in order, the done ones in one line, a blocked one with its note, a long title on two rows", () => {
+	it("sums up the feature's tasks: the active ones, a blocked one with its note, a long title on one row, the rest in a tail", () => {
 		const state = stateOf([
 			[
 				0,
@@ -190,17 +185,16 @@ describe("side panel sections", () => {
 		]);
 		const { lines, current } = render(state);
 		expect(lines).toEqual([
-			at("TODOS", "2/6 ▰▰▱▱▱▱  ctrl+t"),
+			at("TASKS", "2/5 · ctrl+t"),
 			"TUI status panel",
-			at("✓ 2 done", "abc1234"),
-			"▸ T3 Side panel Todos section with a",
-			"  title too long for one row of it",
-			"⊘ T4 Footer: live activity",
+			`${"▰".repeat(15)}${"▱".repeat(22)}`,
+			"◐ Side panel Todos section with a ti…",
+			"⊘ Footer: live activity",
 			"  waiting: decide the cache scope",
-			"○ T5 Footer cut by priority",
-			"  T7 Inline mode",
+			"○ Footer cut by priority",
+			"2 done · 1 dropped",
 		]);
-		expect(current).toEqual({ start: 3, end: 4 });
+		expect(current).toEqual({ start: 3, end: 3 });
 	});
 
 	it("sums up the session: tokens of every turn, the orchestrator's cache, compactions, permissions, changes, integrations", () => {
@@ -347,9 +341,10 @@ describe("side panel sections", () => {
 		]);
 		const { lines, current } = render(state);
 		expect(lines).toEqual([
-			at("TODOS", "0/1 ▱▱▱▱▱▱  ctrl+t"),
+			at("TASKS", "0/1 · ctrl+t"),
 			"Panel",
-			"▸ T1 One",
+			"▱".repeat(WIDTH),
+			"◐ One".padEnd(WIDTH),
 			RULE,
 			at("JOBS", "1 running"),
 			at("⧗ x", "0m00s"),
@@ -357,11 +352,11 @@ describe("side panel sections", () => {
 			at("AGENTS", "1 running"),
 			at("⧗ worker · docs", "0m00s"),
 		]);
-		expect(current).toEqual({ start: 2, end: 2 });
+		expect(current).toEqual({ start: 3, end: 3 });
 		expect(lines.join("\n")).not.toMatch(/[▾▸] *$|⧗ Jobs|❀|◆|✿/m);
 	});
 
-	it("folds only the Todos, to their header", () => {
+	it("lists every task with its id, and leaves the other sections as they are, when the tasks are expanded", () => {
 		const state = stateOf([
 			[0, job("j", "x")],
 			[
@@ -375,9 +370,18 @@ describe("side panel sections", () => {
 				},
 			],
 		]);
-		const { lines, current } = render(state, { todosFolded: true });
-		expect(lines).toEqual([at("TODOS", "0/1 ▱▱▱▱▱▱  ctrl+t"), RULE, at("JOBS", "1 running"), at("⧗ x", "0m00s")]);
-		expect(current).toBeUndefined();
+		const { lines, current } = render(state, { tasksExpanded: true });
+		expect(lines).toEqual([
+			at("TASKS", "0/1 · ctrl+t"),
+			"Panel",
+			"▱".repeat(WIDTH),
+			"◐ T1 One".padEnd(WIDTH),
+			"ctrl+t summary",
+			RULE,
+			at("JOBS", "1 running"),
+			at("⧗ x", "0m00s"),
+		]);
+		expect(current).toEqual({ start: 3, end: 3 });
 	});
 
 	it("draws the tabs on two rows: ink text for the active label, textSecondary for the other, a brand underline", () => {
@@ -422,12 +426,7 @@ describe("side panel sections", () => {
 		const text = (["status", "session"] as const)
 			.flatMap(
 				(tab) =>
-					sidePanelLines(
-						{ state, now: 0, startedAt: 0, tab, todosFolded: false, mode: "yolo" },
-						colored,
-						painter(true),
-						WIDTH,
-					).lines,
+					sidePanelLines({ state, now: 0, startedAt: 0, tab, mode: "yolo" }, colored, painter(true), WIDTH).lines,
 			)
 			.join("\n");
 		const rgb = (hex: string) =>
