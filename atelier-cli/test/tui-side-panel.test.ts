@@ -1,7 +1,7 @@
 import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import { type PanelView, type Section, sidePanelLines } from "../src/tui/side-panel.ts";
+import { type PanelView, type Section, sidePanelLines, tabAt, tabRows } from "../src/tui/side-panel.ts";
 import { emptySidePanel, type SidePanelState, sidePanelAfter } from "../src/tui/side-panel-state.ts";
 import { painter } from "../src/tui/style.ts";
 import { activeTheme, ink } from "../src/tui/theme.ts";
@@ -336,6 +336,34 @@ describe("side panel sections", () => {
 			[0, "jobs"],
 			[2, "status"],
 		]);
+	});
+
+	it("draws the tabs on two rows: ink text for the active label, textSecondary for the other, a brand underline", () => {
+		const colored = ink(activeTheme, true, "truecolor");
+		const rgb = (hex: string) =>
+			`\x1b[38;2;${[1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16)).join(";")}m`;
+		const [status, statusLine] = tabRows(colored, "status", WIDTH);
+		expect(status).toContain(`${rgb(activeTheme.text)}Status`);
+		expect(status).toContain(`${rgb(activeTheme.textSecondary)}Session`);
+		expect(statusLine).toContain(`${rgb(activeTheme.brand)}${"─".repeat(6)}`);
+		const [session, sessionLine] = tabRows(colored, "session", WIDTH);
+		expect(session).toContain(`${rgb(activeTheme.textSecondary)}Status`);
+		expect(session).toContain(`${rgb(activeTheme.text)}Session`);
+		expect(sessionLine).toContain(`${rgb(activeTheme.brand)}${"─".repeat(7)}`);
+		// Plain: the labels two spaces apart, the underline a rule as wide as the panel.
+		const [row, underline] = tabRows(plain.ink, "session", WIDTH);
+		expect(row).toBe(`Status  Session${" ".repeat(WIDTH - 15)}`.trimEnd());
+		expect(underline).toBe("─".repeat(WIDTH));
+		expect(visibleWidth(underline)).toBe(WIDTH);
+	});
+
+	it("knows the tab under a column of the label row: Status [0, 6), Session [8, 15), nothing in the gap or past them", () => {
+		const at = (x: number) => tabAt(x);
+		expect([0, 5].map(at)).toEqual(["status", "status"]);
+		expect([6, 7].map(at)).toEqual([undefined, undefined]);
+		expect([8, 14].map(at)).toEqual(["session", "session"]);
+		expect([15, 30].map(at)).toEqual([undefined, undefined]);
+		expect(at(-1)).toBeUndefined();
 	});
 
 	it("paints with the theme's tokens only, never the terminal's own colors", () => {

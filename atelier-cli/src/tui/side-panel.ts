@@ -10,6 +10,14 @@ import type { Ink } from "./theme.ts";
 export const SECTIONS = ["jobs", "agents", "todos", "status"] as const;
 export type Section = (typeof SECTIONS)[number];
 
+/** The panel's tabs, in the order of their labels. */
+export const PANEL_TABS = ["status", "session"] as const;
+export type PanelTab = (typeof PANEL_TABS)[number];
+
+const TAB_LABELS: Record<PanelTab, string> = { status: "Status", session: "Session" };
+/** The cells between two tab labels. */
+const TAB_GAP = 2;
+
 /** Finished jobs or agents shown under the running ones before `+N more`. */
 const FINISHED_SHOWN = 5;
 /** The cells of the Todos progress bar. */
@@ -85,6 +93,34 @@ const prompt = (usage: Usage) => usage.input + usage.cacheRead + usage.cacheWrit
 function header({ ink, paint }: Painters, icon: string, name: string, open: boolean, counts: string, width: number) {
 	const left = `${ink.fg("textSecondary", icon)} ${paint("bold", ink.fg("text", name))} ${ink.fg("textSecondary", open ? "▾" : "▸")}`;
 	return row(left, counts, width);
+}
+
+/** The columns `[start, end)` of each tab's label on the first tab row. */
+const TAB_RANGES = (() => {
+	let start = 0;
+	return PANEL_TABS.map((tab) => {
+		const range = { tab, start, end: start + visibleWidth(TAB_LABELS[tab]) };
+		start = range.end + TAB_GAP;
+		return range;
+	});
+})();
+
+/** The tab whose label covers column `x` of the first tab row; the gap and the space after the labels have none. */
+export function tabAt(x: number): PanelTab | undefined {
+	return TAB_RANGES.find((range) => x >= range.start && x < range.end)?.tab;
+}
+
+/** The two rows over the scroll: the labels, the active one in `text`, and a rule with the active label underlined in `brand`. */
+export function tabRows(ink: Ink, active: PanelTab, width: number): [string, string] {
+	const labels = TAB_RANGES.map(({ tab }) => ink.fg(tab === active ? "text" : "textSecondary", TAB_LABELS[tab]));
+	const { start, end } = TAB_RANGES.find((range) => range.tab === active) ?? { start: 0, end: 0 };
+	const under = Math.min(end, width);
+	const rule = [
+		ink.fg("separator", "─".repeat(Math.min(start, width))),
+		ink.fg("brand", "─".repeat(Math.max(0, under - start))),
+		ink.fg("separator", "─".repeat(Math.max(0, width - under))),
+	].join("");
+	return [cut(labels.join(" ".repeat(TAB_GAP)), width), rule];
 }
 
 /** The parts that show something, between dots. */
