@@ -7,8 +7,10 @@ import { tmpdir } from "node:os";
 import { basename, delimiter, join } from "node:path";
 import { PassThrough } from "node:stream";
 import {
+	type AgentBackend,
 	type AtelierEvent,
 	type AtelierEventBody,
+	ClaudeCodeBackend,
 	type ClientCommand,
 	coreTools,
 	createBackgroundTools,
@@ -154,7 +156,7 @@ const until = async (condition: () => boolean) => {
 };
 
 /** The core in this process, over the protocol's own encoding: what the TUI sends is what a server receives. */
-function inProcessCore(backend: FakeBackend, saveSessions: boolean, children: FakeBackend[], backendId?: string) {
+function inProcessCore(backend: AgentBackend, saveSessions: boolean, children: FakeBackend[], backendId?: string) {
 	const commands: ClientCommand[] = [];
 	/** Commands the core answers with an error instead of running them. */
 	const failing = new Set<string>();
@@ -3852,6 +3854,63 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			h.screen.type("\r");
 			await until(() => h.screen.statuses.length === 5);
 			expect(h.screen.statuses.slice(3)).toEqual([atelier("working"), atelier("error", { message: "boom" })]);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("reports idle, with no error, for a Claude Code turn the user interrupted", async () => {
+			const queue: unknown[] = [];
+			let wake = () => {};
+			let prompted = false;
+			const result = (subtype: string) => ({
+				type: "result",
+				subtype,
+				uuid: "u",
+				session_id: "s",
+				total_cost_usd: 0.1,
+				num_turns: 1,
+				errors: ["raw diagnostic"],
+				usage: { input_tokens: 3, output_tokens: 1 },
+			});
+			const claude = new ClaudeCodeBackend({
+				env: {},
+				query: ({ prompt }) => {
+					void (async () => {
+						for await (const _ of prompt) {
+							prompted = true;
+							wake();
+						}
+					})();
+					return {
+						async *[Symbol.asyncIterator]() {
+							for (;;) {
+								while (queue.length > 0) yield queue.shift() as never;
+								await new Promise<void>((resolve) => (wake = resolve));
+							}
+						},
+						interrupt: async () => {
+							queue.push(result("error_during_execution"));
+							wake();
+						},
+						close() {},
+					};
+				},
+			});
+			const h = harness([]);
+			h.io.tui.connect = inProcessCore(claude, false, []).connect;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("long job");
+			h.screen.type("\r");
+			await until(() => prompted);
+			h.screen.type("\x1b");
+			await until(() => h.screen.statuses.length === 3);
+			expect(h.screen.statuses).toEqual([
+				atelier("idle"),
+				atelier("working"),
+				atelier("idle", { message: "interrupted" }),
+			]);
+			expect(h.screen.screen()).not.toContain("raw diagnostic");
 			h.screen.type("\x03");
 			expect(await code).toBe(130);
 		});

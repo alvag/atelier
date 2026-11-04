@@ -343,6 +343,10 @@ class ClaudeCodeSession implements BackendSession {
 	#early: AtelierEventBody[] = [];
 	#turn: Channel<AtelierEventBody> | undefined;
 	#interruptTimer: NodeJS.Timeout | undefined;
+	/** The turn the user asked to interrupt: Claude Code reports it as a failed execution, which it was not. */
+	#interruptedTurn: Channel<AtelierEventBody> | undefined;
+	#interruptCompletion: Promise<unknown> | undefined;
+	#releaseInterrupt: (() => void) | undefined;
 	#closing = false;
 	#failure: string | undefined;
 	readonly #compactionState: (() => string | undefined) | undefined;
@@ -399,7 +403,17 @@ class ClaudeCodeSession implements BackendSession {
 				this.#contextTracker.observe(message);
 				if (typeof message.session_id === "string" && message.session_id !== "") this.#sessionId = message.session_id;
 				if (message.type === "system" && message.subtype === "compact_boundary") this.#stateDue = true;
-				const events = mapSdkMessage(message, this.#context);
+				if (
+					message.type === "result" &&
+					message.subtype === "error_during_execution" &&
+					this.#turn !== undefined &&
+					this.#interruptedTurn === this.#turn
+				) {
+					// Keep the diagnostic until the SDK has accepted, rather than refused, the interrupt.
+					await this.#interruptCompletion;
+					if (this.#failure !== undefined) continue;
+				}
+				const events = this.#asInterrupted(message, mapSdkMessage(message, this.#context));
 				for (const event of events) {
 					if (event.type === "turn_finished") {
 						const context = this.#contextTracker.usage();
@@ -448,7 +462,20 @@ class ClaudeCodeSession implements BackendSession {
 		}
 	}
 
+	/** An execution error that ends a turn the user interrupted is the interrupt, not a failure: no error, same totals. */
+	#asInterrupted(message: SDKMessage, events: AtelierEventBody[]): AtelierEventBody[] {
+		if (message.type !== "result" || message.subtype !== "error_during_execution") return events;
+		if (this.#turn === undefined || this.#interruptedTurn !== this.#turn) return events;
+		return events
+			.filter((event) => event.type !== "error")
+			.map((event) => (event.type === "turn_finished" ? { ...event, stopReason: "interrupted" } : event));
+	}
+
 	#endTurn(): void {
+		this.#releaseInterrupt?.();
+		this.#releaseInterrupt = undefined;
+		this.#interruptedTurn = undefined;
+		this.#interruptCompletion = undefined;
 		clearTimeout(this.#interruptTimer);
 		this.#interruptTimer = undefined;
 		this.#turn?.close();
@@ -567,10 +594,38 @@ class ClaudeCodeSession implements BackendSession {
 	/** Asks Claude Code to stop; if the turn does not end within the grace period, closes the query. */
 	async interrupt(): Promise<void> {
 		const turn = this.#turn;
-		await this.#query.interrupt().catch(() => {});
-		if (!turn || turn !== this.#turn || this.#interruptTimer) return;
+		// Requests share this turn's completion and deadline unless the SDK refuses it.
+		if (turn && this.#interruptTimer) {
+			await this.#interruptCompletion;
+			return;
+		}
+		// Marked before the SDK answers: its result for the turn can arrive first.
+		if (turn) this.#interruptedTurn = turn;
+		let release = () => {};
+		const completion = Promise.race([
+			this.#query.interrupt().catch(() => {
+				// A refused request must not prevent another attempt on this turn.
+				if (turn && this.#interruptedTurn === turn) {
+					this.#interruptedTurn = undefined;
+					this.#interruptCompletion = undefined;
+					this.#releaseInterrupt = undefined;
+					clearTimeout(this.#interruptTimer);
+					this.#interruptTimer = undefined;
+				}
+			}),
+			new Promise<void>((resolve) => (release = resolve)),
+		]);
+		if (turn) {
+			this.#interruptCompletion = completion;
+			this.#releaseInterrupt = release;
+		}
+		if (!turn || turn !== this.#turn || this.#interruptTimer) {
+			await completion;
+			return;
+		}
 		this.#interruptTimer = setTimeout(() => {
 			if (this.#turn !== turn) return;
+			release();
 			this.#deliver([
 				errorEvent("interrupt_timeout", "Claude Code did not stop in time; the session was closed."),
 				...this.#unfinishedTurn(),
@@ -583,6 +638,7 @@ class ClaudeCodeSession implements BackendSession {
 			this.#query.close();
 			this.#endTurn();
 		}, this.#interruptGraceMs);
+		await completion;
 	}
 
 	resumeState(): ResumeState | undefined {
@@ -630,6 +686,7 @@ class ClaudeCodeSession implements BackendSession {
 
 	async close(): Promise<void> {
 		this.#closing = true;
+		this.#releaseInterrupt?.();
 		clearTimeout(this.#interruptTimer);
 		this.#dropCompactAtAsk();
 		this.#input.close();
