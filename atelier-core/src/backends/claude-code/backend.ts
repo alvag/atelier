@@ -594,8 +594,8 @@ class ClaudeCodeSession implements BackendSession {
 	/** Asks Claude Code to stop; if the turn does not end within the grace period, closes the query. */
 	async interrupt(): Promise<void> {
 		const turn = this.#turn;
-		// Requests share this turn's completion and deadline unless the SDK refuses it.
-		if (turn && this.#interruptTimer) {
+		// Share accepted or pending requests; a refusal allows retry without restarting the deadline.
+		if (turn && this.#interruptCompletion !== undefined) {
 			await this.#interruptCompletion;
 			return;
 		}
@@ -609,8 +609,6 @@ class ClaudeCodeSession implements BackendSession {
 					this.#interruptedTurn = undefined;
 					this.#interruptCompletion = undefined;
 					this.#releaseInterrupt = undefined;
-					clearTimeout(this.#interruptTimer);
-					this.#interruptTimer = undefined;
 				}
 			}),
 			new Promise<void>((resolve) => (release = resolve)),
