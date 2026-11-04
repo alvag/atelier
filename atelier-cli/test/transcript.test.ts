@@ -12,8 +12,8 @@ import {
 	SessionStore,
 	type ShellResult,
 } from "@atelier/core";
-import { afterEach, describe, expect, it } from "vitest";
-import { savedTranscript } from "../src/transcript.ts";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
+import { savedParts, savedTranscript } from "../src/transcript.ts";
 
 const prompt: SavedEntry = { type: "prompt", turnId: "t", text: "work" };
 const text = (value: string): SavedEntry => ({ type: "text", turnId: "t", text: value });
@@ -248,5 +248,49 @@ describe("a resumed turn whose review asked for the risk declaration", () => {
 	it("adds no paragraph for a declaration whose text is empty", async () => {
 		const { restored } = await resumed([say("")], false);
 		expect(restored).toBe("resumed session saved: 1 turn\n> edit\nDone.\n");
+	});
+});
+
+describe("saved mcp_status", () => {
+	const saved: SavedEntry = {
+		type: "event",
+		event: {
+			type: "mcp_status",
+			turnId: "t",
+			seq: 1,
+			servers: [{ name: "docs", transport: "stdio", state: "failed", tools: [], error: "boom" }],
+			problems: ["old problem"],
+		},
+	};
+
+	it("is not printed when a session resumes", () => {
+		const shown = restore(prompt, saved, text("answer"));
+		expect(shown).not.toContain("mcp");
+		expect(shown).not.toContain("boom");
+		expect(shown).toBe(restore(prompt, text("answer")));
+		expect(savedParts("saved", undefined, [prompt, saved, text("answer")])).toEqual(
+			savedParts("saved", undefined, [prompt, text("answer")]),
+		);
+	});
+});
+
+describe("saved mcp_status between text deltas", () => {
+	it("keeps the whole answer and still records the status", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "atelier-transcript-mcp-"));
+		onTestFinished(() => rm(dir, { recursive: true, force: true }));
+		const store = new SessionStore(join(dir, "home"));
+		const cwd = join(dir, "repo");
+		const record = store.create(cwd);
+		const delta = (seq: number, value: string): AtelierEvent => ({ type: "text_delta", turnId: "t", seq, text: value });
+		record.config({ backend: "claude-code", mode: "normal" });
+		record.prompt("t", "go");
+		record.event(delta(1, "Hello "));
+		record.event({ type: "mcp_status", turnId: "t", seq: 2, servers: [], problems: [] });
+		record.event(delta(3, "world"));
+		await record.release();
+		const { entries } = await store.load(cwd, record.id);
+		expect(entries.some((entry) => entry.type === "event" && entry.event.type === "mcp_status")).toBe(true);
+		expect(savedTranscript("saved", undefined, entries)).toContain("Hello world\n");
+		expect(JSON.stringify(savedParts("saved", undefined, entries))).toContain("Hello world");
 	});
 });

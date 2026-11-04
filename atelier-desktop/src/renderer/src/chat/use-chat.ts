@@ -74,11 +74,16 @@ function profileList(result: Record<string, unknown>): ProfileList {
 	};
 }
 
+const isMcpMessage = (message: HostMessage): message is HostMessage & { sessionId: string } =>
+	(message.type === "event" || message.type === "session_event") && message.event.type === "mcp_status";
+
 /** Chat state fed by the bridge. Host messages are applied once per frame, so streaming does not re-render per delta. */
 export function useChat(bridge: AtelierBridge): Chat {
 	const [state, dispatch] = useReducer(reduceChat, initialChatState);
 	const stateRef = useRef(state);
 	stateRef.current = state;
+	/** While `openSession` awaits `session.start`: the latest MCP message per session id, replayed once the id is known. */
+	const heldMcp = useRef<Map<string, HostMessage> | null>(null);
 
 	useEffect(() => {
 		let queue: ChatAction[] = [];
@@ -90,6 +95,10 @@ export function useChat(bridge: AtelierBridge): Chat {
 			if (actions.length > 0) dispatch({ type: "batch", actions });
 		};
 		const unsubscribe = bridge.onMessage((message: HostMessage) => {
+			if (heldMcp.current && isMcpMessage(message)) {
+				heldMcp.current.set(message.sessionId, message);
+				return;
+			}
 			queue.push(message);
 			if (!scheduled) {
 				scheduled = true;
@@ -160,20 +169,30 @@ export function useChat(bridge: AtelierBridge): Chat {
 		openSession: async (cwd, model, backend, noSandbox = false, profile, mode) => {
 			const previous = stateRef.current.session;
 			if (previous) await request({ command: "session.close", sessionId: previous.id });
-			const result = await request({
-				command: "session.start",
-				cwd,
-				// The desktop shows a job's end outside any turn (`session_event`).
-				sessionEvents: true,
-				...(model ? { model } : {}),
-				backend,
-				userQuestions: true,
-				...(noSandbox ? { noSandbox: true } : {}),
-				...(profile ? { profile } : {}),
-				...(mode ? { mode } : {}),
-			});
-			if (result.ok && typeof result.result.sessionId === "string")
+			const held = new Map<string, HostMessage>();
+			heldMcp.current = held;
+			let result: CommandResult;
+			try {
+				result = await request({
+					command: "session.start",
+					cwd,
+					// The desktop shows a job's end outside any turn (`session_event`).
+					sessionEvents: true,
+					...(model ? { model } : {}),
+					backend,
+					userQuestions: true,
+					...(noSandbox ? { noSandbox: true } : {}),
+					...(profile ? { profile } : {}),
+					...(mode ? { mode } : {}),
+				});
+			} finally {
+				if (heldMcp.current === held) heldMcp.current = null;
+			}
+			if (result.ok && typeof result.result.sessionId === "string") {
 				dispatch({ type: "session_opened", sessionId: result.result.sessionId, cwd, noSandbox });
+				const status = held.get(result.result.sessionId);
+				if (status) dispatch(status);
+			}
 		},
 		setMode: async (mode) => {
 			const session = stateRef.current.session;

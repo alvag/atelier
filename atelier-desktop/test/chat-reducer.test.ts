@@ -1,4 +1,4 @@
-import type { AtelierEventBody } from "@atelier/core/protocol";
+import type { AtelierEventBody, McpServerStatus } from "@atelier/core/protocol";
 import { describe, expect, it } from "vitest";
 import { type ChatAction, type ChatState, initialChatState, reduceChat } from "../src/renderer/src/chat/reducer.ts";
 
@@ -7,6 +7,8 @@ const usage = { input: 10, output: 5, cacheRead: 300, cacheWrite: 20 };
 function run(actions: ChatAction[], state: ChatState = initialChatState): ChatState {
 	return actions.reduce(reduceChat, state);
 }
+
+const finishedTurn = { type: "turn_finished", stopReason: "end_turn", usage } as AtelierEventBody;
 
 let seq = 0;
 function event(body: AtelierEventBody, turnId = "t1", sessionId = "s1"): ChatAction {
@@ -1118,5 +1120,26 @@ describe("background jobs", () => {
 		});
 		// Another session's says nothing here.
 		expect(run([{ type: "session_event", sessionId: "s2", event: ended }], state)).toBe(state);
+	});
+
+	describe("mcp_status outside a turn", () => {
+		const servers: McpServerStatus[] = [
+			{ name: "docs", transport: "stdio", state: "failed", tools: [], error: "boom" },
+		];
+		const status: AtelierEventBody = { type: "mcp_status", servers, problems: ["p"] };
+
+		it("updates the servers and adds no chat entry, leaving the chat idle", () => {
+			const before = run([...ready, { type: "prompt_sent", text: "hi" }, { type: "turn_accepted", turnId: "t1" }]);
+			const idle = run([{ type: "session_event", sessionId: "s1", event: status }], run([event(finishedTurn)], before));
+			expect(idle.mcp).toEqual({ servers, problems: ["p"] });
+			expect(idle.busy).toBe(false);
+			expect(idle.turns).toEqual(run([event(finishedTurn)], before).turns);
+		});
+
+		it("keeps the live snapshot when an older session's status or an event of another session arrives", () => {
+			const live = run([...ready, { type: "session_event", sessionId: "s1", event: status }]);
+			const fresh: AtelierEventBody = { type: "mcp_status", servers: [], problems: [] };
+			expect(run([{ type: "session_event", sessionId: "old", event: fresh }], live).mcp).toEqual(live.mcp);
+		});
 	});
 });

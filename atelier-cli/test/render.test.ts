@@ -517,6 +517,83 @@ describe("Renderer", () => {
 		);
 	});
 
+	describe("mcp_status between and during turns", () => {
+		type Status = Extract<AtelierEvent, { type: "mcp_status" }>;
+		const server = (name: string, state: "connected" | "connecting" | "failed", error?: string) =>
+			({
+				name,
+				transport: "stdio",
+				state,
+				tools: state === "connected" ? ["t"] : [],
+				...(error ? { error } : {}),
+			}) as const;
+		const status = (servers: Status["servers"], turnId = ""): AtelierEvent =>
+			({ type: "mcp_status", servers, problems: [], seq: 0, turnId }) as AtelierEvent;
+		const text = (turnId = "t1"): AtelierEvent => ({ type: "text_delta", text: "hi", seq: 2, turnId }) as AtelierEvent;
+		function live() {
+			const out = { stdout: "", stderr: "" };
+			const renderer = new Renderer({
+				stdout: (s) => (out.stdout += s),
+				stderr: (s) => (out.stderr += s),
+				color: false,
+			});
+			return { out, renderer };
+		}
+
+		it("says nothing before the first turn, then gives the latest summary when it starts", () => {
+			const { out, renderer } = live();
+			renderer.render(status([server("docs", "connecting")]));
+			renderer.render(status([server("docs", "connected")]));
+			expect(out).toEqual({ stdout: "", stderr: "" });
+			renderer.render(text());
+			expect(out.stdout).toBe("mcp: docs (1 tool)\nhi");
+			expect(out.stderr).toBe("");
+		});
+
+		it("warns at the first turn about a failure that came before it", () => {
+			const { out, renderer } = live();
+			renderer.render(status([server("ctx", "failed", "boom")]));
+			renderer.render(text());
+			expect(out.stderr).toBe("mcp: ctx failed: boom (/mcp for details)\n");
+		});
+
+		it("does not repeat the routine summary in later snapshots, and warns only about new or changed problems", () => {
+			const { out, renderer } = live();
+			renderer.render(status([server("docs", "connecting")], "t1"));
+			out.stdout = "";
+			renderer.render(status([server("docs", "connected")], "t1"));
+			renderer.render(status([server("docs", "connected")]));
+			expect(out).toEqual({ stdout: "", stderr: "" });
+			renderer.render(status([server("docs", "failed", "a")]));
+			renderer.render(status([server("docs", "failed", "a")]));
+			expect(out.stderr).toBe("mcp: docs failed: a (/mcp for details)\n");
+			renderer.render(status([server("docs", "failed", "b")]));
+			renderer.render(status([server("docs", "connected")]));
+			renderer.render(status([server("docs", "failed", "b")]));
+			expect(out.stderr.split("\n").filter(Boolean)).toEqual([
+				"mcp: docs failed: a (/mcp for details)",
+				"mcp: docs failed: b (/mcp for details)",
+				"mcp: docs failed: b (/mcp for details)",
+			]);
+			expect(out.stdout).toBe("");
+		});
+
+		it("prints a snapshot of the first turn in full", () => {
+			const { out, renderer } = live();
+			renderer.render(status([server("docs", "connected"), server("ctx", "failed", "x")], "t1"));
+			expect(out.stdout).toBe("mcp: docs (1 tool)\n");
+			expect(out.stderr).toBe("mcp: ctx failed: x (/mcp for details)\n");
+		});
+
+		it("tells whether a snapshot would print anything", () => {
+			const { renderer } = live();
+			expect(renderer.isQuiet(status([server("ctx", "failed", "x")]))).toBe(true);
+			renderer.render(status([server("docs", "connecting")], "t1"));
+			expect(renderer.isQuiet(status([server("docs", "connected")]))).toBe(true);
+			expect(renderer.isQuiet(status([server("ctx", "failed", "x")]))).toBe(false);
+		});
+	});
+
 	it("says which instruction files were loaded, and warns about those the cap left out", () => {
 		const on = render([{ type: "project_instructions", files: ["/w/AGENTS.md", "/w/p/CLAUDE.md"], dropped: [] }]);
 		expect(on.stdout).toBe("instructions: /w/AGENTS.md, /w/p/CLAUDE.md\n");

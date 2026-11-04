@@ -1849,6 +1849,100 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 		return { link, log, emit };
 	}
 
+	describe("an MCP status that comes with the answer that opens a session", () => {
+		const mcp = {
+			type: "mcp_status",
+			servers: [{ name: "docs", transport: "http", state: "connected", tools: ["search"] }],
+			problems: [],
+		};
+		/** A core whose answer to `session.start` is preceded by that session's MCP status, as when both come in one read. */
+		const earlyCore = (emitOnResume = true) => {
+			const idle = new Set<(sessionId: string, event: AtelierEventBody) => void>();
+			let starts = 0;
+			const stub = stubCore({
+				answer: (command) => {
+					if (command.command !== "session.start" && command.command !== "session.resume") return undefined;
+					const sessionId = `s${++starts}`;
+					if (command.command === "session.start" || emitOnResume)
+						for (const listener of idle) listener(sessionId, mcp as unknown as AtelierEventBody);
+					return {
+						sessionId,
+						entries: [
+							{
+								type: "event",
+								event: {
+									...mcp,
+									servers: [{ ...mcp.servers[0], name: "stale", state: "failed", error: "old failure" }],
+									seq: 1,
+									turnId: "old",
+								},
+							},
+						],
+					};
+				},
+			});
+			stub.link.onSessionEvent = (listener) => {
+				idle.add(listener);
+				return () => idle.delete(listener);
+			};
+			return stub;
+		};
+		const turn = () => ({ type: "text_delta", text: "hi", seq: 1, turnId: "t1" }) as const;
+		const said = (h: ReturnType<typeof harness>) => h.screen.screen().includes("mcp: docs (1 tool)");
+
+		it("says the summary of a session's first turn when it came while the session started", async () => {
+			const h = harness([]);
+			const stub = earlyCore();
+			h.io.tui.connect = async () => stub.link;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			expect(said(h)).toBe(false);
+			stub.emit(turn(), "s1");
+			await until(() => said(h));
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it.each([true, false])("keeps /resume history out of live status (early live update: %s)", async (live) => {
+			const h = harness([], { columns: 140 });
+			const stub = earlyCore(live);
+			h.io.tui.connect = async () => stub.link;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("/resume saved");
+			h.screen.type("\r");
+			await until(() => h.screen.screen().includes("resumed session saved"));
+			expect(said(h)).toBe(false);
+			stub.emit(turn(), "s2");
+			await until(() => h.screen.screen().includes("hi"));
+			if (live) await until(() => said(h));
+			expect(h.screen.screen()).not.toContain("stale");
+			expect(h.screen.screen()).not.toContain("old failure");
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
+		it("says it for a session that /new starts, and not before its first turn", async () => {
+			const h = harness([]);
+			const stub = earlyCore();
+			h.io.tui.connect = async () => stub.link;
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(h.screen.started);
+			h.screen.type("/new");
+			h.screen.type("\r");
+			await until(() => stub.log.commands.filter((c) => c.command === "session.start").length === 2);
+			await until(() => h.screen.screen().includes("new session"));
+			expect(said(h)).toBe(false);
+			stub.emit(turn(), "s2");
+			await until(() => said(h));
+			h.screen.type("\x03");
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+	});
+
 	it("updates the header's gauge, clears stale context, and keeps the usage whole on resize", async () => {
 		const h = harness([], { columns: 120 });
 		const stub = stubCore();

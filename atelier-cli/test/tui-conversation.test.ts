@@ -1,6 +1,7 @@
 import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
 import { Container, stripTerminalSequences, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import { savedParts } from "../src/transcript.ts";
 import { Conversation } from "../src/tui/conversation.ts";
 import { type Paint, painter, Shade } from "../src/tui/style.ts";
 
@@ -911,5 +912,56 @@ describe("Conversation ask_user answers", () => {
 		expect(text).not.toContain("\x1b");
 		expect(text).toContain("␛[31mone?");
 		expect(text).toContain("Type something: a␛[2Jb");
+	});
+});
+
+describe("Conversation mcp_status", () => {
+	const connected = [{ name: "docs", transport: "stdio", state: "connected", tools: ["t"] }] as const;
+	const failed = [{ name: "docs", transport: "stdio", state: "failed", tools: [], error: "boom" }] as const;
+	const snapshot = (servers: readonly unknown[], turnId: string) =>
+		({ type: "mcp_status", servers, problems: [], seq: 0, turnId }) as unknown as AtelierEvent;
+	const textOf = (conversation: Conversation) =>
+		conversation
+			.render(80)
+			.map((line) => line.trimEnd())
+			.join("\n");
+
+	it("adds no line before the first turn, then one summary of the latest state at its start", () => {
+		const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
+		conversation.event(snapshot([{ ...connected[0], state: "connecting", tools: [] }], ""));
+		conversation.event(snapshot(connected, ""));
+		expect(textOf(conversation)).not.toContain("mcp:");
+		conversation.event({ type: "text_delta", text: "hi", seq: 1, turnId: "t1" } as AtelierEvent);
+		expect(textOf(conversation)).toContain("mcp: docs (1 tool)");
+		expect(textOf(conversation).match(/mcp:/g)).toHaveLength(1);
+	});
+
+	it("shows only new warnings after the first turn, during and between turns", () => {
+		const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
+		conversation.event(snapshot(connected, "t1"));
+		conversation.event(snapshot(connected, ""));
+		conversation.event(snapshot(connected, "t1"));
+		expect(textOf(conversation).match(/mcp:/g)).toHaveLength(1);
+		conversation.event(snapshot(failed, ""));
+		conversation.event(snapshot(failed, "t1"));
+		expect(textOf(conversation).match(/mcp: docs failed: boom/g)).toHaveLength(1);
+	});
+
+	it("keeps a live snapshot after a resumed transcript with a saved one, which is never fed", () => {
+		const conversation = new Conversation(plain, "/repo", new Shade(false), clock);
+		for (const part of savedParts("saved", undefined, [
+			{ type: "prompt", turnId: "t0", text: "before" },
+			{
+				type: "event",
+				event: { type: "mcp_status", servers: [{ ...failed[0], tools: [] }], problems: [], seq: 1, turnId: "t0" },
+			},
+			{ type: "text", turnId: "t0", text: "old answer" },
+		]))
+			if ("text" in part) conversation.plain(part.text);
+		conversation.event(snapshot(connected, ""));
+		expect(textOf(conversation)).not.toContain("mcp:");
+		conversation.event({ type: "text_delta", text: "hi", seq: 1, turnId: "t1" } as AtelierEvent);
+		expect(textOf(conversation)).toContain("mcp: docs (1 tool)");
+		expect(textOf(conversation)).not.toContain("boom");
 	});
 });

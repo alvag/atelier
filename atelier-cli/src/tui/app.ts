@@ -426,7 +426,10 @@ async function resumeSession(
 		...(resumed.configuration === undefined ? {} : { configuration: resumed.configuration }),
 		...(name === undefined ? {} : { name }),
 		...(resumed.name === undefined ? {} : { named: resumed.name }),
-		saved: entries.flatMap((entry) => (entry.type === "event" ? [entry.event] : [])),
+		// MCP snapshots are historical: neither the conversation nor the live panel restores them.
+		saved: entries.flatMap((entry) =>
+			entry.type === "event" && entry.event.type !== "mcp_status" ? [entry.event] : [],
+		),
 	};
 }
 
@@ -510,6 +513,22 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		...(args.profile === undefined ? {} : { profile: args.profile }),
 		...(args.explicitBackend === undefined ? {} : { backend: args.explicitBackend }),
 	};
+	// The core's MCP status can arrive in the same read as the answer that opens a session, before its id is known: it
+	// waits here, the latest of each session, and is shown once the session is the one on screen.
+	const early: [string, AtelierEventBody][] = [];
+	const holdEarly = (id: string, body: AtelierEventBody) => {
+		if (body.type !== "mcp_status") return;
+		const at = early.findIndex(([held]) => held === id);
+		if (at >= 0) early.splice(at, 1);
+		early.push([id, body]);
+		if (early.length > 4) early.shift();
+	};
+	const releaseEarly = (id: string) => {
+		const held = early.filter(([from]) => from === id).map(([, body]) => body);
+		early.length = 0;
+		return held;
+	};
+	const stopEarly = link.onSessionEvent?.(holdEarly);
 	let opened: Opened | { error: string };
 	try {
 		opened = await openSession(link, args, chosen, conversation);
@@ -517,6 +536,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		opened = { error: describeError(error) };
 	}
 	if ("error" in opened) {
+		stopEarly?.();
 		await link.close();
 		options.stderr(`error: ${opened.error}\n`);
 		return EXIT_FAILED;
@@ -1361,6 +1381,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		line = new StatusLine();
 		void request({ command: "session.close", sessionId: previous });
 		reportSession();
+		for (const body of releaseEarly(sessionId)) showSessionEvent(body);
 	};
 	/** A conversation for the next session, after a rule that ends the one before. */
 	const nextConversation = (title: string) => {
@@ -1597,6 +1618,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		try {
 			switchTo(await startSession(link, args, chosen, mode), shownIn);
 		} catch (error) {
+			early.length = 0;
 			withoutConversation(shownIn);
 			// A level the core refused is not asked for again by the next /new.
 			if (error instanceof EffortRefused) {
@@ -1626,6 +1648,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		try {
 			switchTo(await resumeSession(link, args.cwd, chosenId, shownIn), shownIn);
 		} catch (error) {
+			early.length = 0;
 			withoutConversation(shownIn);
 			return conversation.note(`error: ${describeError(error)}`, true);
 		}
@@ -2109,8 +2132,7 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 
 	const removeEvents = link.onEvent(onEvent);
 	// A job's end outside any turn changes the footer and shows its line; no turn runs for it.
-	const removeSessionEvents = link.onSessionEvent?.((id, body) => {
-		if (id !== sessionId) return;
+	const showSessionEvent = (body: AtelierEventBody) => {
 		const event = { ...body, seq: 0, turnId: "" } as AtelierEvent;
 		footer.state = footerAfter(footer.state, event);
 		conversation.event(event);
@@ -2118,7 +2140,14 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		// A background task's end after the root turn closes its child record and stops the refresh.
 		if (event.type === "task_finished") childStatus.handle(event);
 		tui.requestRender();
+	};
+	const removeSessionEvents = link.onSessionEvent?.((id, body) => {
+		// A session being opened is not the current one yet: its status waits for the switch.
+		if (id !== sessionId) return holdEarly(id, body);
+		showSessionEvent(body);
 	});
+	stopEarly?.();
+	for (const body of releaseEarly(sessionId)) showSessionEvent(body);
 	const removeExit = link.onExit(coreExited);
 	const removeTerminate = options.onTerminate?.((signal) => quit(SIGNAL_EXIT + signal));
 	tui.start();
