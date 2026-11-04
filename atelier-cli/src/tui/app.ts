@@ -2237,7 +2237,13 @@ export async function runTui(args: CliArgs, options: TuiOptions): Promise<number
 		await Promise.all([link.close(), released, historyWrites]);
 		// Last, once the terminal is given back and the file is complete: the line to resume the session by.
 		if (savedId !== undefined && options.home !== undefined && options.shellCwd !== undefined) {
-			const line = await resumeHint(options.home, options.shellCwd, savedId, resumedFile);
+			const line = await resumeHint(
+				options.home,
+				options.shellCwd,
+				savedId,
+				resumedFile,
+				options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS,
+			);
 			try {
 				if (line !== undefined) options.stdout(line);
 			} catch {

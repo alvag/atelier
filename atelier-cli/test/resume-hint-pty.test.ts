@@ -246,6 +246,18 @@ it("documents that only the TUI prints a hint and preserves script output", asyn
 	const docs = await readFile(new URL("../../docs/cli.md", import.meta.url), "utf8");
 	expect(docs).toContain("Only the TUI prints");
 	expect(docs).toContain("The line-by-line CLI and `--prompt` do not print it, preserving stdout for scripts.");
+	expect(docs).toContain("if it expires, no hint is printed and the exit code is unchanged.");
+});
+
+it.each([
+	["README.md", "The interactive session runs full screen:", "On exit, the TUI prints"],
+	["docs/cli.md", "Without a prompt, or with", "Only the TUI prints"],
+])("documents the running session's saving status after introducing the TUI in %s", async (file, opening, hint) => {
+	const text = await readFile(new URL(`../../${file}`, import.meta.url), "utf8");
+	expect(text.indexOf(opening)).toBeGreaterThanOrEqual(0);
+	expect(text.indexOf(hint)).toBeGreaterThan(text.indexOf(opening));
+	expect(text).toContain("A session running without saving prints no hint.");
+	expect(text).toContain("Using `/resume` after `--no-session` opens a saved session and prints its hint.");
 });
 
 it.skipIf(!ptyAvailable).each([
