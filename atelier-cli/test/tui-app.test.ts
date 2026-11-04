@@ -2433,6 +2433,27 @@ describe("TUI questions, hostile text and shutdown", { timeout: 20_000 }, () => 
 			expect(await code).toBe(130);
 		});
 
+		it("goes back to the task summary in a new session, whose feature lists its own tasks", async () => {
+			const h = harness([], { columns: 140 });
+			const stub = stubCore();
+			h.io.tui = { terminal: h.screen.terminal, connect: async () => stub.link };
+			const code = run(["--no-session"], h.io, () => h.backend);
+			await until(() => panel(h).some((row) => row.includes("Status  Session")));
+			stub.emit(feature);
+			h.screen.type("\x14");
+			await until(() => shows(h, "│ ✓ T1 Hot model"));
+			h.screen.type("/new");
+			h.screen.type("\r");
+			await until(() => !shows(h, "│ ✓ T1 Hot model"));
+			expect(panel(h).join("\n")).not.toContain("TASKS");
+			stub.emit(feature);
+			await until(() => shows(h, "│ ◐ Hot profile"));
+			expect(shows(h, "│ ✓ T1 Hot model")).toBe(false);
+			expect(shows(h, "│ ctrl+t summary")).toBe(false);
+			h.screen.type("\x03");
+			expect(await code).toBe(130);
+		});
+
 		it("keeps the last of many quick Ctrl+P presses, on screen and in the settings", async () => {
 			const h = harness([], { columns: 140 });
 			const stub = stubCore();
