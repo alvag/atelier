@@ -75,7 +75,8 @@ export class SidePanel {
 	#startedAt: number;
 	#todosFolded = false;
 	#rendered: Record<PanelTab, PanelLines> = { status: { lines: [] }, session: { lines: [] } };
-	#indicator = false;
+	/** Per tab, whether it shows the indicator: the layout of one tab says nothing of the other. */
+	#indicators: Record<PanelTab, boolean> = { status: false, session: false };
 	#ticker: NodeJS.Timeout | undefined;
 	/** The task in progress the panel keeps in view. */
 	#current: string | undefined;
@@ -96,7 +97,11 @@ export class SidePanel {
 		};
 		this.#scrolls = { status: scroll("status"), session: scroll("session") };
 		// Only the Status tab holds the task in progress.
-		this.#scrolls.status.afterLayout = () => this.#keepTaskInView();
+		this.#scrolls.status.afterLayout = () => {
+			this.#keepTaskInView();
+			this.#measure("status");
+		};
+		this.#scrolls.session.afterLayout = () => this.#measure("session");
 		this.#scrolls.status.onWheel = () => {
 			this.#following = false;
 		};
@@ -229,9 +234,17 @@ export class SidePanel {
 
 	/** Its rows do not fit in its height: the last row says where the view is. */
 	#overflows(): boolean {
-		const height = this.#scrolls[this.#tab].viewportHeight + (this.#indicator ? 1 : 0);
-		this.#indicator = height > 0 && this.#rendered[this.#tab].lines.length > height;
-		return this.#indicator;
+		return this.#indicators[this.#tab];
+	}
+
+	/** After a tab's layout, which knows the height it got: if the indicator is not what its rows need, another render sets it. */
+	#measure(tab: PanelTab): void {
+		if (tab !== this.#tab) return;
+		const height = this.#scrolls[tab].viewportHeight + (this.#indicators[tab] ? 1 : 0);
+		const overflows = height > 0 && this.#rendered[tab].lines.length > height;
+		if (overflows === this.#indicators[tab]) return;
+		this.#indicators[tab] = overflows;
+		this.#tui.requestRender();
 	}
 
 	/** `↑↓ 1–11/21`: the rows in view and how many there are. */
