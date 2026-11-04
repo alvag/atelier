@@ -100,6 +100,7 @@ async function mounted(rows: number, agents: number, topRows = 0) {
 		panel,
 		/** The renders asked for since the first frame. */
 		requests: () => tui.requests,
+		frames: () => frames,
 		/** Asks for a render and waits for its frame. */
 		frame: async () => {
 			const before = frames;
@@ -214,6 +215,55 @@ describe("side panel tab overflow", () => {
 		view.ctrlN();
 		await view.until(() => view.screen()[2] === "Session");
 		expect(view.screen().slice(2)).toEqual(SESSION);
+		await expectStable(view);
+	});
+});
+
+describe("followed task render convergence", () => {
+	const feature = (tasks: number, current: number): AtelierEvent => ({
+		type: "feature_changed",
+		name: "followed",
+		path: "odd/tasks/followed.md",
+		title: "Followed tasks",
+		tasks: Array.from({ length: tasks }, (_, i) => ({
+			id: `T${i + 1}`,
+			title: `Task ${i + 1}`,
+			specs: [],
+			status: i === current ? "in_progress" : "pending",
+		})),
+		seq: 1,
+		turnId: "t",
+	});
+
+	it("settles a followed task and its new indicator in at most one extra frame", async () => {
+		const view = track(await mounted(6, 0));
+		const requests = view.requests();
+		const frames = view.frames();
+		view.panel.event(feature(3, 2));
+		await view.frame();
+		await view.until(() => view.screen().at(-1) === "↑↓ 3–5/5");
+		expect(view.screen()).toContain("▸ T3 Task 3");
+		expect(view.screen().at(-1)).toBe("↑↓ 3–5/5");
+		expect(view.requests() - requests).toBeLessThanOrEqual(2);
+		expect(view.frames() - frames).toBeLessThanOrEqual(2);
+		await expectStable(view);
+	});
+
+	it("settles a followed task and its indicator after shrinking in at most one extra frame", async () => {
+		const view = track(await mounted(12, 0));
+		view.panel.event(feature(8, 7));
+		await view.frame();
+		expect(view.screen()).toContain("▸ T8 Task 8");
+		expect(view.screen().some((row) => row.startsWith("↑↓"))).toBe(false);
+		await expectStable(view);
+		const requests = view.requests();
+		const frames = view.frames();
+		view.resize(10);
+		await view.until(() => view.screen().at(-1) === "↑↓ 4–10/10");
+		expect(view.screen()).toContain("▸ T8 Task 8");
+		expect(view.screen().at(-1)).toBe("↑↓ 4–10/10");
+		expect(view.requests() - requests).toBeLessThanOrEqual(2);
+		expect(view.frames() - frames).toBeLessThanOrEqual(2);
 		await expectStable(view);
 	});
 });

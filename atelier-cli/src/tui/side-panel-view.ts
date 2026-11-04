@@ -29,8 +29,16 @@ class PanelScroll extends ScrollView {
 	afterLayout: () => void = () => {};
 	onWheel: () => void = () => {};
 	override updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void): void {
-		super.updateLayout(contentHeight, viewportHeight, requestRender);
-		this.afterLayout();
+		let layingOut = true;
+		try {
+			super.updateLayout(contentHeight, viewportHeight, () => {
+				// Layout applies scrollTop before painting; only scrolls after this pass need another frame.
+				if (!layingOut) requestRender();
+			});
+			this.afterLayout();
+		} finally {
+			layingOut = false;
+		}
 	}
 	override scrollBy(lines: number): number {
 		this.onWheel();
