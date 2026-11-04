@@ -1,7 +1,7 @@
 import type { AtelierEvent, AtelierEventBody } from "@atelier/core";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import { type PanelView, sidePanelLines, tabAt, tabRows } from "../src/tui/side-panel.ts";
+import { nextSidePanelExpiry, type PanelView, sidePanelLines, tabAt, tabRows } from "../src/tui/side-panel.ts";
 import { emptySidePanel, type SidePanelState, sidePanelAfter } from "../src/tui/side-panel-state.ts";
 import { painter } from "../src/tui/style.ts";
 import { activeTheme, ink } from "../src/tui/theme.ts";
@@ -69,9 +69,9 @@ describe("side panel sections", () => {
 			[1, job("v", "verifier e2e")],
 			[2, job("pr", "PR 61 abort fix wait")],
 			[3, job("check", "pnpm check")],
-			[10, jobEnd("old", 4_200_000, { status: "stopped", exitCode: undefined, notified: false })],
-			[20, jobEnd("v", 242_000, { exitCode: 1, notified: false })],
-			[30, jobEnd("pr", 1_741_000, { waiting: 1 })],
+			[90, jobEnd("old", 4_200_000, { status: "stopped", exitCode: undefined, notified: false })],
+			[100, jobEnd("v", 242_000, { exitCode: 1, notified: false })],
+			[110, jobEnd("pr", 1_741_000, { waiting: 1 })],
 		]);
 		const { lines } = render(state, { now: 137_000 });
 		expect(lines).toEqual([
@@ -84,19 +84,11 @@ describe("side panel sections", () => {
 		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
 	});
 
-	it("caps the finished jobs with how many are left out", () => {
+	it("caps the other finished jobs at three, without saying how many are left out", () => {
 		const bodies: [number, Body][] = [];
 		for (let i = 0; i < 8; i++) bodies.push([i, job(`j${i}`, `job ${i}`)], [i, jobEnd(`j${i}`, 1000)]);
 		const { lines } = render(stateOf(bodies));
-		expect(lines).toEqual([
-			"JOBS",
-			at("✓ job 7", "0m01s"),
-			at("✓ job 6", "0m01s"),
-			at("✓ job 5", "0m01s"),
-			at("✓ job 4", "0m01s"),
-			at("✓ job 3", "0m01s"),
-			at("", "+3 more"),
-		]);
+		expect(lines).toEqual(["JOBS", at("✓ job 7", "0m01s"), at("✓ job 6", "0m01s"), at("✓ job 5", "0m01s")]);
 	});
 
 	it("lists agents with their model and current call while they run, and tokens, cost or why once they end", () => {
@@ -476,5 +468,115 @@ describe("side panel sections", () => {
 		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(30);
 		expect(lines.join("\n")).not.toContain("\x1b");
 		expect(lines.join("\n")).toContain("␛[31m label␊next");
+	});
+});
+
+describe("finished rows", () => {
+	/** Jobs `a`, `b`… started at 0 and ended at the given seconds; `notified` ones stay unread. */
+	const ended = (ends: Record<string, number>, unread: string[] = []) => {
+		const bodies: [number, Body][] = [];
+		for (const id of Object.keys(ends)) bodies.push([0, job(id, id)]);
+		for (const [id, at] of Object.entries(ends))
+			bodies.push([at, jobEnd(id, 1000, { notified: unread.includes(id), waiting: unread.length })]);
+		return stateOf(bodies);
+	};
+	const labels = (state: SidePanelState, now: number) =>
+		render(state, { now }).lines.map((line) => (/^(JOBS|AGENTS)/.test(line) ? line.split(" ")[0] : line.split(" ")[1]));
+
+	it("hides a finished row at 60 s and shows it one millisecond earlier", () => {
+		const state = ended({ a: 100 });
+		expect(render(state, { now: 159_999 }).lines.length).toBe(2);
+		expect(render(state, { now: 160_000 }).lines).toEqual([]);
+	});
+
+	it("shows three other finished rows newest first, then the older ones are gone with no +N more", () => {
+		const state = ended({ a: 100, b: 101, c: 102, d: 103, e: 104 });
+		const { lines } = render(state, { now: 110_000 });
+		expect(labels(state, 110_000)).toEqual(["JOBS", "e", "d", "c"]);
+		expect(lines.join("\n")).not.toContain("more");
+	});
+
+	it("keeps every unread row, newest first before the others, outside the three slots and past 60 s", () => {
+		const state = ended({ a: 10, b: 20, c: 100, d: 101, e: 102, f: 103, g: 104 }, ["a", "b"]);
+		expect(labels(state, 110_000)).toEqual(["JOBS", "b", "a", "g", "f", "e"]);
+		const { lines } = render(state, { now: 110_000 });
+		expect(lines[0]).toBe(at("JOBS", "2 ●"));
+	});
+
+	it("counts the agents shown in the header, not the ones left out", () => {
+		const bodies: [number, Body][] = [];
+		for (let i = 0; i < 5; i++)
+			bodies.push(
+				[i, { type: "task_started", taskId: `t${i}`, agent: "w", label: `l${i}`, outputPath: "x", running: 1 } as Body],
+				[
+					100 + i,
+					{
+						type: "task_finished",
+						taskId: `t${i}`,
+						agent: "w",
+						label: `l${i}`,
+						status: i === 4 ? "failed" : "finished",
+						durationMs: 1000,
+						outputPath: "x",
+						notified: false,
+						running: 0,
+						waiting: 0,
+					} as Body,
+				],
+			);
+		const state = stateOf(bodies);
+		const { lines } = render(state, { now: 110_000 });
+		expect(lines[0]).toBe(at("AGENTS", "2 ✓ · 1 ✗"));
+		expect(lines.join("\n")).not.toContain("more");
+		expect(render(state, { now: 400_000 }).lines).toEqual([]);
+	});
+
+	it("treats a row without endedAt as expired unless it is unread", () => {
+		const state = ended({ a: 100, b: 100 }, ["b"]);
+		const bare = {
+			...state,
+			jobs: state.jobs.map(({ endedAt: _, ...rest }) => rest),
+		};
+		expect(labels(bare, 0)).toEqual(["JOBS", "b"]);
+	});
+
+	it("keeps the original finish time of a row once read", () => {
+		const state = ended({ a: 100 }, ["a"]);
+		const read = { ...state, unread: [] };
+		expect(labels(read, 159_000)).toEqual(["JOBS", "a"]);
+		expect(labels(read, 160_000)).toEqual([]);
+	});
+
+	it("tells the earliest deadline of a shown non-unread finished row across jobs and agents", () => {
+		const state = stateOf([
+			[0, job("a", "a")],
+			[0, { type: "task_started", taskId: "t", agent: "w", label: "l", outputPath: "x", running: 2 } as Body],
+			[100, jobEnd("a", 1000, { notified: false })],
+			[
+				90,
+				{
+					type: "task_finished",
+					taskId: "t",
+					agent: "w",
+					label: "l",
+					status: "finished",
+					durationMs: 1000,
+					outputPath: "x",
+					notified: false,
+					running: 0,
+					waiting: 0,
+				} as Body,
+			],
+		]);
+		expect(nextSidePanelExpiry(state, 120_000)).toBe(150_000);
+	});
+
+	it("ignores rows capped out, unread, running or expired for the next expiry", () => {
+		const capped = ended({ a: 100, b: 101, c: 102, d: 103 });
+		expect(nextSidePanelExpiry(capped, 110_000)).toBe(161_000);
+		expect(nextSidePanelExpiry(ended({ a: 10, b: 20 }, ["a", "b"]), 110_000)).toBeUndefined();
+		expect(nextSidePanelExpiry(ended({ a: 10 }), 70_000)).toBeUndefined();
+		expect(nextSidePanelExpiry(stateOf([[0, job("r", "r")]]), 10_000)).toBeUndefined();
+		expect(nextSidePanelExpiry(emptySidePanel(), 0)).toBeUndefined();
 	});
 });

@@ -166,6 +166,8 @@ Three queries run in the repository itself, before the isolated view exists, and
 
 In fullscreen on a terminal of 120 columns or more, a panel 40 columns wide at the right of the conversation, the editor and the footer lists what the session holds in two tabs, Status and Session; the header stays above both. Ctrl+P shows or hides it and saves the choice as `tui.sidePanel` in `~/.atelier/settings.json` (see [Settings](#settings)); on a narrower terminal it does not show (Ctrl+P says why), and it comes and goes as the terminal is resized. The footer counts, the panel lists: while it is on screen the footer leaves out its `task` and `jobs` items, and the feature panel over the editor is hidden. Outside fullscreen there is no panel; `/status` says the rest.
 
+Jobs and agents stay on the Status tab while they run. A finished one stays for 60 seconds after it ends, at most three of them, newest first, and then goes away; one whose notice the agent has not read yet stays until it is read and does not use one of the three (it then keeps its original finish time, so it goes away at once if that was over a minute ago). The sections' counts are of the rows shown, and a section with no rows is left out; there is no `+N more`.
+
 ```text
 │ Status  Session
 │ ─────────────────────────────────────
