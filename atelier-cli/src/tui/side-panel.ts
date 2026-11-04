@@ -253,8 +253,8 @@ function wrapped(
 		if (visibleWidth(next) > firstRoom) break;
 		first = next;
 	}
-	// A first word wider than the row is cut where it ends.
-	if (first === "") first = truncateToWidth(title, firstRoom, "");
+	// Strip the truncator's reset before measuring how much plain source text was consumed.
+	if (first === "") first = stripTerminalSequences(truncateToWidth(title, firstRoom, ""));
 	const second = title.slice(first.length).trimStart();
 	return [withRight(`${lead}${paintTitle(first)}`), `${" ".repeat(indent)}${paintTitle(cut(second, room))}`];
 }
@@ -318,10 +318,14 @@ function todoLines(
  * title, which takes two rows at most, and a done task's commit stays at the right of the first.
  */
 function taskLines(task: FeatureTask, { ink, paint }: Painters, width: number, full = false): string[] {
-	const rows = (mark: string, paintTitle: (text: string) => string, right = "") =>
-		full
-			? wrapped(`${mark} ${ink.fg("textSecondary", oneLine(task.id))} `, oneLine(task.title), width, paintTitle, right)
-			: [cut(`${mark} ${paintTitle(oneLine(task.title))}`, width)];
+	const rows = (mark: string, paintTitle: (text: string) => string, right = "") => {
+		const title = oneLine(task.title);
+		if (!full) return [cut(`${mark} ${paintTitle(title)}`, width)];
+		// After the mark, spaces and commit, leave at least half the remaining row for the title.
+		const room = width - visibleWidth(mark) - 2 - (right === "" ? 0 : visibleWidth(right) + 1);
+		const id = cut(oneLine(task.id), Math.max(1, Math.floor(room / 2)));
+		return wrapped(`${mark} ${ink.fg("textSecondary", id)} `, title, width, paintTitle, right);
+	};
 	const text = (title: string) => ink.fg("text", title);
 	switch (task.status) {
 		case "in_progress":

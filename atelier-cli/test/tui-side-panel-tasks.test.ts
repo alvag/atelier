@@ -1,5 +1,5 @@
 import type { AtelierEvent, FeatureTask } from "@atelier/core";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { footerAfter, footerLine } from "../src/tui/footer.ts";
 import { type PanelView, sidePanelLines } from "../src/tui/side-panel.ts";
@@ -160,6 +160,44 @@ describe("side panel tasks summary", () => {
 		expect(lines[5]).toContain(`${rgb(activeTheme.warning)}waiting: x`);
 		expect(lines[6]).toContain(`${rgb(activeTheme.textSecondary)}○`);
 		expect(lines[6]).toContain(`${rgb(activeTheme.text)}Title T4`);
+	});
+
+	it.each([
+		["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", "ghijklmnopqrstuvwxyz"],
+		["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".repeat(2), "ghijklmnopqrstuvwxyzABCDEFGHIJK…"],
+	])("wraps an overlong first title word without losing characters: %s", (title, second) => {
+		const { lines } = render([task("T1", "pending", { title })], plain, { tasksExpanded: true });
+		expect(lines.slice(3, -1)).toEqual(["○ T1 ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", `     ${second}`]);
+		expect(lines.join("\n")).not.toContain("\x1b");
+		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
+	});
+
+	it.each([
+		["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", "jklmnopqrstuvwxyz"],
+		["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".repeat(2), "jklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ…"],
+	])("wraps an overlong first note word without losing characters: %s", (note, second) => {
+		const { lines } = render([task("T1", "in_progress", { note })]);
+		expect(lines.slice(4)).toEqual(["  ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", `  ${second}`]);
+		expect(lines.join("\n")).not.toContain("\x1b");
+		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
+	});
+
+	it.each([
+		["plain pending", plain, "pending"],
+		["colored pending", colored, "pending"],
+		["plain done", plain, "done"],
+		["colored done", colored, "done"],
+	] as const)("keeps the title and commit inside 37 columns with a UUID: %s", (_label, p, status) => {
+		const id = "123e4567-e89b-12d3-a456-426614174000";
+		const { lines } = render([task(id, status, { title: "Keep title", commit: "abc1234def" })], p, {
+			tasksExpanded: true,
+		});
+		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
+		const first = stripTerminalSequences(lines[3] ?? "");
+		expect(first).toContain("123e4567");
+		expect(first).not.toContain(id);
+		expect(first).toContain("… Keep title");
+		if (status === "done") expect(first).toMatch(/Keep title\s+abc1234$/);
 	});
 
 	it("lists every task in order with its id after ctrl+t, and a hint to go back", () => {
